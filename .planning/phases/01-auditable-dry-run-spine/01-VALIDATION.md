@@ -18,7 +18,7 @@ created: 2026-07-16
 | **Framework** | pytest 9.1.1 |
 | **Config file** | `pyproject.toml` — created in Plan 01 |
 | **Quick run command** | `uv run --locked pytest -q <task-specific-test>` |
-| **Full suite command** | `uv run --locked pytest -q && uv run --locked ruff check . && uv lock --check` |
+| **Full suite command** | `uv run --locked pytest -q && uv run --locked ruff check . && uv lock --check && uv build --no-sources` |
 | **Estimated runtime** | <15 seconds on local fixtures |
 
 ## Sampling Rate
@@ -33,8 +33,8 @@ created: 2026-07-16
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---|---:|---:|---|---|---|---|---|---|---|
-| 01-01-01 | 01 | 1 | OPS-01, OPS-04 | T-01-SC | Exact runtime and packages are approved before install | human checkpoint | N/A — mandatory runtime/package provenance checkpoint | N/A | ⬜ pending |
-| 01-01-02 | 01 | 1 | OPS-01, OPS-04 | T-01-01 | CLI fixture is bounded and strict | e2e/red | `uv run --locked pytest -q tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
+| 01-01-01 | 01 | 1 | OPS-01, OPS-04 | T-01-SC | Exact runtime, build backend and packages are approved before build/install | human checkpoint | N/A — mandatory runtime/package provenance checkpoint | N/A | ⬜ pending |
+| 01-01-02 | 01 | 1 | OPS-01, OPS-04 | T-01-01 | Packaged `skillscout` console entry point and bounded fixture contract are test-owned | e2e/red | `uv build --no-sources && uv run --locked pytest -q tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
 | 01-01-03 | 01 | 1 | OPS-01, OPS-04 | T-01-02 | Happy path writes real SQLite state and no remote output | e2e | `uv run --locked pytest -q tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
 | 01-02-01 | 02 | 2 | OPS-01 | T-01-03 | Contracts reject extras; output and manifest hash preimages are non-circular and stable | unit | `uv run --locked pytest -q tests/test_stage_contracts.py` | ❌ W0 | ⬜ pending |
 | 01-02-02 | 02 | 2 | OPS-01, OPS-04 | T-01-04 | Attempt telemetry, result and content-addressed manifest/checkpoint commit safely | integration | `uv run --locked pytest -q tests/test_pipeline_resume.py` | ❌ W0 | ⬜ pending |
@@ -47,7 +47,7 @@ created: 2026-07-16
 
 Plan 01 establishes all test infrastructure before implementing the happy path:
 
-- [ ] `pyproject.toml` — Python 3.13, console entry point, pytest and Ruff config.
+- [ ] `pyproject.toml` — Python 3.13, `[build-system]` with exact `uv_build==0.11.29`, `build-backend = "uv_build"`, `[project.scripts]` console entry point, pytest and Ruff config.
 - [ ] `uv.lock` — exact dependency resolution after human package verification.
 - [ ] `tests/fixtures/pipeline/approved.json` — valid deterministic pipeline fixture.
 - [ ] `tests/test_cli_dry_run.py` — failing happy-path acceptance test before implementation.
@@ -59,7 +59,7 @@ Plans 02 and 03 create their focused test files in the same task before implemen
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |---|---|---|---|
-| Runtime/package identity approval | OPS-01, OPS-04 | GSD legitimacy seam returned SUS for current package releases; the runtime is also downloaded externally | Before any install, compare CPython `3.13.14` against Python.org and `uv==0.11.29`, `pydantic==2.13.4`, `pytest==9.1.1`, `ruff==0.15.21` against their official PyPI owners/source links; approve or stop. |
+| Runtime/package identity approval | OPS-01, OPS-04 | GSD legitimacy seam returned SUS for current package releases; the runtime is also downloaded externally | Before any build/install, compare CPython `3.13.14` against Python.org and `uv==0.11.29`, `uv-build==0.11.29` (declared/imported as `uv_build`), `pydantic==2.13.4`, `pytest==9.1.1`, `ruff==0.15.21` against official Astral/PyPI owners and source links; approve or stop. |
 
 All product behaviors after dependency approval have automated verification.
 
@@ -67,6 +67,7 @@ All product behaviors after dependency approval have automated verification.
 
 ```text
 uv lock --check
+uv build --no-sources
 uv run --locked ruff check .
 uv run --locked pytest -q
 uv run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state .tmp/demo.db --output .tmp/demo-out

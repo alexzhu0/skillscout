@@ -60,6 +60,7 @@ The highest-risk implementation mistake is making `--dry-run` a boolean checked 
 |---|---:|---|---|
 | CPython | 3.13.14, pin exact patch in `.python-version` | Runtime | Project-wide research selected 3.13; Python.org identifies 3.13.14 as the current maintenance release, while the local machine currently exposes Python 3.9.6, so execution must not accidentally use system Python. [CITED: https://www.python.org/downloads/release/python-31314/] |
 | uv | 0.11.29 | Project environment and `uv.lock` | uv documents that `uv run` checks project metadata/lock consistency and that `uv.lock` should be committed. [CITED: https://docs.astral.sh/uv/concepts/projects/sync/] |
+| uv build backend | `uv-build==0.11.29`; backend import `uv_build` | Build/install the pure-Python `src/skillscout` package and preserve the `skillscout` console entry point | Astral recommends `uv_build` for most pure-Python projects, documents the current compatibility window `uv_build>=0.11.29,<0.12`, and uses `src/<package>/__init__.py` by default. Phase 1 uses the exact current paired release, a strict subset of that window. [CITED: https://docs.astral.sh/uv/concepts/build-backend/] [CITED: https://pypi.org/project/uv-build/] |
 | Pydantic | 2.13.4 | Strict, frozen stage and payload contracts | Pydantic provides `model_dump(mode="json")` for JSON-compatible primitives and `model_dump_json()` for JSON encoding. [CITED: https://docs.pydantic.dev/latest/concepts/serialization/] |
 | Python `sqlite3` | stdlib 3.13 | Run, attempt, result and checkpoint persistence | Python recommends controlling transactions through `Connection.autocommit` and explicitly committing or rolling back. [CITED: https://docs.python.org/3/library/sqlite3.html#transaction-control-via-the-autocommit-attribute] |
 | Python `json` + `hashlib` | stdlib 3.13 | Canonical bytes and SHA-256 content identity | `json.dumps` supports `sort_keys=True` and compact separators; hashlib includes SHA-256. [CITED: https://docs.python.org/3/library/json.html] [CITED: https://docs.python.org/3/library/hashlib.html] |
@@ -80,12 +81,15 @@ The intended execution setup is:
 ```text
 uv 0.11.29 available
 → uv python pin 3.13.14
-→ pyproject.toml declares pydantic and dev group pytest/ruff
+→ pyproject.toml declares `[build-system] requires = ["uv_build==0.11.29"]`, `build-backend = "uv_build"`
+→ `[project.scripts] skillscout = "skillscout.cli:main"`, pydantic, and dev group pytest/ruff
 → uv lock
 → all task/test commands use uv run --locked ...
 ```
 
 Do not use a floating `uv run` in verification because it may update the lockfile automatically; `--locked` causes an error when project metadata and `uv.lock` disagree. [CITED: https://docs.astral.sh/uv/concepts/projects/sync/]
+
+The PyPI distribution name is canonically displayed as `uv-build`; the PEP 518 requirement and backend import use `uv_build`, as shown by Astral's official configuration. The official range is `>=0.11.29,<0.12`, but Phase 1 narrows it to `==0.11.29` so the build dependency is exactly the release reviewed at the mandatory checkpoint. The `uv 0.11.29` executable bundles a compatible copy and may use it for uv-driven builds; declaring the requirement remains necessary for standard package metadata and non-uv build frontends. `uv_build` is appropriate because this phase is pure Python and uses the backend's default `src/skillscout` layout. [CITED: https://docs.astral.sh/uv/concepts/build-backend/]
 
 ## Package Legitimacy Audit
 
@@ -94,12 +98,13 @@ The GSD package-legitimacy seam returned `SUS` for every checked Python package 
 | Package | Registry evidence | Seam verdict/reason | Official provenance | Disposition |
 |---|---|---|---|---|
 | `uv==0.11.29` | Exists; released 2026-07-15 | SUS: too-new, unknown-downloads | PyPI verified project links and Astral maintainers [CITED: https://pypi.org/project/uv/] | Retain; human verifies name/version/source before install |
+| `uv-build==0.11.29` (`uv_build` in `[build-system]`) | Exists; released 2026-07-15; Python >=3.8 including 3.13 | SUS: too-new, unknown-downloads | Astral's official docs recommend the backend and its PyPI project has verified repository links plus Trusted Publishing [CITED: https://docs.astral.sh/uv/concepts/build-backend/] [CITED: https://pypi.org/project/uv-build/] | Retain; human verifies distribution/backend names, exact version and Astral source before build/install |
 | `pydantic==2.13.4` | Exists; released 2026-05-06 | SUS: unknown-downloads | PyPI verified Pydantic owner/source [CITED: https://pypi.org/project/pydantic/] | Retain; human verifies name/version/source before install |
 | `pytest==9.1.1` | Exists; released 2026-06-19 | SUS: too-new, unknown-downloads | PyPI Trusted Publishing provenance from `pytest-dev/pytest` [CITED: https://pypi.org/project/pytest/] | Retain; human verifies name/version/source before install |
 | `ruff==0.15.21` | Exists; released 2026-07-09 | SUS: too-new, unknown-downloads | PyPI verified Astral repository/maintainers [CITED: https://pypi.org/project/ruff/] | Retain; human verifies name/version/source before install |
 
 **Packages removed due to SLOP:** none.
-**Packages flagged SUS:** uv, pydantic, pytest, ruff.
+**Packages flagged SUS:** uv, uv-build, pydantic, pytest, ruff.
 **Planning consequence:** the first plan is non-autonomous until a human approves the exact table above; installation and lock generation occur only afterward.
 
 **Runtime provenance:** the same checkpoint must also confirm the official CPython `3.13.14` release before uv downloads that interpreter. Python is not a PyPI package and therefore was not part of the package-legitimacy seam, but the exact runtime pin is still an external supply-chain input. [CITED: https://www.python.org/downloads/release/python-31314/]
@@ -338,6 +343,7 @@ Each plan should contain 2–3 tasks and a complete vertical refinement. Plans a
 
 - [uv project workflow](https://docs.astral.sh/uv/guides/projects/)
 - [uv locking and syncing](https://docs.astral.sh/uv/concepts/projects/sync/)
+- [uv build backend](https://docs.astral.sh/uv/concepts/build-backend/)
 - [Pydantic serialization](https://docs.pydantic.dev/latest/concepts/serialization/)
 - [Pydantic model configuration](https://docs.pydantic.dev/latest/api/config/)
 - [Python sqlite3 transaction control](https://docs.python.org/3/library/sqlite3.html#transaction-control-via-the-autocommit-attribute)
@@ -349,10 +355,11 @@ Each plan should contain 2–3 tasks and a complete vertical refinement. Plans a
 - [pytest good integration practices](https://docs.pytest.org/en/stable/explanation/goodpractices.html)
 - [Python Packaging: src layout](https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/)
 - [uv on PyPI](https://pypi.org/project/uv/)
+- [uv-build on PyPI](https://pypi.org/project/uv-build/)
 - [Pydantic on PyPI](https://pypi.org/project/pydantic/)
 - [pytest on PyPI](https://pypi.org/project/pytest/)
 - [Ruff on PyPI](https://pypi.org/project/ruff/)
 
 ## RESEARCH COMPLETE
 
-Phase 1 can be planned without further product decisions. The only execution-time human checkpoint is verification of the exact CPython runtime plus four external package identities/versions before installation.
+Phase 1 can be planned without further product decisions. The only execution-time human checkpoint is verification of the exact CPython runtime plus five external package identities/versions—including the `uv-build` distribution / `uv_build` backend-name mapping—before build or installation.
