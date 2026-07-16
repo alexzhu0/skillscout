@@ -2,14 +2,14 @@
 
 **Last updated:** 2026-07-16  
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Project initialized; ready for Phase 1 discussion
+**Status:** Phase 1 planned and independently verified; ready for execution
 
 ## Current Position
 
 **Phase:** 1 of 6 — Auditable Dry-Run Spine  
-**Plan:** Not yet planned  
+**Plan:** 4 plans across 4 sequential waves
 **Execution:** Not started  
-**Next command:** `$gsd-discuss-phase 1`
+**Next command:** `$gsd-execute-phase 1`
 
 ## Progress
 
@@ -62,7 +62,6 @@ Implementation          [░░░░░░░░░░]   0%
 
 No product-scope blocker remains. Phase planning will choose implementation-level details such as:
 
-- Exact package/lock tooling and pinned dependency versions.
 - Concrete GitHub Search query set and organization-level Reader budget ceilings.
 - Target controlled catalog repository and human reviewer/team identifiers for live canary.
 - Qualification scoring weights, excerpt limit, similarity threshold, and policy versioning process.
@@ -72,7 +71,7 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-None. Phase 1 is ready for discussion and planning.
+None. Phase 1 execution begins with two mandatory, non-auto-approvable supply-chain checkpoints before any project dependency is built, installed, imported, or tested.
 
 ## Session Continuity
 
@@ -84,12 +83,14 @@ None. Phase 1 is ready for discussion and planning.
 - Created and committed all research documents.
 - Confirmed and committed 44 MVP requirements.
 - Drafted a six-phase vertical MVP roadmap and mapped every requirement exactly once.
+- Skipped Phase 1 discussion by explicit user request and completed research, Nyquist validation, pattern mapping, Walking Skeleton design, and four executable plans.
+- Passed two bounded plan-checker revision rounds; the final independent review returned `VERIFICATION PASSED` with no blockers or warnings.
 
 ### Next
 
-1. Begin Phase 1 discussion with `$gsd-discuss-phase 1`.
-2. Clarify the dry-run stage contracts, fixture boundary, checkpoint semantics, and side-effect firewall.
-3. Plan Phase 1 after its discussion context is approved.
+1. Execute Phase 1 with `$gsd-execute-phase 1`.
+2. Stop at Gate A for exact toolchain/direct-declaration approval, then at Gate B for complete lock-graph approval.
+3. Continue through the Walking Skeleton, auditable resume ledger, and fail-closed zero-network acceptance waves.
 
 ---
 *State initialized: 2026-07-16*

@@ -27,7 +27,12 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** To be created with phase planning
+**Plans:** 4 sequential vertical refinements
+
+- [ ] `01-01-PLAN.md` — Gate-A-verified local toolchain, non-building lock discovery and Gate B approval of one canonical first-party root plus registry-only external graph.
+- [ ] `01-02-PLAN.md` — Safe packaged CLI Walking Skeleton with one-descriptor controls, sanitized schema-v1 errors and a real Generator-interrupted v1 freeze.
+- [ ] `01-03-PLAN.md` — Strict contracts, transactional interrupted-v1→v2 migration with Validators-first no-replay proof, content-addressed ledger, inspect/resume and digest-scoped retry.
+- [ ] `01-04-PLAN.md` — Capability firewall, expanded fail-closed boundaries and final zero-network acceptance.
 
 **Success Criteria:**
 
