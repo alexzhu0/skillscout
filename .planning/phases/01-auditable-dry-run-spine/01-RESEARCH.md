@@ -26,7 +26,7 @@ Use a `src/` layout, Python 3.13, Pydantic models, stdlib `sqlite3`, canonical J
 
 The highest-risk implementation mistake is making `--dry-run` a boolean checked only inside a future Publisher. The dry-run boundary must be structural: Phase 1's composition root only constructs no-effect fixture processors, local-state ports and a `PublicationPlanner`; it does not construct or expose a remote adapter. A `SideEffectPolicy` permits only `none` and `local_state`, and an end-to-end test patches outbound socket connection attempts to fail. [ASSUMED: project-specific defense-in-depth design]
 
-**Primary recommendation:** implement three vertical refinements—happy-path walking skeleton, checkpoint/resume ledger, and fail-closed side-effect/state-integrity handling—while keeping live GitHub, OpenAI, state-branch persistence, and real Draft PRs outside Phase 1.
+**Primary recommendation:** implement four sequential waves—verified toolchain/two supply-chain gates, happy-path walking skeleton, checkpoint/resume ledger, and fail-closed side-effect/state-integrity hardening—while keeping live GitHub, OpenAI, state-branch persistence, and real Draft PRs outside Phase 1. The toolchain split preserves the 2–3-task plan limit without collapsing either human gate into automation.
 
 ## Architectural Responsibility Map
 
@@ -97,7 +97,7 @@ Only after Gate A approval may the deterministic bootstrap proceed:
 3. Stage the Gate-A-approved `python-build-standalone` asset under a local `file://` mirror, require SHA-256 `795a5aeeb050f00aa8a2214d779bad9f1b9113edb6923317a80c042a11a087d7` before extraction, and set `UV_PYTHON_CPYTHON_BUILD=20260623`. Run exact `uv python install cpython@3.13.14` with the local mirror, a repository-local `UV_PYTHON_INSTALL_DIR`, and `--no-bin`; uv officially supports a local directory mirror. [CITED: https://docs.astral.sh/uv/reference/cli/#uv-python-install] [CITED: https://docs.astral.sh/uv/reference/environment/#uv_python_cpython_build]
 4. Resolve the interpreter with `uv python find --managed-python --no-python-downloads cpython@3.13.14`, require the resolved path to be below the approved install directory, and run that path with an assertion for `sys.implementation.name == "cpython"` and `sys.version_info[:3] == (3, 13, 14)`. Thereafter every uv command runs with `UV_MANAGED_PYTHON=1`, `UV_PYTHON_DOWNLOADS=never`, the repository-local `UV_PYTHON_INSTALL_DIR`, and `.python-version` containing exactly `3.13.14`; this forbids automatic downloads and system Python fallback. [CITED: https://docs.astral.sh/uv/concepts/python-versions/] [CITED: https://docs.astral.sh/uv/reference/settings/#python-downloads]
 
-After the reviewed `pyproject.toml` exists, resolution is a non-installing discovery step:
+After the reviewed `pyproject.toml` exists, resolution is a non-installing discovery step. The static project identity is fixed as normalized name `skillscout`, version `0.1.0`; changing either value invalidates the lock review:
 
 ```text
 uv lock --no-build --no-sources --no-cache --managed-python --no-python-downloads --python 3.13.14
@@ -105,9 +105,20 @@ uv lock --no-build --no-sources --no-cache --managed-python --no-python-download
 
 This command is deliberately not described as “metadata-only network traffic.” To generate a universal lock, uv may download a wheel to inspect its metadata or inspect static metadata from an sdist; without `--no-build`, it can build a package when neither source is sufficient. `--no-build` makes such a case fail, `--no-sources` excludes workspace/Git/URL/path source overrides, `--no-cache` prevents reuse of a previously built wheel and discards downloaded inspection bytes after the command, and the project must use only static PEP 621 metadata with no editable/path/Git dependency. The command does not sync or install distributions. [CITED: https://docs.astral.sh/uv/reference/troubleshooting/build-failures/#why-does-uv-build-a-package] [CITED: https://docs.astral.sh/uv/reference/cli/#uv-lock]
 
-**Gate B — approve the complete locked graph.** Before `uv sync`, `uv build`, `uv run`, pytest, Ruff, or import of any locked package, a reviewer inspects every `[[package]]` record and every `sdist`/`wheels` distribution entry in `uv.lock`: normalized name, exact version, dependency edge/marker, registry source, artifact URL, SHA-256 and size. Re-run the GSD legitimacy seam and official-owner/source review for every newly introduced transitive distribution. Reject missing hashes, yanked/adverse releases, dependency-confusion lookalikes, non-PyPI registry sources, Git/path/editable/direct-URL sources, unexpected packages, or any package that would require a source build on Darwin/aarch64. Approve the exact lock bytes/hash or stop. `uv.lock` is a human-readable universal lock with exact resolved versions; its artifact records are the reviewed install authority. [CITED: https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile]
+**Gate B — approve the complete locked graph.** Before `uv sync`, `uv build`, `uv run`, pytest, Ruff, or import of any locked package, classify every `[[package]]` record and inspect every `sdist`/`wheels` distribution entry in `uv.lock`:
 
-Only after Gate B may the approved graph be installed and project code built. All later commands use `--locked` where supported, retain the managed-Python/no-download environment, and must fail rather than re-lock, auto-download Python, use system Python, or build an unreviewed dependency. Do not use a floating `uv run`: `--locked` causes an error when project metadata and `uv.lock` disagree. [CITED: https://docs.astral.sh/uv/concepts/projects/sync/]
+1. Allow **exactly one first-party root project node**. It must have normalized name `skillscout`, version `0.1.0`, and source exactly `source = { editable = "." }`, where `.` is the canonical repository root. It must not name another path, escape through a symlink, identify another workspace member, or carry `sdist`/`wheels` artifacts. Its dependency edges, markers, `requires-dist` and dependency-group metadata must exactly match the human-reviewed static `pyproject.toml` declarations; a missing, duplicate or mismatched root node stops the gate. uv documents that it installs the current project/workspace members in editable mode by default, so this single root record is expected first-party metadata rather than an external dependency source. [CITED: https://docs.astral.sh/uv/concepts/projects/config/#editable-mode] [CITED: https://docs.astral.sh/uv/concepts/projects/sync/]
+2. Treat **every other node as external**. Each must use the reviewed PyPI registry source, have an exact version and expected dependency edge/marker, and expose the artifact URL, SHA-256 and size required for install review. Reject Git, path, editable, workspace, direct-URL or alternate-registry sources on every non-root node; also reject missing hashes, yanked/adverse releases, dependency-confusion lookalikes, unexpected packages, or any package that would require a source build on Darwin/aarch64. `--no-sources` ignores `tool.uv.sources` overrides, but it does not remove uv's expected editable representation of the current project. [CITED: https://docs.astral.sh/uv/concepts/projects/dependencies/#dependency-sources] [CITED: https://docs.astral.sh/uv/reference/cli/#uv-lock]
+
+Re-run the GSD legitimacy seam and official-owner/source review for every newly introduced external transitive distribution. Approve the exact lock bytes/hash or stop. `uv.lock` is a human-readable universal lock with exact resolved versions; its artifact records are the reviewed install authority. [CITED: https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile]
+
+Only after Gate B may the approved graph be installed and project code built. From the repository root, every post-Gate-B uv command must repeat this exact self-contained prefix rather than depend on ambient `PATH` or prior shell exports:
+
+```text
+UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv"
+```
+
+All later commands use `--locked` where supported, retain that inline managed-Python/no-download environment, and must fail rather than re-lock, auto-download Python, use system Python, or build an unreviewed dependency. Do not use a floating `uv run`: `--locked` causes an error when project metadata and `uv.lock` disagree. uv documents that `UV_PYTHON_INSTALL_DIR` controls managed-Python discovery, `UV_MANAGED_PYTHON` forbids system-Python fallback, and disabling Python downloads prevents implicit acquisition. [CITED: https://docs.astral.sh/uv/reference/environment/#uv_python_install_dir] [CITED: https://docs.astral.sh/uv/reference/environment/#uv_managed_python] [CITED: https://docs.astral.sh/uv/reference/environment/#uv_python_downloads] [CITED: https://docs.astral.sh/uv/concepts/projects/sync/]
 
 The PyPI distribution name is canonically displayed as `uv-build`; the PEP 518 requirement and backend import use `uv_build`, as shown by Astral's official configuration. The official range is `>=0.11.29,<0.12`, but Phase 1 narrows it to `==0.11.29` so the build dependency is exactly the release reviewed at the mandatory checkpoint. The `uv 0.11.29` executable bundles a compatible copy and may use it for uv-driven builds; declaring the requirement remains necessary for standard package metadata and non-uv build frontends. `uv_build` is appropriate because this phase is pure Python and uses the backend's default `src/skillscout` layout. [CITED: https://docs.astral.sh/uv/concepts/build-backend/]
 
@@ -227,14 +238,14 @@ The JSON manifest should be written to a temporary sibling on the same filesyste
 
 SQLite must enforce foreign keys plus uniqueness for `(run_id, subject_id, stage, attempt_no)`, the reusable stage key, and `manifest_hash`. A crash between manifest replacement and DB commit can leave an unreferenced manifest, which is safe and may be garbage-collected later; the reverse ordering is forbidden because it can leave a committed checkpoint pointing at absent bytes.
 
-### Pattern 3A: Explicit Plan 01 → Plan 02 schema migration
+### Pattern 3A: Explicit Walking Skeleton Plan 02 → Ledger Plan 03 schema migration
 
-Plan 01's thin SQLite database is a real public-on-disk state version, not a disposable prototype. It must create its thin tables with `PRAGMA user_version = 1`, and even the v1 attempt/checkpoint row must retain `subject_id`, `stage`, precomputed `input_hash`, `producer_version`, the fixed `retry_policy_version`, `reusable_key_digest`, attempt number/status and successful output hash. Plan 02's `StateStore.open()` supports exactly versions 1 and 2:
+Walking Skeleton Plan 02's thin SQLite database is a real public-on-disk state version, not a disposable prototype. It must create its thin tables with `PRAGMA user_version = 1`, and even the v1 attempt/checkpoint row must retain `subject_id`, `stage`, precomputed `input_hash`, `producer_version`, the fixed `retry_policy_version`, `reusable_key_digest`, attempt number/status and successful output hash. Ledger Plan 03's `StateStore.open()` supports exactly versions 1 and 2:
 
 1. If the DB path does not exist, the current implementation creates its current schema transactionally. For an existing file, read `PRAGMA user_version` before normal queries. Version `2` proceeds; version `1` enters a `BEGIN IMMEDIATE` migration; existing version `0`, malformed databases, and versions greater than `2` fail closed as `state_schema_incompatible` rather than deleting or recreating state.
-2. Inside the transaction, create the v2 result/checkpoint tables or columns, copy Plan 01 happy-path rows using their persisted run/stage/input/producer/retry identity and hashes, validate row counts, foreign keys, digest recomputation and required non-null fields, then set `PRAGMA user_version = 2` as the final mutation and commit. Missing identity is corruption and fails migration; do not invent a default after processing.
-3. Any exception rolls the whole transaction back and reports `state_schema_migration_error`; it must leave the v1 database readable by Plan 01 semantics. Opening an already-v2 DB is idempotent.
-4. Integration tests must create a v1 DB through the actual Plan 01 CLI/state adapter (not hand-authored SQL), open it with Plan 02, prove the same `run_id` and last successful checkpoint survive, then resume that run. A forced mid-migration error must prove rollback leaves `user_version == 1` and no partial v2 state.
+2. Inside the transaction, create the v2 result/checkpoint tables or columns, copy Walking Skeleton happy-path rows using their persisted run/stage/input/producer/retry identity and hashes, validate row counts, foreign keys, digest recomputation and required non-null fields, then set `PRAGMA user_version = 2` as the final mutation and commit. Missing identity is corruption and fails migration; do not invent a default after processing.
+3. Any exception rolls the whole transaction back and reports `state_schema_migration_error`; it must leave the v1 database readable by Walking Skeleton semantics. Opening an already-v2 DB is idempotent.
+4. Walking Skeleton Plan 02 must already expose deterministic `--fail-after generator`. After its GREEN tests, run the actual packaged CLI with that flag to create `tests/fixtures/state/v1-cli.db`: Generator is the durable last successful checkpoint, the run is `interrupted`, Validators has no attempt, and the companion provenance JSON records the generating command, fixture/database hashes, `user_version=1`, run ID, checkpoint and row counts. Freeze those bytes before changing the v1 adapter. Ledger Plan 03 copies that CLI-produced database, opens the copy under the v2 adapter, proves the same `run_id` and Generator checkpoint survive migration, and resumes **at Validators** with call canaries proving Scout through Generator were not replayed. A forced mid-migration error must prove rollback leaves `user_version == 1` and no partial v2 state.
 
 SQLite reserves `user_version` for application use, and `BEGIN IMMEDIATE` obtains the write transaction before migration work; this makes the format transition explicit and testable without adding a migration dependency. [CITED: https://sqlite.org/pragma.html#pragma_user_version] [CITED: https://sqlite.org/lang_transaction.html]
 
@@ -278,7 +289,13 @@ The CLI is Phase 1's user interface. Define two commands:
 
 Observable happy-path output contains `run_id`, `status`, `last_stage`, `reused_stage_count`, `publication_plan_path`, and `remote_writes_attempted: 0`. Use exit code `0` for completed dry-run, `1` for pipeline/integrity failure, and argparse's `2` for invalid CLI input.
 
-`--fail-after` is a fixture-only interruption seam and must be rejected unless execution mode is dry-run. It exits after the named stage has succeeded and its checkpoint is durable, marks the run `interrupted`, and does not invoke the next processor; rerunning without the flag proves checkpoint resume without killing a process nondeterministically. Separate adapter tests exercise failed `StageAttempt` records, allowlisted transient failures, the three-attempt ceiling, and `retry_exhausted`.
+`--fail-after` is part of the first runnable schema-v1 CLI in Walking Skeleton Plan 02, not a later ledger feature. It is a fixture-only interruption seam and must be rejected unless execution mode is dry-run. It exits `1` after the named stage has succeeded and its checkpoint is durable, marks the run `interrupted`, and does not invoke the next processor. The required v1 migration fixture is generated with `--fail-after generator`; Ledger Plan 03 migrates a frozen copy and resumes at Validators without replaying the six completed stages. Separate adapter tests exercise failed `StageAttempt` records, allowlisted transient failures, the three-attempt ceiling, and `retry_exhausted`.
+
+### Pattern 7: Minimum sanitized error contract starts in the Walking Skeleton
+
+The first runnable CLI already crosses untrusted fixture and filesystem boundaries, so diagnostic sanitization cannot wait for Hardening Plan 04. Walking Skeleton Plan 02 defines a closed schema-v1 error-code enum and a static code-to-summary table. The minimum codes are `invalid_fixture`, `fixture_changed`, `state_operation_failed`, and `pipeline_interrupted`; summaries are fixed generic ASCII text of at most 160 characters and never interpolate an exception, path, identifier or input value.
+
+All CLI JSON, SQLite rows, manifests and publication-plan data must be constructed from that allowlist. Do not serialize or emit `ValidationError.errors()` input/context/URL data, Pydantic `input`, exception `str`/`repr`/`args`, raw JSON bytes/text, environment values, credential-shaped strings, or operator/attacker-selected absolute paths. Internal logs used by tests obey the same boundary. `test_cli_dry_run.py` must inject a credential canary, an attacker-chosen absolute-path canary, hostile raw JSON and an exception containing those values, then search CLI stdout/stderr, SQLite text fields, manifests and any publication plan to prove every canary is absent while only an allowed code plus its fixed bounded summary remains. Hardening Plan 04 expands the code/malformed-state matrix and all durable surfaces; it does not establish this baseline for the first time. [CITED: https://docs.pydantic.dev/latest/errors/errors/]
 
 ## Don't Hand-Roll
 
@@ -301,12 +318,14 @@ Observable happy-path output contains `run_id`, `status`, `last_stage`, `reused_
 5. **Treating `running` as resumable success.** An interrupted attempt must become `abandoned` and be retried with a new attempt.
 6. **Calling future provider adapters in the walking skeleton.** Phase 1 fixtures are local; no network API belongs in this slice.
 7. **A dry-run boolean in the Publisher.** The dangerous capability still exists and can ignore the flag.
-8. **Persisting arbitrary exception strings.** They can contain paths or secrets; map to allowlisted error codes and sanitized summaries.
+8. **Deferring error sanitization to the hardening wave.** The first runnable CLI already accepts untrusted paths/JSON. Map to the schema-v1 closed code/fixed-summary table before any persistence or output; Pydantic input and exception `str`/`repr`/`args` are never diagnostics.
 9. **Unbounded JSON fixtures.** Python warns that malicious JSON can consume CPU/memory; enforce a small fixture byte cap before parsing. [CITED: https://docs.python.org/3/library/json.html]
 10. **Running tests against the repository root instead of the installed package.** Use `src/` layout and `uv run --locked pytest`; pytest recommends src layout for new projects. [CITED: https://docs.pytest.org/en/stable/explanation/goodpractices.html]
 11. **Treating `uv lock` as a no-download/no-execution guarantee.** Resolution may fetch wheel/sdist bytes and may build when static metadata is unavailable. Use the Gate-B discovery command with `--no-build --no-sources --no-cache`; a required build is a stop condition, not permission to continue. [CITED: https://docs.astral.sh/uv/reference/troubleshooting/build-failures/#why-does-uv-build-a-package]
 12. **Allowing lock review to cover only direct packages.** Every transitive distribution, version, source URL and artifact hash is executable supply-chain input at sync time and must pass Gate B.
 13. **Opening a fixture twice.** A check-then-open or size-check-then-reopen sequence permits symlink/file replacement. Inspect and consume one descriptor, then compare its metadata before/after the bounded read.
+14. **Rejecting every editable node in `uv.lock`.** uv normally represents the current project as editable. Gate B allows exactly one canonical `skillscout==0.1.0` root at `.`, then rejects editable/path/workspace/Git/URL sources for every external node.
+15. **Assuming a previously exported uv environment remains active.** Each post-Gate-B command repeats the verified repo-local uv path and all three managed-Python/no-download environment values inline.
 
 ## Security Threat Model Inputs
 
@@ -314,14 +333,14 @@ Security enforcement is active at OWASP ASVS Level 1 and blocks unresolved high-
 
 | Threat | STRIDE | Severity | Required mitigation |
 |---|---|---:|---|
-| Fixture is a symlink/non-regular file, changes during read, or JSON is oversized | Tampering / DoS | high | **Plan 01 minimum:** `lstat` and reject symlink/non-regular inputs; open once with `O_NOFOLLOW`, `O_NONBLOCK` and `O_CLOEXEC` where available so a swap to a FIFO cannot block; `fstat` the same descriptor, require regular mode and compare device/inode; reject declared size over the cap; read in bounded chunks and reject as soon as accumulated bytes exceed the cap (`cap + 1` probe); `fstat` again and reject changed device/inode/size/`mtime_ns`/`ctime_ns`; only then decode/parse and apply the strict schema. Platforms without `O_NOFOLLOW` still require the lstat/fstat identity comparison. Plan 03 expands the adversarial matrix but may not defer these primitives. |
+| Fixture is a symlink/non-regular file, changes during read, or JSON is oversized | Tampering / DoS | high | **Walking Skeleton Plan 02 minimum:** `lstat` and reject symlink/non-regular inputs; open once with `O_NOFOLLOW`, `O_NONBLOCK` and `O_CLOEXEC` where available so a swap to a FIFO cannot block; `fstat` the same descriptor, require regular mode and compare device/inode; reject declared size over the cap; read in bounded chunks and reject as soon as accumulated bytes exceed the cap (`cap + 1` probe); `fstat` again and reject changed device/inode/size/`mtime_ns`/`ctime_ns`; only then decode/parse and apply the strict schema. Platforms without `O_NOFOLLOW` still require the lstat/fstat identity comparison. Hardening Plan 04 expands the adversarial matrix but may not defer these primitives. |
 | Manifest path derived from attacker-controlled IDs | Tampering | high | Validate IDs/enum names and construct paths internally. |
 | Tampered/missing manifest is accepted during resume | Tampering / Repudiation | high | Recompute hash, compare DB metadata, fail closed. |
-| Exception or payload leaks secrets into state/output | Information Disclosure | high | Allowlists for persisted fields; sanitized `error_code`/summary only. |
+| Exception or payload leaks secrets into state/output | Information Disclosure | high | **Walking Skeleton Plan 02 minimum:** closed error-code enum plus fixed generic summaries ≤160 ASCII characters; never persist/emit Pydantic input, validation context/URL, exception `str`/`repr`/`args`, raw JSON, credential canaries or attacker-selected absolute paths; hostile canary coverage lives in `test_cli_dry_run.py`. Hardening Plan 04 expands the matrix. |
 | Dry-run runtime obtains remote read/write or network capability | Elevation of Privilege | critical | Capability omission plus `SideEffectPolicy` startup rejection and socket sentinel test. |
-| Package name/version substitution | Tampering | high | Gate A verified toolchain/direct identities and artifacts; non-building lock discovery; Gate B review of every locked distribution/version/source/hash; locked managed-Python commands only. |
+| Package name/version substitution | Tampering | high | Gate A verified toolchain/direct identities and artifacts; non-building lock discovery; Gate B allows exactly one canonical first-party root `skillscout==0.1.0` editable `.` and requires registry-only sources for every external node; all post-gate commands repeat the self-contained verified-uv prefix. |
 | Replayed stage with incompatible producer/schema/retry version | Tampering | medium | Precomputed attempt identity persists input/producer/retry-policy versions; reusable digest and schema version are validated before reuse. |
-| Plan 01 database is silently reinitialized by Plan 02 | Tampering / Repudiation | high | Version 1/2 format contract, transactional `BEGIN IMMEDIATE` migration, rollback on error, fail-closed unknown versions, migration/resume tests. |
+| Walking Skeleton database is silently reinitialized by Ledger Plan 03 | Tampering / Repudiation | high | Version 1/2 format contract, transactional `BEGIN IMMEDIATE` migration, rollback on error, fail-closed unknown versions, migration/resume tests. |
 
 ## Validation Architecture
 
@@ -338,19 +357,21 @@ Security enforcement is active at OWASP ASVS Level 1 and blocks unresolved high-
 ### Required fixtures
 
 - `approved.json`: one subject traverses all stages to `planned_not_published`.
-- Plan 01 fixture-safety cases in `test_cli_dry_run.py`: symlink, directory or other non-regular input, over-limit declared size, `cap + 1` streaming overflow, and a same-descriptor file-change simulation that proves pre/post metadata comparison. These are minimum acceptance, not Plan 03 deferrals.
-- `fail-after-generator.json` or the `--fail-after generator` seam: first run fails after a known successful checkpoint; second run resumes and reuses prior results.
+- Walking Skeleton fixture-safety cases in `test_cli_dry_run.py`: symlink, directory or other non-regular input, over-limit declared size, `cap + 1` streaming overflow, and a same-descriptor file-change simulation that proves pre/post metadata comparison. These are minimum acceptance, not Hardening Plan 04 deferrals.
+- Walking Skeleton error-disclosure cases in `test_cli_dry_run.py`: raw/Pydantic-invalid JSON containing a credential canary and attacker absolute path plus an exception whose args contain those values; all emitted/persisted surfaces contain only the closed code and its fixed bounded summary.
+- `--fail-after generator` in the schema-v1 Walking Skeleton CLI: generate and freeze a real interrupted v1 DB whose last checkpoint is Generator and which has no Validators attempt; Ledger Plan 03 migrates a copy and proves the first resumed invocation is Validators.
 - `invalid-extra-field.json`: strict schema rejects unknown data.
 - generated oversized JSON in test temp directory: size gate rejects before parse.
 - tampered manifest copy: resume detects content hash mismatch.
 - persisted transient failures at the retry ceiling: the next attempt is rejected as `retry_exhausted` without invoking the processor.
-- a real Plan 01 v1 database plus a forced migration-failure seam: Plan 02 migrates/resumes the former and rolls the latter back without partial v2 state.
+- the real Walking Skeleton CLI-produced, Generator-interrupted v1 database plus a forced migration-failure seam: Ledger Plan 03 migrates/resumes the former at Validators and rolls the latter back without partial v2 state.
 
 ### Sampling policy
 
-- After every task: run the narrow test file named in the task's `<automated>` verification plus Ruff on touched Python paths.
-- After every plan: run `uv run --locked pytest -q` and `uv run --locked ruff check .`.
-- Before Phase 1 verification: run full pytest, Ruff, `uv lock --check`, and two CLI demonstrations (happy path; fail then resume).
+- Wave 1 ends at static bootstrap/lock evidence and Gate B. Run only non-importing static assertions there; do **not** require pytest, Ruff, `uv build`, `uv run` or a full suite in Wave 1.
+- Wave 2 first executes the exact attributed RED after Gate B, then its focused GREEN tests. Full-suite sampling begins only after Wave 2 is GREEN and runs at the ends of Waves 2, 3 and 4.
+- After every post-Gate-B task, run the narrow test file named in the task's `<automated>` verification plus Ruff on touched Python paths. Every command repeats the exact self-contained uv prefix from the installation strategy; ambient `PATH`/exports are not evidence.
+- Before Phase 1 verification: run full pytest, Ruff, `uv lock --check`, and two CLI demonstrations (happy path; fail then resume), again with the exact inline prefix.
 - No watch mode. Target full feedback latency is under 15 seconds on local fixture data.
 
 ### Nyquist mapping guidance
@@ -361,13 +382,14 @@ Security enforcement is active at OWASP ASVS Level 1 and blocks unresolved high-
 
 ## Planning Recommendations
 
-Use three sequential plans:
+Use four sequential plans:
 
-1. **Walking Skeleton:** Gate A, deterministic verified toolchain bootstrap, project scaffold and Plan 01 v1 DB, non-building lock discovery, Gate B, the exact failing build/CLI test, then the thinnest real fixture→SQLite→publication-plan path. The high-severity single-descriptor fixture reader (symlink/non-regular/size/change checks) is part of this plan's green acceptance.
-2. **Checkpoint/Resume Ledger:** transactional v1→v2 migration, immutable envelopes, explicit non-circular hashes, precomputed attempt/retry identity, transactional manifests/SQLite attempts, digest-scoped bounded retry, inspect command, failure injection and resume tests.
-3. **Fail-Closed Dry-Run Hardening:** capability registry/policy, remote-read/write rejection, the broader adversarial path/size/change/error matrix beyond Plan 01 primitives, manifest corruption detection, full acceptance commands.
+1. **Verified Toolchain and Lock Approval:** Gate A, deterministic repository-local uv/managed-Python bootstrap, static scaffold, non-building lock discovery, then blocking Gate B before any build/import/test.
+2. **Walking Skeleton:** exact attributed RED followed by the thinnest real fixture→SQLite-v1→publication-plan path, including the high-severity single-descriptor fixture reader, minimum sanitized-error contract, deterministic `--fail-after generator`, and a frozen CLI-produced v1 DB interrupted after Generator.
+3. **Checkpoint/Resume Ledger:** transactional migration of a copy of that frozen v1 DB, resume at Validators without replay, immutable envelopes, explicit non-circular hashes, precomputed attempt/retry identity, transactional manifests/SQLite attempts, digest-scoped bounded retry and inspect command.
+4. **Fail-Closed Dry-Run Hardening:** capability registry/policy, remote-read/write rejection, the broader adversarial path/size/change/error matrix beyond Walking Skeleton primitives, manifest corruption detection, full acceptance commands.
 
-Each plan should contain 2–3 tasks and a complete vertical refinement. Plans are sequential because Plan 2 refines the skeleton's contracts/state and Plan 3 hardens the composed runtime.
+Each plan should contain 2–3 tasks and a complete vertical refinement. Plans are sequential because Plan 03 migrates/refines the Walking Skeleton's contracts and state, while Plan 04 hardens the composed runtime.
 
 ## Deferred to Later Phases
 
@@ -382,6 +404,9 @@ Each plan should contain 2–3 tasks and a complete vertical refinement. Plans a
 
 - [uv project workflow](https://docs.astral.sh/uv/guides/projects/)
 - [uv locking and syncing](https://docs.astral.sh/uv/concepts/projects/sync/)
+- [uv editable project configuration](https://docs.astral.sh/uv/concepts/projects/config/#editable-mode)
+- [uv dependency-source semantics](https://docs.astral.sh/uv/concepts/projects/dependencies/#dependency-sources)
+- [uv environment variables](https://docs.astral.sh/uv/reference/environment/)
 - [uv 0.11.29 immutable release, platform checksums and attestations](https://github.com/astral-sh/uv/releases/tag/0.11.29)
 - [uv 0.11.29 fixed managed-Python download metadata](https://raw.githubusercontent.com/astral-sh/uv/901092ee11a89ba287f274e3c6e3a2e18ec2fba2/crates/uv-python/download-metadata.json)
 - [Astral python-build-standalone immutable 20260623 release](https://github.com/astral-sh/python-build-standalone/releases/tag/20260623)
@@ -392,6 +417,7 @@ Each plan should contain 2–3 tasks and a complete vertical refinement. Plans a
 - [uv build backend](https://docs.astral.sh/uv/concepts/build-backend/)
 - [Pydantic serialization](https://docs.pydantic.dev/latest/concepts/serialization/)
 - [Pydantic model configuration](https://docs.pydantic.dev/latest/api/config/)
+- [Pydantic validation-error details and input controls](https://docs.pydantic.dev/latest/errors/errors/)
 - [Python sqlite3 transaction control](https://docs.python.org/3/library/sqlite3.html#transaction-control-via-the-autocommit-attribute)
 - [Python JSON](https://docs.python.org/3/library/json.html)
 - [Python hashlib](https://docs.python.org/3/library/hashlib.html)
@@ -410,4 +436,4 @@ Each plan should contain 2–3 tasks and a complete vertical refinement. Plans a
 
 ## RESEARCH COMPLETE
 
-Phase 1 can be planned without further product decisions. Execution has two mandatory supply-chain stops: Gate A verifies the exact uv archive/attestation, separate upstream CPython and Astral redistributed runtime identities, and direct declarations before bootstrap; Gate B verifies every locked transitive distribution/version/source/artifact hash before sync, build or test. The stage contract now persists precomputed input/producer/retry-policy identity, retry budgets are digest-scoped, Plan 02 transactionally migrates the Plan 01 v1 database, and the high-severity single-descriptor fixture safeguards land in Plan 01 rather than being deferred.
+Phase 1 can be planned without further product decisions. Gate B recognizes exactly one canonical first-party `skillscout==0.1.0` editable root and rejects non-registry sources for every external node. Wave 1 ends after static lock approval; every later command repeats the verified local uv/managed-Python prefix. Walking Skeleton Plan 02 owns minimum error sanitization, hostile disclosure canaries and the Generator-interrupted schema-v1 CLI fixture; Ledger Plan 03 migrates a frozen copy and resumes at Validators without replay; Hardening Plan 04 expands the security matrix.

@@ -13,86 +13,104 @@ created: 2026-07-16
 
 ## Test Infrastructure
 
+All commands run from the repository root. Every post-Gate-B uv invocation repeats this exact prefix; `PATH`, activated environments and previously exported variables are not validation evidence:
+
+```text
+UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv"
+```
+
 | Property | Value |
 |---|---|
 | **Framework** | pytest 9.1.1 |
-| **Config file** | `pyproject.toml` — created in Plan 01 |
-| **Quick run command** | `uv run --locked pytest -q <task-specific-test>` |
-| **Full suite command** | `uv run --locked pytest -q && uv run --locked ruff check . && uv lock --check && uv build --no-sources` |
+| **Config file** | `pyproject.toml` — created statically in Plan 01 |
+| **Quick run command** | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q <task-specific-test>` |
+| **Full suite command** | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check . && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" build --no-sources` |
 | **Estimated runtime** | <15 seconds on local fixtures |
 
 ## Sampling Rate
 
-- **After every task commit:** After Gate B, run the task's focused pytest command and Ruff on touched Python paths. Before Gate B, no build/import/test command is authorized.
-- **After every plan wave:** Run the full suite command.
-- **Before `$gsd-verify-work`:** Full suite and both CLI demonstrations must be green.
-- **Max feedback latency:** 15 seconds.
-- Watch-mode flags are forbidden.
+- **Wave 1:** Stop after verified static bootstrap, non-building lock discovery and Gate B. Only the non-importing static check in the map is required; no pytest, Ruff, `uv build`, `uv run` or full suite is authorized or sampled.
+- **Wave 2:** Execute the exact attributed RED in Task `01-01-02`, then the focused Walking Skeleton GREEN suite. Only after GREEN, run the full suite for the first time.
+- **Waves 3–4:** After every task, run its focused command and Ruff on touched Python paths. At the end of each wave, run the full suite.
+- **Before `$gsd-verify-work`:** Run the final self-contained command block plus happy, interrupt/resume and inspect evidence.
+- **Max feedback latency:** 15 seconds. Watch-mode flags are forbidden.
 
 ## Per-Task Verification Map
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---|---:|---:|---|---|---|---|---|---|---|
 | 01-01-01 | 01 | 1 | OPS-01, OPS-04 | T-01-SC-A | Gate A approves the exact uv archive/checksum/attestation, upstream CPython plus Astral redistributed runtime artifact, and direct declarations before bootstrap | human checkpoint | N/A — mandatory toolchain/direct provenance gate | N/A | ⬜ pending |
-| 01-01-01B | 01 | 1 | OPS-01, OPS-04 | T-01-SC-B | Gate B approves every locked package/distribution/version/source/hash before project dependency sync/build/install | human checkpoint | N/A — mandatory complete-lock provenance gate | N/A | ⬜ pending |
-| 01-01-02 | 01 | 1 | OPS-01, OPS-04 | T-01-01 | Packaged `skillscout` console entry point and bounded fixture contract are test-owned; the intended functional assertion is RED after successful build and test collection | e2e/red | `uv build --no-sources && ! uv run --locked pytest -q tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
-| 01-01-03 | 01 | 1 | OPS-01, OPS-04 | T-01-02 | Happy path writes v1 SQLite state and no remote output; fixture reads reject symlink/non-regular/oversize/change races using one descriptor | e2e/security | `uv run --locked pytest -q tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
-| 01-02-01 | 02 | 2 | OPS-01 | T-01-03 | Contracts reject extras; output and manifest hash preimages are non-circular and stable | unit | `uv run --locked pytest -q tests/test_stage_contracts.py` | ❌ W0 | ⬜ pending |
-| 01-02-02 | 02 | 2 | OPS-01, OPS-04 | T-01-04 | v1 state transactionally migrates to v2 or rolls back/fails closed; attempt identity, result and content-addressed manifest/checkpoint commit safely | integration | `uv run --locked pytest -q tests/test_pipeline_resume.py` | ❌ W0 | ⬜ pending |
-| 01-02-03 | 02 | 2 | OPS-04 | T-01-05 | Failed run resumes, reports reused stages, refuses a fourth retry for one digest, and grants a distinct budget only after input/producer/retry-policy change | CLI/integration | `uv run --locked pytest -q tests/test_pipeline_resume.py tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
-| 01-03-01 | 03 | 3 | OPS-04 | T-01-06 | Remote-read and remote-write capabilities cannot register in Phase 1 dry-run | security | `uv run --locked pytest -q tests/test_side_effect_policy.py` | ❌ W0 | ⬜ pending |
-| 01-03-02 | 03 | 3 | OPS-01, OPS-04 | T-01-07 | Tampered state and the expanded adversarial path/size/change matrix beyond Plan 01 primitives fail closed | security/integration | `uv run --locked pytest -q tests/test_state_integrity.py tests/test_cli_security.py` | ❌ W0 | ⬜ pending |
-| 01-03-03 | 03 | 3 | OPS-01, OPS-04 | T-01-06 | Full acceptance proves no network access and reports zero remote writes | e2e | `uv run --locked pytest -q` | ❌ W0 | ⬜ pending |
+| 01-01-01A | 01 | 1 | OPS-01, OPS-04 | T-01-SC-C | Checksum-verified repo-local uv and managed CPython are selected without system fallback; lock discovery is non-building and performs no project/package execution | preflight/static | `test "$(cat .python-version)" = "3.13.14" && test -s uv.lock && test "$("$PWD/.tools/uv-0.11.29/bin/uv" --version)" = "uv 0.11.29" && test -x "$(cat "$PWD/.tools/approved-python-path")"` | ❌ W0 | ⬜ pending |
+| 01-01-01B | 01 | 1 | OPS-01, OPS-04 | T-01-SC-B | Gate B approves the exact one-node first-party root exception plus every external locked package/artifact before project sync/build/install | human checkpoint | N/A — mandatory complete-lock provenance gate | N/A | ⬜ pending |
+| 01-01-02 | 02 | 2 | OPS-01, OPS-04 | T-01-01 | Packaged `skillscout` entry point and bounded fixture/error/failure contract collect, then fail only at the named missing behavior | e2e/red | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" build --no-sources && ! UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
+| 01-01-03 | 02 | 2 | OPS-01, OPS-04 | T-01-01, T-01-02, T-01-08 | Happy path writes v1 state; one-descriptor controls pass; fixed bounded diagnostics omit raw/Pydantic/exception/secret/path input; `--fail-after generator` freezes a real interrupted v1 DB | e2e/security | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_cli_dry_run.py && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
+| 01-02-01 | 03 | 3 | OPS-01 | T-01-03 | Contracts reject extras; output and manifest hash preimages are non-circular and stable | unit | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_stage_contracts.py && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout/domain tests/test_stage_contracts.py` | ❌ W0 | ⬜ pending |
+| 01-02-02 | 03 | 3 | OPS-01, OPS-04 | T-01-04 | A frozen CLI-produced v1 DB interrupted after Generator migrates transactionally to v2 and resumes at Validators with no prior-stage replay; rollback remains fail closed | integration | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_pipeline_resume.py && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout tests/test_pipeline_resume.py` | ❌ W0 | ⬜ pending |
+| 01-02-03 | 03 | 3 | OPS-04 | T-01-05 | Resume reports reused stages, refuses a fourth retry for one digest, and grants a distinct budget only after input/producer/retry-policy change | CLI/integration | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_pipeline_resume.py tests/test_cli_dry_run.py && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout tests/test_pipeline_resume.py tests/test_cli_dry_run.py` | ❌ W0 | ⬜ pending |
+| 01-03-01 | 04 | 4 | OPS-04 | T-01-06 | Remote-read and remote-write capabilities cannot register in Phase 1 dry-run | security | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_side_effect_policy.py && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout tests/test_side_effect_policy.py` | ❌ W0 | ⬜ pending |
+| 01-03-02 | 04 | 4 | OPS-01, OPS-04 | T-01-07, T-01-08 | Tampered state and the expanded path/size/change/error disclosure matrix beyond the Walking Skeleton baseline fail closed | security/integration | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_state_integrity.py tests/test_cli_security.py tests/test_cli_dry_run.py && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout tests/test_state_integrity.py tests/test_cli_security.py` | ❌ W0 | ⬜ pending |
+| 01-03-03 | 04 | 4 | OPS-01, OPS-04 | T-01-06 | Full acceptance proves no network access and reports zero remote writes | e2e | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check .` | ❌ W0 | ⬜ pending |
 
 ## Wave 0 Requirements
 
-Plan 01 establishes all test infrastructure before implementing the happy path:
+Plan 01 creates static infrastructure but does not execute project or dependency code:
 
-- [ ] `pyproject.toml` — Python 3.13, `[build-system]` with exact `uv_build==0.11.29`, `build-backend = "uv_build"`, `[project.scripts]` console entry point, pytest and Ruff config.
-- [ ] `uv.lock` — generated only by the non-building/no-source/no-cache discovery command after Gate A and approved in full at Gate B before any sync/build/install.
+- [ ] `pyproject.toml` — static name `skillscout`, version `0.1.0`, Python 3.13, exact `uv_build==0.11.29`, `build-backend = "uv_build"`, console entry point, pytest and Ruff config.
+- [ ] `uv.lock` — generated only by the non-building/no-source/no-cache discovery command after Gate A; Gate B allows exactly one canonical first-party root `skillscout==0.1.0` with `source = { editable = "." }`, then requires registry-only sources for every other node.
 - [ ] `tests/fixtures/pipeline/approved.json` — valid deterministic pipeline fixture.
-- [ ] `tests/test_cli_dry_run.py` — failing happy-path acceptance test before implementation, plus Plan 01 minimum symlink, non-regular, size-before/during, `cap + 1`, single-descriptor, and pre/post-change-detection cases.
+- [ ] `tests/test_cli_dry_run.py` — unexecuted failing happy-path contract; minimum single-descriptor safety cases; closed-code/fixed-summary hostile canaries; and schema-v1 `--fail-after generator` behavior.
 - [ ] `tests/conftest.py` — temporary state/output fixtures and deterministic clock/ID providers.
 
-Plans 02 and 03 create their focused test files in the same task before implementing the behavior under test; no test path may be referenced after the task without being created first.
+Walking Skeleton Plan 02 owns the first execution. After its GREEN suite, it uses its actual packaged CLI—not hand-authored SQL—to create and freeze `tests/fixtures/state/v1-cli.db` with Generator as the durable last checkpoint and no Validators attempt, plus `v1-cli-provenance.json`. Plans 03 and 04 create their remaining focused test files in the same task before implementing the behavior under test.
 
-Plan 01's enforced order is Gate A → verified repo-local uv/managed CPython bootstrap → write only the static `pyproject.toml`/test scaffold → non-building lock discovery → Gate B → execute the exact `01-01-02` RED command → implement `01-01-03`. The Gate B row is a blocking checkpoint inside that sequence; its `01-01-01B` identifier preserves every existing implementation ID and does not authorize moving build/test ahead of lock review.
+The order is: Plan 01 Gate A → verified repo-local bootstrap → static scaffold → non-building lock discovery → Gate B → stop Wave 1; Plan 02 exact attributed RED → GREEN Walking Skeleton → freeze interrupted v1 DB → first full-suite sample. No Wave-1 full-suite requirement may pull build/import/test ahead of Gate B.
 
 ## Manual-Only Verifications
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |---|---|---|---|
-| Gate A: toolchain/direct identity approval | OPS-01, OPS-04 | GSD legitimacy seam returned SUS; the current host lacks approved uv/Python | Before bootstrap, verify Darwin/aarch64; uv `0.11.29` commit `901092e…`, Apple-Silicon archive SHA `61c04acc…8930e3` and attestation; upstream CPython `3.13.14`; distinct Astral build `20260623`, `cpython-3.13.14+20260623-aarch64-apple-darwin-install_only_stripped.tar.gz`, SHA `795a5aee…087d7`; and `uv-build==0.11.29` (`uv_build` backend), `pydantic==2.13.4`, `pytest==9.1.1`, `ruff==0.15.21`. Match the full values in `01-RESEARCH.md`, record evidence, and approve or stop. After bootstrap, require the approved path and `uv --version` to report `0.11.29`, then pass the managed interpreter path/version checks before continuing. |
-| Gate B: complete lock approval | OPS-01, OPS-04 | Transitive identities and executable artifacts are unknown until safe resolution | Run only `uv lock --no-build --no-sources --no-cache --managed-python --no-python-downloads --python 3.13.14`; it may download wheel/sdist bytes for metadata but must not build, sync or install. Review every locked package and every artifact's exact version, dependency/marker, source URL, SHA-256 and size; rerun legitimacy/provenance checks for all transitives; reject nonregistry/Git/path/editable/direct-URL sources, missing hashes, unexpected/yanked packages or required source builds. Approve exact lock bytes/hash or stop before `uv sync`, `uv build`, `uv run`, pytest or Ruff. |
+| Gate A: toolchain/direct identity approval | OPS-01, OPS-04 | GSD legitimacy seam returned SUS; the current host lacks approved uv/Python | Before bootstrap, verify Darwin/aarch64; uv `0.11.29` commit `901092e…`, Apple-Silicon archive SHA `61c04acc…8930e3` and attestation; upstream CPython `3.13.14`; distinct Astral build `20260623`, managed-runtime asset SHA `795a5aee…087d7`; and `uv-build==0.11.29`, `pydantic==2.13.4`, `pytest==9.1.1`, `ruff==0.15.21`. Match the full values in `01-RESEARCH.md`, record evidence, and approve or stop. |
+| Gate B: complete lock approval | OPS-01, OPS-04 | External transitive identities and executable artifacts are unknown until safe resolution | Run only `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --no-build --no-sources --no-cache --managed-python --no-python-downloads --python 3.13.14`. Permit exactly one first-party root node with name `skillscout`, version `0.1.0`, source exactly editable `.`, and dependency metadata matching reviewed `pyproject.toml`; reject a missing/duplicate/mismatched root. For every other node, require reviewed PyPI registry source and reject Git/path/editable/workspace/direct-URL/alternate-registry sources. Review every external version, edge/marker and artifact URL/hash/size; approve exact lock bytes/hash or stop before sync/build/import/test. |
 
 All product behaviors after the two supply-chain approvals have automated verification.
 
-The RED command for `01-01-02` must be executed exactly as listed. Its shell success is not sufficient evidence: retain pytest output and confirm the test module collected successfully and failed at the named intended functional assertion. Exit due to import/collection/usage/no-tests errors (pytest 2/4/5), build failure, missing interpreter, or dependency/bootstrap failure does not count as RED and must be attributed to setup instead.
+The RED command for `01-01-02` must be executed exactly as listed in the map. Its shell success is not sufficient evidence: retain pytest output and confirm the module collected successfully and failed at the named intended functional assertion. Exit due to import/collection/usage/no-tests errors (pytest 2/4/5), build failure, missing interpreter, dependency/bootstrap failure, or a mismatched Gate-B lock does not count as RED.
+
+## Walking Skeleton v1 Freeze Handoff
+
+After Task `01-01-03` is GREEN and before any v2 adapter edit, execute the schema-v1 CLI once against fresh paths using the exact prefix:
+
+```text
+! UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state tests/fixtures/state/v1-cli.db --output .tmp/v1-cli-out --fail-after generator
+```
+
+The raw CLI status must be `1` for the intentional interruption, not setup failure. Record the exact command, fixture/database SHA-256, `PRAGMA user_version=1`, run ID, Generator checkpoint, run status `interrupted`, row counts and absence of any Validators attempt in `v1-cli-provenance.json`; freeze both files before Plan 03 changes the adapter. Plan 03 tests copy the DB, migrate the copy, and place invocation canaries on Scout through Generator so resumption proves Validators is the first processor called.
 
 ## Final Phase Commands
 
-Run these only from the Gate-A-verified shell where `command -v uv` resolves to the approved repo-local uv `0.11.29`, `UV_MANAGED_PYTHON=1`, `UV_PYTHON_DOWNLOADS=never`, the approved `UV_PYTHON_INSTALL_DIR` is set, and Gate B has approved the exact current `uv.lock`.
+Run from a repository root with fresh `.tmp` demo paths after confirming the current lock SHA-256 still equals Gate B:
 
 ```text
-uv lock --check
-uv build --no-sources
-uv run --locked ruff check .
-uv run --locked pytest -q
-uv run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state .tmp/demo.db --output .tmp/demo-out
-uv run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state .tmp/resume.db --output .tmp/resume-out --fail-after generator
-uv run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state .tmp/resume.db --output .tmp/resume-out
+UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check
+UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" build --no-sources
+UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check .
+UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q
+UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state .tmp/demo.db --output .tmp/demo-out
+! UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state .tmp/resume.db --output .tmp/resume-out --fail-after generator
+UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state .tmp/resume.db --output .tmp/resume-out
 ```
 
-The first dry-run exits `0` with `status=planned_not_published` and `remote_writes_attempted=0`. The fail-injected run exits `1`; its rerun exits `0`, reports a positive `reused_stage_count`, and preserves identical hashes for reused stage results. The full pytest suite additionally proves transactional v1→v2 migration/rollback, persisted precomputed attempt identity, retry exhaustion scoped to one reusable digest plus a distinct budget after identity change, complete nullable attempt telemetry, non-circular hashes, Plan 01 fixture-read primitives, and rejection of both remote-read and remote-write capabilities.
+The happy run exits `0` with `planned_not_published` and zero remote writes. The intentional interruption exits `1` after durable Generator; its rerun exits `0`, begins processing at Validators, reports positive reuse and preserves reused hashes. The full suite additionally proves v1→v2 migration/rollback, retry exhaustion per digest, complete nullable telemetry, non-circular hashes, Walking Skeleton error canaries and fixture primitives, expanded Plan-04 disclosure/integrity coverage, and rejection of remote-read/write capabilities.
 
 ## Validation Sign-Off
 
-- [x] All implementation tasks define an automated verification command or create their test first.
-- [x] Sampling continuity has no three consecutive implementation tasks without automated verification.
-- [x] Wave 0 paths are explicitly owned by Plan 01.
-- [x] No watch-mode flags are used.
-- [x] Target feedback latency is under 15 seconds.
-- [x] `nyquist_compliant: true` is set.
+- [x] Wave 1 terminates after static lock approval and has no full-suite requirement.
+- [x] The exact attributed RED remains in Plan 02.
+- [x] Full-suite sampling begins only after Wave 2 GREEN and continues after Waves 3–4.
+- [x] Every post-Gate-B command repeats the verified repo-local uv path and all three inline managed-Python/no-download values.
+- [x] Walking Skeleton owns minimum error sanitization, hostile canaries and `--fail-after generator`; Plan 04 owns the expanded matrix.
+- [x] Plan 03 migrates a frozen CLI-produced interrupted v1 DB and proves resume begins at Validators.
+- [x] No watch-mode flags are used; `nyquist_compliant: true` is set.
 - [ ] Execution evidence captured.
 
-**Approval:** planning contract approved 2026-07-16; execution pending
+**Approval:** planning contract revised 2026-07-16; execution pending
