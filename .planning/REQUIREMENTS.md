@@ -137,20 +137,52 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 
 | Requirement | Phase | Status |
 |---|---|---|
-| DISC-01..03 | — | Pending roadmap |
-| FILT-01..03 | — | Pending roadmap |
-| READ-01..06 | — | Pending roadmap |
-| EXTR-01..04 | — | Pending roadmap |
-| QUAL-01..02 | — | Pending roadmap |
-| GEN-01..05 | — | Pending roadmap |
-| VAL-01..03 | — | Pending roadmap |
-| REV-01..03 | — | Pending roadmap |
-| PUB-01..05 | — | Pending roadmap |
-| OPS-01..04 | — | Pending roadmap |
-| SEC-01..02 | — | Pending roadmap |
-| TEST-01..04 | — | Pending roadmap |
+| DISC-01 | Phase 5 | Pending |
+| DISC-02 | Phase 5 | Pending |
+| DISC-03 | Phase 5 | Pending |
+| FILT-01 | Phase 2 | Pending |
+| FILT-02 | Phase 2 | Pending |
+| FILT-03 | Phase 2 | Pending |
+| READ-01 | Phase 2 | Pending |
+| READ-02 | Phase 2 | Pending |
+| READ-03 | Phase 2 | Pending |
+| READ-04 | Phase 2 | Pending |
+| READ-05 | Phase 2 | Pending |
+| READ-06 | Phase 2 | Pending |
+| EXTR-01 | Phase 2 | Pending |
+| EXTR-02 | Phase 2 | Pending |
+| EXTR-03 | Phase 2 | Pending |
+| EXTR-04 | Phase 2 | Pending |
+| QUAL-01 | Phase 3 | Pending |
+| QUAL-02 | Phase 3 | Pending |
+| GEN-01 | Phase 3 | Pending |
+| GEN-02 | Phase 3 | Pending |
+| GEN-03 | Phase 3 | Pending |
+| GEN-04 | Phase 3 | Pending |
+| GEN-05 | Phase 3 | Pending |
+| VAL-01 | Phase 3 | Pending |
+| VAL-02 | Phase 3 | Pending |
+| VAL-03 | Phase 3 | Pending |
+| REV-01 | Phase 3 | Pending |
+| REV-02 | Phase 3 | Pending |
+| REV-03 | Phase 3 | Pending |
+| PUB-01 | Phase 4 | Pending |
+| PUB-02 | Phase 4 | Pending |
+| PUB-03 | Phase 4 | Pending |
+| PUB-04 | Phase 4 | Pending |
+| PUB-05 | Phase 4 | Pending |
+| OPS-01 | Phase 1 | Pending |
+| OPS-02 | Phase 5 | Pending |
+| OPS-03 | Phase 5 | Pending |
+| OPS-04 | Phase 1 | Pending |
+| SEC-01 | Phase 2 | Pending |
+| SEC-02 | Phase 4 | Pending |
+| TEST-01 | Phase 6 | Pending |
+| TEST-02 | Phase 6 | Pending |
+| TEST-03 | Phase 6 | Pending |
+| TEST-04 | Phase 6 | Pending |
 
-**Coverage:** 44 v1 requirements; 0 mapped before roadmap; 44 pending mapping.
+**Coverage:** 44 v1 requirements; 44 mapped; 0 unmapped.
 
 ## Approval Record
 
@@ -159,4 +191,4 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 
 ---
 *Requirements defined: 2026-07-16*  
-*Last updated: 2026-07-16 after MVP scope approval*
+*Last updated: 2026-07-16 after vertical roadmap mapping*
