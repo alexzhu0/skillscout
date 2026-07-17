@@ -6,6 +6,7 @@ The first execution of these tests is intentionally deferred until Gate B.
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,25 @@ import pytest
 @pytest.fixture
 def approved_fixture() -> Path:
     return Path(__file__).parent / "fixtures" / "pipeline" / "approved.json"
+
+
+@pytest.fixture
+def outbound_socket_sentinel(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Reject and record every attempted outbound socket connection."""
+
+    attempts: list[object] = []
+
+    def reject_connect(_socket: socket.socket, address: object) -> None:
+        attempts.append(address)
+        raise AssertionError("outbound socket connection attempted")
+
+    def reject_create_connection(address: object, *_args, **_kwargs) -> None:
+        attempts.append(address)
+        raise AssertionError("outbound socket connection attempted")
+
+    monkeypatch.setattr(socket.socket, "connect", reject_connect)
+    monkeypatch.setattr(socket, "create_connection", reject_create_connection)
+    return attempts
 
 
 @pytest.fixture

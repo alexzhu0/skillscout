@@ -153,6 +153,45 @@ def test_approved_fixture_reaches_planned_not_published(
     assert [stage for stage, _digest in observations] == list(STAGE_SEQUENCE)
 
 
+def test_installed_main_completes_all_stages_with_socket_connects_disabled(
+    approved_fixture: Path,
+    outbound_socket_sentinel: list[object],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = tmp_path / "state.db"
+    output = tmp_path / "output"
+    status = cli.main(
+        [
+            "dry-run",
+            "--fixture",
+            str(approved_fixture),
+            "--state",
+            str(state),
+            "--output",
+            str(output),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert status == 0, captured.err
+    payload = json.loads(captured.out)
+    assert payload["status"] == "planned_not_published"
+    assert payload["last_stage"] == "publication_planner"
+    assert payload["remote_writes_attempted"] == 0
+    assert payload["publication_plan_path"] == "publication-plan.json"
+    assert outbound_socket_sentinel == []
+
+    with _connect(state) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 9
+        assert connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 9
+        assert connection.execute("SELECT status FROM runs").fetchone()[0] == (
+            "planned_not_published"
+        )
+    publication = json.loads((output / "publication-plan.json").read_text())
+    assert publication["remote_writes_attempted"] == 0
+    assert publication["status"] == "planned_not_published"
+
+
 def test_fixture_symlink_is_rejected_before_run_creation(
     approved_fixture: Path, run_cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
