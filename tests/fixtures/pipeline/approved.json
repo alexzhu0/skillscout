@@ -1,0 +1,24 @@
+{
+  "schema_version": "1",
+  "subject_id": "fixture:approved-workflow",
+  "source": {
+    "repository": "https://github.com/example/approved-workflow",
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "license": "MIT"
+  },
+  "workflow": {
+    "goal": "Transform a bounded structured request into a review-only publication plan.",
+    "inputs": ["structured_request"],
+    "steps": [
+      "discover",
+      "filter",
+      "read",
+      "extract",
+      "qualify",
+      "generate",
+      "validate",
+      "review"
+    ],
+    "outputs": ["publication_plan"]
+  }
+}
