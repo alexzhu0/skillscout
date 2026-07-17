@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -171,7 +172,11 @@ class PipelineRunner:
             start_index = int(checkpoint["stage_index"]) + 1 if checkpoint else 0
             previous_output_hash = str(checkpoint["output_hash"]) if checkpoint else None
             reused_count = start_index
-            self.state.set_run_status(run_id, RunStatus.RUNNING.value, self.clock.now())
+            resumable_status = RunStatus(str(resumable["status"]))
+            if resumable_status is RunStatus.INTERRUPTED:
+                self.state.set_run_status(run_id, RunStatus.RUNNING.value, self.clock.now())
+            elif resumable_status is not RunStatus.RUNNING:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         self.state.set_reused_stage_count(run_id, reused_count)
 
         for stage_index, stage in enumerate(PipelineStage):
@@ -309,7 +314,7 @@ class PipelineRunner:
                 )
                 raise failure
 
-        plan_path = self._write_publication_plan(output_directory, PublicationPlan(run_id=run_id))
+        self._write_publication_plan(output_directory, PublicationPlan(run_id=run_id))
         self.state.set_run_status(run_id, RunStatus.PLANNED_NOT_PUBLISHED.value, self.clock.now())
         persisted = self.state.read_run(run_id)
         return RunSummary(
@@ -317,34 +322,76 @@ class PipelineRunner:
             status=RunStatus(str(persisted["status"])),
             last_stage=PipelineStage(str(persisted["last_stage"])),
             reused_stage_count=reused_count,
-            publication_plan_path=str(plan_path),
+            publication_plan_path="publication-plan.json",
             remote_writes_attempted=0,
         )
 
     @staticmethod
     def _write_publication_plan(output_directory: Path, plan: PublicationPlan) -> Path:
+        temporary: Path | None = None
+        descriptor = -1
         try:
+            if PipelineRunner._path_contains_symlink(output_directory):
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
             output_directory.mkdir(parents=True, exist_ok=True)
+            directory_metadata = os.lstat(output_directory)
+            if stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(
+                directory_metadata.st_mode
+            ):
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
             target = output_directory / "publication-plan.json"
             temporary = output_directory / ".publication-plan.json.tmp"
+            if target.is_symlink() or (target.exists() and not target.is_file()):
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+            if temporary.exists() or temporary.is_symlink():
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
             payload = canonical_json_bytes(plan) + b"\n"
             descriptor = os.open(
                 temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0),
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
                 0o600,
             )
-            try:
-                view = memoryview(payload)
-                while view:
-                    written = os.write(descriptor, view)
-                    view = view[written:]
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            view = memoryview(payload)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
             os.replace(temporary, target)
             return target
+        except SafeFailure:
+            raise
         except OSError:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        finally:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _path_contains_symlink(path: Path) -> bool:
+        absolute = path.absolute()
+        for candidate in reversed((absolute, *absolute.parents)):
+            try:
+                if stat.S_ISLNK(os.lstat(candidate).st_mode):
+                    return True
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+        return False
 
 
 def build_dry_run_runtime(

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import stat
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -19,11 +21,20 @@ from skillscout.domain.canonical import (
     stage_manifest_hash,
     stage_output_hash,
 )
-from skillscout.domain.enums import ExecutionMode, PipelineStage
+from skillscout.domain.enums import (
+    ExecutionMode,
+    PipelineStage,
+    RunStatus,
+    validate_run_transition,
+)
 from skillscout.domain.models import StageAttempt, StageEnvelope, StageInput
 
 SCHEMA_VERSION = 2
 _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
+_DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-f]{64})$")
+_SUPPORTED_RESULT_SCHEMAS = frozenset({"1", "2"})
+_SUPPORTED_PRODUCERS = frozenset({"fixture-v1"})
+MAX_MANIFEST_BYTES = 262_144
 
 
 def _schema_statements(suffix: str = "") -> tuple[str, ...]:
@@ -111,7 +122,24 @@ class SQLiteStateStore:
             raise ValueError("unknown migration failure seam")
         self.path = path
         self.manifest_root = path.with_suffix(".manifests")
-        existed = path.exists()
+        try:
+            path_metadata = os.lstat(path)
+            existed = True
+            if stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISREG(path_metadata.st_mode):
+                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+        except FileNotFoundError:
+            existed = False
+        except SafeFailure:
+            raise
+        except OSError:
+            raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE) from None
+        if self._path_contains_symlink(path.parent):
+            code = (
+                ErrorCode.STATE_SCHEMA_INCOMPATIBLE
+                if existed
+                else ErrorCode.STATE_OPERATION_FAILED
+            )
+            raise SafeFailure(code)
         self.connection: sqlite3.Connection | None = None
         try:
             if not existed:
@@ -411,12 +439,22 @@ class SQLiteStateStore:
 
     def latest_checkpoint(self, run_id: str) -> sqlite3.Row | None:
         try:
-            return self._db.execute(
+            row = self._db.execute(
                 """SELECT stage, stage_index, result_id, output_hash, manifest_hash,
                           manifest_path, updated_at
                    FROM checkpoints WHERE run_id = ? ORDER BY stage_index DESC LIMIT 1""",
                 (run_id,),
             ).fetchone()
+            if row is not None:
+                stage = PipelineStage(str(row["stage"]))
+                expected = self._manifest_path(stage, str(row["manifest_hash"]))
+                if str(row["manifest_path"]) != str(expected):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            return row
+        except (ValueError, TypeError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+        except SafeFailure:
+            raise
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
@@ -583,29 +621,44 @@ class SQLiteStateStore:
     def _write_manifest(self, envelope: StageEnvelope) -> Path:
         if envelope.manifest_hash is None:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-        target = self.manifest_root / envelope.stage.value / f"{envelope.manifest_hash}.json"
+        target = self._manifest_path(envelope.stage, envelope.manifest_hash)
         payload = canonical_json_bytes(envelope)
+        descriptor = -1
+        temporary: Path | None = None
         try:
+            if self._path_contains_symlink(self.manifest_root):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                if target.read_bytes() != payload:
+            if self._path_contains_symlink(target.parent):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            parent_metadata = os.lstat(target.parent)
+            if not stat.S_ISDIR(parent_metadata.st_mode):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            if target.exists() or target.is_symlink():
+                if self._read_manifest_bytes(target) != payload:
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                 return target
             temporary = target.with_name(f".{target.name}.tmp")
+            if temporary.exists() or temporary.is_symlink():
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             descriptor = os.open(
                 temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
                 0o600,
             )
-            try:
-                view = memoryview(payload)
-                while view:
-                    written = os.write(descriptor, view)
-                    view = view[written:]
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            view = memoryview(payload)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
             os.replace(temporary, target)
+            temporary = None
             try:
                 directory = os.open(target.parent, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
                 try:
@@ -619,10 +672,36 @@ class SQLiteStateStore:
             raise
         except OSError:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        finally:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _commit_success(self, envelope: StageEnvelope, manifest_path: Path) -> None:
         try:
             self._db.execute("BEGIN IMMEDIATE")
+            run = self._db.execute(
+                "SELECT status FROM runs WHERE run_id = ?", (envelope.run_id,)
+            ).fetchone()
+            previous = self._db.execute(
+                "SELECT MAX(stage_index) FROM checkpoints WHERE run_id = ?",
+                (envelope.run_id,),
+            ).fetchone()
+            expected_index = 0 if previous[0] is None else int(previous[0]) + 1
+            if (
+                run is None
+                or str(run["status"]) != RunStatus.RUNNING.value
+                or envelope.stage_index != expected_index
+                or tuple(PipelineStage)[envelope.stage_index] is not envelope.stage
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             self._db.execute(
                 """INSERT INTO stage_results
                    (result_id, attempt_id, run_id, schema_version, subject_id, stage,
@@ -674,7 +753,10 @@ class SQLiteStateStore:
                 (envelope.created_at, envelope.run_id),
             )
             self._db.commit()
-        except sqlite3.Error:
+        except SafeFailure:
+            self._db.rollback()
+            raise
+        except (IndexError, sqlite3.Error):
             self._db.rollback()
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
@@ -697,8 +779,24 @@ class SQLiteStateStore:
 
     def _verify_manifest_row(self, row: sqlite3.Row) -> StageEnvelope:
         try:
-            raw = Path(str(row["manifest_path"])).read_bytes()
+            stage = PipelineStage(str(row["stage"]))
+            expected_path = self._manifest_path(stage, str(row["manifest_hash"]))
+            if str(row["manifest_path"]) != str(expected_path):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            raw = self._read_manifest_bytes(expected_path)
             envelope = StageEnvelope.model_validate_json(raw, strict=True)
+            if (
+                envelope.schema_version not in _SUPPORTED_RESULT_SCHEMAS
+                or envelope.producer_version not in _SUPPORTED_PRODUCERS
+                or str(row["schema_version"]) != envelope.schema_version
+                or str(row["producer_version"]) != envelope.producer_version
+                or str(row["run_id"]) != envelope.run_id
+                or str(row["attempt_id"]) != envelope.attempt_id
+                or str(row["subject_id"]) != envelope.subject_id
+                or stage is not envelope.stage
+                or int(row["stage_index"]) != envelope.stage_index
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             if envelope.manifest_hash != row["manifest_hash"]:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             if stage_manifest_hash(envelope) != envelope.manifest_hash:
@@ -720,7 +818,7 @@ class SQLiteStateStore:
             return envelope
         except SafeFailure:
             raise
-        except (OSError, ValidationError, ValueError, TypeError):
+        except (OSError, ValidationError, ValueError, TypeError, KeyError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
     def fail_attempt(
@@ -764,17 +862,40 @@ class SQLiteStateStore:
         updated_at: str,
         failure: SafeFailure | None = None,
     ) -> None:
-        self._write_transaction(
-            """UPDATE runs SET status = ?, updated_at = ?, error_code = ?, error_summary = ?
-               WHERE run_id = ?""",
-            (
-                status,
-                updated_at,
-                failure.code.value if failure else None,
-                failure.as_dict()["summary"] if failure else None,
-                run_id,
-            ),
-        )
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT status FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+            current = RunStatus(str(row["status"]))
+            successor = RunStatus(status)
+            validate_run_transition(current, successor)
+            updated = self._db.execute(
+                """UPDATE runs SET status = ?, updated_at = ?, error_code = ?, error_summary = ?
+                   WHERE run_id = ? AND status = ?""",
+                (
+                    successor.value,
+                    updated_at,
+                    failure.code.value if failure else None,
+                    failure.as_dict()["summary"] if failure else None,
+                    run_id,
+                    current.value,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            self._db.commit()
+        except SafeFailure:
+            self._db.rollback()
+            raise
+        except (ValueError, TypeError):
+            self._db.rollback()
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+        except sqlite3.Error:
+            self._db.rollback()
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     def read_run(self, run_id: str) -> dict[str, Any]:
         try:
@@ -862,3 +983,72 @@ class SQLiteStateStore:
             except sqlite3.Error:
                 pass
             self.connection = None
+
+    def _manifest_path(self, stage: PipelineStage, manifest_hash: str) -> Path:
+        if not isinstance(stage, PipelineStage):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        matched = _DIGEST_PATTERN.fullmatch(manifest_hash)
+        if matched is None:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return self.manifest_root / stage.value / f"{matched.group(1)}.json"
+
+    def _read_manifest_bytes(self, path: Path) -> bytes:
+        descriptor = -1
+        try:
+            if self._path_contains_symlink(path):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            before = os.lstat(path)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_MANIFEST_BYTES:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            opened = os.fstat(descriptor)
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            chunks: list[bytes] = []
+            consumed = 0
+            while True:
+                chunk = os.read(descriptor, min(8192, MAX_MANIFEST_BYTES + 1 - consumed))
+                if not chunk:
+                    break
+                consumed += len(chunk)
+                if consumed > MAX_MANIFEST_BYTES:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+            def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+                return (
+                    value.st_dev,
+                    value.st_ino,
+                    value.st_size,
+                    value.st_mtime_ns,
+                    value.st_ctime_ns,
+                )
+            if identity(opened) != identity(after):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            return b"".join(chunks)
+        except SafeFailure:
+            raise
+        except (OSError, OverflowError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+        finally:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _path_contains_symlink(path: Path) -> bool:
+        absolute = path.absolute()
+        for candidate in reversed((absolute, *absolute.parents)):
+            try:
+                if stat.S_ISLNK(os.lstat(candidate).st_mode):
+                    return True
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+        return False

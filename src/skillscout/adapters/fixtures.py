@@ -6,14 +6,30 @@ import json
 import os
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.models import StageInput
 
 MAX_FIXTURE_BYTES = 65_536
+FixtureId = Annotated[
+    str,
+    Field(min_length=9, max_length=128, pattern=r"^fixture:[a-z0-9]+(?:-[a-z0-9]+)*$"),
+]
+RepositoryUrl = Annotated[
+    str,
+    Field(
+        min_length=20,
+        max_length=300,
+        pattern=r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$",
+    ),
+]
+CommitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+BoundedText = Annotated[str, Field(min_length=1, max_length=4096)]
+BoundedToken = Annotated[str, Field(min_length=1, max_length=160)]
+BoundedTokens = Annotated[list[BoundedToken], Field(max_length=64)]
 
 
 class _StrictModel(BaseModel):
@@ -21,21 +37,21 @@ class _StrictModel(BaseModel):
 
 
 class FixtureSource(_StrictModel):
-    repository: str
-    commit_sha: str
-    license: str
+    repository: RepositoryUrl
+    commit_sha: CommitSha
+    license: Literal["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"]
 
 
 class FixtureWorkflow(_StrictModel):
-    goal: str
-    inputs: list[str]
-    steps: list[str]
-    outputs: list[str]
+    goal: BoundedText
+    inputs: BoundedTokens
+    steps: BoundedTokens
+    outputs: BoundedTokens
 
 
 class FixtureSubject(_StrictModel):
-    schema_version: str
-    subject_id: str
+    schema_version: Literal["1"]
+    subject_id: FixtureId
     source: FixtureSource
     workflow: FixtureWorkflow
 
