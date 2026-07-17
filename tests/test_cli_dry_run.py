@@ -66,7 +66,7 @@ def test_approved_fixture_reaches_planned_not_published(
         "status": "planned_not_published",
         "last_stage": "publication_planner",
         "reused_stage_count": 0,
-        "publication_plan_path": str(tmp_path / "output" / "publication-plan.json"),
+        "publication_plan_path": "publication-plan.json",
         "remote_writes_attempted": 0,
     }
 
