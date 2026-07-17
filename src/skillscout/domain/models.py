@@ -46,6 +46,7 @@ class StageEnvelope(StrictFrozenModel):
     input_hash: Digest
     output_hash: Digest
     producer_version: NonEmpty
+    retry_policy_version: NonEmpty
     prompt_version: str | None
     policy_version: str | None
     model_id: str | None
@@ -90,6 +91,7 @@ class RunRecord(StrictFrozenModel):
     updated_at: NonEmpty
     error_code: str | None
     error_summary: str | None
+    reused_stage_count: NonNegativeInt
 
 
 class Checkpoint(StrictFrozenModel):

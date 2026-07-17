@@ -118,15 +118,17 @@ def make_result_id(
     input_hash: str,
     producer_version: str,
     output_hash: str,
+    retry_policy_version: str | None = None,
 ) -> str:
     """Derive a deterministic result identity from semantic producer facts."""
 
-    return sha256_digest(
-        {
-            "subject_id": subject_id,
-            "stage": stage.value,
-            "input_hash": input_hash,
-            "producer_version": producer_version,
-            "output_hash": output_hash,
-        }
-    )
+    preimage = {
+        "subject_id": subject_id,
+        "stage": stage.value,
+        "input_hash": input_hash,
+        "producer_version": producer_version,
+        "output_hash": output_hash,
+    }
+    if retry_policy_version is not None:
+        preimage["retry_policy_version"] = retry_policy_version
+    return sha256_digest(preimage)

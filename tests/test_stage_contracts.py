@@ -119,6 +119,7 @@ def _envelope(**changes: object) -> StageEnvelope:
         "input_hash": input_hash,
         "output_hash": output_hash,
         "producer_version": "fixture-v1",
+        "retry_policy_version": "retry-v1",
         "prompt_version": None,
         "policy_version": None,
         "model_id": None,

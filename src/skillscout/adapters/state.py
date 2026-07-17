@@ -15,11 +15,12 @@ from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
     reusable_key_digest,
+    stage_input_hash,
     stage_manifest_hash,
     stage_output_hash,
 )
-from skillscout.domain.enums import PipelineStage
-from skillscout.domain.models import StageAttempt, StageEnvelope
+from skillscout.domain.enums import ExecutionMode, PipelineStage
+from skillscout.domain.models import StageAttempt, StageEnvelope, StageInput
 
 SCHEMA_VERSION = 2
 _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
@@ -40,7 +41,8 @@ def _schema_statements(suffix: str = "") -> tuple[str, ...]:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             error_code TEXT,
-            error_summary TEXT
+            error_summary TEXT,
+            reused_stage_count INTEGER NOT NULL DEFAULT 0
         )""",
         f"""CREATE TABLE {attempts} (
             attempt_id TEXT PRIMARY KEY,
@@ -165,7 +167,13 @@ class SQLiteStateStore:
 
     def _validate_current_schema(self) -> None:
         required = {
-            "runs": {"run_id", "schema_version", "subject_id", "status"},
+            "runs": {
+                "run_id",
+                "schema_version",
+                "subject_id",
+                "status",
+                "reused_stage_count",
+            },
             "stage_attempts": {
                 "attempt_id",
                 "input_hash",
@@ -202,7 +210,7 @@ class SQLiteStateStore:
             self._db.execute(
                 """INSERT INTO runs_v2
                    SELECT run_id, '1', subject_id, execution_mode, status, created_at,
-                          updated_at, error_code, error_summary
+                          updated_at, error_code, error_summary, 0
                    FROM runs"""
             )
             self._db.execute(
@@ -216,8 +224,8 @@ class SQLiteStateStore:
             )
 
             rows = self._db.execute(
-                """SELECT r.*, a.attempt_no, a.input_hash, a.prompt_version,
-                          a.policy_version, a.model_id, a.request_id
+                """SELECT r.*, a.attempt_no, a.input_hash, a.retry_policy_version,
+                          a.prompt_version, a.policy_version, a.model_id, a.request_id
                    FROM stage_results r
                    JOIN stage_attempts a USING (attempt_id)
                    ORDER BY r.stage_index"""
@@ -237,6 +245,7 @@ class SQLiteStateStore:
                     input_hash=str(row["input_hash"]),
                     output_hash=str(row["output_hash"]),
                     producer_version=str(row["producer_version"]),
+                    retry_policy_version=str(row["retry_policy_version"]),
                     prompt_version=row["prompt_version"],
                     policy_version=row["policy_version"],
                     model_id=row["model_id"],
@@ -291,6 +300,10 @@ class SQLiteStateStore:
                 ("checkpoints_v2", "checkpoints"),
             ):
                 self._db.execute(f"ALTER TABLE {old} RENAME TO {new}")
+            self._db.execute("DROP INDEX idx_attempts_reusable_v2")
+            self._db.execute(
+                "CREATE INDEX idx_attempts_reusable ON stage_attempts(reusable_key_digest)"
+            )
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._db.commit()
         except Exception:
@@ -380,8 +393,8 @@ class SQLiteStateStore:
         self._write_transaction(
             """INSERT INTO runs
                (run_id, schema_version, subject_id, execution_mode, status, created_at,
-                updated_at, error_code, error_summary)
-               VALUES (?, ?, ?, 'dry_run', 'running', ?, ?, NULL, NULL)""",
+                updated_at, error_code, error_summary, reused_stage_count)
+               VALUES (?, ?, ?, 'dry_run', 'running', ?, ?, NULL, NULL, 0)""",
             (run_id, schema_version, subject_id, created_at, created_at),
         )
 
@@ -404,6 +417,108 @@ class SQLiteStateStore:
                    FROM checkpoints WHERE run_id = ? ORDER BY stage_index DESC LIMIT 1""",
                 (run_id,),
             ).fetchone()
+        except sqlite3.Error:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def resume_identity_matches(
+        self,
+        run_id: str,
+        *,
+        schema_version: str,
+        subject_id: str,
+        fixture_hash: str,
+        producer_version: str,
+        retry_policy_version: str,
+    ) -> bool:
+        """Verify both manifest bytes and current canonical identity before reuse."""
+
+        try:
+            rows = self._db.execute(
+                """SELECT r.*, a.input_hash, a.producer_version AS attempt_producer,
+                          a.retry_policy_version, a.reusable_key_digest
+                   FROM stage_results r JOIN stage_attempts a USING (attempt_id)
+                   WHERE r.run_id = ? ORDER BY r.stage_index""",
+                (run_id,),
+            ).fetchall()
+            previous_output_hash: str | None = None
+            for expected_index, row in enumerate(rows):
+                if int(row["stage_index"]) != expected_index:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                envelope = self._verify_manifest_row(row)
+                stage_input = StageInput(
+                    schema_version=schema_version,
+                    execution_mode=ExecutionMode.DRY_RUN,
+                    subject_id=subject_id,
+                    stage=PipelineStage(str(row["stage"])),
+                    previous_output_hash=previous_output_hash,
+                    fixture_hash=fixture_hash if expected_index == 0 else None,
+                )
+                expected_input = stage_input_hash(stage_input)
+                expected_digest = reusable_key_digest(
+                    subject_id=subject_id,
+                    stage=stage_input.stage,
+                    input_hash=expected_input,
+                    producer_version=producer_version,
+                    retry_policy_version=retry_policy_version,
+                )
+                if (
+                    row["input_hash"] != expected_input
+                    or row["attempt_producer"] != producer_version
+                    or row["retry_policy_version"] != retry_policy_version
+                    or row["reusable_key_digest"] != expected_digest
+                ):
+                    return False
+                previous_output_hash = envelope.output_hash
+            return True
+        except SafeFailure:
+            raise
+        except sqlite3.Error:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def set_reused_stage_count(self, run_id: str, count: int) -> None:
+        self._write_transaction(
+            "UPDATE runs SET reused_stage_count = ? WHERE run_id = ?", (count, run_id)
+        )
+
+    def abandon_stale_running(
+        self, run_id: str, stage: PipelineStage, finished_at: str
+    ) -> None:
+        summary = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED).as_dict()["summary"]
+        self._write_transaction(
+            """UPDATE stage_attempts
+               SET status = 'abandoned', finished_at = ?, error_code = ?,
+                   error_summary = ?, retryable = 1
+               WHERE run_id = ? AND stage = ? AND status = 'running'""",
+            (
+                finished_at,
+                ErrorCode.PIPELINE_INTERRUPTED.value,
+                summary,
+                run_id,
+                stage.value,
+            ),
+        )
+
+    def retry_attempt_count(self, reusable_digest: str) -> int:
+        try:
+            row = self._db.execute(
+                """SELECT COUNT(*) FROM stage_attempts INDEXED BY idx_attempts_reusable
+                   WHERE reusable_key_digest = ?
+                     AND ((status = 'failed' AND retryable = 1) OR status = 'abandoned')""",
+                (reusable_digest,),
+            ).fetchone()
+            return int(row[0])
+        except sqlite3.Error:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def has_permanent_failure(self, reusable_digest: str) -> bool:
+        try:
+            row = self._db.execute(
+                """SELECT 1 FROM stage_attempts INDEXED BY idx_attempts_reusable
+                   WHERE reusable_key_digest = ? AND status = 'failed' AND retryable = 0
+                   LIMIT 1""",
+                (reusable_digest,),
+            ).fetchone()
+            return row is not None
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
@@ -609,15 +724,28 @@ class SQLiteStateStore:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
     def fail_attempt(
-        self, attempt_id: str, run_id: str, failure: SafeFailure, finished_at: str
+        self,
+        attempt_id: str,
+        run_id: str,
+        failure: SafeFailure,
+        finished_at: str,
+        *,
+        retryable: bool,
     ) -> None:
         try:
             self._db.execute("BEGIN IMMEDIATE")
             self._db.execute(
                 """UPDATE stage_attempts
-                   SET status = 'failed', finished_at = ?, error_code = ?, error_summary = ?
+                   SET status = 'failed', finished_at = ?, error_code = ?, error_summary = ?,
+                       retryable = ?
                    WHERE attempt_id = ?""",
-                (finished_at, failure.code.value, failure.as_dict()["summary"], attempt_id),
+                (
+                    finished_at,
+                    failure.code.value,
+                    failure.as_dict()["summary"],
+                    int(retryable),
+                    attempt_id,
+                ),
             )
             self._db.execute(
                 """UPDATE runs SET status = 'interrupted', updated_at = ?, error_code = ?,
@@ -660,6 +788,58 @@ class SQLiteStateStore:
                 "run_id": run["run_id"],
                 "status": run["status"],
                 "last_stage": checkpoint["stage"],
+            }
+        except SafeFailure:
+            raise
+        except sqlite3.Error:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def inspect_run(self, run_id: str) -> dict[str, Any]:
+        """Project one run exclusively from verified persisted state."""
+
+        try:
+            run = self._db.execute(
+                """SELECT run_id, schema_version, subject_id, execution_mode, status,
+                          created_at, updated_at, error_code, error_summary,
+                          reused_stage_count
+                   FROM runs WHERE run_id = ?""",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+            attempts = [
+                dict(row)
+                for row in self._db.execute(
+                    """SELECT attempt_id, run_id, subject_id, stage, stage_index,
+                              attempt_no, status, input_hash, producer_version,
+                              retry_policy_version, reusable_key_digest, started_at,
+                              finished_at, prompt_version, policy_version, model_id,
+                              request_id, latency_ms, prompt_tokens, completion_tokens,
+                              total_tokens, error_code, error_summary, retryable
+                       FROM stage_attempts WHERE run_id = ?
+                       ORDER BY stage_index, attempt_no""",
+                    (run_id,),
+                )
+            ]
+            for attempt in attempts:
+                attempt["retryable"] = bool(attempt["retryable"])
+            result_rows = self._db.execute(
+                """SELECT * FROM stage_results WHERE run_id = ? ORDER BY stage_index""",
+                (run_id,),
+            ).fetchall()
+            results: list[dict[str, Any]] = []
+            for row in result_rows:
+                envelope = self._verify_manifest_row(row)
+                results.append(envelope.model_dump(mode="json", exclude_none=False))
+            checkpoint = self.latest_checkpoint(run_id)
+            reused = int(run["reused_stage_count"])
+            return {
+                "run": dict(run),
+                "attempts": attempts,
+                "results": results,
+                "checkpoint": dict(checkpoint) if checkpoint is not None else None,
+                "reused_stage_count": reused,
+                "remote_writes_attempted": 0,
             }
         except SafeFailure:
             raise

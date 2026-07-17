@@ -92,7 +92,13 @@ class StateStore(Protocol):
     ) -> None: ...
 
     def fail_attempt(
-        self, attempt_id: str, run_id: str, failure: SafeFailure, finished_at: str
+        self,
+        attempt_id: str,
+        run_id: str,
+        failure: SafeFailure,
+        finished_at: str,
+        *,
+        retryable: bool,
     ) -> None: ...
 
     def set_run_status(

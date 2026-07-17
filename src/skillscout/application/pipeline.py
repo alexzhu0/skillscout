@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Mapping
@@ -37,6 +38,21 @@ from skillscout.domain.models import (
 
 STAGE_SEQUENCE = tuple(stage.value for stage in PipelineStage)
 RETRY_POLICY_VERSION = "retry-v1"
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Finite retry authority scoped only to a canonical reusable digest."""
+
+    version: str = RETRY_POLICY_VERSION
+    max_attempts: int = 3
+    transient_error_codes: frozenset[ErrorCode] = frozenset(
+        {ErrorCode.STAGE_TRANSIENT_FAILURE}
+    )
+
+    def __post_init__(self) -> None:
+        if not self.version or self.max_attempts < 1:
+            raise ValueError("invalid retry policy")
 
 
 def canonical_v1_digest(
@@ -78,11 +94,13 @@ class PipelineRunner:
         *,
         clock: Clock | None = None,
         ids: IdProvider | None = None,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
         self.state = state
         self.processor = processor
         self.clock = clock or SystemClock()
         self.ids = ids or UUIDIdProvider()
+        self.retry_policy = retry_policy or RetryPolicy()
 
     def run(
         self,
@@ -93,7 +111,17 @@ class PipelineRunner:
         if fail_after is not None and fail_after not in STAGE_SEQUENCE:
             raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
 
+        fixture_hash = sha256_digest(subject.model_dump(mode="json", exclude_none=False))
         resumable = self.state.find_resumable_run(subject.subject_id)
+        if resumable is not None and not self.state.resume_identity_matches(
+            str(resumable["run_id"]),
+            schema_version=str(resumable["schema_version"]),
+            subject_id=subject.subject_id,
+            fixture_hash=fixture_hash,
+            producer_version=self.processor.producer_version,
+            retry_policy_version=self.retry_policy.version,
+        ):
+            resumable = None
         if resumable is None:
             run_id = self.ids.new_run_id()
             schema_version = "2"
@@ -108,10 +136,9 @@ class PipelineRunner:
             start_index = int(checkpoint["stage_index"]) + 1 if checkpoint else 0
             previous_output_hash = str(checkpoint["output_hash"]) if checkpoint else None
             reused_count = start_index
-            self.state.verify_completed_results(run_id, start_index)
             self.state.set_run_status(run_id, RunStatus.RUNNING.value, self.clock.now())
+        self.state.set_reused_stage_count(run_id, reused_count)
 
-        fixture_hash = sha256_digest(subject.model_dump(mode="json", exclude_none=False))
         for stage_index, stage in enumerate(PipelineStage):
             if stage_index < start_index:
                 continue
@@ -129,8 +156,21 @@ class PipelineRunner:
                 stage=stage,
                 input_hash=input_hash,
                 producer_version=self.processor.producer_version,
-                retry_policy_version=RETRY_POLICY_VERSION,
+                retry_policy_version=self.retry_policy.version,
             )
+            self.state.abandon_stale_running(run_id, stage, self.clock.now())
+            if self.state.has_permanent_failure(reusable_digest):
+                failure = SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+                self.state.set_run_status(
+                    run_id, RunStatus.INTERRUPTED.value, self.clock.now(), failure
+                )
+                raise failure
+            if self.state.retry_attempt_count(reusable_digest) >= self.retry_policy.max_attempts:
+                failure = SafeFailure(ErrorCode.RETRY_EXHAUSTED)
+                self.state.set_run_status(
+                    run_id, RunStatus.INTERRUPTED.value, self.clock.now(), failure
+                )
+                raise failure
             attempt_no = self.state.next_attempt_no(run_id, stage, reusable_digest)
             attempt_id = f"{run_id}:{stage.value}:{attempt_no}"
             attempt = StageAttempt(
@@ -143,7 +183,7 @@ class PipelineRunner:
                 status=AttemptStatus.RUNNING,
                 input_hash=input_hash,
                 producer_version=self.processor.producer_version,
-                retry_policy_version=RETRY_POLICY_VERSION,
+                retry_policy_version=self.retry_policy.version,
                 reusable_key_digest=reusable_digest,
                 started_at=self.clock.now(),
                 finished_at=None,
@@ -162,11 +202,23 @@ class PipelineRunner:
             try:
                 output: Mapping[str, object] = self.processor.process(stage_input)
             except SafeFailure as failure:
-                self.state.fail_attempt(attempt_id, run_id, failure, self.clock.now())
+                self.state.fail_attempt(
+                    attempt_id,
+                    run_id,
+                    failure,
+                    self.clock.now(),
+                    retryable=failure.code in self.retry_policy.transient_error_codes,
+                )
                 raise
             except Exception:
                 failure = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
-                self.state.fail_attempt(attempt_id, run_id, failure, self.clock.now())
+                self.state.fail_attempt(
+                    attempt_id,
+                    run_id,
+                    failure,
+                    self.clock.now(),
+                    retryable=False,
+                )
                 raise failure from None
 
             payload = dict(output)
@@ -186,6 +238,7 @@ class PipelineRunner:
                 input_hash=input_hash,
                 producer_version=self.processor.producer_version,
                 output_hash=output_hash,
+                retry_policy_version=self.retry_policy.version,
             )
             provisional = StageEnvelope(
                 schema_version=schema_version,
@@ -199,6 +252,7 @@ class PipelineRunner:
                 input_hash=input_hash,
                 output_hash=output_hash,
                 producer_version=self.processor.producer_version,
+                retry_policy_version=self.retry_policy.version,
                 prompt_version=None,
                 policy_version=None,
                 model_id=None,

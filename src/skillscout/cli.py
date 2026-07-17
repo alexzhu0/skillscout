@@ -24,6 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
     dry_run.add_argument("--state", required=True, type=Path)
     dry_run.add_argument("--output", required=True, type=Path)
     dry_run.add_argument("--fail-after", choices=STAGE_SEQUENCE)
+    inspect_run = commands.add_parser("inspect-run")
+    inspect_run.add_argument("run_id")
+    inspect_run.add_argument("--state", required=True, type=Path)
+    inspect_run.add_argument("--format", choices=("json",), default="json")
     return parser
 
 
@@ -31,14 +35,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     state: SQLiteStateStore | None = None
     try:
-        subject = load_fixture(arguments.fixture)
-        state = SQLiteStateStore(arguments.state)
-        summary = PipelineRunner(state, FixtureProcessor()).run(
-            subject,
-            arguments.output,
-            fail_after=arguments.fail_after,
-        )
-        print(json.dumps(summary.as_dict(), sort_keys=True, separators=(",", ":")))
+        if arguments.command == "inspect-run":
+            state = SQLiteStateStore(arguments.state)
+            payload = state.inspect_run(arguments.run_id)
+        else:
+            subject = load_fixture(arguments.fixture)
+            state = SQLiteStateStore(arguments.state)
+            payload = PipelineRunner(state, FixtureProcessor()).run(
+                subject,
+                arguments.output,
+                fail_after=arguments.fail_after,
+            ).as_dict()
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return 0
     except SafeFailure as failure:
         print(
