@@ -288,7 +288,7 @@ def test_closed_stages_and_transitions() -> None:
         "publication_planner",
     )
     assert tuple(stage.value for stage in PipelineStage) == expected
-    for current, successor in zip(PipelineStage, tuple(PipelineStage)[1:], strict=True):
+    for current, successor in zip(PipelineStage, tuple(PipelineStage)[1:]):
         assert validate_stage_successor(current, successor) is successor
     with pytest.raises(ValueError):
         validate_stage_successor(PipelineStage.SCOUT, PipelineStage.READER)
