@@ -1,0 +1,21 @@
+{
+  "command": "UV_PYTHON_INSTALL_DIR=\"$PWD/.tools/python\" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \"$PWD/.tools/uv-0.11.29/bin/uv\" run --locked skillscout dry-run --fixture tests/fixtures/pipeline/approved.json --state tests/fixtures/state/v1-cli.db --output .tmp/v1-cli-out --fail-after generator",
+  "database_sha256": "49fa8067a2cc7e55b3afb2e2c93aca91f2b3d6cfbaee1bc32242f7b175bc0251",
+  "fixture_sha256": "1664549ffc5154d2a10827deaddba4e030b574b4bfb3e9b53475af4ca049bf3c",
+  "last_checkpoint": {
+    "output_hash": "sha256:141156ca85ae35297f9208f48ffff2c4ad5783e8882dd952d9d88c0b6cfdfbc1",
+    "stage": "generator",
+    "stage_index": 5
+  },
+  "raw_exit_code": 1,
+  "row_counts": {
+    "checkpoints": 6,
+    "runs": 1,
+    "stage_attempts": 6,
+    "stage_results": 6
+  },
+  "run_id": "884039fcafca4757a194a9a69ca0e306",
+  "run_status": "interrupted",
+  "user_version": 1,
+  "validators_attempt_count": 0
+}

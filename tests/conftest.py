@@ -35,3 +35,10 @@ def parse_cli_json(result: subprocess.CompletedProcess[str]) -> dict[str, object
     """Parse a successful CLI response without hiding stderr in assertions."""
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+def parse_cli_error(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    """Parse a sanitized failure response without accepting stdout disclosure."""
+    assert result.returncode == 1
+    assert result.stdout == ""
+    return json.loads(result.stderr)
