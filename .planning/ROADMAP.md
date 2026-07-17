@@ -27,7 +27,12 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 4 sequential vertical refinements
+**Plans:** 1/4 plans executed
+
+- [x] 01-01-PLAN.md
+- [ ] 01-02-PLAN.md
+- [ ] 01-03-PLAN.md
+- [ ] 01-04-PLAN.md
 
 - [ ] `01-01-PLAN.md` — Gate-A-verified local toolchain, non-building lock discovery and Gate B approval of one canonical first-party root plus registry-only external graph.
 - [ ] `01-02-PLAN.md` — Safe packaged CLI Walking Skeleton with one-descriptor controls, sanitized schema-v1 errors and a real Generator-interrupted v1 freeze.
@@ -143,7 +148,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 | Phase | Status | Requirements | Completed |
 |---|---|---:|---:|
-| 1. Auditable Dry-Run Spine | Not started | 2 | 0/2 |
+| 1. Auditable Dry-Run Spine | 1/4 | In Progress|  |
 | 2. Safe Single-Repository Extraction | Not started | 14 | 0/14 |
 | 3. Validated Skill Candidate | Not started | 13 | 0/13 |
 | 4. Controlled Draft PR | Not started | 6 | 0/6 |

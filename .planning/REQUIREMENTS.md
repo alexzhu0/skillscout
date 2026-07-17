@@ -69,10 +69,10 @@
 
 ### State, Recovery, and Audit
 
-- [ ] **OPS-01**: 每个阶段均输出带 `schema_version`、稳定 ID、时间戳、input/output hash 以及 prompt/policy/model 版本的结构化数据，并通过 `StageAttempt` 记录重试、错误、请求 ID、延迟和 token 用量。
+- [x] **OPS-01**: 每个阶段均输出带 `schema_version`、稳定 ID、时间戳、input/output hash 以及 prompt/policy/model 版本的结构化数据，并通过 `StageAttempt` 记录重试、错误、请求 ID、延迟和 token 用量。
 - [ ] **OPS-02**: v1 使用 SQLite 保存可查询事务状态，并用专用 `skillscout-state` 分支中的版本化 JSON manifests 提供审计与重建能力；定时和手动生产运行通过单 concurrency group 串行化。
 - [ ] **OPS-03**: 持久状态、日志、Actions artifacts 和 Draft PR 不得保存完整第三方仓库正文、授权头、API 密钥或其他不必要的秘密数据。
-- [ ] **OPS-04**: 系统支持暂时性故障的有限重试、从最近成功阶段恢复，以及完成发布计划但不产生远程写入的 dry-run。
+- [x] **OPS-04**: 系统支持暂时性故障的有限重试、从最近成功阶段恢复，以及完成发布计划但不产生远程写入的 dry-run。
 
 ### Security Controls
 
@@ -171,10 +171,10 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | PUB-03 | Phase 4 | Pending |
 | PUB-04 | Phase 4 | Pending |
 | PUB-05 | Phase 4 | Pending |
-| OPS-01 | Phase 1 | Pending |
+| OPS-01 | Phase 1 | Complete |
 | OPS-02 | Phase 5 | Pending |
 | OPS-03 | Phase 5 | Pending |
-| OPS-04 | Phase 1 | Pending |
+| OPS-04 | Phase 1 | Complete |
 | SEC-01 | Phase 2 | Pending |
 | SEC-02 | Phase 4 | Pending |
 | TEST-01 | Phase 6 | Pending |
