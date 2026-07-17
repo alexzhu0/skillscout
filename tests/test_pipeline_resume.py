@@ -12,10 +12,15 @@ import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.state import SQLiteStateStore
-from skillscout.application.pipeline import PipelineRunner
+from skillscout.application.pipeline import PipelineRunner, RetryPolicy
 from skillscout.application.ports import ErrorCode, SafeFailure
-from skillscout.domain.enums import PipelineStage
-from skillscout.domain.models import StageInput
+from skillscout.domain.canonical import (
+    reusable_key_digest,
+    sha256_digest,
+    stage_input_hash,
+)
+from skillscout.domain.enums import AttemptStatus, ExecutionMode, PipelineStage
+from skillscout.domain.models import StageAttempt, StageInput
 
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
 FROZEN_PROVENANCE = Path(__file__).parent / "fixtures" / "state" / "v1-cli-provenance.json"
@@ -225,3 +230,209 @@ def test_database_failure_after_manifest_never_advances_checkpoint(
         assert store.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
     finally:
         store.close()
+
+
+def test_stale_running_attempt_is_abandoned_before_monotonic_replacement(
+    tmp_path: Path,
+) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+    store = SQLiteStateStore(tmp_path / "state.db")
+    run_id = "stale-run"
+    store.create_run(run_id, subject.subject_id, "2026-07-17T00:00:00.000000Z", "2")
+    stage_input = StageInput(
+        schema_version="2",
+        execution_mode=ExecutionMode.DRY_RUN,
+        subject_id=subject.subject_id,
+        stage=PipelineStage.SCOUT,
+        previous_output_hash=None,
+        fixture_hash=sha256_digest(subject.model_dump(mode="json", exclude_none=False)),
+    )
+    input_hash = stage_input_hash(stage_input)
+    digest = reusable_key_digest(
+        subject_id=subject.subject_id,
+        stage=PipelineStage.SCOUT,
+        input_hash=input_hash,
+        producer_version="fixture-v1",
+        retry_policy_version="retry-v1",
+    )
+    store.start_attempt(
+        StageAttempt(
+            attempt_id=f"{run_id}:scout:1",
+            run_id=run_id,
+            subject_id=subject.subject_id,
+            stage=PipelineStage.SCOUT,
+            stage_index=0,
+            attempt_no=1,
+            status=AttemptStatus.RUNNING,
+            input_hash=input_hash,
+            producer_version="fixture-v1",
+            retry_policy_version="retry-v1",
+            reusable_key_digest=digest,
+            started_at="2026-07-17T00:00:00.000000Z",
+            finished_at=None,
+            prompt_version=None,
+            policy_version=None,
+            model_id=None,
+            request_id=None,
+            latency_ms=None,
+            token_usage=None,
+            error_code=None,
+            error_summary=None,
+            retryable=False,
+        )
+    )
+    try:
+        PipelineRunner(store, FixtureProcessor()).run(subject, tmp_path / "output")
+        rows = store.connection.execute(
+            """SELECT attempt_no, status FROM stage_attempts
+               WHERE stage = 'scout' ORDER BY attempt_no"""
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [(1, "abandoned"), (2, "succeeded")]
+    finally:
+        store.close()
+
+
+def test_three_transient_attempts_exhaust_one_digest_before_fourth_invocation(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    class AlwaysTransient(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+
+    store = SQLiteStateStore(tmp_path / "state.db")
+    subject = load_fixture(APPROVED_FIXTURE)
+    processor = AlwaysTransient()
+    try:
+        for _ in range(3):
+            with pytest.raises(SafeFailure) as failure:
+                PipelineRunner(store, processor).run(subject, tmp_path / "output")
+            assert failure.value.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+        with pytest.raises(SafeFailure) as failure:
+            PipelineRunner(store, processor).run(subject, tmp_path / "output")
+        assert failure.value.code is ErrorCode.RETRY_EXHAUSTED
+        assert calls == 3
+        rows = store.connection.execute(
+            """SELECT reusable_key_digest, status, retryable FROM stage_attempts
+               WHERE stage = 'scout' ORDER BY attempt_no"""
+        ).fetchall()
+        assert len({row["reusable_key_digest"] for row in rows}) == 1
+        assert [tuple(row)[1:] for row in rows] == [("failed", 1)] * 3
+        query_plan = " ".join(
+            str(value)
+            for value in store.connection.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM stage_attempts WHERE reusable_key_digest = ?",
+                (rows[0]["reusable_key_digest"],),
+            ).fetchone()
+        )
+        assert "idx_attempts_reusable" in query_plan
+    finally:
+        store.close()
+
+
+def test_permanent_error_is_not_invoked_twice_for_same_digest(tmp_path: Path) -> None:
+    calls = 0
+
+    class PermanentFailure(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+
+    store = SQLiteStateStore(tmp_path / "state.db")
+    subject = load_fixture(APPROVED_FIXTURE)
+    processor = PermanentFailure()
+    try:
+        for _ in range(2):
+            with pytest.raises(SafeFailure) as failure:
+                PipelineRunner(store, processor).run(subject, tmp_path / "output")
+            assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+        assert calls == 1
+        assert store.connection.execute("SELECT COUNT(*) FROM stage_attempts").fetchone()[0] == 1
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("changed_field", ["input", "producer", "retry_policy"])
+def test_changed_identity_gets_fresh_budget_and_never_reuses_old_checkpoint(
+    tmp_path: Path, changed_field: str
+) -> None:
+    original = load_fixture(APPROVED_FIXTURE)
+    changed_subject = original
+    old_processor_version = "fixture-v1"
+    new_processor_version = old_processor_version
+    old_policy = RetryPolicy(version="retry-v1")
+    new_policy = old_policy
+    if changed_field == "input":
+        changed_subject = original.model_copy(
+            update={
+                "workflow": original.workflow.model_copy(
+                    update={"goal": "A distinct canonical workflow goal"}
+                )
+            }
+        )
+    elif changed_field == "producer":
+        new_processor_version = "fixture-v2"
+    else:
+        new_policy = RetryPolicy(version="retry-v2")
+
+    class VersionedTransient(FixtureProcessor):
+        def __init__(self, version: str) -> None:
+            self.producer_version = version
+
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+
+    class VersionedSuccess(FixtureProcessor):
+        def __init__(self, version: str) -> None:
+            self.producer_version = version
+            self.calls: list[PipelineStage] = []
+
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            self.calls.append(stage_input.stage)
+            return super().process(stage_input)
+
+    budget_store = SQLiteStateStore(tmp_path / f"budget-{changed_field}.db")
+    try:
+        failing = VersionedTransient(old_processor_version)
+        for _ in range(3):
+            with pytest.raises(SafeFailure):
+                PipelineRunner(budget_store, failing, retry_policy=old_policy).run(
+                    original, tmp_path / "old-output"
+                )
+        success = VersionedSuccess(new_processor_version)
+        summary = PipelineRunner(
+            budget_store, success, retry_policy=new_policy
+        ).run(changed_subject, tmp_path / "new-output")
+        assert summary.status.value == "planned_not_published"
+        assert success.calls[0] is PipelineStage.SCOUT
+        digest_counts = budget_store.connection.execute(
+            """SELECT reusable_key_digest, COUNT(*) AS count
+               FROM stage_attempts WHERE stage = 'scout'
+               GROUP BY reusable_key_digest ORDER BY count DESC"""
+        ).fetchall()
+        assert [row["count"] for row in digest_counts] == [3, 1]
+        assert digest_counts[0]["reusable_key_digest"] != digest_counts[1]["reusable_key_digest"]
+    finally:
+        budget_store.close()
+
+    checkpoint_store = SQLiteStateStore(tmp_path / f"checkpoint-{changed_field}.db")
+    first_processor = VersionedSuccess(old_processor_version)
+    try:
+        with pytest.raises(SafeFailure):
+            PipelineRunner(
+                checkpoint_store, first_processor, retry_policy=old_policy
+            ).run(original, tmp_path / "checkpoint-old", fail_after="scout")
+        old_run_id = checkpoint_store.connection.execute("SELECT run_id FROM runs").fetchone()[0]
+        second_processor = VersionedSuccess(new_processor_version)
+        summary = PipelineRunner(
+            checkpoint_store, second_processor, retry_policy=new_policy
+        ).run(changed_subject, tmp_path / "checkpoint-new")
+        assert summary.run_id != old_run_id
+        assert summary.reused_stage_count == 0
+        assert second_processor.calls[0] is PipelineStage.SCOUT
+    finally:
+        checkpoint_store.close()

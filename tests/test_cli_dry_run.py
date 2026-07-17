@@ -419,3 +419,113 @@ def test_frozen_v1_cli_fixture_matches_provenance() -> None:
         assert connection.execute(
             "SELECT COUNT(*) FROM stage_attempts WHERE stage = 'validators'"
         ).fetchone()[0] == provenance["validators_attempt_count"] == 0
+
+
+def test_fresh_interruption_rerun_and_inspect_are_persisted(
+    approved_fixture: Path, run_cli, tmp_path: Path
+) -> None:
+    state = tmp_path / "state.db"
+    first = run_cli(
+        "dry-run",
+        "--fixture",
+        str(approved_fixture),
+        "--state",
+        str(state),
+        "--output",
+        str(tmp_path / "first-output"),
+        "--fail-after",
+        "generator",
+    )
+    _assert_sanitized_error(first, ErrorCode.PIPELINE_INTERRUPTED)
+    with _connect(state) as connection:
+        run_id = connection.execute("SELECT run_id FROM runs").fetchone()[0]
+        original = [
+            tuple(row)
+            for row in connection.execute(
+                """SELECT result_id, output_hash, manifest_hash
+                   FROM stage_results ORDER BY stage_index"""
+            )
+        ]
+
+    second = run_cli(
+        "dry-run",
+        "--fixture",
+        str(approved_fixture),
+        "--state",
+        str(state),
+        "--output",
+        str(tmp_path / "second-output"),
+    )
+    summary = parse_cli_json(second)
+    assert summary["run_id"] == run_id
+    assert summary["reused_stage_count"] == 6
+    with _connect(state) as connection:
+        assert [
+            tuple(row)
+            for row in connection.execute(
+                """SELECT result_id, output_hash, manifest_hash
+                   FROM stage_results ORDER BY stage_index LIMIT 6"""
+            )
+        ] == original
+
+    inspected = run_cli(
+        "inspect-run", run_id, "--state", str(state), "--format", "json"
+    )
+    payload = parse_cli_json(inspected)
+    assert payload["run"] == {
+        "run_id": run_id,
+        "schema_version": "2",
+        "subject_id": "fixture:approved-workflow",
+        "execution_mode": "dry_run",
+        "status": "planned_not_published",
+        "created_at": payload["run"]["created_at"],
+        "updated_at": payload["run"]["updated_at"],
+        "error_code": None,
+        "error_summary": None,
+        "reused_stage_count": 6,
+    }
+    assert len(payload["attempts"]) == 9
+    assert len(payload["results"]) == 9
+    assert payload["checkpoint"]["stage"] == "publication_planner"
+    assert payload["reused_stage_count"] == 6
+    required_attempt_fields = {
+        "attempt_id",
+        "run_id",
+        "subject_id",
+        "stage",
+        "stage_index",
+        "attempt_no",
+        "status",
+        "input_hash",
+        "producer_version",
+        "retry_policy_version",
+        "reusable_key_digest",
+        "started_at",
+        "finished_at",
+        "prompt_version",
+        "policy_version",
+        "model_id",
+        "request_id",
+        "latency_ms",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "error_code",
+        "error_summary",
+        "retryable",
+    }
+    assert required_attempt_fields == set(payload["attempts"][0])
+    assert all(field in payload["attempts"][0] for field in ("request_id", "latency_ms"))
+    assert payload["attempts"][0]["request_id"] is None
+    assert payload["attempts"][0]["latency_ms"] is None
+
+
+def test_inspect_run_exit_codes_preserve_not_found_and_usage(
+    run_cli, tmp_path: Path
+) -> None:
+    state = tmp_path / "state.db"
+    SQLiteStateStore(state).close()
+    missing = run_cli("inspect-run", "missing", "--state", str(state), "--format", "json")
+    _assert_sanitized_error(missing, ErrorCode.STATE_OPERATION_FAILED)
+    usage = run_cli("inspect-run", "missing", "--state", str(state), "--format", "yaml")
+    assert usage.returncode == 2
