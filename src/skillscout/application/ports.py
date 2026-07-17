@@ -5,6 +5,8 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Mapping, Protocol
 
+from skillscout.domain.models import StageAttempt, StageEnvelope, StageInput
+
 
 class ErrorCode(StrEnum):
     """The complete schema-v1 diagnostic vocabulary."""
@@ -13,6 +15,12 @@ class ErrorCode(StrEnum):
     FIXTURE_CHANGED = "fixture_changed"
     STATE_OPERATION_FAILED = "state_operation_failed"
     PIPELINE_INTERRUPTED = "pipeline_interrupted"
+    STATE_SCHEMA_INCOMPATIBLE = "state_schema_incompatible"
+    STATE_SCHEMA_MIGRATION_ERROR = "state_schema_migration_error"
+    STATE_INTEGRITY_ERROR = "state_integrity_error"
+    RETRY_EXHAUSTED = "retry_exhausted"
+    STAGE_TRANSIENT_FAILURE = "stage_transient_failure"
+    STAGE_PERMANENT_FAILURE = "stage_permanent_failure"
 
 
 ERROR_SUMMARIES: dict[ErrorCode, str] = {
@@ -20,6 +28,12 @@ ERROR_SUMMARIES: dict[ErrorCode, str] = {
     ErrorCode.FIXTURE_CHANGED: "Fixture input changed while it was being read.",
     ErrorCode.STATE_OPERATION_FAILED: "Local state operation failed.",
     ErrorCode.PIPELINE_INTERRUPTED: "Dry-run pipeline was interrupted.",
+    ErrorCode.STATE_SCHEMA_INCOMPATIBLE: "Local state schema is incompatible.",
+    ErrorCode.STATE_SCHEMA_MIGRATION_ERROR: "Local state schema migration failed.",
+    ErrorCode.STATE_INTEGRITY_ERROR: "Local state integrity verification failed.",
+    ErrorCode.RETRY_EXHAUSTED: "Stage retry budget was exhausted.",
+    ErrorCode.STAGE_TRANSIENT_FAILURE: "Stage processing failed temporarily.",
+    ErrorCode.STAGE_PERMANENT_FAILURE: "Stage processing failed permanently.",
 }
 
 if not all(summary.isascii() and len(summary) <= 160 for summary in ERROR_SUMMARIES.values()):
@@ -44,45 +58,37 @@ class StageProcessor(Protocol):
 
     def process(
         self,
-        stage: str,
-        subject_id: str,
-        previous_output_hash: str | None,
+        stage_input: StageInput,
     ) -> Mapping[str, Any]: ...
 
 
-class LocalStateStore(Protocol):
-    """Persistence operations required by the schema-v1 runner."""
+class Clock(Protocol):
+    """Injectable UTC clock used only for audit timestamps."""
 
-    def create_run(self, run_id: str, subject_id: str, created_at: str) -> None: ...
+    def now(self) -> str: ...
+
+
+class IdProvider(Protocol):
+    """Injectable run identifier source."""
+
+    def new_run_id(self) -> str: ...
+
+
+class StateStore(Protocol):
+    """Provider-independent persistence operations used by the runner."""
+
+    def create_run(
+        self, run_id: str, subject_id: str, created_at: str, schema_version: str
+    ) -> None: ...
 
     def start_attempt(
         self,
-        *,
-        attempt_id: str,
-        run_id: str,
-        subject_id: str,
-        stage: str,
-        stage_index: int,
-        input_hash: str,
-        producer_version: str,
-        retry_policy_version: str,
-        reusable_key_digest: str,
-        started_at: str,
+        attempt: StageAttempt,
     ) -> None: ...
 
     def complete_stage(
         self,
-        *,
-        result_id: str,
-        attempt_id: str,
-        run_id: str,
-        subject_id: str,
-        stage: str,
-        stage_index: int,
-        output_json: str,
-        output_hash: str,
-        producer_version: str,
-        finished_at: str,
+        envelope: StageEnvelope,
     ) -> None: ...
 
     def fail_attempt(
@@ -100,3 +106,6 @@ class LocalStateStore(Protocol):
     def read_run(self, run_id: str) -> Mapping[str, Any]: ...
 
     def close(self) -> None: ...
+
+
+LocalStateStore = StateStore

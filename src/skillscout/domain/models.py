@@ -82,6 +82,7 @@ class StageAttempt(StrictFrozenModel):
 
 class RunRecord(StrictFrozenModel):
     run_id: NonEmpty
+    schema_version: NonEmpty
     subject_id: NonEmpty
     execution_mode: ExecutionMode
     status: RunStatus
@@ -108,6 +109,9 @@ class PublicationPlan(StrictFrozenModel):
     last_stage: PipelineStage = PipelineStage.PUBLICATION_PLANNER
     remote_writes_attempted: NonNegativeInt = 0
 
+    def as_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=False)
+
 
 class RunSummary(StrictFrozenModel):
     run_id: NonEmpty
@@ -117,3 +121,5 @@ class RunSummary(StrictFrozenModel):
     publication_plan_path: str
     remote_writes_attempted: NonNegativeInt
 
+    def as_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=False)

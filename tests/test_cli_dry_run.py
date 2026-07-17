@@ -23,6 +23,7 @@ from skillscout.application.pipeline import (
     canonical_v1_digest,
 )
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
+from skillscout.domain.models import StageInput
 
 
 def _all_file_bytes(root: Path, *, exclude: set[Path] | None = None) -> bytes:
@@ -71,7 +72,7 @@ def test_approved_fixture_reaches_planned_not_published(
 
     state_path = tmp_path / "state.db"
     with _connect(state_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
         attempts = connection.execute(
             """SELECT stage, status, input_hash, producer_version, retry_policy_version,
@@ -129,19 +130,19 @@ def test_approved_fixture_reaches_planned_not_published(
     observations: list[tuple[str, str]] = []
 
     class ProbeProcessor(FixtureProcessor):
-        def process(self, stage: str, subject_id: str, previous_output_hash: str | None):
+        def process(self, stage_input: StageInput):
             with _connect(probe_state_path) as probe:
                 row = probe.execute(
                     """SELECT status, input_hash, producer_version, retry_policy_version,
                               reusable_key_digest
                        FROM stage_attempts WHERE stage = ?""",
-                    (stage,),
+                    (stage_input.stage.value,),
                 ).fetchone()
                 assert row is not None
                 assert row["status"] == "running"
                 assert all(row[field] for field in row.keys() if field != "status")
-                observations.append((stage, row["reusable_key_digest"]))
-            return super().process(stage, subject_id, previous_output_hash)
+                observations.append((stage_input.stage.value, row["reusable_key_digest"]))
+            return super().process(stage_input)
 
     try:
         PipelineRunner(probe_store, ProbeProcessor()).run(
@@ -373,7 +374,7 @@ def test_fail_after_generator_is_durable_and_stops_before_validators(
     )
     _assert_sanitized_error(result, ErrorCode.PIPELINE_INTERRUPTED)
     with _connect(state) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         run = connection.execute("SELECT status FROM runs").fetchone()
         assert run["status"] == "interrupted"
         checkpoints = connection.execute(

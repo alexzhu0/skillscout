@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.domain.models import StageInput
 
 MAX_FIXTURE_BYTES = 65_536
 
@@ -112,14 +113,16 @@ class FixtureProcessor:
 
     def process(
         self,
-        stage: str,
-        subject_id: str,
-        previous_output_hash: str | None,
+        stage_input: StageInput,
     ) -> dict[str, object]:
         return {
-            "schema_version": "1",
-            "stage": stage,
-            "subject_id": subject_id,
-            "previous_output_hash": previous_output_hash,
-            "outcome": "accepted" if stage != "publication_planner" else "planned_not_published",
+            "schema_version": stage_input.schema_version,
+            "stage": stage_input.stage.value,
+            "subject_id": stage_input.subject_id,
+            "previous_output_hash": stage_input.previous_output_hash,
+            "outcome": (
+                "accepted"
+                if stage_input.stage.value != "publication_planner"
+                else "planned_not_published"
+            ),
         }

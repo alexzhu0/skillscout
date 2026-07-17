@@ -59,6 +59,16 @@ def stage_output_hash(
 ) -> str:
     """Hash semantic output identity, excluding run-local and telemetry fields."""
 
+    if schema_version == "1":
+        return sha256_digest(
+            {
+                "schema_version": schema_version,
+                "stage": stage.value,
+                "subject_id": subject_id,
+                "producer_version": producer_version,
+                "payload": payload,
+            }
+        )
     return sha256_digest(
         {
             "schema_version": schema_version,
