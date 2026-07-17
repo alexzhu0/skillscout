@@ -7,10 +7,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from skillscout.adapters.fixtures import FixtureSubject
 from skillscout.application.ports import (
+    AdapterRegistration,
     Clock,
     ErrorCode,
     IdProvider,
@@ -27,7 +28,13 @@ from skillscout.domain.canonical import (
     stage_manifest_hash,
     stage_output_hash,
 )
-from skillscout.domain.enums import AttemptStatus, ExecutionMode, PipelineStage, RunStatus
+from skillscout.domain.enums import (
+    AttemptStatus,
+    EffectScope,
+    ExecutionMode,
+    PipelineStage,
+    RunStatus,
+)
 from skillscout.domain.models import (
     PublicationPlan,
     RunSummary,
@@ -82,6 +89,34 @@ class SystemClock:
 class UUIDIdProvider:
     def new_run_id(self) -> str:
         return uuid.uuid4().hex
+
+
+@dataclass(frozen=True)
+class SideEffectPolicy:
+    """Fail-closed authority policy applied before runtime construction."""
+
+    allowed_scopes: frozenset[EffectScope]
+
+    @classmethod
+    def phase_one(cls) -> SideEffectPolicy:
+        return cls(frozenset({EffectScope.NONE, EffectScope.LOCAL_STATE}))
+
+    def validate(
+        self, registrations: Iterable[AdapterRegistration]
+    ) -> tuple[AdapterRegistration, ...]:
+        registry = tuple(registrations)
+        if any(registration.scope not in self.allowed_scopes for registration in registry):
+            raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
+        return registry
+
+
+@dataclass(frozen=True)
+class DryRunRuntime:
+    """Validated local-only runtime returned by the sole composition root."""
+
+    runner: PipelineRunner
+    registrations: tuple[AdapterRegistration, ...]
+    policy: SideEffectPolicy
 
 
 class PipelineRunner:
@@ -310,3 +345,41 @@ class PipelineRunner:
             return target
         except OSError:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+
+def build_dry_run_runtime(
+    state: StateStore,
+    processor: StageProcessor,
+    *,
+    clock: Clock | None = None,
+    ids: IdProvider | None = None,
+    retry_policy: RetryPolicy | None = None,
+    registrations: Iterable[AdapterRegistration] = (),
+    policy: SideEffectPolicy | None = None,
+) -> DryRunRuntime:
+    """Validate the complete registry before constructing a runnable pipeline."""
+
+    resolved_clock = clock or SystemClock()
+    resolved_ids = ids or UUIDIdProvider()
+    complete_registry = (
+        AdapterRegistration("fixture_processor", EffectScope.NONE, processor),
+        AdapterRegistration("sqlite_and_manifests", EffectScope.LOCAL_STATE, state),
+        AdapterRegistration("clock", EffectScope.NONE, resolved_clock),
+        AdapterRegistration("run_ids", EffectScope.NONE, resolved_ids),
+        AdapterRegistration(
+            "local_publication_planner",
+            EffectScope.LOCAL_STATE,
+            PipelineRunner._write_publication_plan,
+        ),
+        *tuple(registrations),
+    )
+    resolved_policy = policy or SideEffectPolicy.phase_one()
+    validated = resolved_policy.validate(complete_registry)
+    runner = PipelineRunner(
+        state,
+        processor,
+        clock=resolved_clock,
+        ids=resolved_ids,
+        retry_policy=retry_policy,
+    )
+    return DryRunRuntime(runner=runner, registrations=validated, policy=resolved_policy)

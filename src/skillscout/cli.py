@@ -10,7 +10,7 @@ from typing import Sequence
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.state import SQLiteStateStore
-from skillscout.application.pipeline import STAGE_SEQUENCE, PipelineRunner
+from skillscout.application.pipeline import STAGE_SEQUENCE, build_dry_run_runtime
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
 
 __all__ = ["ERROR_SUMMARIES", "ErrorCode", "build_parser", "main"]
@@ -41,7 +41,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             subject = load_fixture(arguments.fixture)
             state = SQLiteStateStore(arguments.state)
-            payload = PipelineRunner(state, FixtureProcessor()).run(
+            runtime = build_dry_run_runtime(state, FixtureProcessor())
+            payload = runtime.runner.run(
                 subject,
                 arguments.output,
                 fail_after=arguments.fail_after,

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Mapping, Protocol
 
+from skillscout.domain.enums import EffectScope
 from skillscout.domain.models import StageAttempt, StageEnvelope, StageInput
 
 
@@ -21,6 +23,7 @@ class ErrorCode(StrEnum):
     RETRY_EXHAUSTED = "retry_exhausted"
     STAGE_TRANSIENT_FAILURE = "stage_transient_failure"
     STAGE_PERMANENT_FAILURE = "stage_permanent_failure"
+    FORBIDDEN_EFFECT_SCOPE = "forbidden_effect_scope"
 
 
 ERROR_SUMMARIES: dict[ErrorCode, str] = {
@@ -34,6 +37,7 @@ ERROR_SUMMARIES: dict[ErrorCode, str] = {
     ErrorCode.RETRY_EXHAUSTED: "Stage retry budget was exhausted.",
     ErrorCode.STAGE_TRANSIENT_FAILURE: "Stage processing failed temporarily.",
     ErrorCode.STAGE_PERMANENT_FAILURE: "Stage processing failed permanently.",
+    ErrorCode.FORBIDDEN_EFFECT_SCOPE: "Dry-run adapter authority was rejected.",
 }
 
 if not all(summary.isascii() and len(summary) <= 160 for summary in ERROR_SUMMARIES.values()):
@@ -49,6 +53,30 @@ class SafeFailure(Exception):
 
     def as_dict(self) -> dict[str, str]:
         return {"code": self.code.value, "summary": ERROR_SUMMARIES[self.code]}
+
+
+class ScopedAdapter(Protocol):
+    """An adapter registration with an explicit, closed effect scope."""
+
+    @property
+    def effect_scope(self) -> EffectScope: ...
+
+
+@dataclass(frozen=True)
+class AdapterRegistration:
+    """Immutable declaration of one runtime adapter and its authority."""
+
+    name: str
+    scope: EffectScope
+    adapter: object
+
+    def __post_init__(self) -> None:
+        if not self.name or not isinstance(self.scope, EffectScope):
+            raise ValueError("invalid adapter registration")
+
+    @property
+    def effect_scope(self) -> EffectScope:
+        return self.scope
 
 
 class StageProcessor(Protocol):

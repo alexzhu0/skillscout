@@ -21,6 +21,15 @@ class ExecutionMode(StrEnum):
     DRY_RUN = "dry_run"
 
 
+class EffectScope(StrEnum):
+    """Closed authority vocabulary for runtime adapter registration."""
+
+    NONE = "none"
+    LOCAL_STATE = "local_state"
+    REMOTE_READ = "remote_read"
+    REMOTE_WRITE = "remote_write"
+
+
 class RunStatus(StrEnum):
     RUNNING = "running"
     INTERRUPTED = "interrupted"
