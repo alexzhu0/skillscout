@@ -65,7 +65,9 @@ def test_manifest_paths_use_closed_stage_and_bare_lowercase_hash(tmp_path: Path)
         expected = database.with_suffix(".manifests") / str(row["stage"]) / (
             digest.removeprefix("sha256:") + ".json"
         )
-        assert Path(str(row["manifest_path"])) == expected
+        assert Path(str(row["manifest_path"])) == Path(str(row["stage"])) / (
+            digest.removeprefix("sha256:") + ".json"
+        )
         assert expected.is_file()
 
 
@@ -77,12 +79,10 @@ def test_missing_or_tampered_manifest_never_advances_checkpoint(
     _run_interrupted(database, tmp_path / "first")
     before = _checkpoint_facts(database)
     with _connect(database) as connection:
-        path = Path(
-            str(
-                connection.execute(
-                    "SELECT manifest_path FROM stage_results ORDER BY stage_index LIMIT 1"
-                ).fetchone()[0]
-            )
+        path = database.with_suffix(".manifests") / str(
+            connection.execute(
+                "SELECT manifest_path FROM stage_results ORDER BY stage_index LIMIT 1"
+            ).fetchone()[0]
         )
     if damage == "missing":
         path.unlink()
@@ -109,7 +109,7 @@ def test_stored_manifest_path_cannot_redirect_verified_reads(tmp_path: Path) -> 
             "SELECT result_id, manifest_path FROM stage_results ORDER BY stage_index LIMIT 1"
         ).fetchone()
         external = tmp_path / "attacker-selected.json"
-        shutil.copy2(Path(str(row["manifest_path"])), external)
+        shutil.copy2(database.with_suffix(".manifests") / str(row["manifest_path"]), external)
         connection.execute(
             "UPDATE stage_results SET manifest_path = ? WHERE result_id = ?",
             (str(external), row["result_id"]),

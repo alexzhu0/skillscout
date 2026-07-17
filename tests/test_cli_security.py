@@ -139,6 +139,37 @@ def test_success_json_does_not_echo_operator_selected_absolute_output_path(
     assert canary.encode() not in _all_bytes(tmp_path)
 
 
+def test_state_path_canary_is_not_persisted_or_emitted(
+    approved_fixture: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    canary = "STATE_PATH_SECRET_DO_NOT_DISCLOSE"
+    state = tmp_path / canary / "state.db"
+    status = cli.main(
+        [
+            "dry-run",
+            "--fixture",
+            str(approved_fixture),
+            "--state",
+            str(state),
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    first = capsys.readouterr()
+    assert status == 0, first.err
+    run_id = str(json.loads(first.out)["run_id"])
+    inspected_status = cli.main(
+        ["inspect-run", run_id, "--state", str(state), "--format", "json"]
+    )
+    second = capsys.readouterr()
+    assert inspected_status == 0, second.err
+    assert canary not in first.out
+    assert canary not in second.out
+    assert canary.encode() not in _all_bytes(tmp_path)
+
+
 def test_unexpected_state_exception_is_mapped_without_repr_or_args(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

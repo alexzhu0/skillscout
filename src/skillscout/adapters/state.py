@@ -287,6 +287,9 @@ class SQLiteStateStore:
                 )
                 manifest_path = self._write_manifest(envelope)
                 created_manifests.append(manifest_path)
+                manifest_locator = self._manifest_locator(
+                    envelope.stage, str(envelope.manifest_hash)
+                )
                 self._db.execute(
                     """INSERT INTO stage_results_v2
                        (result_id, attempt_id, run_id, schema_version, subject_id, stage,
@@ -304,7 +307,7 @@ class SQLiteStateStore:
                         envelope.output_hash,
                         envelope.producer_version,
                         envelope.manifest_hash,
-                        str(manifest_path),
+                        manifest_locator,
                         envelope.created_at,
                     ),
                 )
@@ -447,8 +450,8 @@ class SQLiteStateStore:
             ).fetchone()
             if row is not None:
                 stage = PipelineStage(str(row["stage"]))
-                expected = self._manifest_path(stage, str(row["manifest_hash"]))
-                if str(row["manifest_path"]) != str(expected):
+                expected = self._manifest_locator(stage, str(row["manifest_hash"]))
+                if str(row["manifest_path"]) != expected:
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             return row
         except (ValueError, TypeError):
@@ -685,6 +688,10 @@ class SQLiteStateStore:
                     pass
 
     def _commit_success(self, envelope: StageEnvelope, manifest_path: Path) -> None:
+        del manifest_path
+        if envelope.manifest_hash is None:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        manifest_locator = self._manifest_locator(envelope.stage, envelope.manifest_hash)
         try:
             self._db.execute("BEGIN IMMEDIATE")
             run = self._db.execute(
@@ -720,7 +727,7 @@ class SQLiteStateStore:
                     envelope.output_hash,
                     envelope.producer_version,
                     envelope.manifest_hash,
-                    str(manifest_path),
+                    manifest_locator,
                     envelope.created_at,
                 ),
             )
@@ -744,7 +751,7 @@ class SQLiteStateStore:
                     envelope.result_id,
                     envelope.output_hash,
                     envelope.manifest_hash,
-                    str(manifest_path),
+                    manifest_locator,
                     envelope.created_at,
                 ),
             )
@@ -781,7 +788,8 @@ class SQLiteStateStore:
         try:
             stage = PipelineStage(str(row["stage"]))
             expected_path = self._manifest_path(stage, str(row["manifest_hash"]))
-            if str(row["manifest_path"]) != str(expected_path):
+            expected_locator = self._manifest_locator(stage, str(row["manifest_hash"]))
+            if str(row["manifest_path"]) != expected_locator:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             raw = self._read_manifest_bytes(expected_path)
             envelope = StageEnvelope.model_validate_json(raw, strict=True)
@@ -985,12 +993,16 @@ class SQLiteStateStore:
             self.connection = None
 
     def _manifest_path(self, stage: PipelineStage, manifest_hash: str) -> Path:
+        return self.manifest_root / self._manifest_locator(stage, manifest_hash)
+
+    @staticmethod
+    def _manifest_locator(stage: PipelineStage, manifest_hash: str) -> str:
         if not isinstance(stage, PipelineStage):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         matched = _DIGEST_PATTERN.fullmatch(manifest_hash)
         if matched is None:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-        return self.manifest_root / stage.value / f"{matched.group(1)}.json"
+        return f"{stage.value}/{matched.group(1)}.json"
 
     def _read_manifest_bytes(self, path: Path) -> bytes:
         descriptor = -1
