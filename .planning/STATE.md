@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: Auditable Dry-Run Spine
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-07-17T05:58:41.001Z"
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-07-17T06:24:58.424Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 01 (Auditable Dry-Run Spine) — EXECUTING
-**Plan:** 3 of 4
+**Plan:** 4 of 4
 **Execution:** Not started  
 **Next command:** `$gsd-execute-phase 1`
 
@@ -92,8 +92,8 @@ None. Phase 1 execution begins with two mandatory, non-auto-approvable supply-ch
 
 ## Session Continuity
 
-**Last session:** 2026-07-17T05:58:40.998Z
-**Stopped at:** Completed 01-02-PLAN.md
+**Last session:** 2026-07-17T06:24:58.420Z
+**Stopped at:** Completed 01-03-PLAN.md
 **Resume file:** None
 
 ### Completed
@@ -122,6 +122,7 @@ None. Phase 1 execution begins with two mandatory, non-auto-approvable supply-ch
 |-------|------|----------|-------|
 | Phase 01 P01 | 9 min | 3 tasks | 8 files |
 | Phase 01 P02 | 15 min | 2 tasks | 9 files |
+| Phase 01 P03 | 21 min | 3 tasks | 11 files |
 
 ## Decisions
 
@@ -130,3 +131,5 @@ None. Phase 1 execution begins with two mandatory, non-auto-approvable supply-ch
 - [Phase 01]: Load and strictly validate the bounded fixture before opening SQLite, so rejected input cannot create state. — Keep rejected untrusted input outside every durable run surface.
 - [Phase 01]: Persist the five-field reusable identity on a running attempt before processor invocation. — Make migration, retry accounting and interruption evidence reconstructible from durable facts.
 - [Phase 01]: Expose only four closed schema-v1 error codes and fixed ASCII summaries. — Prevent raw fixture, Pydantic, exception, credential and path disclosure.
+- [Phase 01]: Validate current canonical identity before checkpoint reuse — Input, producer, or retry-policy mismatch starts a new run and preserves the interrupted audit record.
+- [Phase 01]: Scope retry budget to persisted reusable_key_digest — Three transient or abandoned attempts exhaust one identity; permanent failures never receive a second invocation.
