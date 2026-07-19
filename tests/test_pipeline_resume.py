@@ -20,7 +20,13 @@ from skillscout.domain.canonical import (
     stage_input_hash,
 )
 from skillscout.domain.enums import AttemptStatus, ExecutionMode, PipelineStage
-from skillscout.domain.models import MAX_STAGE_STRING_BYTES, StageAttempt, StageInput
+from skillscout.domain.models import (
+    MAX_STAGE_STRING_BYTES,
+    RunIdentity,
+    RunRecord,
+    StageAttempt,
+    StageInput,
+)
 
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
 FROZEN_PROVENANCE = Path(__file__).parent / "fixtures" / "state" / "v1-cli-provenance.json"
@@ -87,8 +93,39 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
     store = SQLiteStateStore(copied)
     try:
         assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        with pytest.raises(SafeFailure) as unbound:
+            store.inspect_run(str(provenance["run_id"]))
+        assert unbound.value.code is ErrorCode.STATE_IDENTITY_UNBOUND
+        assert unbound.value.as_dict() == {
+            "code": "state_identity_unbound",
+            "summary": "Run identity is not bound.",
+        }
+
+        subject = load_fixture(APPROVED_FIXTURE)
+        fixture_hash = sha256_digest(subject.model_dump(mode="json", exclude_none=False))
+        wrong = RunIdentity(
+            schema_version="1",
+            subject_id=subject.subject_id,
+            fixture_hash="sha256:" + "f" * 64,
+            producer_version="fixture-v1",
+            retry_policy_version="retry-v1",
+        )
+        before_wrong_bind = copied.read_bytes()
+        assert store.bind_legacy_run(wrong) is None
+        assert copied.read_bytes() == before_wrong_bind
+        assert store.connection.execute(
+            "SELECT identity_state FROM runs"
+        ).fetchone()[0] == "legacy_unbound"
+
+        expected = wrong.model_copy(update={"fixture_hash": fixture_hash})
+        bound = store.bind_legacy_run(expected)
+        assert isinstance(bound, RunRecord)
+        assert bound.identity_state == "bound"
+        assert bound.identity == expected
+        assert store.inspect_run(bound.run_id)["run"]["identity_state"] == "bound"
+
         summary = PipelineRunner(store, CanaryProcessor()).run(
-            load_fixture(APPROVED_FIXTURE), tmp_path / "output"
+            subject, tmp_path / "output"
         )
         assert summary.run_id == provenance["run_id"]
         assert summary.reused_stage_count == 6
@@ -114,6 +151,216 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
     assert hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (
         provenance["database_sha256"]
     )
+
+
+def test_complete_run_identity_is_persisted_before_first_attempt(tmp_path: Path) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+    store = SQLiteStateStore(tmp_path / "identity-before-attempt.db")
+
+    class IdentityProbe(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            row = store.connection.execute(
+                """SELECT schema_version, subject_id, fixture_hash, producer_version,
+                          retry_policy_version, identity_state
+                   FROM runs"""
+            ).fetchone()
+            assert dict(row) == {
+                "schema_version": "2",
+                "subject_id": subject.subject_id,
+                "fixture_hash": sha256_digest(
+                    subject.model_dump(mode="json", exclude_none=False)
+                ),
+                "producer_version": "fixture-v1",
+                "retry_policy_version": "retry-v1",
+                "identity_state": "bound",
+            }
+            return super().process(stage_input)
+
+    try:
+        PipelineRunner(store, IdentityProbe()).run(subject, tmp_path / "identity-out")
+    finally:
+        store.close()
+
+
+def test_exact_identity_lookup_uses_index_and_skips_newer_subject_mismatch(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "identity-index.db")
+    first = RunIdentity(
+        schema_version="2",
+        subject_id="fixture:same-subject",
+        fixture_hash="sha256:" + "1" * 64,
+        producer_version="fixture-v1",
+        retry_policy_version="retry-v1",
+    )
+    newer = first.model_copy(
+        update={
+            "fixture_hash": "sha256:" + "2" * 64,
+            "producer_version": "fixture-v2",
+            "retry_policy_version": "retry-v2",
+        }
+    )
+    try:
+        store.create_run("run-a", first, "2026-07-19T00:00:00.000000Z")
+        store.create_run("run-b", newer, "2026-07-19T00:00:01.000000Z")
+        selected = store.find_resumable_run(first)
+        assert isinstance(selected, RunRecord)
+        assert selected.run_id == "run-a"
+        assert selected.identity == first
+        query_plan = " ".join(
+            str(value)
+            for value in store.connection.execute(
+                """EXPLAIN QUERY PLAN SELECT run_id FROM runs
+                   INDEXED BY idx_runs_resumable_identity
+                   WHERE schema_version = ? AND subject_id = ? AND fixture_hash = ?
+                     AND producer_version = ? AND retry_policy_version = ?
+                     AND identity_state = 'bound'
+                     AND status IN ('running', 'interrupted')
+                   ORDER BY updated_at DESC, run_id DESC LIMIT 1""",
+                (
+                    first.schema_version,
+                    first.subject_id,
+                    first.fixture_hash,
+                    first.producer_version,
+                    first.retry_policy_version,
+                ),
+            ).fetchone()
+        )
+        assert "idx_runs_resumable_identity" in query_plan
+    finally:
+        store.close()
+
+
+def test_changed_a_prime_completes_without_reuse_and_both_runs_inspect(
+    tmp_path: Path,
+) -> None:
+    original = load_fixture(APPROVED_FIXTURE)
+    changed = original.model_copy(
+        update={
+            "workflow": original.workflow.model_copy(
+                update={"goal": "A-prime canonical workflow goal"}
+            )
+        }
+    )
+    store = SQLiteStateStore(tmp_path / "changed-a-prime.db")
+    try:
+        with pytest.raises(SafeFailure):
+            PipelineRunner(store, FixtureProcessor()).run(
+                original, tmp_path / "a-interrupted", fail_after="generator"
+            )
+        original_run = str(
+            store.connection.execute(
+                "SELECT run_id FROM runs WHERE fixture_hash = ?",
+                (sha256_digest(original.model_dump(mode="json", exclude_none=False)),),
+            ).fetchone()[0]
+        )
+
+        changed_summary = PipelineRunner(store, FixtureProcessor()).run(
+            changed, tmp_path / "a-prime"
+        )
+        assert changed_summary.run_id != original_run
+        assert changed_summary.reused_stage_count == 0
+        assert store.inspect_run(original_run)["run"]["status"] == "interrupted"
+        assert store.inspect_run(changed_summary.run_id)["run"]["status"] == (
+            "planned_not_published"
+        )
+        duplicates = store.connection.execute(
+            """SELECT result_id, COUNT(*) AS count FROM stage_results
+               GROUP BY result_id HAVING COUNT(*) > 1"""
+        ).fetchall()
+        assert duplicates
+    finally:
+        store.close()
+
+
+def test_a_interrupt_b_interrupt_a_rerun_resumes_exact_a_without_touching_b(
+    tmp_path: Path,
+) -> None:
+    original = load_fixture(APPROVED_FIXTURE)
+    changed = original.model_copy(
+        update={
+            "workflow": original.workflow.model_copy(
+                update={"goal": "B canonical workflow goal"}
+            )
+        }
+    )
+    store = SQLiteStateStore(tmp_path / "a-b-a.db")
+    try:
+        with pytest.raises(SafeFailure):
+            PipelineRunner(store, FixtureProcessor()).run(
+                original, tmp_path / "a-first", fail_after="generator"
+            )
+        a_run = str(
+            store.connection.execute(
+                "SELECT run_id FROM runs ORDER BY created_at LIMIT 1"
+            ).fetchone()[0]
+        )
+        a_hashes = [
+            tuple(row)
+            for row in store.connection.execute(
+                """SELECT result_row_id, result_id, output_hash, manifest_hash
+                   FROM stage_results WHERE run_id = ? ORDER BY stage_index""",
+                (a_run,),
+            )
+        ]
+
+        with pytest.raises(SafeFailure):
+            PipelineRunner(store, FixtureProcessor()).run(
+                changed, tmp_path / "b-first", fail_after="reader"
+            )
+        b_run = str(
+            store.connection.execute(
+                "SELECT run_id FROM runs WHERE run_id != ?", (a_run,)
+            ).fetchone()[0]
+        )
+        b_before = tuple(
+            store.connection.execute(
+                """SELECT r.status, r.updated_at, c.stage, c.stage_index,
+                          c.result_row_id, c.result_id, c.output_hash, c.manifest_hash
+                   FROM runs r JOIN checkpoints c USING (run_id)
+                   WHERE r.run_id = ? ORDER BY c.stage_index DESC LIMIT 1""",
+                (b_run,),
+            ).fetchone()
+        )
+
+        calls: list[PipelineStage] = []
+
+        class ResumeCanary(FixtureProcessor):
+            def process(self, stage_input: StageInput) -> dict[str, object]:
+                calls.append(stage_input.stage)
+                return super().process(stage_input)
+
+        resumed = PipelineRunner(store, ResumeCanary()).run(
+            original, tmp_path / "a-resumed"
+        )
+        assert resumed.run_id == a_run
+        assert resumed.reused_stage_count == 6
+        assert calls == [
+            PipelineStage.VALIDATORS,
+            PipelineStage.REVIEWER,
+            PipelineStage.PUBLICATION_PLANNER,
+        ]
+        assert [
+            tuple(row)
+            for row in store.connection.execute(
+                """SELECT result_row_id, result_id, output_hash, manifest_hash
+                   FROM stage_results WHERE run_id = ?
+                   ORDER BY stage_index LIMIT 6""",
+                (a_run,),
+            )
+        ] == a_hashes
+        b_after = tuple(
+            store.connection.execute(
+                """SELECT r.status, r.updated_at, c.stage, c.stage_index,
+                          c.result_row_id, c.result_id, c.output_hash, c.manifest_hash
+                   FROM runs r JOIN checkpoints c USING (run_id)
+                   WHERE r.run_id = ? ORDER BY c.stage_index DESC LIMIT 1""",
+                (b_run,),
+            ).fetchone()
+        )
+        assert b_after == b_before
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("seam", ["after_schema", "after_copy", "after_validation"])
