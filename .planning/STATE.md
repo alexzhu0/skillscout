@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Completed 01-09-PLAN.md
-last_updated: "2026-07-19T06:55:07.028Z"
+stopped_at: Completed 01-10-PLAN.md
+last_updated: "2026-07-19T07:19:41.219Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 11
-  completed_plans: 9
-  percent: 0
+  completed_plans: 10
+  percent: 91
 ---
 
 # Project State: SkillScout
@@ -24,8 +24,8 @@ progress:
 ## Current Position
 
 **Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 10 of 11
-**Execution:** Three verified gap-closure plans are pending
+**Plan:** 11 of 11
+**Execution:** One verified gap-closure plan is pending
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
 ## Progress
@@ -34,7 +34,7 @@ progress:
 Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
-Phase 1 implementation  [███████░░░]  73%
+Phase 1 implementation  [█████████░]  91%
 ```
 
 | Metric | Value |
@@ -43,7 +43,7 @@ Phase 1 implementation  [███████░░░]  73%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 0 |
-| Plans completed | 8/11 |
+| Plans completed | 10/11 |
 
 ## Accumulated Context
 
@@ -92,20 +92,9 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T06:53:41.164Z
-**Stopped at:** Completed 01-09-PLAN.md
+**Last session:** 2026-07-19T07:19:12.481Z
+**Stopped at:** Completed 01-10-PLAN.md
 **Resume file:** None
-
-### Completed
-
-- Initialized the project, research, 44 MVP requirements, six-phase roadmap, and the first four independently reviewed Phase 1 plans.
-- Completed Plans 01-01 through 01-08; independent verification identified four root gaps and the reviewed Plans 01-05 through 01-11 cover their closure.
-
-### Next
-
-1. Execute only the Phase 1 gap-closure plans with `$gsd-execute-phase 1 --gaps-only`.
-2. Re-run independent Phase 1 verification and the security audit.
-3. Mark Phase 1 complete only after both gates pass, then begin Phase 2 planning.
 
 ---
 *State initialized: 2026-07-16*
@@ -123,6 +112,7 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 | Phase 01 P07 | 20min | 2 tasks | 5 files |
 | Phase 01 P08 | 19min | 2 tasks | 9 files |
 | Phase 01 P09 | 24min | 2 tasks | 5 files |
+| Phase 01 P10 | 19min | 2 tasks | 7 files |
 
 ## Decisions
 
@@ -151,3 +141,7 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 - [Phase 01]: Use one immutable schema-v2 descriptor set for creation, acceptance, and migration — A user_version value cannot establish structural or integrity compatibility.
 - [Phase 01]: Treat persisted diagnostics as untrusted until exact closed validation — Public inspect output must never project corrupt, legacy, credential-bearing, or provider-controlled fields.
 - [Phase 01]: Validate schema-v1 source rows before migration copy or manifest creation — Rejected legacy bytes stay unchanged evidence and cannot become new durable surfaces.
+- [Phase 01]: Return VerifiedRunChain only for bound identity — Legacy-unbound evidence cannot authorize resume or full inspect before exact current identity proof.
+- [Phase 01]: Keep legacy migration validation non-authorizing — The frozen v1 ledger lacks fixture_hash, so only reconstructible facts are validated before binding.
+- [Phase 01]: Use one full-chain verifier for every bound trust path — Resume, latest checkpoint, completed verification, and inspect must reject identical corruption consistently.
+- [Phase 01]: Preserve the historical schema-v1 semantic result preimage — Migrated and newly completed v1 stages must remain one canonical chain.
