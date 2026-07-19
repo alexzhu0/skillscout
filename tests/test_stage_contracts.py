@@ -119,6 +119,9 @@ def _envelope(**changes: object) -> StageEnvelope:
     )
     values: dict[str, object] = {
         "schema_version": "2",
+        "result_row_id": make_result_row_id(
+            run_id="run-1", stage=PipelineStage.VALIDATORS
+        ),
         "result_id": make_result_id(
             subject_id="fixture:approved-workflow",
             stage=PipelineStage.VALIDATORS,

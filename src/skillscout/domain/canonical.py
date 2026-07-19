@@ -132,3 +132,9 @@ def make_result_id(
     if retry_policy_version is not None:
         preimage["retry_policy_version"] = retry_policy_version
     return sha256_digest(preimage)
+
+
+def make_result_row_id(*, run_id: str, stage: PipelineStage) -> str:
+    """Hash the canonical run/stage association, separate from semantic identity."""
+
+    return sha256_digest({"run_id": run_id, "stage": stage.value})

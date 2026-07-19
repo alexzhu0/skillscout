@@ -468,8 +468,11 @@ def test_result_row_constraints_reject_cross_run_checkpoint_and_duplicates(
 ) -> None:
     store = SQLiteStateStore(tmp_path / "constraints.db")
     try:
-        PipelineRunner(store, FixtureProcessor()).run(
+        first = PipelineRunner(store, FixtureProcessor()).run(
             load_fixture(APPROVED_FIXTURE), tmp_path / "out"
+        )
+        second = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "out-second"
         )
         foreign_keys = store.connection.execute(
             "PRAGMA foreign_key_list(checkpoints)"
@@ -481,11 +484,25 @@ def test_result_row_constraints_reject_cross_run_checkpoint_and_duplicates(
             for row in foreign_keys
         )
 
+        semantic_twin = store.connection.execute(
+            """SELECT result_row_id FROM stage_results
+               WHERE run_id = ? AND stage = 'scout'""",
+            (second.run_id,),
+        ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError):
+            store.connection.execute(
+                """UPDATE checkpoints SET result_row_id = ?
+                   WHERE run_id = ? AND stage = 'scout'""",
+                (semantic_twin["result_row_id"], first.run_id),
+            )
+
         result = store.connection.execute(
-            "SELECT * FROM stage_results WHERE stage = 'scout'"
+            "SELECT * FROM stage_results WHERE run_id = ? AND stage = 'scout'",
+            (first.run_id,),
         ).fetchone()
         attempt = store.connection.execute(
-            "SELECT * FROM stage_attempts WHERE stage = 'scout'"
+            "SELECT * FROM stage_attempts WHERE run_id = ? AND stage = 'scout'",
+            (first.run_id,),
         ).fetchone()
         with pytest.raises(sqlite3.IntegrityError):
             store.connection.execute(

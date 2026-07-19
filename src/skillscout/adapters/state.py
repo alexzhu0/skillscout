@@ -18,6 +18,7 @@ from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
+    make_result_row_id,
     reusable_key_digest,
     stage_input_hash,
     stage_manifest_hash,
@@ -102,7 +103,8 @@ def _schema_statements(suffix: str = "") -> tuple[str, ...]:
         )""",
         f"CREATE INDEX idx_attempts_reusable{suffix} ON {attempts}(reusable_key_digest)",
         f"""CREATE TABLE {results} (
-            result_id TEXT PRIMARY KEY,
+            result_row_id TEXT PRIMARY KEY,
+            result_id TEXT NOT NULL,
             attempt_id TEXT NOT NULL UNIQUE REFERENCES {attempts}(attempt_id),
             run_id TEXT NOT NULL REFERENCES {runs}(run_id),
             schema_version TEXT NOT NULL,
@@ -115,19 +117,24 @@ def _schema_statements(suffix: str = "") -> tuple[str, ...]:
             manifest_hash TEXT NOT NULL,
             manifest_path TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            UNIQUE (run_id, stage)
+            UNIQUE (run_id, stage),
+            UNIQUE (result_row_id, run_id)
         )""",
+        f"CREATE INDEX idx_results_semantic{suffix} ON {results}(result_id)",
         f"""CREATE TABLE {checkpoints} (
             run_id TEXT NOT NULL REFERENCES {runs}(run_id),
             subject_id TEXT NOT NULL,
             stage TEXT NOT NULL,
             stage_index INTEGER NOT NULL,
-            result_id TEXT NOT NULL REFERENCES {results}(result_id),
+            result_row_id TEXT NOT NULL,
+            result_id TEXT NOT NULL,
             output_hash TEXT NOT NULL,
             manifest_hash TEXT NOT NULL,
             manifest_path TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            PRIMARY KEY (run_id, stage)
+            PRIMARY KEY (run_id, stage),
+            FOREIGN KEY (result_row_id, run_id)
+                REFERENCES {results}(result_row_id, run_id)
         )""",
     )
 
@@ -336,8 +343,20 @@ class SQLiteStateStore:
                 "retry_policy_version",
                 "reusable_key_digest",
             },
-            "stage_results": {"result_id", "manifest_hash", "manifest_path", "output_hash"},
-            "checkpoints": {"result_id", "manifest_hash", "manifest_path", "output_hash"},
+            "stage_results": {
+                "result_row_id",
+                "result_id",
+                "manifest_hash",
+                "manifest_path",
+                "output_hash",
+            },
+            "checkpoints": {
+                "result_row_id",
+                "result_id",
+                "manifest_hash",
+                "manifest_path",
+                "output_hash",
+            },
         }
         try:
             for table, columns in required.items():
@@ -393,6 +412,9 @@ class SQLiteStateStore:
                     raise ValueError("unsupported migrated producer identity")
                 provisional = StageEnvelope(
                     schema_version="1",
+                    result_row_id=make_result_row_id(
+                        run_id=str(row["run_id"]), stage=stage
+                    ),
                     result_id=str(row["result_id"]),
                     run_id=str(row["run_id"]),
                     attempt_id=str(row["attempt_id"]),
@@ -422,11 +444,13 @@ class SQLiteStateStore:
                 )
                 self._db.execute(
                     """INSERT INTO stage_results_v2
-                       (result_id, attempt_id, run_id, schema_version, subject_id, stage,
+                       (result_row_id, result_id, attempt_id, run_id, schema_version,
+                        subject_id, stage,
                         stage_index, output_json, output_hash, producer_version,
                         manifest_hash, manifest_path, created_at)
-                       VALUES (?, ?, ?, '1', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, '1', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
+                        envelope.result_row_id,
                         envelope.result_id,
                         envelope.attempt_id,
                         envelope.run_id,
@@ -444,8 +468,9 @@ class SQLiteStateStore:
 
             self._db.execute(
                 """INSERT INTO checkpoints_v2
-                   SELECT c.run_id, c.subject_id, c.stage, c.stage_index, c.result_id,
-                          c.output_hash, r.manifest_hash, r.manifest_path, c.updated_at
+                   SELECT c.run_id, c.subject_id, c.stage, c.stage_index,
+                          r.result_row_id, c.result_id, c.output_hash, r.manifest_hash,
+                          r.manifest_path, c.updated_at
                    FROM checkpoints c JOIN stage_results_v2 r USING (result_id)"""
             )
             self._trip_migration_seam(fail_at, "after_copy")
@@ -462,8 +487,12 @@ class SQLiteStateStore:
             ):
                 self._db.execute(f"ALTER TABLE {old} RENAME TO {new}")
             self._db.execute("DROP INDEX idx_attempts_reusable_v2")
+            self._db.execute("DROP INDEX idx_results_semantic_v2")
             self._db.execute(
                 "CREATE INDEX idx_attempts_reusable ON stage_attempts(reusable_key_digest)"
+            )
+            self._db.execute(
+                "CREATE INDEX idx_results_semantic ON stage_results(result_id)"
             )
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._db.commit()
@@ -525,6 +554,9 @@ class SQLiteStateStore:
             )
             if expected_output != row["output_hash"] or expected_result != row["result_id"]:
                 raise ValueError("migration result identity mismatch")
+            expected_row = make_result_row_id(run_id=str(row["run_id"]), stage=stage)
+            if expected_row != row["result_row_id"]:
+                raise ValueError("migration result row identity mismatch")
             self._verify_manifest_row(row)
         if self._db.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise ValueError("migration foreign key failure")
@@ -589,8 +621,8 @@ class SQLiteStateStore:
     def latest_checkpoint(self, run_id: str) -> sqlite3.Row | None:
         try:
             row = self._db.execute(
-                """SELECT stage, stage_index, result_id, output_hash, manifest_hash,
-                          manifest_path, updated_at
+                """SELECT run_id, subject_id, stage, stage_index, result_row_id,
+                          result_id, output_hash, manifest_hash, manifest_path, updated_at
                    FROM checkpoints WHERE run_id = ? ORDER BY stage_index DESC LIMIT 1""",
                 (run_id,),
             ).fetchone()
@@ -825,11 +857,13 @@ class SQLiteStateStore:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             database.execute(
                 """INSERT INTO stage_results
-                   (result_id, attempt_id, run_id, schema_version, subject_id, stage,
+                   (result_row_id, result_id, attempt_id, run_id, schema_version,
+                    subject_id, stage,
                     stage_index, output_json, output_hash, producer_version, manifest_hash,
                     manifest_path, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
+                    envelope.result_row_id,
                     envelope.result_id,
                     envelope.attempt_id,
                     envelope.run_id,
@@ -854,14 +888,16 @@ class SQLiteStateStore:
                 raise sqlite3.IntegrityError("attempt was not running")
             database.execute(
                 """INSERT INTO checkpoints
-                   (run_id, subject_id, stage, stage_index, result_id, output_hash,
+                   (run_id, subject_id, stage, stage_index, result_row_id, result_id,
+                    output_hash,
                     manifest_hash, manifest_path, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     envelope.run_id,
                     envelope.subject_id,
                     envelope.stage.value,
                     envelope.stage_index,
+                    envelope.result_row_id,
                     envelope.result_id,
                     envelope.output_hash,
                     envelope.manifest_hash,
@@ -908,6 +944,7 @@ class SQLiteStateStore:
                 or str(row["schema_version"]) != envelope.schema_version
                 or str(row["producer_version"]) != envelope.producer_version
                 or str(row["run_id"]) != envelope.run_id
+                or str(row["result_row_id"]) != envelope.result_row_id
                 or str(row["attempt_id"]) != envelope.attempt_id
                 or str(row["subject_id"]) != envelope.subject_id
                 or stage is not envelope.stage
@@ -931,6 +968,10 @@ class SQLiteStateStore:
             if expected_output != envelope.output_hash or expected_output != row["output_hash"]:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             if envelope.result_id != row["result_id"]:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            if envelope.result_row_id != make_result_row_id(
+                run_id=envelope.run_id, stage=envelope.stage
+            ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             return envelope
         except SafeFailure:

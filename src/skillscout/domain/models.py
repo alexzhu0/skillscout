@@ -132,6 +132,7 @@ class StageInput(StrictFrozenModel):
 
 class StageEnvelope(StrictFrozenModel):
     schema_version: NonEmpty
+    result_row_id: Digest
     result_id: Digest
     run_id: NonEmpty
     attempt_id: NonEmpty
@@ -200,6 +201,7 @@ class Checkpoint(StrictFrozenModel):
     subject_id: NonEmpty
     stage: PipelineStage
     stage_index: NonNegativeInt
+    result_row_id: Digest
     result_id: Digest
     output_hash: Digest
     manifest_hash: Digest

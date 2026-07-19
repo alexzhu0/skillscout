@@ -23,6 +23,7 @@ from skillscout.application.ports import (
 from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
+    make_result_row_id,
     reusable_key_digest,
     sha256_digest,
     stage_input_hash,
@@ -334,6 +335,7 @@ class PipelineRunner:
                 )
                 provisional = StageEnvelope(
                     schema_version=schema_version,
+                    result_row_id=make_result_row_id(run_id=run_id, stage=stage),
                     result_id=result_id,
                     run_id=run_id,
                     attempt_id=attempt_id,
