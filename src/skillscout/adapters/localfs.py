@@ -308,10 +308,19 @@ class AnchoredDirectory:
                 self._best_effort_unlink(backup_name, sync=True)
             raise
         if had_backup:
-            try:
-                self.unlink(backup_name, missing_ok=False, sync=True)
-            except DurableWriteError as error:
-                raise DurableWriteError("backup_cleanup", renamed=True) from error
+            self._retire_backup_after_commit(backup_name)
+
+    def _retire_backup_after_commit(self, backup_name: str) -> None:
+        """Best-effort housekeeping after the replacement is authoritative."""
+
+        backup_name = self.validate_child_name(backup_name)
+        try:
+            os.unlink(backup_name, dir_fd=self.descriptor)
+            self._trip("after_backup_unlink")
+            self._trip("before_backup_cleanup_directory_fsync")
+            os.fsync(self.descriptor)
+        except (DurableWriteError, OSError):
+            pass
 
     def _atomic_write_once(
         self,

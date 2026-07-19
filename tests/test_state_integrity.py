@@ -1074,6 +1074,78 @@ def test_post_commit_backup_cleanup_failure_returns_success_and_reopen_observes_
         reopened.close()
 
 
+@pytest.mark.parametrize(
+    "seam",
+    ["before_state_file_fsync", "before_state_rename", "before_state_directory_fsync"],
+)
+def test_pre_commit_snapshot_failure_restores_prior_authority(
+    tmp_path: Path,
+    seam: str,
+) -> None:
+    active = False
+
+    def fail_selected(operation: str) -> None:
+        if active and operation == seam:
+            raise OSError("forced pre-commit failure")
+
+    database = tmp_path / f"pre-commit-{seam}.db"
+    store = SQLiteStateStore(database, filesystem_seam=fail_selected)
+    prior = database.read_bytes()
+    active = True
+    with pytest.raises(SafeFailure) as failure:
+        store.create_run(
+            "not-committed",
+            _run_identity("pre-commit-subject"),
+            "2026-07-19T00:00:00.000000Z",
+        )
+    assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    assert store.connection is None
+    assert database.read_bytes() == prior
+    store.close()
+
+    reopened = SQLiteStateStore(database)
+    try:
+        assert reopened.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    finally:
+        reopened.close()
+
+
+def test_stale_backup_never_supersedes_valid_state_target(tmp_path: Path) -> None:
+    database = tmp_path / "authoritative.db"
+    SQLiteStateStore(database).close()
+
+    stale_database = tmp_path / "stale.db"
+    stale = SQLiteStateStore(stale_database)
+    stale.create_run(
+        "stale-run",
+        _run_identity("stale-subject"),
+        "2026-07-19T00:00:00.000000Z",
+    )
+    stale.close()
+    backup = tmp_path / ".authoritative.db.backup"
+    backup.write_bytes(stale_database.read_bytes())
+    backup.chmod(0o600)
+
+    reopened = SQLiteStateStore(database)
+    try:
+        assert reopened.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        reopened.create_run(
+            "authoritative-run",
+            _run_identity("authoritative-subject"),
+            "2026-07-19T00:00:01.000000Z",
+        )
+    finally:
+        reopened.close()
+
+    final = SQLiteStateStore(database)
+    try:
+        assert [
+            row[0] for row in final.connection.execute("SELECT run_id FROM runs").fetchall()
+        ] == ["authoritative-run"]
+    finally:
+        final.close()
+
+
 def test_semantic_result_twins_use_distinct_run_scoped_rows(tmp_path: Path) -> None:
     database = tmp_path / "semantic-twins.db"
     store = SQLiteStateStore(database)
