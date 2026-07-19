@@ -433,6 +433,7 @@ class VerifiedRunChain(StrictFrozenModel):
     attempts: tuple[PersistedAttemptRecord, ...]
     results: tuple[StageEnvelope, ...]
     checkpoints: tuple[PersistedCheckpointRecord, ...]
+    resume_events: tuple[ResumeEvent, ...]
 
     @model_validator(mode="after")
     def validate_verified_chain_shape(self) -> VerifiedRunChain:
@@ -440,11 +441,30 @@ class VerifiedRunChain(StrictFrozenModel):
             raise ValueError("verified run identity disagrees")
         if len(self.results) != len(self.checkpoints):
             raise ValueError("verified result/checkpoint cardinality disagrees")
+        if not self.resume_events:
+            raise ValueError("verified resume-event chain is empty")
+        prior_hash: str | None = None
+        for expected_index, event in enumerate(self.resume_events):
+            if (
+                event.run_id != self.run.run_id
+                or event.event_index != expected_index
+                or event.prior_event_hash != prior_hash
+            ):
+                raise ValueError("verified resume-event linkage disagrees")
+            prior_hash = event.event_hash
+        if self.run.reused_stage_count != self.resume_events[-1].reused_stage_count:
+            raise ValueError("verified reused-stage count disagrees")
         return self
 
     @property
     def latest_checkpoint(self) -> PersistedCheckpointRecord | None:
         return self.checkpoints[-1] if self.checkpoints else None
+
+    @property
+    def reused_stage_count(self) -> int:
+        """Return reuse authority derived only from the verified event head."""
+
+        return self.resume_events[-1].reused_stage_count
 
 
 class PublicationPlan(StrictFrozenModel):

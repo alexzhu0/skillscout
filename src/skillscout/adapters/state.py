@@ -1018,13 +1018,14 @@ class SQLiteStateStore:
             self._validate_v2_schema()
             run_rows = self._db.execute("SELECT * FROM runs ORDER BY run_id").fetchall()
             events: dict[str, ResumeEvent] = {}
+            bound_identities: dict[str, RunIdentity] = {}
             for row in run_rows:
                 run = self._persisted_run_record(row)
                 legacy_count = row["reused_stage_count"]
                 if type(legacy_count) is not int or legacy_count != 0:
                     raise ValueError("unattested historical reuse count")
                 if run.identity_state == "bound":
-                    self._verify_run_chain(self._db, run.run_id, run.identity)
+                    bound_identities[run.run_id] = run.identity
                 else:
                     self._validate_pre_event_legacy_run(run)
                 events[run.run_id] = self._new_resume_event(
@@ -1088,6 +1089,8 @@ class SQLiteStateStore:
                 self._db.execute(f"DROP TABLE {table}")
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._validate_current_schema()
+            for run_id, identity in bound_identities.items():
+                self._verify_run_chain(self._db, run_id, identity)
             self._db.commit()
         except Exception:
             self._db.rollback()
@@ -1933,12 +1936,74 @@ class SQLiteStateStore:
                 ):
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
+            event_rows = database.execute(
+                """SELECT * FROM resume_events WHERE run_id = ?
+                   ORDER BY event_index, event_hash""",
+                (run_id,),
+            ).fetchall()
+            if not event_rows:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            resume_events: list[ResumeEvent] = []
+            prior_event: ResumeEvent | None = None
+            for expected_index, event_row in enumerate(event_rows):
+                event = self._persisted_resume_event(event_row)
+                expected_prior_hash = (
+                    prior_event.event_hash if prior_event is not None else None
+                )
+                if (
+                    event.run_id != run.run_id
+                    or event.event_index != expected_index
+                    or event.prior_event_hash != expected_prior_hash
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                if expected_index == 0:
+                    if event.recorded_at != run.created_at:
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                elif (
+                    prior_event is None
+                    or event.recorded_at < prior_event.recorded_at
+                    or event.recorded_at < run.created_at
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                if event.recorded_at > run.updated_at:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+                if event.reused_stage_count > 0:
+                    checkpoint_index = event.reused_stage_count - 1
+                    if checkpoint_index >= len(checkpoints):
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    selected_checkpoint = checkpoints[checkpoint_index]
+                    if (
+                        event.checkpoint_stage is not selected_checkpoint.stage
+                        or event.checkpoint_result_row_id
+                        != selected_checkpoint.result_row_id
+                        or event.checkpoint_manifest_hash
+                        != selected_checkpoint.manifest_hash
+                        or event.recorded_at < selected_checkpoint.updated_at
+                    ):
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                resume_events.append(event)
+                prior_event = event
+
+            final_event = resume_events[-1]
+            run_head = run_row["latest_resume_event_hash"]
+            if (
+                type(run_head) is not str
+                or run_head != final_event.event_hash
+                or run.reused_stage_count != final_event.reused_stage_count
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            verified_run = run.model_copy(
+                update={"reused_stage_count": final_event.reused_stage_count}
+            )
+
             return VerifiedRunChain(
-                run=run,
+                run=verified_run,
                 identity=identity,
                 attempts=attempts,
                 results=tuple(results),
                 checkpoints=tuple(checkpoints),
+                resume_events=tuple(resume_events),
             )
         except SafeFailure:
             raise
@@ -2001,26 +2066,8 @@ class SQLiteStateStore:
                 selected_checkpoint = expected_checkpoint
                 reused_stage_count = expected_checkpoint.stage_index + 1
 
-            run_head = database.execute(
-                """SELECT latest_resume_event_hash FROM runs
-                   WHERE run_id = ?""",
-                (run_id,),
-            ).fetchone()
-            if run_head is None or type(run_head["latest_resume_event_hash"]) is not str:
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            head_row = database.execute(
-                """SELECT * FROM resume_events
-                   WHERE event_hash = ? AND run_id = ?""",
-                (run_head["latest_resume_event_hash"], run_id),
-            ).fetchone()
-            if head_row is None:
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            head = self._persisted_resume_event(head_row)
-            maximum_index = database.execute(
-                "SELECT MAX(event_index) FROM resume_events WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()[0]
-            if maximum_index != head.event_index or recorded_at < head.recorded_at:
+            head = chain.resume_events[-1]
+            if recorded_at < head.recorded_at:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
             event = self._new_resume_event(

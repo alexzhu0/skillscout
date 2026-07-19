@@ -424,12 +424,12 @@ def _assert_resume_integrity_failure(store: SQLiteStateStore, run_id: str) -> No
 def _rewrite_resume_event(
     store: SQLiteStateStore,
     run_id: str,
-    event_index: int,
+    target_event_index: int,
     **updates: object,
 ) -> str:
     row = store.connection.execute(
         "SELECT * FROM resume_events WHERE run_id = ? AND event_index = ?",
-        (run_id, event_index),
+        (run_id, target_event_index),
     ).fetchone()
     assert row is not None
     values = {
@@ -572,6 +572,7 @@ def test_full_chain_accepts_genesis_only_and_consecutive_zero_prefix_events(
         "broken_prior",
         "wrong_ordinal",
         "genesis_relabelled",
+        "genesis_time",
         "zero_null_prior",
         "zero_checkpoint_tuple",
         "non_monotonic_time",
@@ -640,6 +641,22 @@ def test_full_chain_rejects_resume_event_order_shape_head_and_count_tamper(
                 event_index=1,
                 prior_event_hash="sha256:" + "e" * 64,
             )
+        elif damage == "genesis_time":
+            store.connection.execute("PRAGMA foreign_keys = OFF")
+            store.connection.execute(
+                "DELETE FROM resume_events WHERE event_index = 1"
+            )
+            store.connection.execute(
+                "UPDATE runs SET latest_resume_event_hash = ? WHERE run_id = ?",
+                (genesis["event_hash"], "resume-chain"),
+            )
+            store.connection.execute("PRAGMA foreign_keys = ON")
+            _rewrite_resume_event(
+                store,
+                "resume-chain",
+                0,
+                recorded_at="2026-07-19T00:00:00.000001Z",
+            )
         elif damage == "zero_null_prior":
             _rewrite_resume_event(
                 store,
@@ -681,6 +698,46 @@ def test_full_chain_rejects_resume_event_order_shape_head_and_count_tamper(
             )
 
         _assert_resume_integrity_failure(store, "resume-chain")
+    finally:
+        store.close()
+
+
+def test_resume_event_schema_rejects_duplicate_hash_and_ordinal(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "duplicate-resume-event.db")
+    try:
+        store.create_run(
+            "duplicate-resume-event",
+            _run_identity("subject:duplicate-resume-event"),
+            "2026-07-19T00:00:00.000000Z",
+        )
+        event = store._new_resume_event(
+            run_id="duplicate-resume-event",
+            event_index=1,
+            prior_event_hash=str(
+                store.connection.execute(
+                    "SELECT latest_resume_event_hash FROM runs"
+                ).fetchone()[0]
+            ),
+            reused_stage_count=0,
+            checkpoint=None,
+            recorded_at="2026-07-19T00:00:01.000000Z",
+        )
+        store._insert_resume_event(store.connection, event)
+        with pytest.raises(sqlite3.IntegrityError):
+            store._insert_resume_event(store.connection, event)
+
+        same_ordinal = store._new_resume_event(
+            run_id="duplicate-resume-event",
+            event_index=1,
+            prior_event_hash=event.prior_event_hash,
+            reused_stage_count=0,
+            checkpoint=None,
+            recorded_at="2026-07-19T00:00:02.000000Z",
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            store._insert_resume_event(store.connection, same_ordinal)
     finally:
         store.close()
 
