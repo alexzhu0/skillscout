@@ -24,6 +24,7 @@ from skillscout.domain.canonical import (
 from skillscout.domain.enums import AttemptStatus, ExecutionMode, PipelineStage
 from skillscout.domain.models import (
     MAX_STAGE_STRING_BYTES,
+    ResumeEvent,
     RunIdentity,
     RunRecord,
     StageAttempt,
@@ -58,6 +59,15 @@ def _schema_fingerprint(path: Path) -> tuple[tuple[object, ...], ...]:
                    WHERE type IN ('table', 'index') ORDER BY type, name"""
             )
         )
+
+
+def _resume_events(store: SQLiteStateStore, run_id: str) -> tuple[ResumeEvent, ...]:
+    rows = store.connection.execute(
+        """SELECT * FROM resume_events WHERE run_id = ?
+           ORDER BY event_index""",
+        (run_id,),
+    ).fetchall()
+    return tuple(ResumeEvent.model_validate(dict(row)) for row in rows)
 
 
 def test_frozen_fixture_provenance_is_real_interrupted_schema_v1() -> None:
@@ -238,6 +248,231 @@ def test_state_store_protocol_matches_domain_typed_verified_chain_contract() -> 
     assert tuple(protocol_signature.parameters) == tuple(adapter_signature.parameters)
     assert get_type_hints(StateStore.verify_run_chain)["return"] is VerifiedRunChain
     assert get_type_hints(SQLiteStateStore.verify_run_chain)["return"] is VerifiedRunChain
+
+
+def test_state_store_protocol_exposes_only_atomic_resume_decisions() -> None:
+    protocol_signature = inspect.signature(StateStore.record_resume_decision)
+    adapter_signature = inspect.signature(SQLiteStateStore.record_resume_decision)
+    assert tuple(protocol_signature.parameters) == tuple(adapter_signature.parameters)
+    assert get_type_hints(StateStore.record_resume_decision)["return"] is ResumeEvent
+    assert get_type_hints(SQLiteStateStore.record_resume_decision)["return"] is ResumeEvent
+    assert not hasattr(StateStore, "set_reused_stage_count")
+    assert not hasattr(SQLiteStateStore, "set_reused_stage_count")
+
+
+def test_fresh_run_uses_genesis_as_its_persisted_zero_reuse_authority(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "fresh-genesis-authority.db")
+    try:
+        summary = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "fresh-genesis-output"
+        )
+        events = _resume_events(store, summary.run_id)
+        run = store.connection.execute(
+            "SELECT latest_resume_event_hash, reused_stage_count FROM runs WHERE run_id = ?",
+            (summary.run_id,),
+        ).fetchone()
+    finally:
+        store.close()
+
+    assert len(events) == 1
+    assert events[0].event_index == 0
+    assert events[0].reused_stage_count == summary.reused_stage_count == 0
+    assert tuple(run) == (events[0].event_hash, 0)
+
+
+def test_crash_before_first_attempt_appends_zero_prefix_and_starts_at_scout(
+    tmp_path: Path,
+) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+    identity = RunIdentity(
+        schema_version="2",
+        subject_id=subject.subject_id,
+        fixture_hash=sha256_digest(subject.model_dump(mode="json", exclude_none=False)),
+        producer_version="fixture-v1",
+        retry_policy_version="retry-v1",
+    )
+    calls: list[PipelineStage] = []
+
+    class Probe(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            calls.append(stage_input.stage)
+            return super().process(stage_input)
+
+    store = SQLiteStateStore(tmp_path / "crash-before-first.db")
+    try:
+        store.create_run(
+            "crash-before-first",
+            identity,
+            "2026-07-19T00:00:00.000000Z",
+        )
+        summary = PipelineRunner(store, Probe()).run(
+            subject, tmp_path / "crash-before-first-output"
+        )
+        events = _resume_events(store, summary.run_id)
+    finally:
+        store.close()
+
+    assert calls[0] is PipelineStage.SCOUT
+    assert [event.event_index for event in events] == [0, 1]
+    assert [event.reused_stage_count for event in events] == [0, 0]
+    assert events[1].prior_event_hash == events[0].event_hash
+    assert events[1].checkpoint_stage is None
+    assert summary.reused_stage_count == 0
+
+
+def test_crash_after_zero_prefix_decision_appends_another_zero_before_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+    identity = RunIdentity(
+        schema_version="2",
+        subject_id=subject.subject_id,
+        fixture_hash=sha256_digest(subject.model_dump(mode="json", exclude_none=False)),
+        producer_version="fixture-v1",
+        retry_policy_version="retry-v1",
+    )
+    calls: list[PipelineStage] = []
+
+    class Probe(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            calls.append(stage_input.stage)
+            return super().process(stage_input)
+
+    store = SQLiteStateStore(tmp_path / "crash-after-zero.db")
+    store.create_run(
+        "crash-after-zero",
+        identity,
+        "2026-07-19T00:00:00.000000Z",
+    )
+    original_start_attempt = store.start_attempt
+
+    def crash_before_start(_attempt: StageAttempt) -> None:
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+
+    monkeypatch.setattr(store, "start_attempt", crash_before_start)
+    with pytest.raises(SafeFailure) as failure:
+        PipelineRunner(store, Probe()).run(subject, tmp_path / "crashed-output")
+    assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    after_crash = _resume_events(store, "crash-after-zero")
+    assert [event.reused_stage_count for event in after_crash] == [0, 0]
+    assert calls == []
+    assert store.connection.execute("SELECT COUNT(*) FROM stage_attempts").fetchone()[0] == 0
+
+    monkeypatch.setattr(store, "start_attempt", original_start_attempt)
+    try:
+        summary = PipelineRunner(store, Probe()).run(
+            subject, tmp_path / "recovered-output"
+        )
+        events = _resume_events(store, summary.run_id)
+    finally:
+        store.close()
+
+    assert calls.count(PipelineStage.SCOUT) == 1
+    assert [event.event_index for event in events] == [0, 1, 2]
+    assert [event.reused_stage_count for event in events] == [0, 0, 0]
+    assert events[1].prior_event_hash == events[0].event_hash
+    assert events[2].prior_event_hash == events[1].event_hash
+    assert summary.reused_stage_count == 0
+
+
+def test_positive_resume_event_is_durable_before_first_new_processor_call(
+    tmp_path: Path,
+) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+    store = SQLiteStateStore(tmp_path / "event-before-work.db")
+    with pytest.raises(SafeFailure):
+        PipelineRunner(store, FixtureProcessor()).run(
+            subject, tmp_path / "event-before-first", fail_after="generator"
+        )
+    run_id = str(store.connection.execute("SELECT run_id FROM runs").fetchone()[0])
+    generator_checkpoint = store.latest_checkpoint(run_id)
+    assert generator_checkpoint is not None
+    observations: list[ResumeEvent] = []
+
+    class EventProbe(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            observations.append(_resume_events(store, run_id)[-1])
+            return super().process(stage_input)
+
+    try:
+        summary = PipelineRunner(store, EventProbe()).run(
+            subject, tmp_path / "event-before-resume"
+        )
+        events = _resume_events(store, run_id)
+    finally:
+        store.close()
+
+    assert observations[0] == events[1]
+    assert events[1].prior_event_hash == events[0].event_hash
+    assert events[1].reused_stage_count == 6
+    assert events[1].checkpoint_stage is PipelineStage.GENERATOR
+    assert events[1].checkpoint_result_row_id == generator_checkpoint.result_row_id
+    assert events[1].checkpoint_manifest_hash == generator_checkpoint.manifest_hash
+    assert summary.reused_stage_count == events[1].reused_stage_count
+
+
+def test_repeated_positive_resumes_form_contiguous_checkpoint_bound_chain(
+    tmp_path: Path,
+) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+    store = SQLiteStateStore(tmp_path / "repeated-positive.db")
+    try:
+        with pytest.raises(SafeFailure):
+            PipelineRunner(store, FixtureProcessor()).run(
+                subject, tmp_path / "positive-one", fail_after="generator"
+            )
+        with pytest.raises(SafeFailure):
+            PipelineRunner(store, FixtureProcessor()).run(
+                subject, tmp_path / "positive-two", fail_after="validators"
+            )
+        summary = PipelineRunner(store, FixtureProcessor()).run(
+            subject, tmp_path / "positive-three"
+        )
+        events = _resume_events(store, summary.run_id)
+    finally:
+        store.close()
+
+    assert [event.event_index for event in events] == [0, 1, 2]
+    assert [event.reused_stage_count for event in events] == [0, 6, 7]
+    assert [event.checkpoint_stage for event in events] == [
+        None,
+        PipelineStage.GENERATOR,
+        PipelineStage.VALIDATORS,
+    ]
+    assert events[1].prior_event_hash == events[0].event_hash
+    assert events[2].prior_event_hash == events[1].event_hash
+    assert summary.reused_stage_count == 7
+
+
+def test_run_row_count_cannot_authorize_or_override_persisted_resume_fact(
+    tmp_path: Path,
+) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+    store = SQLiteStateStore(tmp_path / "count-is-not-authority.db")
+    try:
+        with pytest.raises(SafeFailure):
+            PipelineRunner(store, FixtureProcessor()).run(
+                subject, tmp_path / "count-first", fail_after="generator"
+            )
+        run_id = str(store.connection.execute("SELECT run_id FROM runs").fetchone()[0])
+        store.connection.execute(
+            "UPDATE runs SET reused_stage_count = 1 WHERE run_id = ?", (run_id,)
+        )
+        summary = PipelineRunner(store, FixtureProcessor()).run(
+            subject, tmp_path / "count-resume"
+        )
+        latest = _resume_events(store, run_id)[-1]
+        persisted_count = store.connection.execute(
+            "SELECT reused_stage_count FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
+    finally:
+        store.close()
+
+    assert latest.checkpoint_stage is PipelineStage.GENERATOR
+    assert latest.reused_stage_count == summary.reused_stage_count == 6
+    assert persisted_count == 6
 
 
 def test_complete_run_identity_is_persisted_before_first_attempt(tmp_path: Path) -> None:
@@ -430,6 +665,26 @@ def test_a_interrupt_b_interrupt_a_rerun_resumes_exact_a_without_touching_b(
                 (a_run,),
             )
         ] == a_hashes
+        resumed_event = _resume_events(store, a_run)[-1]
+        a_checkpoint = store.connection.execute(
+            """SELECT result_row_id, manifest_hash FROM checkpoints
+               WHERE run_id = ? AND stage = 'generator'""",
+            (a_run,),
+        ).fetchone()
+        b_checkpoint = store.connection.execute(
+            """SELECT result_row_id, manifest_hash FROM checkpoints
+               WHERE run_id = ? ORDER BY stage_index DESC LIMIT 1""",
+            (b_run,),
+        ).fetchone()
+        assert resumed_event.checkpoint_stage is PipelineStage.GENERATOR
+        assert (
+            resumed_event.checkpoint_result_row_id,
+            resumed_event.checkpoint_manifest_hash,
+        ) == tuple(a_checkpoint)
+        assert (
+            resumed_event.checkpoint_result_row_id,
+            resumed_event.checkpoint_manifest_hash,
+        ) != tuple(b_checkpoint)
         b_after = tuple(
             store.connection.execute(
                 """SELECT r.status, r.updated_at, c.stage, c.stage_index,
