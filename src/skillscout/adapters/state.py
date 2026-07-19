@@ -28,14 +28,18 @@ from skillscout.domain.enums import (
     RunStatus,
     validate_run_transition,
 )
-from skillscout.domain.models import StageAttempt, StageEnvelope, StageInput
+from skillscout.domain.models import (
+    MAX_MANIFEST_BYTES,
+    SUPPORTED_PRODUCER_SCHEMAS,
+    StageAttempt,
+    StageEnvelope,
+    StageInput,
+    validate_manifest_bytes,
+)
 
 SCHEMA_VERSION = 2
 _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
 _DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-f]{64})$")
-_SUPPORTED_RESULT_SCHEMAS = frozenset({"1", "2"})
-_SUPPORTED_PRODUCERS = frozenset({"fixture-v1"})
-MAX_MANIFEST_BYTES = 262_144
 
 
 def _schema_statements(suffix: str = "") -> tuple[str, ...]:
@@ -154,17 +158,18 @@ class SQLiteStateStore:
             self.connection.execute("PRAGMA foreign_keys = ON")
             if not existed:
                 self._create_current_schema()
-                return
-            try:
-                version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
-            except sqlite3.Error:
-                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE) from None
-            if version == SCHEMA_VERSION:
-                self._validate_current_schema()
-            elif version == 1:
-                self._migrate_v1(migration_fail_at)
             else:
-                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+                try:
+                    version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
+                except sqlite3.Error:
+                    raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE) from None
+                if version == SCHEMA_VERSION:
+                    self._validate_current_schema()
+                elif version == 1:
+                    self._migrate_v1(migration_fail_at)
+                else:
+                    raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+            self._reconcile_orphan_running_attempts()
         except SafeFailure:
             if self.connection is not None:
                 self.connection.close()
@@ -266,6 +271,9 @@ class SQLiteStateStore:
             for row in rows:
                 stage = PipelineStage(str(row["stage"]))
                 payload = json.loads(str(row["output_json"]))
+                producer_version = str(row["producer_version"])
+                if ("1", producer_version) not in SUPPORTED_PRODUCER_SCHEMAS:
+                    raise ValueError("unsupported migrated producer identity")
                 provisional = StageEnvelope(
                     schema_version="1",
                     result_id=str(row["result_id"]),
@@ -277,7 +285,7 @@ class SQLiteStateStore:
                     stage_index=int(row["stage_index"]),
                     input_hash=str(row["input_hash"]),
                     output_hash=str(row["output_hash"]),
-                    producer_version=str(row["producer_version"]),
+                    producer_version=producer_version,
                     retry_policy_version=str(row["retry_policy_version"]),
                     prompt_version=row["prompt_version"],
                     policy_version=row["policy_version"],
@@ -629,8 +637,16 @@ class SQLiteStateStore:
     def _write_manifest(self, envelope: StageEnvelope) -> Path:
         if envelope.manifest_hash is None:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        if (
+            envelope.schema_version,
+            envelope.producer_version,
+        ) not in SUPPORTED_PRODUCER_SCHEMAS:
+            raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+        try:
+            payload = validate_manifest_bytes(canonical_json_bytes(envelope))
+        except (OverflowError, TypeError, ValueError):
+            raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID) from None
         target = self._manifest_path(envelope.stage, envelope.manifest_hash)
-        payload = canonical_json_bytes(envelope)
         descriptor = -1
         temporary: Path | None = None
         try:
@@ -799,8 +815,8 @@ class SQLiteStateStore:
             raw = self._read_manifest_bytes(expected_path)
             envelope = StageEnvelope.model_validate_json(raw, strict=True)
             if (
-                envelope.schema_version not in _SUPPORTED_RESULT_SCHEMAS
-                or envelope.producer_version not in _SUPPORTED_PRODUCERS
+                (envelope.schema_version, envelope.producer_version)
+                not in SUPPORTED_PRODUCER_SCHEMAS
                 or str(row["schema_version"]) != envelope.schema_version
                 or str(row["producer_version"]) != envelope.producer_version
                 or str(row["run_id"]) != envelope.run_id
@@ -865,7 +881,54 @@ class SQLiteStateStore:
             )
             self._db.commit()
         except sqlite3.Error:
-            self._db.rollback()
+            try:
+                self._db.rollback()
+            except sqlite3.Error:
+                pass
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def _reconcile_orphan_running_attempts(self) -> None:
+        """Deterministically close attempts left running by an indeterminate failure."""
+
+        failure = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+        summary = failure.as_dict()["summary"]
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            rows = self._db.execute(
+                """SELECT a.run_id, MAX(a.started_at) AS last_started_at
+                   FROM stage_attempts a JOIN runs r USING (run_id)
+                   WHERE a.status = 'running' AND r.status = 'running'
+                   GROUP BY a.run_id ORDER BY a.run_id"""
+            ).fetchall()
+            for row in rows:
+                run_id = str(row["run_id"])
+                updated_attempts = self._db.execute(
+                    """UPDATE stage_attempts
+                       SET status = 'abandoned', finished_at = started_at,
+                           error_code = ?, error_summary = ?, retryable = 1
+                       WHERE run_id = ? AND status = 'running'""",
+                    (failure.code.value, summary, run_id),
+                )
+                updated_run = self._db.execute(
+                    """UPDATE runs
+                       SET status = 'interrupted', updated_at = ?, error_code = ?,
+                           error_summary = ?
+                       WHERE run_id = ? AND status = 'running'""",
+                    (
+                        str(row["last_started_at"]),
+                        failure.code.value,
+                        summary,
+                        run_id,
+                    ),
+                )
+                if updated_attempts.rowcount < 1 or updated_run.rowcount != 1:
+                    raise sqlite3.IntegrityError("orphan reconciliation lost its target")
+            self._db.commit()
+        except sqlite3.Error:
+            try:
+                self._db.rollback()
+            except sqlite3.Error:
+                pass
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     def set_run_status(

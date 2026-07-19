@@ -40,9 +40,11 @@ from skillscout.domain.enums import (
 from skillscout.domain.models import (
     PublicationPlan,
     RunSummary,
+    SUPPORTED_PRODUCER_SCHEMAS,
     StageAttempt,
     StageEnvelope,
     StageInput,
+    StagePayload,
 )
 
 STAGE_SEQUENCE = tuple(stage.value for stage in PipelineStage)
@@ -176,6 +178,17 @@ class PipelineRunner:
         if fail_after is not None and fail_after not in STAGE_SEQUENCE:
             raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
 
+        try:
+            producer_version = self.processor.producer_version
+            producer_supported = (
+                type(producer_version) is str
+                and ("2", producer_version) in SUPPORTED_PRODUCER_SCHEMAS
+            )
+        except Exception:
+            producer_supported = False
+        if not producer_supported:
+            raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+
         fixture_hash = sha256_digest(subject.model_dump(mode="json", exclude_none=False))
         resumable = self.state.find_resumable_run(subject.subject_id)
         if resumable is not None and not self.state.resume_identity_matches(
@@ -183,7 +196,7 @@ class PipelineRunner:
             schema_version=str(resumable["schema_version"]),
             subject_id=subject.subject_id,
             fixture_hash=fixture_hash,
-            producer_version=self.processor.producer_version,
+            producer_version=producer_version,
             retry_policy_version=self.retry_policy.version,
         ):
             resumable = None
@@ -224,7 +237,7 @@ class PipelineRunner:
                 subject_id=subject.subject_id,
                 stage=stage,
                 input_hash=input_hash,
-                producer_version=self.processor.producer_version,
+                producer_version=producer_version,
                 retry_policy_version=self.retry_policy.version,
             )
             self.state.abandon_stale_running(run_id, stage, self.clock.now())
@@ -251,7 +264,7 @@ class PipelineRunner:
                 attempt_no=attempt_no,
                 status=AttemptStatus.RUNNING,
                 input_hash=input_hash,
-                producer_version=self.processor.producer_version,
+                producer_version=producer_version,
                 retry_policy_version=self.retry_policy.version,
                 reusable_key_digest=reusable_digest,
                 started_at=self.clock.now(),
@@ -271,69 +284,91 @@ class PipelineRunner:
             try:
                 output: Mapping[str, object] = self.processor.process(stage_input)
             except SafeFailure as failure:
-                self.state.fail_attempt(
-                    attempt_id,
-                    run_id,
-                    failure,
-                    self.clock.now(),
-                    retryable=failure.code in self.retry_policy.transient_error_codes,
+                self._close_started_attempt(
+                    attempt_id=attempt_id,
+                    run_id=run_id,
+                    failure=failure,
                 )
                 raise
             except Exception:
                 failure = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
-                self.state.fail_attempt(
-                    attempt_id,
-                    run_id,
-                    failure,
-                    self.clock.now(),
-                    retryable=False,
+                self._close_started_attempt(
+                    attempt_id=attempt_id,
+                    run_id=run_id,
+                    failure=failure,
                 )
                 raise failure from None
 
-            payload = dict(output)
-            output_hash = stage_output_hash(
-                schema_version=schema_version,
-                subject_id=subject.subject_id,
-                stage=stage,
-                producer_version=self.processor.producer_version,
-                prompt_version=None,
-                policy_version=None,
-                model_id=None,
-                payload=payload,
-            )
-            result_id = make_result_id(
-                subject_id=subject.subject_id,
-                stage=stage,
-                input_hash=input_hash,
-                producer_version=self.processor.producer_version,
-                output_hash=output_hash,
-                retry_policy_version=self.retry_policy.version,
-            )
-            provisional = StageEnvelope(
-                schema_version=schema_version,
-                result_id=result_id,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                attempt_no=attempt_no,
-                subject_id=subject.subject_id,
-                stage=stage,
-                stage_index=stage_index,
-                input_hash=input_hash,
-                output_hash=output_hash,
-                producer_version=self.processor.producer_version,
-                retry_policy_version=self.retry_policy.version,
-                prompt_version=None,
-                policy_version=None,
-                model_id=None,
-                request_id=None,
-                created_at=self.clock.now(),
-                payload=payload,
-                manifest_hash=None,
-            )
-            envelope = provisional.model_copy(
-                update={"manifest_hash": stage_manifest_hash(provisional)}
-            )
-            self.state.complete_stage(envelope)
+            try:
+                payload = StagePayload.model_validate(output).root
+                output_hash = stage_output_hash(
+                    schema_version=schema_version,
+                    subject_id=subject.subject_id,
+                    stage=stage,
+                    producer_version=producer_version,
+                    prompt_version=None,
+                    policy_version=None,
+                    model_id=None,
+                    payload=payload,
+                )
+                result_id = make_result_id(
+                    subject_id=subject.subject_id,
+                    stage=stage,
+                    input_hash=input_hash,
+                    producer_version=producer_version,
+                    output_hash=output_hash,
+                    retry_policy_version=self.retry_policy.version,
+                )
+                provisional = StageEnvelope(
+                    schema_version=schema_version,
+                    result_id=result_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    attempt_no=attempt_no,
+                    subject_id=subject.subject_id,
+                    stage=stage,
+                    stage_index=stage_index,
+                    input_hash=input_hash,
+                    output_hash=output_hash,
+                    producer_version=producer_version,
+                    retry_policy_version=self.retry_policy.version,
+                    prompt_version=None,
+                    policy_version=None,
+                    model_id=None,
+                    request_id=None,
+                    created_at=self.clock.now(),
+                    payload=payload,
+                    manifest_hash=None,
+                )
+                envelope = provisional.model_copy(
+                    update={"manifest_hash": stage_manifest_hash(provisional)}
+                )
+            except Exception:
+                failure = SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+                self._close_started_attempt(
+                    attempt_id=attempt_id,
+                    run_id=run_id,
+                    failure=failure,
+                )
+                raise failure from None
+
+            try:
+                self.state.complete_stage(envelope)
+            except SafeFailure as failure:
+                self._close_started_attempt(
+                    attempt_id=attempt_id,
+                    run_id=run_id,
+                    failure=failure,
+                )
+                raise
+            except Exception:
+                failure = SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+                self._close_started_attempt(
+                    attempt_id=attempt_id,
+                    run_id=run_id,
+                    failure=failure,
+                )
+                raise failure from None
             previous_output_hash = output_hash
 
             if fail_after == stage.value:
@@ -354,6 +389,28 @@ class PipelineRunner:
             publication_plan_path="publication-plan.json",
             remote_writes_attempted=0,
         )
+
+    def _close_started_attempt(
+        self,
+        *,
+        attempt_id: str,
+        run_id: str,
+        failure: SafeFailure,
+    ) -> None:
+        """Close a known running lifecycle or expose only a closed state failure."""
+
+        try:
+            self.state.fail_attempt(
+                attempt_id,
+                run_id,
+                failure,
+                self.clock.now(),
+                retryable=failure.code in self.retry_policy.transient_error_codes,
+            )
+        except SafeFailure:
+            raise
+        except Exception:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     @staticmethod
     def _write_publication_plan(output_directory: Path, plan: PublicationPlan) -> Path:

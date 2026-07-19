@@ -496,6 +496,8 @@ def test_invalid_or_oversized_output_closes_lifecycle_before_manifest_io(
     monkeypatch: pytest.MonkeyPatch,
     output: dict[str, object],
 ) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+
     class InvalidOutputProcessor(FixtureProcessor):
         def process(self, stage_input: StageInput) -> dict[str, object]:
             return output
@@ -513,7 +515,7 @@ def test_invalid_or_oversized_output_closes_lifecycle_before_manifest_io(
     try:
         with pytest.raises(SafeFailure) as failure:
             PipelineRunner(store, InvalidOutputProcessor()).run(
-                load_fixture(APPROVED_FIXTURE), tmp_path / "output"
+                subject, tmp_path / "output"
             )
         assert failure.value.code is ErrorCode.STAGE_OUTPUT_INVALID
         attempt = store.connection.execute(
