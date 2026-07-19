@@ -46,6 +46,99 @@ def _connect(path: Path) -> sqlite3.Connection:
     return connection
 
 
+def _write_schema_v2_variant(path: Path, variant: str) -> None:
+    statements = list(state_adapter._schema_statements())
+
+    def replace(prefix: str, old: str, new: str) -> None:
+        index = next(
+            position
+            for position, statement in enumerate(statements)
+            if statement.startswith(prefix)
+        )
+        assert old in statements[index]
+        statements[index] = statements[index].replace(old, new, 1)
+
+    if variant == "extra_table":
+        statements.append("CREATE TABLE shadow_ledger (value TEXT)")
+    elif variant == "extra_column":
+        replace(
+            "CREATE TABLE runs",
+            "run_id TEXT PRIMARY KEY,",
+            "run_id TEXT PRIMARY KEY, shadow_value TEXT,",
+        )
+    elif variant == "changed_type":
+        replace(
+            "CREATE TABLE runs",
+            "reused_stage_count INTEGER NOT NULL DEFAULT 0",
+            "reused_stage_count TEXT NOT NULL DEFAULT 0",
+        )
+    elif variant == "changed_nullability":
+        replace(
+            "CREATE TABLE runs",
+            "subject_id TEXT NOT NULL,",
+            "subject_id TEXT,",
+        )
+    elif variant == "changed_default":
+        replace(
+            "CREATE TABLE runs",
+            "reused_stage_count INTEGER NOT NULL DEFAULT 0",
+            "reused_stage_count INTEGER NOT NULL DEFAULT 1",
+        )
+    elif variant == "missing_check":
+        replace(
+            "CREATE TABLE runs",
+            "execution_mode TEXT NOT NULL CHECK (execution_mode = 'dry_run'),",
+            "execution_mode TEXT NOT NULL,",
+        )
+    elif variant == "missing_unique":
+        replace(
+            "CREATE TABLE stage_attempts",
+            ",\n            UNIQUE (run_id, subject_id, stage, attempt_no)",
+            "",
+        )
+    elif variant == "missing_foreign_key":
+        replace(
+            "CREATE TABLE stage_attempts",
+            "run_id TEXT NOT NULL REFERENCES runs(run_id),",
+            "run_id TEXT NOT NULL,",
+        )
+    elif variant == "missing_index":
+        statements = [
+            statement
+            for statement in statements
+            if not statement.startswith("CREATE INDEX idx_results_semantic")
+        ]
+    elif variant == "changed_index_order":
+        replace(
+            "CREATE INDEX idx_runs_resumable_identity",
+            "schema_version, subject_id, fixture_hash, producer_version,",
+            "subject_id, schema_version, fixture_hash, producer_version,",
+        )
+    elif variant == "unique_index":
+        replace(
+            "CREATE INDEX idx_results_semantic",
+            "CREATE INDEX",
+            "CREATE UNIQUE INDEX",
+        )
+    elif variant == "partial_index":
+        replace(
+            "CREATE INDEX idx_results_semantic",
+            "(result_id)",
+            "(result_id) WHERE result_id IS NOT NULL",
+        )
+    elif variant == "extra_index":
+        statements.append("CREATE INDEX idx_shadow_status ON runs(status)")
+    else:
+        raise AssertionError(f"unknown schema variant: {variant}")
+
+    with _connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for statement in statements:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 2")
+        connection.commit()
+
+
 def _run_interrupted(database: Path, output: Path) -> str:
     store = SQLiteStateStore(database)
     try:
@@ -224,6 +317,38 @@ def test_symlinked_state_target_is_rejected_without_touching_target(tmp_path: Pa
         SQLiteStateStore(link)
     assert failure.value.code is ErrorCode.STATE_SCHEMA_INCOMPATIBLE
     assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "extra_table",
+        "extra_column",
+        "changed_type",
+        "changed_nullability",
+        "changed_default",
+        "missing_check",
+        "missing_unique",
+        "missing_foreign_key",
+        "missing_index",
+        "changed_index_order",
+        "unique_index",
+        "partial_index",
+        "extra_index",
+    ],
+)
+def test_malformed_schema_v2_fingerprint_is_rejected_without_mutation(
+    tmp_path: Path, variant: str
+) -> None:
+    database = tmp_path / f"malformed-schema-{variant}.db"
+    _write_schema_v2_variant(database, variant)
+    before = database.read_bytes()
+
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(database)
+
+    assert failure.value.code is ErrorCode.STATE_SCHEMA_INCOMPATIBLE
+    assert database.read_bytes() == before
 
 
 def test_symlinked_manifest_root_is_rejected_without_external_write(tmp_path: Path) -> None:

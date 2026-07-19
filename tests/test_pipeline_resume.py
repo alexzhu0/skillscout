@@ -45,6 +45,17 @@ def _copy_frozen(tmp_path: Path) -> Path:
     return copied
 
 
+def _schema_fingerprint(path: Path) -> tuple[tuple[object, ...], ...]:
+    with _connect(path) as connection:
+        return tuple(
+            tuple(row)
+            for row in connection.execute(
+                """SELECT type, name, tbl_name, sql FROM sqlite_master
+                   WHERE type IN ('table', 'index') ORDER BY type, name"""
+            )
+        )
+
+
 def test_frozen_fixture_provenance_is_real_interrupted_schema_v1() -> None:
     provenance = json.loads(FROZEN_PROVENANCE.read_text())
     assert hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (
@@ -400,6 +411,15 @@ def test_missing_database_creates_v2_and_existing_v2_is_idempotent(tmp_path: Pat
         assert {"runs", "stage_attempts", "stage_results", "checkpoints"} <= tables
     second = SQLiteStateStore(database)
     second.close()
+
+
+def test_fresh_and_migrated_v2_use_identical_schema_fingerprint(tmp_path: Path) -> None:
+    fresh = tmp_path / "fresh.db"
+    SQLiteStateStore(fresh).close()
+    migrated = _copy_frozen(tmp_path)
+    SQLiteStateStore(migrated).close()
+
+    assert _schema_fingerprint(migrated) == _schema_fingerprint(fresh)
 
 
 @pytest.mark.parametrize("kind", ["version_zero", "future", "malformed"])
