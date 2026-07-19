@@ -1,8 +1,8 @@
 ---
 phase: 01-auditable-dry-run-spine
-reviewed: 2026-07-19T07:59:00Z
+reviewed: 2026-07-19T11:44:44Z
 depth: standard
-files_reviewed: 22
+files_reviewed: 23
 files_reviewed_list:
   - src/skillscout/__init__.py
   - src/skillscout/adapters/fixtures.py
@@ -20,6 +20,7 @@ files_reviewed_list:
   - tests/fixtures/state/v1-cli.db
   - tests/test_cli_dry_run.py
   - tests/test_cli_security.py
+  - tests/test_phase1_evidence_verifier.py
   - tests/test_phase1_gap_closure.py
   - tests/test_pipeline_resume.py
   - tests/test_side_effect_policy.py
@@ -27,98 +28,81 @@ files_reviewed_list:
   - tests/test_state_integrity.py
   - tools/verify_phase1_gap_evidence.py
 findings:
-  critical: 3
-  warning: 4
+  critical: 1
+  warning: 1
   info: 0
-  total: 7
+  total: 2
 status: issues_found
 ---
 
 # Phase 1: Code Review Report
 
-**Reviewed:** 2026-07-19T07:59:00Z
+**Reviewed:** 2026-07-19T11:44:44Z
 **Depth:** standard
-**Files Reviewed:** 22
+**Files Reviewed:** 23
 **Status:** issues_found
+
+## Summary
+
+The original persistence-commit, resume-event, parser-disclosure, unexpected-retry, namespace-collision, and private-file admission defects are fixed at their cited boundaries. The locked offline suite passes (`300 passed`), Ruff passes, and the schema-v2 evidence verifier reproduced its recorded six-command result before this report was replaced.
+
+The re-review found one new release-blocking recovery defect and one remaining evidence-authority gap. A crash-left deterministic temporary file permanently prevents later snapshot mutations, and the evidence source set still omits both reviewed JSON fixtures. The latter means previous WR-02 is improved but not fully closed: semantically neutral fixture-byte changes can leave every recorded command result unchanged while the verifier continues to accept the stale evidence.
+
+No production network client, remote-write adapter, candidate-code execution path, dependency installation, source-repository script invocation, secret/environment read, automatic approval, merge, or publication capability was introduced. The production composition root still admits only the exact fixture processor, SQLite/local-manifest store, local clock/ID providers, and local publication planner; publication remains a local `planned_not_published` artifact with `remote_writes_attempted = 0`. The separately deferred Phase-6 OS/syscall network-denial item is not the current WR-04 file ownership/mode admission finding and is not reclassified here.
+
+## Previous Finding Re-evaluation
+
+| Previous finding | Status | Re-evaluation |
+|---|---|---|
+| CR-01 | **CLOSED** | `AnchoredDirectory._retire_backup_after_commit()` is non-throwing after the authoritative target/directory sync, and post-commit cleanup fault tests prove the returned result matches reopened state. |
+| CR-02 | **CLOSED** | Schema v3 persists hash-linked resume events; `_verify_run_chain()` recomputes their hashes, order, checkpoint association, head, timing, and denormalized count before any public projection. |
+| CR-03 | **CLOSED** | Root and child parsers use `SafeArgumentParser`; every nonzero parser exit discards generated detail and emits one fixed byte-exact diagnostic. |
+| WR-01 | **CLOSED** | `PIPELINE_INTERRUPTED` now uses the finite three-attempt transient budget, and fail-once recovery resumes at the failed stage without prefix replay. |
+| WR-02 | **NOT CLOSED** | Source binding and command reruns were added, but `_source_paths()` includes only `*.py` under `tests`; the reviewed approved/provenance JSON fixtures remain outside the digest authority. See current WR-01. |
+| WR-03 | **CLOSED** | State/manifest namespace equality is rejected in `SQLiteStateStore.__init__` before parent creation or state mutation. |
+| WR-04 | **CLOSED** | Existing state and manifest bytes must pass the shared private regular-file predicate: effective owner, one link, and no group/other permission bits. |
 
 ## Narrative Findings (AI reviewer)
 
-The current post-gap implementation was reviewed across the fixture boundary, snapshot-backed SQLite ledger, content-addressed manifests, resume logic, CLI diagnostics, and standalone evidence verifier. The checked-in suite passes (`200 passed`), Ruff passes, and the gap-evidence document validates, but those checks miss three release-blocking integrity/disclosure failures and four robustness gaps. Two critical failures were reproduced directly: a state mutation that raises `state_operation_failed` is present after reopen, and a tampered `reused_stage_count` is accepted and emitted by the full-chain verifier.
-
 ## Critical Issues
 
-### CR-01: Backup-cleanup failure reports rollback while the new state is durably committed
+### CR-01: Crash-left temporary files permanently disable recovery
 
 **Classification:** BLOCKER
-**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/localfs.py:310-314`
-**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:2016-2037`
+**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/localfs.py:358-360`
+**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/localfs.py:394-401`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:2538-2550`
 
-**Issue:** `atomic_write()` first makes the replacement durable, then unlinks the backup with a directory fsync. If that cleanup fsync fails, `unlink()` has already removed the backup and line 314 raises `DurableWriteError("backup_cleanup", renamed=True)` without restoring the prior target. `_snapshot_transaction()` treats this as a failed transaction, poisons the live connection, and returns `state_operation_failed`, even though the replacement snapshot remains on disk. A focused reproduction made `create_run("failed-call", ...)` raise `state_operation_failed`; reopening the database returned the supposedly failed `failed-call` row. Callers can retry after an error and create duplicate or contradictory audit state, so the API's success/failure boundary is false.
+**Issue:** Every atomic replacement uses a deterministic `.{name}.tmp` path and immediately fails if that path exists. The `finally` cleanup only runs when the current Python process unwinds; `SIGKILL`, host loss, or power loss after `O_EXCL` creation but before rename leaves the temporary inode behind. No startup or under-lock recovery removes or validates it. A direct local reproduction created a valid state database, placed a private `.state.db.tmp` beside it to model that crash window, then attempted the same state mutation across two independent reopen cycles. Both returned `state_operation_failed`, and the temporary file survived both attempts. The same naming primitive is used for manifests and the publication plan, so a crash can turn a resumable checkpoint into a persistent manual-repair requirement.
 
-**Fix:** Separate replacement durability from best-effort backup retirement. Once the target file and containing directory are durably synced, commit the in-memory candidate and treat backup cleanup as recoverable housekeeping; alternatively retain the backup and record a deterministic recovery state. Do not return failure after a mutation is already authoritative unless reopen can unambiguously select and restore the old generation. Add a regression that injects failure specifically after backup unlink and asserts that the returned outcome matches the state observed after reopen.
+This violates the phase's crash/retry contract: the authoritative target still contains the prior valid snapshot, but the next invocation cannot promote any candidate and cannot make progress.
 
-### CR-02: Full-chain verification trusts an unattested `reused_stage_count`
-
-**Classification:** BLOCKER
-**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:1549-1555`
-**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:1567-1570`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:1960-1982`
-
-**Issue:** `verify_run_chain()` recomputes stage inputs, reusable digests, result identities, output hashes, and manifest hashes, but returns the run row without proving `reused_stage_count`. That field is a standalone mutable column, is not covered by a manifest or immutable resume event, and is projected as verified audit data by `inspect_run()`. Changing a fresh completed run from `reused_stage_count=0` to `9` in the persisted database still makes both `verify_run_chain()` and `inspect_run()` return `9`. This breaks the phase's claim that inspected audit facts are full-chain verified.
-
-**Fix:** Persist an immutable, content-addressed resume event that records the selected checkpoint and reused prefix, and bind its digest into the run ledger; derive `reused_stage_count` from that verified event instead of trusting the mutable summary column. If the field remains denormalized, compare it with the verified event during `_verify_run_chain()` and reject any mismatch. Add tamper cases for every publicly projected run-level audit fact, including `reused_stage_count`.
-
-### CR-03: `argparse` echoes raw hostile arguments outside the sanitized diagnostic boundary
-
-**Classification:** BLOCKER
-**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/cli.py:19-35`
-
-**Issue:** `parse_args()` executes before the CLI's `try` block, and the default `ArgumentParser.error()` writes the rejected argument verbatim to stderr. For example, `--fail-after github_pat_DO_NOT_DISCLOSE` exits 2 while printing that complete canary. Unknown options similarly echo their raw values. This bypasses the closed `SafeFailure` vocabulary and violates the requirement that credentials and untrusted values never enter logs or diagnostics.
-
-**Fix:** Use a parser subclass whose `error()`/`exit()` emits only a fixed bounded diagnostic (for example, a new allowlisted `invalid_cli_arguments` code) without including the offending token, or pre-validate argv through a non-echoing parser boundary. Preserve exit code 2 if desired, but add subprocess tests with credential and path canaries for invalid choices, unknown options, and missing values.
+**Fix:** Add deterministic stale-temporary recovery under the state lock before mutation. Admit a stale temp only with the existing private-owner/single-link/regular-file checks, then discard and directory-fsync it when the live target is still the authoritative pre-rename generation. Cover both `.state.db.tmp` and the backup writer's `..state.db.backup.tmp`; apply equivalent state-serialized recovery to manifest temps. For publication output, use an operation-specific lock or unique temp names plus a safe owner-validated scavenger so one live writer cannot delete another writer's temp. Add a subprocess crash regression that kills the writer after temp creation, reopens, completes the pending stage, and proves the verified prefix is not replayed.
 
 ## Warnings
 
-### WR-01: An unexpected processor exception permanently disables retry for that stage identity
+### WR-01: Evidence source authority excludes reviewed JSON fixtures
 
 **Classification:** WARNING
-**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/pipeline.py:311-318`
-**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/pipeline.py:262-273`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/pipeline.py:426-433`
+**File:** `/Users/alexzhu/Lenovo/skillscout/tools/verify_phase1_gap_evidence.py:282-300`
+**Related:** `/Users/alexzhu/Lenovo/skillscout/tools/verify_phase1_gap_evidence.py:305-312`, `/Users/alexzhu/Lenovo/skillscout/tools/verify_phase1_gap_evidence.py:509-522`
 
-**Issue:** An arbitrary processor exception is translated to `PIPELINE_INTERRUPTED`, but `_close_started_attempt()` marks only `STAGE_TRANSIENT_FAILURE` retryable. The next invocation sees a non-retryable failed attempt through `has_permanent_failure()` and raises `STAGE_PERMANENT_FAILURE` without calling the processor again. A one-time internal exception was reproduced as `pipeline_interrupted` on the first run and `stage_permanent_failure` on the second, with the processor call count still one. This contradicts resumable failure behavior and the meaning of an interruption.
+**Issue:** `_source_paths()` recursively binds only filenames ending in `.py` under `tests`. It separately fixes the database hash, but it does not bind `tests/fixtures/pipeline/approved.json` or `tests/fixtures/state/v1-cli-provenance.json`, even though both are in this review scope and are authoritative inputs to the migration, resume, provenance, and packaged-CLI tests. The current source set reports 23 paths while direct inspection confirms both JSON paths are absent.
 
-**Fix:** Classify unexpected exceptions consistently: either store them as an explicit permanent failure on the first run, or treat sanitized `PIPELINE_INTERRUPTED` as retryable under the finite retry budget. Add a fail-once-then-succeed resume test.
+Rerunning commands does not close this gap. A whitespace/key-order-only edit changes `approved.json` bytes without changing its parsed model, tests, pass counts, normalized output digests, build artifacts, or any bound source hash. A similarly non-semantic provenance edit can do the same. `verify_evidence()` can therefore accept evidence whose reviewed fixture bytes differ from the recorded run, contradicting the claimed exact source-byte authority and leaving previous WR-02 partially open.
 
-### WR-02: The standalone evidence verifier accepts stale or self-asserted command success
+**Fix:** Make the evidence source set an explicit closed list of every reviewed source/fixture artifact, including both JSON files, or safely enumerate all relevant regular non-symlink test fixtures by approved extension while retaining the database's separately pinned hash. Add a regression that records evidence, changes only JSON whitespace or key order, supplies otherwise identical fresh command captures, and requires verification to fail on the source digest check before command credit.
 
-**Classification:** WARNING
-**File:** `/Users/alexzhu/Lenovo/skillscout/tools/verify_phase1_gap_evidence.py:158-189`
-**Related:** `/Users/alexzhu/Lenovo/skillscout/tools/verify_phase1_gap_evidence.py:192-228`
+## Verification Notes
 
-**Issue:** The verifier checks that the document claims fixed exit codes/counts and that node strings look like pytest IDs; it does not bind those claims to command output, the reviewed source/test bytes, or even the existence and contents of the named test functions. Only `uv.lock` and the frozen database are hashed. Consequently the unchanged evidence document remains valid after arbitrary product/test edits and can be constructed with the expected success literals without running a command. This is a false-positive quality gate, not independent verification of the claimed full suite.
-
-**Fix:** Bind evidence to an immutable repository tree or an explicit digest set covering production and test files, include digests of captured command outputs, and have the verifier resolve every named node against the bound test sources. Prefer generating and validating the evidence in the same CI job that executes the commands, with the commit/tree identity recorded.
-
-### WR-03: A valid state filename can collide with its derived manifest directory
-
-**Classification:** WARNING
-**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:456-459`
-
-**Issue:** `self.manifest_root = self.path.with_suffix(".manifests")` equals `self.path` whenever the operator selects a state file already ending in `.manifests`. The database is created successfully, but the first stage then tries to open that regular file as the manifest directory and fails with `state_integrity_error`, leaving an interrupted run. The CLI accepts this filename and provides no early validation.
-
-**Fix:** Derive a disjoint sibling name (for example, append `.manifests` to the complete database filename) or explicitly reject any path where `manifest_root == path` before creating state. Add a CLI regression for `.manifests`-suffixed state names.
-
-### WR-04: Existing state snapshots are accepted without private ownership or mode checks
-
-**Classification:** WARNING
-**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/localfs.py:227-241`
-**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:479-484`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:92-98`
-
-**Issue:** New snapshots and the lock use mode `0600`, and the lock is checked with `stat_is_private_regular()`, but `read_bytes()` validates only regular-file type, symlink status, and size. A pre-existing state database owned by another user or writable by group/other is accepted as authoritative when its parent is owner-controlled but traversable (for example, mode `0755`). This weakens the local tamper boundary and makes run-level metadata forgery materially easier.
-
-**Fix:** Before deserializing state, require owner identity, link/type expectations, and no group/other permission bits, matching the lock policy. Apply an equivalent check to existing manifest files before treating them as immutable evidence. Reject violations with the fixed state-integrity diagnostic and add mode/ownership regression tests.
+- Locked offline pytest: `300 passed in 5.54s`.
+- Locked offline Ruff: `All checks passed!`.
+- The existing evidence document passed `verify --rerun` against the pre-review source bytes. After this replacement changed a deliberately bound source file, the same read-only command was confirmed to fail closed until evidence is freshly recorded; no evidence artifact was modified during this review.
+- Direct stale-temp reproduction: two reopen/mutation attempts both returned `state_operation_failed`; `.state.db.tmp` remained present.
+- Direct source-set inspection: `approved_json_bound=False`, `provenance_json_bound=False`, `source_count=23`.
+- `.planning/config.json` remained at SHA-256 `5c5acc837fef244afd431f542223618d8abd043eb77b0ef9e08b98267d9d3219` before the report write.
 
 ---
 
-_Reviewed: 2026-07-19T07:59:00Z_
+_Reviewed: 2026-07-19T11:44:44Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: standard_
