@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 VERIFIER_PATH = Path(__file__).parents[1] / "tools/verify_phase1_gap_evidence.py"
+PROJECT_ROOT = Path(__file__).parents[1]
 VERIFIER_SPEC = importlib.util.spec_from_file_location(
     "phase1_gap_evidence_verifier", VERIFIER_PATH
 )
@@ -49,10 +50,10 @@ def evidence_repository(tmp_path: Path) -> Path:
     shutil.copyfile(
         Path(verifier.__file__), repository / "tools/verify_phase1_gap_evidence.py"
     )
-    shutil.copyfile(Path.cwd() / "uv.lock", repository / "uv.lock")
+    shutil.copyfile(PROJECT_ROOT / "uv.lock", repository / "uv.lock")
     frozen = repository / "tests/fixtures/state/v1-cli.db"
     frozen.parent.mkdir(parents=True)
-    shutil.copyfile(Path.cwd() / "tests/fixtures/state/v1-cli.db", frozen)
+    shutil.copyfile(PROJECT_ROOT / "tests/fixtures/state/v1-cli.db", frozen)
 
     definitions: dict[str, list[str]] = {}
     for nodes in verifier.CURRENT_FINDING_NODES.values():
@@ -151,6 +152,30 @@ def test_verify_rejects_new_in_scope_source_until_recorded(
         verifier.verify_evidence(
             document, evidence_repository, rerun=True, runner=_successful_runner()
         )
+
+
+@pytest.mark.parametrize("damage", ["missing", "symlink", "non_regular", "oversized"])
+def test_record_rejects_unsafe_or_unbounded_source_authority(
+    evidence_repository: Path, damage: str
+) -> None:
+    source = evidence_repository / "tools/verify_phase1_gap_evidence.py"
+    if damage == "missing":
+        source.unlink()
+    elif damage == "symlink":
+        source.unlink()
+        source.symlink_to(evidence_repository / "pyproject.toml")
+    elif damage == "non_regular":
+        source.unlink()
+        source.mkdir()
+    else:
+        source.write_bytes(b"x" * (verifier.MAX_SOURCE_BYTES + 1))
+    document = (
+        evidence_repository
+        / ".planning/phases/01-auditable-dry-run-spine/01-GAP-VALIDATION.md"
+    )
+
+    with pytest.raises((verifier.EvidenceError, OSError)):
+        verifier.record_evidence(document, evidence_repository, runner=_successful_runner())
 
 
 def test_verify_resolves_named_nodes_from_the_digest_bound_ast(
@@ -260,6 +285,25 @@ def test_verify_reruns_closed_registry_and_rejects_mismatched_output(
         verifier.verify_evidence(document, evidence_repository, rerun=True, runner=changed)
     assert invoked == [spec.id for spec in verifier.COMMAND_REGISTRY]
     assert document.read_bytes() == before
+
+
+def test_verify_rejects_a_forged_zero_exit_when_fresh_execution_fails(
+    evidence_repository: Path,
+) -> None:
+    document = _document(evidence_repository)
+    original = _successful_runner()
+
+    def failing(spec: verifier.CommandSpec, workspace: Path) -> verifier.ProcessCapture:
+        if spec.id == "full_pytest":
+            return verifier.ProcessCapture(
+                1,
+                b"36 passed, 1 failed in 0.40s\n",
+                b"FAILED tests/test_current.py::test_failure\n",
+            )
+        return original(spec, workspace)
+
+    with pytest.raises(verifier.EvidenceError):
+        verifier.verify_evidence(document, evidence_repository, rerun=True, runner=failing)
 
 
 def test_output_normalization_is_narrow_and_preserves_failure_facts(tmp_path: Path) -> None:
