@@ -110,7 +110,7 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
 
     store = SQLiteStateStore(copied)
     try:
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 3
         with pytest.raises(SafeFailure) as unbound:
             store.inspect_run(str(provenance["run_id"]))
         assert unbound.value.code is ErrorCode.STATE_IDENTITY_UNBOUND
@@ -453,22 +453,28 @@ def test_forced_migration_failure_rolls_back_to_intact_v1(tmp_path: Path, seam: 
     assert not copied.with_suffix(".manifests").exists()
 
 
-def test_missing_database_creates_v2_and_existing_v2_is_idempotent(tmp_path: Path) -> None:
+def test_missing_database_creates_v3_and_existing_v3_is_idempotent(tmp_path: Path) -> None:
     database = tmp_path / "new.db"
     first = SQLiteStateStore(database)
     first.close()
     with _connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-        assert {"runs", "stage_attempts", "stage_results", "checkpoints"} <= tables
+        assert {
+            "runs",
+            "stage_attempts",
+            "stage_results",
+            "checkpoints",
+            "resume_events",
+        } <= tables
     second = SQLiteStateStore(database)
     second.close()
 
 
-def test_fresh_and_migrated_v2_use_identical_schema_fingerprint(tmp_path: Path) -> None:
+def test_fresh_and_migrated_v3_use_identical_schema_fingerprint(tmp_path: Path) -> None:
     fresh = tmp_path / "fresh.db"
     SQLiteStateStore(fresh).close()
     migrated = _copy_frozen(tmp_path)

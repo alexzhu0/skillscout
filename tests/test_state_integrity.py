@@ -24,11 +24,12 @@ from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
     make_result_row_id,
+    resume_event_hash,
     reusable_key_digest,
     stage_manifest_hash,
 )
 from skillscout.domain.enums import PipelineStage, RunStatus
-from skillscout.domain.models import RunIdentity, StageEnvelope
+from skillscout.domain.models import ResumeEvent, RunIdentity, StageEnvelope
 
 APPROVED_FIXTURE = Path(__file__).parent / "fixtures" / "pipeline" / "approved.json"
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
@@ -55,6 +56,17 @@ def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     return connection
+
+
+def _schema_fingerprint(path: Path) -> tuple[tuple[object, ...], ...]:
+    with _connect(path) as connection:
+        return tuple(
+            tuple(row)
+            for row in connection.execute(
+                """SELECT type, name, tbl_name, sql FROM sqlite_master
+                   WHERE type IN ('table', 'index') ORDER BY type, name"""
+            )
+        )
 
 
 def _write_schema_v2_variant(path: Path, variant: str) -> None:
@@ -146,8 +158,172 @@ def _write_schema_v2_variant(path: Path, variant: str) -> None:
         connection.execute("PRAGMA foreign_keys = ON")
         for statement in statements:
             connection.execute(statement)
+        connection.execute(f"PRAGMA user_version = {state_adapter.SCHEMA_VERSION}")
+        connection.commit()
+
+
+def _write_pre_event_schema_v2(path: Path, *, reused_stage_count: int = 0) -> bytes:
+    with _connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for statement in state_adapter._schema_v2_statements():
+            connection.execute(statement)
+        connection.execute(
+            """INSERT INTO runs
+               (run_id, schema_version, subject_id, fixture_hash, producer_version,
+                retry_policy_version, identity_state, execution_mode, status,
+                created_at, updated_at, error_code, error_summary, reused_stage_count)
+               VALUES ('pre-event-run', '2', 'fixture:pre-event', ?, 'fixture-v1',
+                       'retry-v1', 'bound', 'dry_run', 'running', ?, ?, NULL, NULL, ?)""",
+            (
+                "sha256:" + "1" * 64,
+                "2026-07-19T00:00:00.000000Z",
+                "2026-07-19T00:00:00.000000Z",
+                reused_stage_count,
+            ),
+        )
         connection.execute("PRAGMA user_version = 2")
         connection.commit()
+    path.chmod(0o600)
+    return path.read_bytes()
+
+
+def _resume_event(**updates: object) -> ResumeEvent:
+    values: dict[str, object] = {
+        "run_id": "resume-run",
+        "event_index": 0,
+        "prior_event_hash": None,
+        "reused_stage_count": 0,
+        "checkpoint_stage": None,
+        "checkpoint_result_row_id": None,
+        "checkpoint_manifest_hash": None,
+        "recorded_at": "2026-07-19T00:00:00.000000Z",
+    }
+    values.update(updates)
+    event_hash = resume_event_hash(**values)
+    return ResumeEvent.model_validate({"event_hash": event_hash, **values})
+
+
+def test_resume_event_contract_accepts_only_genesis_zero_and_positive_prefix_shapes() -> None:
+    genesis = _resume_event()
+    zero_prefix = _resume_event(
+        event_index=1,
+        prior_event_hash=genesis.event_hash,
+        recorded_at="2026-07-19T00:00:01.000000Z",
+    )
+    positive_prefix = _resume_event(
+        event_index=2,
+        prior_event_hash=zero_prefix.event_hash,
+        reused_stage_count=6,
+        checkpoint_stage=PipelineStage.GENERATOR,
+        checkpoint_result_row_id="sha256:" + "2" * 64,
+        checkpoint_manifest_hash="sha256:" + "3" * 64,
+        recorded_at="2026-07-19T00:00:02.000000Z",
+    )
+
+    assert genesis.event_index == 0 and genesis.prior_event_hash is None
+    assert zero_prefix.reused_stage_count == 0
+    assert positive_prefix.checkpoint_stage is PipelineStage.GENERATOR
+    assert positive_prefix.reused_stage_count == positive_prefix.checkpoint_stage_index + 1
+    assert resume_event_hash(
+        **positive_prefix.model_dump(mode="json", exclude={"event_hash"})
+    ) == positive_prefix.event_hash
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"event_index": 0, "prior_event_hash": "sha256:" + "1" * 64},
+        {"event_index": 0, "reused_stage_count": 1},
+        {"event_index": 1, "prior_event_hash": None},
+        {
+            "event_index": 1,
+            "prior_event_hash": "sha256:" + "1" * 64,
+            "checkpoint_stage": PipelineStage.SCOUT,
+        },
+        {
+            "event_index": 1,
+            "prior_event_hash": "sha256:" + "1" * 64,
+            "reused_stage_count": 2,
+            "checkpoint_stage": PipelineStage.SCOUT,
+            "checkpoint_result_row_id": "sha256:" + "2" * 64,
+            "checkpoint_manifest_hash": "sha256:" + "3" * 64,
+        },
+    ],
+)
+def test_resume_event_contract_rejects_invalid_shape(updates: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        _resume_event(**updates)
+
+
+def test_resume_event_contract_rejects_unknown_fields_and_inconsistent_hash() -> None:
+    event = _resume_event()
+    values = event.model_dump(mode="json")
+    values["unknown"] = "forbidden"
+    with pytest.raises(ValueError):
+        ResumeEvent.model_validate(values)
+    values.pop("unknown")
+    values["event_hash"] = "sha256:" + "f" * 64
+    with pytest.raises(ValueError):
+        ResumeEvent.model_validate(values)
+
+
+def test_fresh_run_creation_atomically_heads_one_genesis_event(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "genesis.db")
+    created_at = "2026-07-19T00:00:00.000000Z"
+    try:
+        store.create_run("genesis-run", _run_identity("genesis-subject"), created_at)
+        run = store.connection.execute(
+            """SELECT latest_resume_event_hash, reused_stage_count
+               FROM runs WHERE run_id = 'genesis-run'"""
+        ).fetchone()
+        events = store.connection.execute(
+            "SELECT * FROM resume_events WHERE run_id = 'genesis-run'"
+        ).fetchall()
+        attempts = store.connection.execute(
+            "SELECT COUNT(*) FROM stage_attempts WHERE run_id = 'genesis-run'"
+        ).fetchone()[0]
+    finally:
+        store.close()
+
+    assert len(events) == 1
+    event = ResumeEvent.model_validate(dict(events[0]))
+    assert event == _resume_event(run_id="genesis-run", recorded_at=created_at)
+    assert tuple(run) == (event.event_hash, 0)
+    assert attempts == 0
+
+
+def test_zero_reuse_v2_migrates_to_schema_v3_genesis_only(tmp_path: Path) -> None:
+    fresh = tmp_path / "fresh-v3.db"
+    SQLiteStateStore(fresh).close()
+    migrated = tmp_path / "zero-v2.db"
+    _write_pre_event_schema_v2(migrated)
+
+    SQLiteStateStore(migrated).close()
+
+    assert _schema_fingerprint(migrated) == _schema_fingerprint(fresh)
+    with _connect(migrated) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        event = ResumeEvent.model_validate(
+            dict(connection.execute("SELECT * FROM resume_events").fetchone())
+        )
+        run = connection.execute(
+            "SELECT latest_resume_event_hash, reused_stage_count FROM runs"
+        ).fetchone()
+    assert event.event_index == 0
+    assert event.reused_stage_count == 0
+    assert tuple(run) == (event.event_hash, 0)
+
+
+def test_unattested_nonzero_v2_reuse_is_rejected_without_mutation(tmp_path: Path) -> None:
+    database = tmp_path / "nonzero-v2.db"
+    before = _write_pre_event_schema_v2(database, reused_stage_count=1)
+
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(database)
+
+    assert failure.value.code is ErrorCode.STATE_SCHEMA_MIGRATION_ERROR
+    assert database.read_bytes() == before
+    assert not database.with_suffix(".manifests").exists()
 
 
 def _run_interrupted(database: Path, output: Path) -> str:
