@@ -332,6 +332,7 @@ def test_legacy_diagnostic_canary_rejects_migration_without_new_evidence(
     attacker_path = "/attacker/legacy/private/path"
     copied = tmp_path / "legacy-canary.db"
     shutil.copy2(FROZEN_DATABASE, copied)
+    copied.chmod(0o600)
     with _connect(copied) as connection:
         connection.execute(
             """UPDATE stage_attempts SET error_code = ?, error_summary = ?, request_id = ?

@@ -7,7 +7,6 @@ import json
 import os
 import re
 import sqlite3
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -87,15 +86,6 @@ class _IndexDescriptor:
     origin: str
     partial: int
     columns: tuple[tuple[int, int, str], ...]
-
-
-def stat_is_private_regular(metadata: os.stat_result) -> bool:
-    return (
-        stat.S_ISREG(metadata.st_mode)
-        and not stat.S_ISLNK(metadata.st_mode)
-        and metadata.st_uid == os.getuid()
-        and metadata.st_mode & 0o077 == 0
-    )
 
 
 def _schema_statements(suffix: str = "") -> tuple[str, ...]:
@@ -455,6 +445,8 @@ class SQLiteStateStore:
             raise ValueError("unknown migration failure seam")
         self.path = Path(os.path.abspath(os.fspath(path)))
         self.manifest_root = self.path.with_suffix(".manifests")
+        if self.manifest_root == self.path:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         self._state_name = AnchoredDirectory.validate_child_name(self.path.name)
         self._manifest_name = AnchoredDirectory.validate_child_name(self.manifest_root.name)
         self._filesystem_seam = filesystem_seam
@@ -570,10 +562,12 @@ class SQLiteStateStore:
                 follow_symlinks=False,
             )
             opened = os.fstat(descriptor)
+            AnchoredDirectory._require_private_regular(anchored)
+            AnchoredDirectory._require_private_regular(opened)
             if (anchored.st_dev, anchored.st_ino) != (
                 opened.st_dev,
                 opened.st_ino,
-            ) or not stat_is_private_regular(opened):
+            ):
                 raise OSError("invalid lock file")
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self._lock_descriptor = descriptor

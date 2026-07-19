@@ -832,6 +832,42 @@ def test_private_file_predicate_rejects_foreign_owner_and_missing_identity(
         AnchoredDirectory._require_private_regular(private)
 
 
+def test_new_state_lock_backup_temporary_and_manifest_files_are_private(
+    tmp_path: Path,
+) -> None:
+    transient: list[os.stat_result] = []
+    saw_backup_temporary = False
+
+    def observe_private_temporary(operation: str) -> None:
+        nonlocal saw_backup_temporary
+        if not operation.endswith("file_fsync"):
+            return
+        for candidate in tmp_path.rglob("*"):
+            if candidate.name.endswith(".tmp") and candidate.is_file():
+                metadata = os.lstat(candidate)
+                transient.append(metadata)
+                saw_backup_temporary |= "backup" in candidate.name
+
+    database = tmp_path / "private.db"
+    store = SQLiteStateStore(database, filesystem_seam=observe_private_temporary)
+    try:
+        PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "private-output"
+        )
+    finally:
+        store.close()
+
+    authorities = [database, tmp_path / ".private.db.lock"]
+    authorities.extend(database.with_suffix(".manifests").rglob("*.json"))
+    metadata = [os.lstat(path) for path in authorities]
+    assert transient
+    assert saw_backup_temporary is True
+    assert metadata
+    assert all(item.st_mode & 0o077 == 0 for item in [*transient, *metadata])
+    assert all(item.st_nlink == 1 for item in [*transient, *metadata])
+    assert all(item.st_uid == os.geteuid() for item in [*transient, *metadata])
+
+
 @pytest.mark.parametrize("damage", ["permission", "hardlink"])
 def test_existing_manifest_requires_private_single_owner_file_before_decode(
     tmp_path: Path,
@@ -1361,6 +1397,7 @@ def test_v1_migration_preserves_semantic_results_and_adds_row_identity(
 ) -> None:
     database = tmp_path / "migrated.db"
     shutil.copy2(FROZEN_DATABASE, database)
+    database.chmod(0o600)
     with _connect(database) as legacy:
         legacy_results = [
             str(row[0])

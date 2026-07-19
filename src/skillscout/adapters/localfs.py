@@ -152,6 +152,26 @@ class AnchoredDirectory:
             raise DurableWriteError("directory_permissions")
 
     @staticmethod
+    def _require_private_regular(metadata: os.stat_result) -> None:
+        """Require one private regular file owned by the effective identity."""
+
+        get_effective_uid = getattr(os, "geteuid", None)
+        if not callable(get_effective_uid):
+            raise DurableWriteError("secure_owner_check_unavailable")
+        try:
+            effective_uid = get_effective_uid()
+        except OSError as error:
+            raise DurableWriteError("secure_owner_check_unavailable") from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid != effective_uid
+            or metadata.st_mode & 0o077
+        ):
+            raise DurableWriteError("file_permissions")
+
+    @staticmethod
     def validate_child_name(name: str) -> str:
         if (
             type(name) is not str
@@ -233,17 +253,15 @@ class AnchoredDirectory:
             if missing_ok:
                 return None
             raise DurableWriteError("file_missing")
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or stat.S_ISLNK(before.st_mode)
-            or before.st_size > max_bytes
-        ):
+        self._require_private_regular(before)
+        if before.st_size > max_bytes:
             raise DurableWriteError("file_invalid")
         descriptor = -1
         try:
             descriptor = os.open(name, _file_flags(os.O_RDONLY), dir_fd=self.descriptor)
             opened = os.fstat(descriptor)
-            if _identity(before) != _identity(opened) or not stat.S_ISREG(opened.st_mode):
+            self._require_private_regular(opened)
+            if _identity(before) != _identity(opened):
                 raise DurableWriteError("file_identity")
             chunks: list[bytes] = []
             consumed = 0
