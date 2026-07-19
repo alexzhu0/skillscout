@@ -12,6 +12,17 @@ from skillscout.domain.enums import AttemptStatus, ExecutionMode, PipelineStage,
 Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 NonEmpty = Annotated[str, Field(min_length=1)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
+PersistedIdentifier = Annotated[str, Field(min_length=1, max_length=512)]
+PersistedSubject = Annotated[str, Field(min_length=1, max_length=128)]
+PersistedVersion = Annotated[str, Field(min_length=1, max_length=128)]
+PersistedDiagnosticCode = Annotated[str, Field(min_length=1, max_length=64)]
+PersistedDiagnosticSummary = Annotated[str, Field(min_length=1, max_length=160)]
+PersistedTelemetryText = Annotated[str, Field(min_length=1, max_length=512)]
+PersistedTimestamp = Annotated[
+    str,
+    Field(pattern=(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")),
+]
+PersistedSQLiteInt = Annotated[int, Field(ge=0, le=9_223_372_036_854_775_807)]
 
 MAX_MANIFEST_BYTES = 262_144
 MAX_STAGE_PAYLOAD_DEPTH = 16
@@ -230,6 +241,99 @@ class RunRecord(StrictFrozenModel):
         )
 
 
+class PersistedRunRecord(RunRecord):
+    """Exact sanitized projection of one persisted run row."""
+
+    run_id: PersistedIdentifier
+    schema_version: Literal["1", "2"]
+    subject_id: PersistedSubject
+    producer_version: PersistedVersion
+    retry_policy_version: PersistedVersion
+    created_at: PersistedTimestamp
+    updated_at: PersistedTimestamp
+    error_code: PersistedDiagnosticCode | None
+    error_summary: PersistedDiagnosticSummary | None
+    reused_stage_count: Annotated[int, Field(ge=0, le=len(tuple(PipelineStage)))]
+
+    @model_validator(mode="after")
+    def validate_persisted_run(self) -> PersistedRunRecord:
+        has_code = self.error_code is not None
+        has_summary = self.error_summary is not None
+        if has_code != has_summary:
+            raise ValueError("persisted run diagnostic is incomplete")
+        needs_error = self.status in {RunStatus.INTERRUPTED, RunStatus.FAILED}
+        if needs_error != has_code:
+            raise ValueError("persisted run status and diagnostic disagree")
+        if self.updated_at < self.created_at:
+            raise ValueError("persisted run timestamps are not monotonic")
+        return self
+
+
+class PersistedAttemptRecord(StrictFrozenModel):
+    """Flattened sanitized projection of one persisted attempt row."""
+
+    attempt_id: PersistedIdentifier
+    run_id: PersistedIdentifier
+    subject_id: PersistedSubject
+    stage: PipelineStage
+    stage_index: Annotated[int, Field(ge=0, lt=len(tuple(PipelineStage)))]
+    attempt_no: Annotated[int, Field(ge=1, le=1_000_000)]
+    status: AttemptStatus
+    input_hash: Digest
+    producer_version: PersistedVersion
+    retry_policy_version: PersistedVersion
+    reusable_key_digest: Digest
+    started_at: PersistedTimestamp
+    finished_at: PersistedTimestamp | None
+    prompt_version: PersistedTelemetryText | None
+    policy_version: PersistedTelemetryText | None
+    model_id: PersistedTelemetryText | None
+    request_id: PersistedTelemetryText | None
+    latency_ms: PersistedSQLiteInt | None
+    prompt_tokens: PersistedSQLiteInt | None
+    completion_tokens: PersistedSQLiteInt | None
+    total_tokens: PersistedSQLiteInt | None
+    error_code: PersistedDiagnosticCode | None
+    error_summary: PersistedDiagnosticSummary | None
+    retryable: bool
+
+    @model_validator(mode="after")
+    def validate_persisted_attempt(self) -> PersistedAttemptRecord:
+        if self.stage_index != tuple(PipelineStage).index(self.stage):
+            raise ValueError("persisted attempt stage index disagrees")
+        if self.attempt_id != f"{self.run_id}:{self.stage.value}:{self.attempt_no}":
+            raise ValueError("persisted attempt identity disagrees")
+
+        has_code = self.error_code is not None
+        has_summary = self.error_summary is not None
+        if has_code != has_summary:
+            raise ValueError("persisted attempt diagnostic is incomplete")
+        if self.status is AttemptStatus.RUNNING:
+            valid_lifecycle = self.finished_at is None and not has_code and not self.retryable
+        elif self.status is AttemptStatus.SUCCEEDED:
+            valid_lifecycle = self.finished_at is not None and not has_code and not self.retryable
+        elif self.status is AttemptStatus.FAILED:
+            valid_lifecycle = self.finished_at is not None and has_code
+        else:
+            valid_lifecycle = self.finished_at is not None and has_code and self.retryable
+        if not valid_lifecycle:
+            raise ValueError("persisted attempt lifecycle is incoherent")
+        if self.finished_at is not None and self.finished_at < self.started_at:
+            raise ValueError("persisted attempt timestamps are not monotonic")
+
+        token_values = (
+            self.prompt_tokens,
+            self.completion_tokens,
+            self.total_tokens,
+        )
+        if any(value is None for value in token_values):
+            if any(value is not None for value in token_values):
+                raise ValueError("persisted attempt token usage is incomplete")
+        elif self.total_tokens != self.prompt_tokens + self.completion_tokens:
+            raise ValueError("persisted attempt token usage is inconsistent")
+        return self
+
+
 class Checkpoint(StrictFrozenModel):
     run_id: NonEmpty
     subject_id: NonEmpty
@@ -240,6 +344,29 @@ class Checkpoint(StrictFrozenModel):
     output_hash: Digest
     manifest_hash: Digest
     updated_at: NonEmpty
+
+
+class PersistedCheckpointRecord(Checkpoint):
+    """Exact sanitized projection of one persisted checkpoint row."""
+
+    run_id: PersistedIdentifier
+    subject_id: PersistedSubject
+    stage_index: Annotated[int, Field(ge=0, lt=len(tuple(PipelineStage)))]
+    manifest_path: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=256,
+            pattern=r"^[a-z_]+/[0-9a-f]{64}\.json$",
+        ),
+    ]
+    updated_at: PersistedTimestamp
+
+    @model_validator(mode="after")
+    def validate_persisted_checkpoint(self) -> PersistedCheckpointRecord:
+        if self.stage_index != tuple(PipelineStage).index(self.stage):
+            raise ValueError("persisted checkpoint stage index disagrees")
+        return self
 
 
 class PublicationPlan(StrictFrozenModel):

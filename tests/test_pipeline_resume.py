@@ -876,6 +876,94 @@ def test_supported_writer_state_is_immediately_verifiable_and_inspectable(
         store.close()
 
 
+def test_running_failed_and_abandoned_records_project_explicit_nulls(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "status-projections.db"
+    store = SQLiteStateStore(database)
+    running_identity = RunIdentity(
+        schema_version="2",
+        subject_id="fixture:running-projection",
+        fixture_hash="sha256:" + "1" * 64,
+        producer_version="fixture-v1",
+        retry_policy_version="retry-v1",
+    )
+    abandoned_identity = running_identity.model_copy(
+        update={
+            "subject_id": "fixture:abandoned-projection",
+            "fixture_hash": "sha256:" + "2" * 64,
+        }
+    )
+    try:
+        store.create_run("failed-run", running_identity, "2026-07-19T00:00:00.000000Z")
+        store.set_run_status(
+            "failed-run",
+            "failed",
+            "2026-07-19T00:00:01.000000Z",
+            SafeFailure(ErrorCode.STATE_OPERATION_FAILED),
+        )
+        failed = store.inspect_run("failed-run")
+        assert failed["run"]["status"] == "failed"
+        assert failed["run"]["error_code"] == ErrorCode.STATE_OPERATION_FAILED.value
+
+        store.create_run("abandoned-run", abandoned_identity, "2026-07-19T00:00:02.000000Z")
+        store.start_attempt(
+            StageAttempt(
+                attempt_id="abandoned-run:scout:1",
+                run_id="abandoned-run",
+                subject_id=abandoned_identity.subject_id,
+                stage=PipelineStage.SCOUT,
+                stage_index=0,
+                attempt_no=1,
+                status=AttemptStatus.RUNNING,
+                input_hash="sha256:" + "3" * 64,
+                producer_version="fixture-v1",
+                retry_policy_version="retry-v1",
+                reusable_key_digest="sha256:" + "4" * 64,
+                started_at="2026-07-19T00:00:02.000000Z",
+                finished_at=None,
+                prompt_version=None,
+                policy_version=None,
+                model_id=None,
+                request_id=None,
+                latency_ms=None,
+                token_usage=None,
+                error_code=None,
+                error_summary=None,
+                retryable=False,
+            )
+        )
+        running = store.inspect_run("abandoned-run")
+        assert running["run"]["status"] == "running"
+        nullable_attempt_fields = {
+            "finished_at",
+            "prompt_version",
+            "policy_version",
+            "model_id",
+            "request_id",
+            "latency_ms",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "error_code",
+            "error_summary",
+        }
+        assert nullable_attempt_fields <= set(running["attempts"][0])
+        assert all(running["attempts"][0][field] is None for field in nullable_attempt_fields)
+    finally:
+        store.close()
+
+    reopened = SQLiteStateStore(database)
+    try:
+        abandoned = reopened.inspect_run("abandoned-run")
+        assert abandoned["run"]["status"] == "interrupted"
+        assert abandoned["attempts"][0]["status"] == "abandoned"
+        assert abandoned["attempts"][0]["retryable"] is True
+        assert abandoned["attempts"][0]["error_code"] == (ErrorCode.PIPELINE_INTERRUPTED.value)
+    finally:
+        reopened.close()
+
+
 def test_migration_rejects_oversized_output_before_manifest_creation(
     tmp_path: Path,
 ) -> None:

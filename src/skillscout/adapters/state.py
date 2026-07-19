@@ -11,12 +11,12 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Iterable, TypeVar
+from typing import Any, Callable, Iterable, Mapping, TypeVar
 
 from pydantic import ValidationError
 
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
-from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
 from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
@@ -27,6 +27,7 @@ from skillscout.domain.canonical import (
     stage_output_hash,
 )
 from skillscout.domain.enums import (
+    AttemptStatus,
     EffectScope,
     ExecutionMode,
     PipelineStage,
@@ -37,6 +38,9 @@ from skillscout.domain.models import (
     MAX_MANIFEST_BYTES,
     SUPPORTED_PRODUCER_SCHEMAS,
     Checkpoint,
+    PersistedAttemptRecord,
+    PersistedCheckpointRecord,
+    PersistedRunRecord,
     RunIdentity,
     RunRecord,
     StageAttempt,
@@ -719,6 +723,7 @@ class SQLiteStateStore:
     def _migrate_v1(self, fail_at: str | None) -> None:
         created_manifests: list[Path] = []
         try:
+            self._validate_v1_source_rows()
             self._db.execute("BEGIN IMMEDIATE")
             for statement in _schema_statements("_v2"):
                 self._db.execute(statement)
@@ -852,6 +857,171 @@ class SQLiteStateStore:
         if configured == current:
             raise RuntimeError("forced migration seam")
 
+    @staticmethod
+    def _validated_diagnostic(
+        error_code: object, error_summary: object
+    ) -> tuple[str | None, str | None]:
+        if error_code is None and error_summary is None:
+            return None, None
+        if type(error_code) is not str or type(error_summary) is not str:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        try:
+            code = ErrorCode(error_code)
+        except ValueError:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+        if error_summary != ERROR_SUMMARIES[code]:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return code.value, ERROR_SUMMARIES[code]
+
+    @classmethod
+    def _persisted_run_record(cls, row: Mapping[str, object] | sqlite3.Row) -> PersistedRunRecord:
+        try:
+            error_code, error_summary = cls._validated_diagnostic(
+                row["error_code"], row["error_summary"]
+            )
+            values = {
+                "run_id": row["run_id"],
+                "schema_version": row["schema_version"],
+                "subject_id": row["subject_id"],
+                "fixture_hash": row["fixture_hash"],
+                "producer_version": row["producer_version"],
+                "retry_policy_version": row["retry_policy_version"],
+                "identity_state": row["identity_state"],
+                "execution_mode": ExecutionMode(str(row["execution_mode"])),
+                "status": RunStatus(str(row["status"])),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "error_code": error_code,
+                "error_summary": error_summary,
+                "reused_stage_count": row["reused_stage_count"],
+            }
+            return PersistedRunRecord.model_validate(values)
+        except SafeFailure:
+            raise
+        except (IndexError, KeyError, ValidationError, ValueError, TypeError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    @classmethod
+    def _persisted_attempt_record(
+        cls, row: Mapping[str, object] | sqlite3.Row
+    ) -> PersistedAttemptRecord:
+        try:
+            error_code, error_summary = cls._validated_diagnostic(
+                row["error_code"], row["error_summary"]
+            )
+            retryable = row["retryable"]
+            if type(retryable) is not int or retryable not in (0, 1):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            values = {
+                "attempt_id": row["attempt_id"],
+                "run_id": row["run_id"],
+                "subject_id": row["subject_id"],
+                "stage": PipelineStage(str(row["stage"])),
+                "stage_index": row["stage_index"],
+                "attempt_no": row["attempt_no"],
+                "status": AttemptStatus(str(row["status"])),
+                "input_hash": row["input_hash"],
+                "producer_version": row["producer_version"],
+                "retry_policy_version": row["retry_policy_version"],
+                "reusable_key_digest": row["reusable_key_digest"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+                "prompt_version": row["prompt_version"],
+                "policy_version": row["policy_version"],
+                "model_id": row["model_id"],
+                "request_id": row["request_id"],
+                "latency_ms": row["latency_ms"],
+                "prompt_tokens": row["prompt_tokens"],
+                "completion_tokens": row["completion_tokens"],
+                "total_tokens": row["total_tokens"],
+                "error_code": error_code,
+                "error_summary": error_summary,
+                "retryable": bool(retryable),
+            }
+            record = PersistedAttemptRecord.model_validate(values)
+            if record.producer_version == "fixture-v1" and any(
+                value is not None
+                for value in (
+                    record.prompt_version,
+                    record.policy_version,
+                    record.model_id,
+                    record.request_id,
+                    record.latency_ms,
+                    record.prompt_tokens,
+                    record.completion_tokens,
+                    record.total_tokens,
+                )
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            return record
+        except SafeFailure:
+            raise
+        except (IndexError, KeyError, ValidationError, ValueError, TypeError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    @classmethod
+    def _persisted_checkpoint_record(
+        cls, row: Mapping[str, object] | sqlite3.Row
+    ) -> PersistedCheckpointRecord:
+        try:
+            record = PersistedCheckpointRecord.model_validate(
+                {
+                    "run_id": row["run_id"],
+                    "subject_id": row["subject_id"],
+                    "stage": PipelineStage(str(row["stage"])),
+                    "stage_index": row["stage_index"],
+                    "result_row_id": row["result_row_id"],
+                    "result_id": row["result_id"],
+                    "output_hash": row["output_hash"],
+                    "manifest_hash": row["manifest_hash"],
+                    "manifest_path": row["manifest_path"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+            expected = cls._manifest_locator(record.stage, record.manifest_hash)
+            if record.manifest_path != expected:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            return record
+        except SafeFailure:
+            raise
+        except (IndexError, KeyError, ValidationError, ValueError, TypeError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def _validate_v1_source_rows(self) -> None:
+        attempts = self._db.execute("SELECT * FROM stage_attempts").fetchall()
+        for attempt in attempts:
+            self._persisted_attempt_record(attempt)
+
+        for run in self._db.execute("SELECT * FROM runs").fetchall():
+            facts = self._db.execute(
+                """SELECT COUNT(DISTINCT producer_version) AS producer_count,
+                          COUNT(DISTINCT retry_policy_version) AS retry_count,
+                          MIN(producer_version) AS producer_version,
+                          MIN(retry_policy_version) AS retry_policy_version
+                   FROM stage_attempts WHERE run_id = ?""",
+                (run["run_id"],),
+            ).fetchone()
+            if facts is None or int(facts["producer_count"]) != 1 or int(facts["retry_count"]) != 1:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            self._persisted_run_record(
+                {
+                    "run_id": run["run_id"],
+                    "schema_version": "1",
+                    "subject_id": run["subject_id"],
+                    "fixture_hash": None,
+                    "producer_version": facts["producer_version"],
+                    "retry_policy_version": facts["retry_policy_version"],
+                    "identity_state": "legacy_unbound",
+                    "execution_mode": run["execution_mode"],
+                    "status": run["status"],
+                    "created_at": run["created_at"],
+                    "updated_at": run["updated_at"],
+                    "error_code": run["error_code"],
+                    "error_summary": run["error_summary"],
+                    "reused_stage_count": 0,
+                }
+            )
+
     def _validate_migration_copy(self) -> None:
         for source, target in (
             ("runs", "runs_v2"),
@@ -865,6 +1035,7 @@ class SQLiteStateStore:
                 raise ValueError("migration row count mismatch")
 
         for row in self._db.execute("SELECT * FROM stage_attempts_v2"):
+            self._persisted_attempt_record(row)
             expected = reusable_key_digest(
                 subject_id=str(row["subject_id"]),
                 stage=PipelineStage(str(row["stage"])),
@@ -876,6 +1047,7 @@ class SQLiteStateStore:
                 raise ValueError("migration reusable digest mismatch")
 
         for run in self._db.execute("SELECT * FROM runs_v2"):
+            self._persisted_run_record(run)
             facts = self._db.execute(
                 """SELECT COUNT(DISTINCT producer_version) AS producer_count,
                           COUNT(DISTINCT retry_policy_version) AS retry_count,
@@ -923,6 +1095,8 @@ class SQLiteStateStore:
             if expected_row != row["result_row_id"]:
                 raise ValueError("migration result row identity mismatch")
             self._verify_manifest_row(row)
+        for checkpoint in self._db.execute("SELECT * FROM checkpoints_v2"):
+            self._persisted_checkpoint_record(checkpoint)
         if self._db.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise ValueError("migration foreign key failure")
 
@@ -1086,26 +1260,7 @@ class SQLiteStateStore:
                 (run_id,),
             ).fetchone()
             if row is not None:
-                stage = PipelineStage(str(row["stage"]))
-                expected = self._manifest_locator(stage, str(row["manifest_hash"]))
-                if str(row["manifest_path"]) != expected:
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                values = {
-                    key: row[key]
-                    for key in (
-                        "run_id",
-                        "subject_id",
-                        "stage",
-                        "stage_index",
-                        "result_row_id",
-                        "result_id",
-                        "output_hash",
-                        "manifest_hash",
-                        "updated_at",
-                    )
-                }
-                values["stage"] = stage
-                return Checkpoint.model_validate(values)
+                return self._persisted_checkpoint_record(row)
             return None
         except (ValidationError, ValueError, TypeError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
@@ -1216,15 +1371,9 @@ class SQLiteStateStore:
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
-    @staticmethod
-    def _run_record(row: sqlite3.Row) -> RunRecord:
-        try:
-            values = dict(row)
-            values["execution_mode"] = ExecutionMode(str(values["execution_mode"]))
-            values["status"] = RunStatus(str(values["status"]))
-            return RunRecord.model_validate(values)
-        except (ValidationError, ValueError, TypeError):
-            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+    @classmethod
+    def _run_record(cls, row: sqlite3.Row) -> RunRecord:
+        return cls._persisted_run_record(row)
 
     def set_reused_stage_count(self, run_id: str, count: int) -> None:
         self._write_transaction(
@@ -1652,7 +1801,7 @@ class SQLiteStateStore:
                 require_evidence=False,
             )
             attempts = [
-                dict(row)
+                self._persisted_attempt_record(row).model_dump(mode="json", exclude_none=False)
                 for row in self._db.execute(
                     """SELECT attempt_id, run_id, subject_id, stage, stage_index,
                               attempt_no, status, input_hash, producer_version,
@@ -1665,8 +1814,6 @@ class SQLiteStateStore:
                     (run_id,),
                 )
             ]
-            for attempt in attempts:
-                attempt["retryable"] = bool(attempt["retryable"])
             result_rows = self._db.execute(
                 """SELECT * FROM stage_results WHERE run_id = ? ORDER BY stage_index""",
                 (run_id,),
