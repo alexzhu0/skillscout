@@ -10,17 +10,18 @@ from pathlib import Path
 
 import pytest
 
+import skillscout.adapters.state as state_adapter
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner, RetryPolicy
-from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
 from skillscout.domain.canonical import (
     reusable_key_digest,
     sha256_digest,
     stage_input_hash,
 )
 from skillscout.domain.enums import AttemptStatus, ExecutionMode, PipelineStage
-from skillscout.domain.models import StageAttempt, StageInput
+from skillscout.domain.models import MAX_STAGE_STRING_BYTES, StageAttempt, StageInput
 
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
 FROZEN_PROVENANCE = Path(__file__).parent / "fixtures" / "state" / "v1-cli-provenance.json"
@@ -228,6 +229,22 @@ def test_database_failure_after_manifest_never_advances_checkpoint(
         assert written
         assert store.connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 0
         assert store.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+        attempt = store.connection.execute(
+            "SELECT status, error_code, error_summary FROM stage_attempts"
+        ).fetchone()
+        run = store.connection.execute(
+            "SELECT status, error_code, error_summary FROM runs"
+        ).fetchone()
+        assert tuple(attempt) == (
+            "failed",
+            ErrorCode.STATE_OPERATION_FAILED.value,
+            ERROR_SUMMARIES[ErrorCode.STATE_OPERATION_FAILED],
+        )
+        assert tuple(run) == (
+            "interrupted",
+            ErrorCode.STATE_OPERATION_FAILED.value,
+            ERROR_SUMMARIES[ErrorCode.STATE_OPERATION_FAILED],
+        )
     finally:
         store.close()
 
@@ -356,7 +373,7 @@ def test_permanent_error_is_not_invoked_twice_for_same_digest(tmp_path: Path) ->
         store.close()
 
 
-@pytest.mark.parametrize("changed_field", ["input", "producer", "retry_policy"])
+@pytest.mark.parametrize("changed_field", ["input", "retry_policy"])
 def test_changed_identity_gets_fresh_budget_and_never_reuses_old_checkpoint(
     tmp_path: Path, changed_field: str
 ) -> None:
@@ -374,8 +391,6 @@ def test_changed_identity_gets_fresh_budget_and_never_reuses_old_checkpoint(
                 )
             }
         )
-    elif changed_field == "producer":
-        new_processor_version = "fixture-v2"
     else:
         new_policy = RetryPolicy(version="retry-v2")
 
@@ -436,3 +451,184 @@ def test_changed_identity_gets_fresh_budget_and_never_reuses_old_checkpoint(
         assert second_processor.calls[0] is PipelineStage.SCOUT
     finally:
         checkpoint_store.close()
+
+
+def test_unsupported_producer_is_rejected_before_run_creation(tmp_path: Path) -> None:
+    calls = 0
+
+    class UnsupportedProcessor(FixtureProcessor):
+        producer_version = "fixture-v2"
+
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            return super().process(stage_input)
+
+    database = tmp_path / "unsupported.db"
+    store = SQLiteStateStore(database)
+    try:
+        with pytest.raises(SafeFailure) as failure:
+            PipelineRunner(store, UnsupportedProcessor()).run(
+                load_fixture(APPROVED_FIXTURE), tmp_path / "output"
+            )
+        assert failure.value.code is ErrorCode.STAGE_OUTPUT_INVALID
+        assert calls == 0
+        assert store.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        assert store.connection.execute("SELECT COUNT(*) FROM stage_attempts").fetchone()[0] == 0
+        assert store.connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 0
+        assert store.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+        assert not database.with_suffix(".manifests").exists()
+        assert not (tmp_path / "output").exists()
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        {"value": object()},
+        {str(index): "x" * MAX_STAGE_STRING_BYTES for index in range(4)},
+    ),
+    ids=("non-json", "manifest-cap-plus-one"),
+)
+def test_invalid_or_oversized_output_closes_lifecycle_before_manifest_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output: dict[str, object],
+) -> None:
+    class InvalidOutputProcessor(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            return output
+
+    opened_paths: list[object] = []
+    original_open = state_adapter.os.open
+
+    def observe_open(path: object, *args: object, **kwargs: object) -> int:
+        opened_paths.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(state_adapter.os, "open", observe_open)
+    database = tmp_path / "invalid-output.db"
+    store = SQLiteStateStore(database)
+    try:
+        with pytest.raises(SafeFailure) as failure:
+            PipelineRunner(store, InvalidOutputProcessor()).run(
+                load_fixture(APPROVED_FIXTURE), tmp_path / "output"
+            )
+        assert failure.value.code is ErrorCode.STAGE_OUTPUT_INVALID
+        attempt = store.connection.execute(
+            "SELECT status, error_code, error_summary FROM stage_attempts"
+        ).fetchone()
+        run = store.connection.execute(
+            "SELECT status, error_code, error_summary FROM runs"
+        ).fetchone()
+        assert tuple(attempt) == (
+            "failed",
+            ErrorCode.STAGE_OUTPUT_INVALID.value,
+            ERROR_SUMMARIES[ErrorCode.STAGE_OUTPUT_INVALID],
+        )
+        assert tuple(run) == (
+            "interrupted",
+            ErrorCode.STAGE_OUTPUT_INVALID.value,
+            ERROR_SUMMARIES[ErrorCode.STAGE_OUTPUT_INVALID],
+        )
+        assert store.connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 0
+        assert store.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+        assert opened_paths == []
+        assert not database.with_suffix(".manifests").exists()
+    finally:
+        store.close()
+
+
+def test_indeterminate_failure_closure_is_reconciled_on_next_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class InvalidOutputProcessor(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            return {"value": object()}
+
+    database = tmp_path / "orphan.db"
+    store = SQLiteStateStore(database)
+
+    def fail_to_close(*_args: object, **_kwargs: object) -> None:
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+
+    monkeypatch.setattr(store, "fail_attempt", fail_to_close)
+    with pytest.raises(SafeFailure) as failure:
+        PipelineRunner(store, InvalidOutputProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "output"
+        )
+    assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    assert store.connection.execute("SELECT status FROM stage_attempts").fetchone()[0] == "running"
+    assert store.connection.execute("SELECT status FROM runs").fetchone()[0] == "running"
+    store.close()
+
+    reopened = SQLiteStateStore(database)
+    try:
+        attempt = reopened.connection.execute(
+            "SELECT status, error_code, error_summary, retryable FROM stage_attempts"
+        ).fetchone()
+        run = reopened.connection.execute(
+            "SELECT status, error_code, error_summary FROM runs"
+        ).fetchone()
+        assert tuple(attempt) == (
+            "abandoned",
+            ErrorCode.PIPELINE_INTERRUPTED.value,
+            ERROR_SUMMARIES[ErrorCode.PIPELINE_INTERRUPTED],
+            1,
+        )
+        assert tuple(run) == (
+            "interrupted",
+            ErrorCode.PIPELINE_INTERRUPTED.value,
+            ERROR_SUMMARIES[ErrorCode.PIPELINE_INTERRUPTED],
+        )
+        assert reopened.connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 0
+        assert reopened.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+    finally:
+        reopened.close()
+
+
+def test_supported_writer_state_is_immediately_verifiable_and_inspectable(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "supported.db")
+    try:
+        summary = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "output"
+        )
+        store.verify_completed_results(summary.run_id, len(PipelineStage))
+        inspection = store.inspect_run(summary.run_id)
+        assert inspection["run"]["status"] == "planned_not_published"
+        assert len(inspection["results"]) == len(PipelineStage)
+    finally:
+        store.close()
+
+
+def test_migration_rejects_oversized_output_before_manifest_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    copied = _copy_frozen(tmp_path)
+    oversized = {str(index): "x" * MAX_STAGE_STRING_BYTES for index in range(4)}
+    with _connect(copied) as connection:
+        connection.execute(
+            "UPDATE stage_results SET output_json = ? WHERE stage = 'scout'",
+            (json.dumps(oversized, separators=(",", ":")),),
+        )
+        connection.commit()
+
+    opened_paths: list[object] = []
+    original_open = state_adapter.os.open
+
+    def observe_open(path: object, *args: object, **kwargs: object) -> int:
+        opened_paths.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(state_adapter.os, "open", observe_open)
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(copied)
+    assert failure.value.code is ErrorCode.STATE_SCHEMA_MIGRATION_ERROR
+    assert opened_paths == []
+    assert not copied.with_suffix(".manifests").exists()
+    with _connect(copied) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
