@@ -26,6 +26,7 @@ from skillscout.domain.canonical import (
     make_result_row_id,
     resume_event_hash,
     reusable_key_digest,
+    sha256_digest,
     stage_manifest_hash,
 )
 from skillscout.domain.enums import PipelineStage, RunStatus
@@ -409,6 +410,84 @@ def _assert_full_chain_integrity_failure(store: SQLiteStateStore, run_id: str) -
     assert after == before
 
 
+def _assert_resume_integrity_failure(store: SQLiteStateStore, run_id: str) -> None:
+    before = store.connection.serialize()
+    with pytest.raises(SafeFailure) as failure:
+        store.verify_run_chain(run_id)
+    assert failure.value.as_dict() == {
+        "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+        "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+    }
+    assert store.connection.serialize() == before
+
+
+def _rewrite_resume_event(
+    store: SQLiteStateStore,
+    run_id: str,
+    event_index: int,
+    **updates: object,
+) -> str:
+    row = store.connection.execute(
+        "SELECT * FROM resume_events WHERE run_id = ? AND event_index = ?",
+        (run_id, event_index),
+    ).fetchone()
+    assert row is not None
+    values = {
+        "run_id": row["run_id"],
+        "event_index": row["event_index"],
+        "prior_event_hash": row["prior_event_hash"],
+        "reused_stage_count": row["reused_stage_count"],
+        "checkpoint_stage": row["checkpoint_stage"],
+        "checkpoint_result_row_id": row["checkpoint_result_row_id"],
+        "checkpoint_manifest_hash": row["checkpoint_manifest_hash"],
+        "recorded_at": row["recorded_at"],
+    }
+    values.update(updates)
+    rewritten_hash = resume_event_hash(**values)
+    store.connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        store.connection.execute(
+            """UPDATE resume_events
+               SET event_hash = ?, event_index = ?, prior_event_hash = ?,
+                   reused_stage_count = ?, checkpoint_stage = ?,
+                   checkpoint_result_row_id = ?, checkpoint_manifest_hash = ?,
+                   recorded_at = ?
+               WHERE event_hash = ?""",
+            (
+                rewritten_hash,
+                values["event_index"],
+                values["prior_event_hash"],
+                values["reused_stage_count"],
+                values["checkpoint_stage"],
+                values["checkpoint_result_row_id"],
+                values["checkpoint_manifest_hash"],
+                values["recorded_at"],
+                row["event_hash"],
+            ),
+        )
+        store.connection.execute(
+            """UPDATE runs SET latest_resume_event_hash = ?
+               WHERE run_id = ? AND latest_resume_event_hash = ?""",
+            (rewritten_hash, run_id, row["event_hash"]),
+        )
+    finally:
+        store.connection.execute("PRAGMA foreign_keys = ON")
+    return rewritten_hash
+
+
+def _create_zero_prefix_chain(store: SQLiteStateStore, run_id: str) -> None:
+    store.create_run(
+        run_id,
+        _run_identity(f"subject:{run_id}"),
+        "2026-07-19T00:00:00.000000Z",
+    )
+    store.record_resume_decision(
+        run_id,
+        None,
+        "2026-07-19T00:00:01.000000Z",
+    )
+
+
 @pytest.mark.parametrize(
     ("fail_after", "expected_count", "expected_status"),
     [
@@ -446,6 +525,269 @@ def test_verify_run_chain_returns_one_typed_closed_prefix(
             type(attempt).__name__ == "PersistedAttemptRecord"
             for attempt in chain.attempts
         )
+        assert tuple(event.event_index for event in chain.resume_events) == tuple(
+            range(len(chain.resume_events))
+        )
+        assert chain.reused_stage_count == chain.resume_events[-1].reused_stage_count
+    finally:
+        store.close()
+
+
+def test_full_chain_accepts_genesis_only_and_consecutive_zero_prefix_events(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "zero-prefix-authority.db")
+    try:
+        store.create_run(
+            "genesis-only",
+            _run_identity("subject:genesis-only"),
+            "2026-07-19T00:00:00.000000Z",
+        )
+        genesis = store.verify_run_chain("genesis-only")
+        assert len(genesis.resume_events) == 1
+        assert genesis.reused_stage_count == 0
+
+        _create_zero_prefix_chain(store, "consecutive-zero")
+        store.record_resume_decision(
+            "consecutive-zero",
+            None,
+            "2026-07-19T00:00:02.000000Z",
+        )
+        zero_chain = store.verify_run_chain("consecutive-zero")
+        assert [event.reused_stage_count for event in zero_chain.resume_events] == [
+            0,
+            0,
+            0,
+        ]
+        assert zero_chain.reused_stage_count == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing",
+        "extra",
+        "broken_prior",
+        "wrong_ordinal",
+        "genesis_relabelled",
+        "zero_null_prior",
+        "zero_checkpoint_tuple",
+        "non_monotonic_time",
+        "wrong_head",
+        "wrong_count",
+        "unrehashed_payload",
+    ],
+)
+def test_full_chain_rejects_resume_event_order_shape_head_and_count_tamper(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    store = SQLiteStateStore(tmp_path / f"resume-chain-{damage}.db")
+    try:
+        _create_zero_prefix_chain(store, "resume-chain")
+        genesis = store.connection.execute(
+            "SELECT * FROM resume_events WHERE run_id = ? AND event_index = 0",
+            ("resume-chain",),
+        ).fetchone()
+        latest = store.connection.execute(
+            "SELECT * FROM resume_events WHERE run_id = ? AND event_index = 1",
+            ("resume-chain",),
+        ).fetchone()
+        assert genesis is not None and latest is not None
+
+        if damage == "missing":
+            store.connection.execute("PRAGMA foreign_keys = OFF")
+            store.connection.execute(
+                "DELETE FROM resume_events WHERE event_hash = ?",
+                (latest["event_hash"],),
+            )
+            store.connection.execute("PRAGMA foreign_keys = ON")
+        elif damage == "extra":
+            extra = store._new_resume_event(
+                run_id="resume-chain",
+                event_index=2,
+                prior_event_hash=str(latest["event_hash"]),
+                reused_stage_count=0,
+                checkpoint=None,
+                recorded_at="2026-07-19T00:00:02.000000Z",
+            )
+            store._insert_resume_event(store.connection, extra)
+        elif damage == "broken_prior":
+            _rewrite_resume_event(
+                store,
+                "resume-chain",
+                1,
+                prior_event_hash="sha256:" + "f" * 64,
+            )
+        elif damage == "wrong_ordinal":
+            _rewrite_resume_event(store, "resume-chain", 1, event_index=3)
+        elif damage == "genesis_relabelled":
+            store.connection.execute("PRAGMA foreign_keys = OFF")
+            store.connection.execute(
+                "DELETE FROM resume_events WHERE event_index = 1"
+            )
+            store.connection.execute(
+                "UPDATE runs SET latest_resume_event_hash = ? WHERE run_id = ?",
+                (genesis["event_hash"], "resume-chain"),
+            )
+            store.connection.execute("PRAGMA foreign_keys = ON")
+            _rewrite_resume_event(
+                store,
+                "resume-chain",
+                0,
+                event_index=1,
+                prior_event_hash="sha256:" + "e" * 64,
+            )
+        elif damage == "zero_null_prior":
+            _rewrite_resume_event(
+                store,
+                "resume-chain",
+                1,
+                prior_event_hash=None,
+            )
+        elif damage == "zero_checkpoint_tuple":
+            _rewrite_resume_event(
+                store,
+                "resume-chain",
+                1,
+                checkpoint_stage="scout",
+                checkpoint_result_row_id="sha256:" + "a" * 64,
+                checkpoint_manifest_hash="sha256:" + "b" * 64,
+            )
+        elif damage == "non_monotonic_time":
+            _rewrite_resume_event(
+                store,
+                "resume-chain",
+                1,
+                recorded_at="2026-07-18T23:59:59.999999Z",
+            )
+        elif damage == "wrong_head":
+            store.connection.execute(
+                "UPDATE runs SET latest_resume_event_hash = ? WHERE run_id = ?",
+                (genesis["event_hash"], "resume-chain"),
+            )
+        elif damage == "wrong_count":
+            store.connection.execute(
+                "UPDATE runs SET reused_stage_count = 1 WHERE run_id = ?",
+                ("resume-chain",),
+            )
+        else:
+            store.connection.execute(
+                """UPDATE resume_events SET recorded_at = ?
+                   WHERE run_id = ? AND event_index = 1""",
+                ("2026-07-19T00:00:02.000000Z", "resume-chain"),
+            )
+
+        _assert_resume_integrity_failure(store, "resume-chain")
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "partial_tuple",
+        "wrong_stage",
+        "wrong_result_row",
+        "wrong_manifest",
+        "before_checkpoint",
+    ],
+)
+def test_full_chain_rejects_positive_event_checkpoint_and_timing_tamper(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    store = SQLiteStateStore(tmp_path / f"positive-event-{damage}.db")
+    try:
+        run_id = _run_interrupted_in_store(
+            store,
+            tmp_path / f"positive-event-{damage}-out",
+        )
+        checkpoint = store.latest_checkpoint(run_id)
+        assert checkpoint is not None
+        store.record_resume_decision(run_id, checkpoint, checkpoint.updated_at)
+        run = store.connection.execute(
+            "SELECT created_at FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        first_checkpoint = store.connection.execute(
+            """SELECT result_row_id FROM checkpoints
+               WHERE run_id = ? AND stage_index = 0""",
+            (run_id,),
+        ).fetchone()
+        assert run is not None and first_checkpoint is not None
+
+        if damage == "partial_tuple":
+            updates = {"checkpoint_manifest_hash": None}
+        elif damage == "wrong_stage":
+            updates = {"checkpoint_stage": "reader"}
+        elif damage == "wrong_result_row":
+            updates = {"checkpoint_result_row_id": first_checkpoint["result_row_id"]}
+        elif damage == "wrong_manifest":
+            updates = {"checkpoint_manifest_hash": "sha256:" + "d" * 64}
+        else:
+            updates = {"recorded_at": run["created_at"]}
+        _rewrite_resume_event(store, run_id, 1, **updates)
+
+        _assert_resume_integrity_failure(store, run_id)
+    finally:
+        store.close()
+
+
+def test_full_chain_accepts_repeated_positive_events_and_derives_latest_count(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "repeated-positive.db")
+    try:
+        run_id = _run_interrupted_in_store(store, tmp_path / "repeated-positive-out")
+        checkpoint = store.latest_checkpoint(run_id)
+        assert checkpoint is not None
+        store.record_resume_decision(run_id, checkpoint, checkpoint.updated_at)
+        store.record_resume_decision(run_id, checkpoint, checkpoint.updated_at)
+
+        chain = store.verify_run_chain(run_id)
+        assert [event.event_index for event in chain.resume_events] == [0, 1, 2]
+        assert [event.reused_stage_count for event in chain.resume_events] == [0, 6, 6]
+        assert chain.reused_stage_count == 6
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("source_version", [1, 2])
+def test_zero_reuse_migration_verifies_with_exactly_one_genesis_event(
+    tmp_path: Path,
+    source_version: int,
+) -> None:
+    database = tmp_path / f"migrated-v{source_version}-genesis.db"
+    if source_version == 1:
+        shutil.copy2(FROZEN_DATABASE, database)
+        database.chmod(0o600)
+    else:
+        _write_pre_event_schema_v2(database)
+
+    store = SQLiteStateStore(database)
+    try:
+        row = store.connection.execute("SELECT * FROM runs").fetchone()
+        assert row is not None
+        if source_version == 1:
+            fixture = load_fixture(APPROVED_FIXTURE)
+            expected = RunIdentity(
+                schema_version=str(row["schema_version"]),
+                subject_id=str(row["subject_id"]),
+                fixture_hash=sha256_digest(
+                    fixture.model_dump(mode="json", exclude_none=False)
+                ),
+                producer_version=str(row["producer_version"]),
+                retry_policy_version=str(row["retry_policy_version"]),
+            )
+            bound = store.bind_legacy_run(expected)
+            assert bound is not None
+        chain = store.verify_run_chain(str(row["run_id"]))
+        assert len(chain.resume_events) == 1
+        assert chain.resume_events[0].recorded_at == chain.run.created_at
+        assert chain.reused_stage_count == 0
     finally:
         store.close()
 
