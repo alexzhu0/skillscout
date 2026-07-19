@@ -335,7 +335,9 @@ class PipelineRunner:
                     input_hash=input_hash,
                     producer_version=producer_version,
                     output_hash=output_hash,
-                    retry_policy_version=self.retry_policy.version,
+                    retry_policy_version=(
+                        None if schema_version == "1" else self.retry_policy.version
+                    ),
                 )
                 provisional = StageEnvelope(
                     schema_version=schema_version,

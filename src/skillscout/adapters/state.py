@@ -829,7 +829,7 @@ class SQLiteStateStore:
                    FROM checkpoints c JOIN stage_results_v2 r USING (result_id)"""
             )
             self._trip_migration_seam(fail_at, "after_copy")
-            self._validate_migration_copy()
+            self._validate_legacy_migration_copy()
             self._trip_migration_seam(fail_at, "after_validation")
 
             for table in ("checkpoints", "stage_results", "stage_attempts", "runs"):
@@ -1023,7 +1023,9 @@ class SQLiteStateStore:
                 }
             )
 
-    def _validate_migration_copy(self) -> None:
+    def _validate_legacy_migration_copy(self) -> None:
+        """Validate only reconstructible legacy facts without granting run authority."""
+
         for source, target in (
             ("runs", "runs_v2"),
             ("stage_attempts", "stage_attempts_v2"),
@@ -1035,69 +1037,150 @@ class SQLiteStateStore:
             if source_count != target_count:
                 raise ValueError("migration row count mismatch")
 
-        for row in self._db.execute("SELECT * FROM stage_attempts_v2"):
-            self._persisted_attempt_record(row)
-            expected = reusable_key_digest(
-                subject_id=str(row["subject_id"]),
-                stage=PipelineStage(str(row["stage"])),
-                input_hash=str(row["input_hash"]),
-                producer_version=str(row["producer_version"]),
-                retry_policy_version=str(row["retry_policy_version"]),
-            )
-            if expected != row["reusable_key_digest"]:
-                raise ValueError("migration reusable digest mismatch")
-
-        for run in self._db.execute("SELECT * FROM runs_v2"):
-            self._persisted_run_record(run)
-            facts = self._db.execute(
-                """SELECT COUNT(DISTINCT producer_version) AS producer_count,
-                          COUNT(DISTINCT retry_policy_version) AS retry_count,
-                          MIN(producer_version) AS producer_version,
-                          MIN(retry_policy_version) AS retry_policy_version
-                   FROM stage_attempts_v2 WHERE run_id = ?""",
-                (run["run_id"],),
-            ).fetchone()
-            if (
-                int(facts["producer_count"]) != 1
-                or int(facts["retry_count"]) != 1
-                or run["producer_version"] != facts["producer_version"]
-                or run["retry_policy_version"] != facts["retry_policy_version"]
-                or run["fixture_hash"] is not None
-                or run["identity_state"] != "legacy_unbound"
+        for run_row in self._db.execute("SELECT * FROM runs_v2 ORDER BY run_id"):
+            run = self._persisted_run_record(run_row)
+            if run.identity_state != "legacy_unbound" or run.fixture_hash is not None:
+                raise ValueError("migration claimed bound identity authority")
+            attempt_rows = self._db.execute(
+                """SELECT * FROM stage_attempts_v2 WHERE run_id = ?
+                   ORDER BY stage_index, attempt_no, attempt_id""",
+                (run.run_id,),
+            ).fetchall()
+            result_rows = self._db.execute(
+                """SELECT * FROM stage_results_v2 WHERE run_id = ?
+                   ORDER BY stage_index, result_row_id""",
+                (run.run_id,),
+            ).fetchall()
+            checkpoint_rows = self._db.execute(
+                """SELECT * FROM checkpoints_v2 WHERE run_id = ?
+                   ORDER BY stage_index, stage""",
+                (run.run_id,),
+            ).fetchall()
+            if len(result_rows) != len(checkpoint_rows):
+                raise ValueError("migration result/checkpoint cardinality mismatch")
+            completed_count = len(result_rows)
+            if completed_count > len(tuple(PipelineStage)) or (
+                run.status is RunStatus.PLANNED_NOT_PUBLISHED
+                and completed_count != len(tuple(PipelineStage))
             ):
-                raise ValueError("migration run identity facts are ambiguous")
+                raise ValueError("migration stage cardinality mismatch")
 
-        for row in self._db.execute(
-            """SELECT r.*, a.input_hash, a.prompt_version, a.policy_version, a.model_id
-               FROM stage_results_v2 r JOIN stage_attempts_v2 a USING (attempt_id)"""
-        ):
-            stage = PipelineStage(str(row["stage"]))
-            payload = json.loads(str(row["output_json"]))
-            expected_output = stage_output_hash(
-                schema_version="1",
-                subject_id=str(row["subject_id"]),
-                stage=stage,
-                producer_version=str(row["producer_version"]),
-                prompt_version=row["prompt_version"],
-                policy_version=row["policy_version"],
-                model_id=row["model_id"],
-                payload=payload,
+            attempts = tuple(
+                self._persisted_attempt_record(row) for row in attempt_rows
             )
-            expected_result = make_result_id(
-                subject_id=str(row["subject_id"]),
-                stage=stage,
-                input_hash=str(row["input_hash"]),
-                producer_version=str(row["producer_version"]),
-                output_hash=str(row["output_hash"]),
-            )
-            if expected_output != row["output_hash"] or expected_result != row["result_id"]:
-                raise ValueError("migration result identity mismatch")
-            expected_row = make_result_row_id(run_id=str(row["run_id"]), stage=stage)
-            if expected_row != row["result_row_id"]:
-                raise ValueError("migration result row identity mismatch")
-            self._verify_manifest_row(row)
-        for checkpoint in self._db.execute("SELECT * FROM checkpoints_v2"):
-            self._persisted_checkpoint_record(checkpoint)
+            attempts_by_id = {attempt.attempt_id: attempt for attempt in attempts}
+            attempts_by_stage: dict[int, list[PersistedAttemptRecord]] = {}
+            for attempt in attempts:
+                expected_reusable = reusable_key_digest(
+                    subject_id=attempt.subject_id,
+                    stage=attempt.stage,
+                    input_hash=attempt.input_hash,
+                    producer_version=attempt.producer_version,
+                    retry_policy_version=attempt.retry_policy_version,
+                )
+                if (
+                    attempt.run_id != run.run_id
+                    or attempt.subject_id != run.subject_id
+                    or attempt.producer_version != run.producer_version
+                    or attempt.retry_policy_version != run.retry_policy_version
+                    or attempt.stage_index > completed_count
+                    or attempt.reusable_key_digest != expected_reusable
+                ):
+                    raise ValueError("migration attempt identity mismatch")
+                attempts_by_stage.setdefault(attempt.stage_index, []).append(attempt)
+            for stage_index, stage_attempts in attempts_by_stage.items():
+                if tuple(item.attempt_no for item in stage_attempts) != tuple(
+                    range(1, len(stage_attempts) + 1)
+                ):
+                    raise ValueError("migration attempt sequence mismatch")
+                succeeded = sum(
+                    attempt.status is AttemptStatus.SUCCEEDED
+                    for attempt in stage_attempts
+                )
+                if succeeded != (1 if stage_index < completed_count else 0):
+                    raise ValueError("migration attempt/result association mismatch")
+            if any(index not in attempts_by_stage for index in range(completed_count)):
+                raise ValueError("migration result has no attempt")
+
+            previous_output_hash: str | None = None
+            for expected_index, (result_row, checkpoint_row) in enumerate(
+                zip(result_rows, checkpoint_rows, strict=True)
+            ):
+                expected_stage = tuple(PipelineStage)[expected_index]
+                if (
+                    str(result_row["stage"]) != expected_stage.value
+                    or int(result_row["stage_index"]) != expected_index
+                    or str(checkpoint_row["stage"]) != expected_stage.value
+                    or int(checkpoint_row["stage_index"]) != expected_index
+                ):
+                    raise ValueError("migration stage prefix mismatch")
+                envelope = self._verify_manifest_row(result_row)
+                checkpoint = self._persisted_checkpoint_record(checkpoint_row)
+                attempt = attempts_by_id.get(envelope.attempt_id)
+                if attempt is None or attempt.status is not AttemptStatus.SUCCEEDED:
+                    raise ValueError("migration result attempt mismatch")
+                if expected_index > 0:
+                    available_input = StageInput(
+                        schema_version="1",
+                        execution_mode=ExecutionMode.DRY_RUN,
+                        subject_id=run.subject_id,
+                        stage=expected_stage,
+                        previous_output_hash=previous_output_hash,
+                        fixture_hash=None,
+                    )
+                    if attempt.input_hash != stage_input_hash(available_input):
+                        raise ValueError("migration available input chain mismatch")
+                expected_output = stage_output_hash(
+                    schema_version="1",
+                    subject_id=run.subject_id,
+                    stage=expected_stage,
+                    producer_version=run.producer_version,
+                    prompt_version=attempt.prompt_version,
+                    policy_version=attempt.policy_version,
+                    model_id=attempt.model_id,
+                    payload=envelope.payload,
+                )
+                expected_result = make_result_id(
+                    subject_id=run.subject_id,
+                    stage=expected_stage,
+                    input_hash=attempt.input_hash,
+                    producer_version=run.producer_version,
+                    output_hash=expected_output,
+                )
+                expected_row = make_result_row_id(
+                    run_id=run.run_id, stage=expected_stage
+                )
+                expected_locator = self._manifest_locator(
+                    expected_stage, str(envelope.manifest_hash)
+                )
+                if (
+                    envelope.schema_version != "1"
+                    or envelope.run_id != run.run_id
+                    or envelope.subject_id != run.subject_id
+                    or envelope.stage is not expected_stage
+                    or envelope.stage_index != expected_index
+                    or envelope.attempt_id != attempt.attempt_id
+                    or envelope.attempt_no != attempt.attempt_no
+                    or envelope.input_hash != attempt.input_hash
+                    or envelope.output_hash != expected_output
+                    or envelope.producer_version != run.producer_version
+                    or envelope.retry_policy_version != run.retry_policy_version
+                    or envelope.result_id != expected_result
+                    or envelope.result_row_id != expected_row
+                    or str(result_row["result_id"]) != expected_result
+                    or str(result_row["result_row_id"]) != expected_row
+                    or str(result_row["output_json"])
+                    != canonical_json_bytes(envelope.payload).decode("utf-8")
+                    or checkpoint.run_id != run.run_id
+                    or checkpoint.subject_id != run.subject_id
+                    or checkpoint.result_row_id != expected_row
+                    or checkpoint.result_id != expected_result
+                    or checkpoint.output_hash != expected_output
+                    or checkpoint.manifest_hash != envelope.manifest_hash
+                    or checkpoint.manifest_path != expected_locator
+                ):
+                    raise ValueError("migration canonical association mismatch")
+                previous_output_hash = expected_output
         if self._db.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise ValueError("migration foreign key failure")
 
@@ -1171,15 +1254,7 @@ class SQLiteStateStore:
             ).fetchone()
             if row is None:
                 return None
-            record = self._run_record(row)
-            self._identity_chain_matches(
-                self._db,
-                record.run_id,
-                identity,
-                allow_first_input_mismatch=False,
-                require_evidence=False,
-            )
-            return record
+            return self.verify_run_chain(str(row["run_id"]), identity).run
         except SafeFailure:
             raise
         except sqlite3.Error:
@@ -1204,173 +1279,33 @@ class SQLiteStateStore:
                     MAX_LEGACY_BIND_CANDIDATES,
                 ),
             ).fetchall()
-            selected: str | None = None
             for candidate in candidates:
                 run_id = str(candidate["run_id"])
-                if self._identity_chain_matches(
-                    self._db,
-                    run_id,
-                    expected,
-                    allow_first_input_mismatch=True,
-                    require_evidence=True,
-                ):
-                    selected = run_id
-                    break
-            if selected is None:
-                return None
 
-            def bind(database: sqlite3.Connection) -> RunRecord:
-                row = database.execute(
-                    """SELECT * FROM runs WHERE run_id = ?
-                       AND identity_state = 'legacy_unbound'""",
-                    (selected,),
-                ).fetchone()
-                if row is None or not self._identity_chain_matches(
-                    database,
-                    selected,
-                    expected,
-                    allow_first_input_mismatch=False,
-                    require_evidence=True,
-                ):
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                updated = database.execute(
-                    """UPDATE runs SET fixture_hash = ?, identity_state = 'bound'
-                       WHERE run_id = ? AND identity_state = 'legacy_unbound'
-                         AND fixture_hash IS NULL""",
-                    (expected.fixture_hash, selected),
-                )
-                if updated.rowcount != 1:
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                bound = database.execute(
-                    "SELECT * FROM runs WHERE run_id = ?", (selected,)
-                ).fetchone()
-                return self._run_record(bound)
+                def bind(database: sqlite3.Connection) -> RunRecord:
+                    updated = database.execute(
+                        """UPDATE runs SET fixture_hash = ?, identity_state = 'bound'
+                           WHERE run_id = ? AND identity_state = 'legacy_unbound'
+                             AND fixture_hash IS NULL""",
+                        (expected.fixture_hash, run_id),
+                    )
+                    if updated.rowcount != 1:
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    return self._verify_run_chain(database, run_id, expected).run
 
-            return self._snapshot_transaction(bind)
+                try:
+                    return self._snapshot_transaction(bind)
+                except SafeFailure as failure:
+                    if failure.code is not ErrorCode.STATE_INTEGRITY_ERROR:
+                        raise
+            return None
         except SafeFailure:
             raise
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     def latest_checkpoint(self, run_id: str) -> Checkpoint | None:
-        try:
-            row = self._db.execute(
-                """SELECT run_id, subject_id, stage, stage_index, result_row_id,
-                          result_id, output_hash, manifest_hash, manifest_path, updated_at
-                   FROM checkpoints WHERE run_id = ? ORDER BY stage_index DESC LIMIT 1""",
-                (run_id,),
-            ).fetchone()
-            if row is not None:
-                return self._persisted_checkpoint_record(row)
-            return None
-        except (ValidationError, ValueError, TypeError):
-            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
-        except SafeFailure:
-            raise
-        except sqlite3.Error:
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
-
-    def _identity_chain_matches(
-        self,
-        database: sqlite3.Connection,
-        run_id: str,
-        identity: RunIdentity,
-        *,
-        allow_first_input_mismatch: bool,
-        require_evidence: bool,
-    ) -> bool:
-        """Verify every fact needed for exact reuse or one-time legacy binding."""
-
-        try:
-            rows = database.execute(
-                """SELECT r.*, a.attempt_no, a.status AS attempt_status,
-                          a.subject_id AS attempt_subject, a.stage AS attempt_stage,
-                          a.stage_index AS attempt_stage_index,
-                          a.input_hash AS attempt_input_hash,
-                          a.producer_version AS attempt_producer,
-                          a.retry_policy_version AS attempt_retry_policy,
-                          a.reusable_key_digest,
-                          c.subject_id AS checkpoint_subject,
-                          c.stage AS checkpoint_stage,
-                          c.stage_index AS checkpoint_stage_index,
-                          c.result_row_id AS checkpoint_result_row_id,
-                          c.result_id AS checkpoint_result_id,
-                          c.output_hash AS checkpoint_output_hash,
-                          c.manifest_hash AS checkpoint_manifest_hash
-                   FROM stage_results r JOIN stage_attempts a USING (attempt_id)
-                   LEFT JOIN checkpoints c
-                     ON c.run_id = r.run_id AND c.stage = r.stage
-                   WHERE r.run_id = ? ORDER BY r.stage_index""",
-                (run_id,),
-            ).fetchall()
-            if require_evidence and not rows:
-                return False
-            previous_output_hash: str | None = None
-            for expected_index, row in enumerate(rows):
-                stage = PipelineStage(str(row["stage"]))
-                if (
-                    int(row["stage_index"]) != expected_index
-                    or stage is not tuple(PipelineStage)[expected_index]
-                ):
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                envelope = self._verify_manifest_row(row)
-                stage_input = StageInput(
-                    schema_version=identity.schema_version,
-                    execution_mode=ExecutionMode.DRY_RUN,
-                    subject_id=identity.subject_id,
-                    stage=stage,
-                    previous_output_hash=previous_output_hash,
-                    fixture_hash=identity.fixture_hash if expected_index == 0 else None,
-                )
-                expected_input = stage_input_hash(stage_input)
-                if row["attempt_input_hash"] != expected_input:
-                    if expected_index == 0 and allow_first_input_mismatch:
-                        return False
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                expected_digest = reusable_key_digest(
-                    subject_id=identity.subject_id,
-                    stage=stage_input.stage,
-                    input_hash=expected_input,
-                    producer_version=identity.producer_version,
-                    retry_policy_version=identity.retry_policy_version,
-                )
-                expected_result = make_result_id(
-                    subject_id=identity.subject_id,
-                    stage=stage,
-                    input_hash=expected_input,
-                    producer_version=identity.producer_version,
-                    output_hash=envelope.output_hash,
-                    retry_policy_version=(
-                        None if identity.schema_version == "1" else identity.retry_policy_version
-                    ),
-                )
-                if (
-                    row["attempt_status"] != "succeeded"
-                    or row["attempt_subject"] != identity.subject_id
-                    or row["attempt_stage"] != stage.value
-                    or int(row["attempt_stage_index"]) != expected_index
-                    or int(row["attempt_no"]) != envelope.attempt_no
-                    or row["attempt_producer"] != identity.producer_version
-                    or row["attempt_retry_policy"] != identity.retry_policy_version
-                    or row["reusable_key_digest"] != expected_digest
-                    or row["result_id"] != expected_result
-                    or row["checkpoint_subject"] != identity.subject_id
-                    or row["checkpoint_stage"] != stage.value
-                    or int(row["checkpoint_stage_index"]) != expected_index
-                    or row["checkpoint_result_row_id"] != row["result_row_id"]
-                    or row["checkpoint_result_id"] != row["result_id"]
-                    or row["checkpoint_output_hash"] != row["output_hash"]
-                    or row["checkpoint_manifest_hash"] != row["manifest_hash"]
-                ):
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                previous_output_hash = envelope.output_hash
-            return True
-        except SafeFailure:
-            raise
-        except (IndexError, TypeError, ValueError):
-            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
-        except sqlite3.Error:
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        return self.verify_run_chain(run_id).latest_checkpoint
 
     def verify_run_chain(
         self,
@@ -1845,21 +1780,9 @@ class SQLiteStateStore:
         self._snapshot_transaction(mutate)
 
     def verify_completed_results(self, run_id: str, count: int) -> None:
-        try:
-            rows = self._db.execute(
-                """SELECT * FROM stage_results WHERE run_id = ? ORDER BY stage_index""",
-                (run_id,),
-            ).fetchall()
-            if len(rows) != count:
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            for expected_index, row in enumerate(rows):
-                if int(row["stage_index"]) != expected_index:
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                self._verify_manifest_row(row)
-        except SafeFailure:
-            raise
-        except sqlite3.Error:
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        chain = self.verify_run_chain(run_id)
+        if len(chain.results) != count:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
     def _verify_manifest_row(self, row: sqlite3.Row) -> StageEnvelope:
         try:
@@ -2037,63 +1960,26 @@ class SQLiteStateStore:
     def inspect_run(self, run_id: str) -> dict[str, Any]:
         """Project one run exclusively from verified persisted state."""
 
-        try:
-            run = self._db.execute(
-                "SELECT * FROM runs WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()
-            if run is None:
-                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-            run_record = self._run_record(run)
-            if run_record.identity_state != "bound":
-                raise SafeFailure(ErrorCode.STATE_IDENTITY_UNBOUND)
-            self._identity_chain_matches(
-                self._db,
-                run_id,
-                run_record.identity,
-                allow_first_input_mismatch=False,
-                require_evidence=False,
-            )
-            attempts = [
-                self._persisted_attempt_record(row).model_dump(mode="json", exclude_none=False)
-                for row in self._db.execute(
-                    """SELECT attempt_id, run_id, subject_id, stage, stage_index,
-                              attempt_no, status, input_hash, producer_version,
-                              retry_policy_version, reusable_key_digest, started_at,
-                              finished_at, prompt_version, policy_version, model_id,
-                              request_id, latency_ms, prompt_tokens, completion_tokens,
-                              total_tokens, error_code, error_summary, retryable
-                       FROM stage_attempts WHERE run_id = ?
-                       ORDER BY stage_index, attempt_no""",
-                    (run_id,),
-                )
-            ]
-            result_rows = self._db.execute(
-                """SELECT * FROM stage_results WHERE run_id = ? ORDER BY stage_index""",
-                (run_id,),
-            ).fetchall()
-            results: list[dict[str, Any]] = []
-            for row in result_rows:
-                envelope = self._verify_manifest_row(row)
-                results.append(envelope.model_dump(mode="json", exclude_none=False))
-            checkpoint = self.latest_checkpoint(run_id)
-            reused = run_record.reused_stage_count
-            return {
-                "run": run_record.model_dump(mode="json", exclude_none=False),
-                "attempts": attempts,
-                "results": results,
-                "checkpoint": (
-                    checkpoint.model_dump(mode="json", exclude_none=False)
-                    if checkpoint is not None
-                    else None
-                ),
-                "reused_stage_count": reused,
-                "remote_writes_attempted": 0,
-            }
-        except SafeFailure:
-            raise
-        except sqlite3.Error:
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        chain = self.verify_run_chain(run_id)
+        checkpoint = chain.latest_checkpoint
+        return {
+            "run": chain.run.model_dump(mode="json", exclude_none=False),
+            "attempts": [
+                attempt.model_dump(mode="json", exclude_none=False)
+                for attempt in chain.attempts
+            ],
+            "results": [
+                result.model_dump(mode="json", exclude_none=False)
+                for result in chain.results
+            ],
+            "checkpoint": (
+                checkpoint.model_dump(mode="json", exclude_none=False)
+                if checkpoint is not None
+                else None
+            ),
+            "reused_stage_count": chain.run.reused_stage_count,
+            "remote_writes_attempted": 0,
+        }
 
     def _write_transaction(self, statement: str, parameters: tuple[object, ...]) -> None:
         def mutate(database: sqlite3.Connection) -> None:

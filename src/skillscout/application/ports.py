@@ -14,6 +14,7 @@ from skillscout.domain.models import (
     StageAttempt,
     StageEnvelope,
     StageInput,
+    VerifiedRunChain,
 )
 
 
@@ -130,6 +131,12 @@ class StateStore(Protocol):
     def find_resumable_run(self, identity: RunIdentity) -> RunRecord | None: ...
 
     def bind_legacy_run(self, expected: RunIdentity) -> RunRecord | None: ...
+
+    def verify_run_chain(
+        self,
+        run_id: str,
+        expected_identity: RunIdentity | None = None,
+    ) -> VerifiedRunChain: ...
 
     def latest_checkpoint(self, run_id: str) -> Checkpoint | None: ...
 

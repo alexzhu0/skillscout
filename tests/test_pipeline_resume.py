@@ -971,6 +971,23 @@ def test_running_failed_and_abandoned_records_project_explicit_nulls(
         assert failed["run"]["error_code"] == ErrorCode.STATE_OPERATION_FAILED.value
 
         store.create_run("abandoned-run", abandoned_identity, "2026-07-19T00:00:02.000000Z")
+        abandoned_input_hash = stage_input_hash(
+            StageInput(
+                schema_version=abandoned_identity.schema_version,
+                execution_mode=ExecutionMode.DRY_RUN,
+                subject_id=abandoned_identity.subject_id,
+                stage=PipelineStage.SCOUT,
+                previous_output_hash=None,
+                fixture_hash=abandoned_identity.fixture_hash,
+            )
+        )
+        abandoned_reusable = reusable_key_digest(
+            subject_id=abandoned_identity.subject_id,
+            stage=PipelineStage.SCOUT,
+            input_hash=abandoned_input_hash,
+            producer_version=abandoned_identity.producer_version,
+            retry_policy_version=abandoned_identity.retry_policy_version,
+        )
         store.start_attempt(
             StageAttempt(
                 attempt_id="abandoned-run:scout:1",
@@ -980,10 +997,10 @@ def test_running_failed_and_abandoned_records_project_explicit_nulls(
                 stage_index=0,
                 attempt_no=1,
                 status=AttemptStatus.RUNNING,
-                input_hash="sha256:" + "3" * 64,
+                input_hash=abandoned_input_hash,
                 producer_version="fixture-v1",
                 retry_policy_version="retry-v1",
-                reusable_key_digest="sha256:" + "4" * 64,
+                reusable_key_digest=abandoned_reusable,
                 started_at="2026-07-19T00:00:02.000000Z",
                 finished_at=None,
                 prompt_version=None,
