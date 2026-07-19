@@ -2012,10 +2012,6 @@ class SQLiteStateStore:
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
-    @classmethod
-    def _run_record(cls, row: sqlite3.Row) -> RunRecord:
-        return cls._persisted_run_record(row)
-
     def record_resume_decision(
         self,
         run_id: str,
@@ -2475,26 +2471,19 @@ class SQLiteStateStore:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
     def read_run(self, run_id: str) -> RunRecord:
-        try:
-            run = self._db.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-            if run is None:
-                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-            record = self._run_record(run)
-            if record.identity_state != "bound":
-                raise SafeFailure(ErrorCode.STATE_IDENTITY_UNBOUND)
-            return record
-        except SafeFailure:
-            raise
-        except sqlite3.Error:
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        """Return a run projection only after its complete chain is verified."""
+
+        return self.verify_run_chain(run_id).run
 
     def inspect_run(self, run_id: str) -> dict[str, Any]:
         """Project one run exclusively from verified persisted state."""
 
         chain = self.verify_run_chain(run_id)
         checkpoint = chain.latest_checkpoint
+        run_projection = chain.run.model_dump(mode="json", exclude_none=False)
+        run_projection["reused_stage_count"] = chain.reused_stage_count
         return {
-            "run": chain.run.model_dump(mode="json", exclude_none=False),
+            "run": run_projection,
             "attempts": [
                 attempt.model_dump(mode="json", exclude_none=False)
                 for attempt in chain.attempts
@@ -2508,7 +2497,7 @@ class SQLiteStateStore:
                 if checkpoint is not None
                 else None
             ),
-            "reused_stage_count": chain.run.reused_stage_count,
+            "reused_stage_count": chain.reused_stage_count,
             "remote_writes_attempted": 0,
         }
 
