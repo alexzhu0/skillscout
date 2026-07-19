@@ -8,9 +8,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Final, Iterable, Mapping, Protocol
 
-from skillscout.adapters.fixtures import FixtureSubject
+from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject
+from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import (
     AdapterRegistration,
     Clock,
@@ -46,6 +47,9 @@ from skillscout.domain.models import (
 
 STAGE_SEQUENCE = tuple(stage.value for stage in PipelineStage)
 RETRY_POLICY_VERSION = "retry-v1"
+PHASE_ONE_MAX_SCOPES: Final[frozenset[EffectScope]] = frozenset(
+    {EffectScope.NONE, EffectScope.LOCAL_STATE}
+)
 
 
 @dataclass(frozen=True)
@@ -108,7 +112,7 @@ class SideEffectPolicy:
 
     @classmethod
     def phase_one(cls) -> SideEffectPolicy:
-        return cls(frozenset({EffectScope.NONE, EffectScope.LOCAL_STATE}))
+        return cls(PHASE_ONE_MAX_SCOPES)
 
     def validate(
         self, registrations: Iterable[AdapterRegistration]
@@ -128,6 +132,21 @@ class DryRunRuntime:
     policy: SideEffectPolicy
 
 
+class _PublicationWriter(Protocol):
+    def write(self, output_directory: Path, plan: PublicationPlan) -> Path: ...
+
+
+class _LocalPublicationPlanner:
+    """The only publication capability present in the Phase 1 runtime."""
+
+    @property
+    def effect_scope(self) -> EffectScope:
+        return EffectScope.LOCAL_STATE
+
+    def write(self, output_directory: Path, plan: PublicationPlan) -> Path:
+        return PipelineRunner._write_publication_plan(output_directory, plan)
+
+
 class PipelineRunner:
     """Persist running identity before work and atomic evidence after work."""
 
@@ -139,12 +158,14 @@ class PipelineRunner:
         clock: Clock | None = None,
         ids: IdProvider | None = None,
         retry_policy: RetryPolicy | None = None,
+        publication_writer: _PublicationWriter | None = None,
     ) -> None:
         self.state = state
         self.processor = processor
         self.clock = clock or SystemClock()
         self.ids = ids or UUIDIdProvider()
         self.retry_policy = retry_policy or RetryPolicy()
+        self.publication_writer = publication_writer or _LocalPublicationPlanner()
 
     def run(
         self,
@@ -322,7 +343,7 @@ class PipelineRunner:
                 )
                 raise failure
 
-        self._write_publication_plan(output_directory, PublicationPlan(run_id=run_id))
+        self.publication_writer.write(output_directory, PublicationPlan(run_id=run_id))
         self.state.set_run_status(run_id, RunStatus.PLANNED_NOT_PUBLISHED.value, self.clock.now())
         persisted = self.state.read_run(run_id)
         return RunSummary(
@@ -403,45 +424,48 @@ class PipelineRunner:
 
 
 def build_dry_run_runtime(
-    state: StateStore,
-    processor: StageProcessor,
+    state: SQLiteStateStore,
+    processor: FixtureProcessor,
     *,
-    clock: Clock | None = None,
-    ids: IdProvider | None = None,
     retry_policy: RetryPolicy | None = None,
-    registrations: Iterable[AdapterRegistration] = (),
-    policy: SideEffectPolicy | None = None,
 ) -> DryRunRuntime:
-    """Validate the complete registry before constructing a runnable pipeline."""
+    """Construct the closed Phase 1 runtime under its immutable authority ceiling."""
 
-    resolved_clock = clock or SystemClock()
-    resolved_ids = ids or UUIDIdProvider()
-    complete_registry = (
-        AdapterRegistration("fixture_processor", processor),
-        AdapterRegistration("sqlite_and_manifests", state),
-        AdapterRegistration("clock", resolved_clock),
-        AdapterRegistration("run_ids", resolved_ids),
-        AdapterRegistration(
-            "local_publication_planner",
-            _LocalPublicationPlanner(),
-        ),
-        *tuple(registrations),
-    )
-    resolved_policy = policy or SideEffectPolicy.phase_one()
+    resolved_clock = SystemClock()
+    resolved_ids = UUIDIdProvider()
+    publication_writer = _LocalPublicationPlanner()
+    try:
+        complete_registry = (
+            AdapterRegistration("fixture_processor", processor),
+            AdapterRegistration("sqlite_and_manifests", state),
+            AdapterRegistration("clock", resolved_clock),
+            AdapterRegistration("run_ids", resolved_ids),
+            AdapterRegistration("local_publication_planner", publication_writer),
+        )
+    except ValueError:
+        raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE) from None
+
+    resolved_policy = SideEffectPolicy.phase_one()
     validated = resolved_policy.validate(complete_registry)
+    expected_types = (
+        FixtureProcessor,
+        SQLiteStateStore,
+        SystemClock,
+        UUIDIdProvider,
+        _LocalPublicationPlanner,
+    )
+    if any(
+        type(registration.adapter) is not expected
+        for registration, expected in zip(validated, expected_types, strict=True)
+    ):
+        raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
+
     runner = PipelineRunner(
         state,
         processor,
         clock=resolved_clock,
         ids=resolved_ids,
         retry_policy=retry_policy,
+        publication_writer=publication_writer,
     )
     return DryRunRuntime(runner=runner, registrations=validated, policy=resolved_policy)
-
-
-class _LocalPublicationPlanner:
-    """Trusted declaration for the runner's local publication-plan write."""
-
-    @property
-    def effect_scope(self) -> EffectScope:
-        return EffectScope.LOCAL_STATE
