@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Completed 01-05-PLAN.md
-last_updated: "2026-07-19T05:11:07.648Z"
+stopped_at: Completed 01-06-PLAN.md
+last_updated: "2026-07-19T05:34:13.783Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 11
-  completed_plans: 5
-  percent: 45
+  completed_plans: 6
+  percent: 0
 ---
 
 # Project State: SkillScout
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 6 of 11
+**Plan:** 7 of 11
 **Execution:** Six verified gap-closure plans are pending
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
@@ -92,8 +92,8 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T05:11:07.644Z
-**Stopped at:** Completed 01-05-PLAN.md
+**Last session:** 2026-07-19T05:34:13.779Z
+**Stopped at:** Completed 01-06-PLAN.md
 **Resume file:** None
 
 ### Completed
@@ -128,6 +128,7 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 | Phase 01 P03 | 21 min | 3 tasks | 11 files |
 | Phase 01 P04 | 21 min | 3 tasks | 11 files |
 | Phase 01 P05 | 9min | 2 tasks | 5 files |
+| Phase 01 P06 | 16min | 2 tasks | 6 files |
 
 ## Decisions
 
@@ -144,3 +145,6 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 - [Phase 01]: Derive registration authority only from adapter-owned effect declarations — Remove the parallel caller label that enabled capability misrepresentation.
 - [Phase 01]: Seal build_dry_run_runtime to PHASE_ONE_MAX_SCOPES — Production construction has no policy or arbitrary-registration widening input.
 - [Phase 01]: Keep PipelineRunner injectable while production composition requires supported concrete adapters — Deterministic tests retain protocol seams without widening the production authority boundary.
+- [Phase 01]: Use one immutable producer/schema registry at runtime, migration, manifest write and manifest read boundaries. — Prevent successful evidence that the reader later rejects.
+- [Phase 01]: Validate StagePayload and bound exact canonical manifest bytes before filesystem activity. — Keep untrusted outputs JSON-only, deterministic and resource bounded.
+- [Phase 01]: Close known post-start failures immediately and reconcile indeterminate orphan attempts on next open. — Keep durable lifecycle evidence truthful after failures.
