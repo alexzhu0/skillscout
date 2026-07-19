@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
+import skillscout.adapters.state as state_adapter
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner
 from skillscout.application.ports import ErrorCode, SafeFailure
@@ -237,3 +239,100 @@ def test_symlinked_output_directory_is_rejected_without_external_write(
     finally:
         store.close()
     assert list(external.iterdir()) == []
+
+
+def test_state_uses_private_memory_sqlite_and_one_reusable_live_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened_databases: list[object] = []
+    original_connect = state_adapter.sqlite3.connect
+
+    def observed_connect(database: object, *args: object, **kwargs: object):
+        opened_databases.append(database)
+        return original_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(state_adapter.sqlite3, "connect", observed_connect)
+    database = tmp_path / "serialized.db"
+    first = SQLiteStateStore(database)
+    lock = tmp_path / ".serialized.db.lock"
+    first_lock_identity = (os.lstat(lock).st_dev, os.lstat(lock).st_ino)
+    try:
+        first.create_run("run-1", "subject-1", "2026-07-19T00:00:00.000000Z")
+        with pytest.raises(SafeFailure) as failure:
+            SQLiteStateStore(database)
+        assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    finally:
+        first.close()
+
+    second = SQLiteStateStore(database)
+    try:
+        assert second.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+        assert (os.lstat(lock).st_dev, os.lstat(lock).st_ino) == first_lock_identity
+    finally:
+        second.close()
+
+    assert opened_databases
+    assert set(opened_databases) == {":memory:"}
+
+
+def test_parent_swap_after_state_anchor_cannot_redirect_state_or_manifests(
+    tmp_path: Path,
+) -> None:
+    visible_parent = tmp_path / "visible"
+    anchored_parent = tmp_path / "anchored"
+    attacker_parent = tmp_path / "attacker"
+    visible_parent.mkdir(mode=0o700)
+    attacker_parent.mkdir(mode=0o700)
+    attacker_canary = attacker_parent / "canary"
+    attacker_canary.write_bytes(b"unchanged")
+    swapped = False
+
+    def swap_parent(seam: str) -> None:
+        nonlocal swapped
+        if seam != "after_state_parent_anchor" or swapped:
+            return
+        visible_parent.rename(anchored_parent)
+        visible_parent.symlink_to(attacker_parent, target_is_directory=True)
+        swapped = True
+
+    store = SQLiteStateStore(visible_parent / "state.db", filesystem_seam=swap_parent)
+    try:
+        PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), anchored_parent / "output"
+        )
+    finally:
+        store.close()
+
+    assert swapped is True
+    assert (anchored_parent / "state.db").is_file()
+    assert any((anchored_parent / "state.manifests").rglob("*.json"))
+    assert attacker_canary.read_bytes() == b"unchanged"
+    assert sorted(path.name for path in attacker_parent.iterdir()) == ["canary"]
+
+
+def test_oversized_serialized_state_fails_before_sqlite_deserialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "oversized.db"
+    with database.open("wb") as stream:
+        stream.truncate(67_108_864 + 1)
+    before = os.lstat(database)
+    connect_calls: list[object] = []
+
+    def reject_connect(database_name: object, *_args: object, **_kwargs: object) -> None:
+        connect_calls.append(database_name)
+        raise AssertionError("oversized bytes reached sqlite")
+
+    monkeypatch.setattr(state_adapter.sqlite3, "connect", reject_connect)
+
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(database)
+
+    assert failure.value.code is ErrorCode.STATE_SCHEMA_INCOMPATIBLE
+    assert connect_calls == []
+    after = os.lstat(database)
+    assert (after.st_dev, after.st_ino, after.st_size) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+    )
