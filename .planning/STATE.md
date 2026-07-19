@@ -3,16 +3,16 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: 01
-current_phase_name: Auditable Dry-Run Spine
+current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Gap-closure plans 01-05 through 01-11 verified and ready
-last_updated: "2026-07-19T04:48:20Z"
+stopped_at: Completed 01-05-PLAN.md
+last_updated: "2026-07-19T05:11:07.648Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 11
-  completed_plans: 4
-  percent: 36
+  completed_plans: 5
+  percent: 45
 ---
 
 # Project State: SkillScout
@@ -23,9 +23,9 @@ progress:
 
 ## Current Position
 
-**Phase:** 01 (Auditable Dry-Run Spine) — GAP CLOSURE PLANNED
-**Plan:** 4 of 11 complete
-**Execution:** Seven verified gap-closure plans are pending
+**Phase:** 01 (auditable-dry-run-spine) — EXECUTING
+**Plan:** 6 of 11
+**Execution:** Six verified gap-closure plans are pending
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
 ## Progress
@@ -34,7 +34,7 @@ progress:
 Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
-Phase 1 implementation  [████░░░░░░]  36%
+Phase 1 implementation  [█████░░░░░]  45%
 ```
 
 | Metric | Value |
@@ -43,7 +43,7 @@ Phase 1 implementation  [████░░░░░░]  36%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 0 |
-| Plans completed | 4/11 |
+| Plans completed | 5/11 |
 
 ## Accumulated Context
 
@@ -92,8 +92,8 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T04:48:20Z
-**Stopped at:** Gap-closure planning passed independent plan checking
+**Last session:** 2026-07-19T05:11:07.644Z
+**Stopped at:** Completed 01-05-PLAN.md
 **Resume file:** None
 
 ### Completed
@@ -127,6 +127,7 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 | Phase 01 P02 | 15 min | 2 tasks | 9 files |
 | Phase 01 P03 | 21 min | 3 tasks | 11 files |
 | Phase 01 P04 | 21 min | 3 tasks | 11 files |
+| Phase 01 P05 | 9min | 2 tasks | 5 files |
 
 ## Decisions
 
@@ -140,3 +141,6 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 - [Phase 01]: Validate the complete immutable effect-scoped registry before constructing the dry-run runner — Remote authority is absent structurally, not hidden behind a flag.
 - [Phase 01]: Persist only closed relative manifest locators — Filesystem roots derive from the configured state DB and operator paths never enter evidence.
 - [Phase 01]: Keep every external diagnostic on a closed code and fixed bounded ASCII summary — Raw exceptions, payloads, credentials and paths never cross into durable or CLI surfaces.
+- [Phase 01]: Derive registration authority only from adapter-owned effect declarations — Remove the parallel caller label that enabled capability misrepresentation.
+- [Phase 01]: Seal build_dry_run_runtime to PHASE_ONE_MAX_SCOPES — Production construction has no policy or arbitrary-registration widening input.
+- [Phase 01]: Keep PipelineRunner injectable while production composition requires supported concrete adapters — Deterministic tests retain protocol seams without widening the production authority boundary.
