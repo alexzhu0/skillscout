@@ -138,3 +138,30 @@ def make_result_row_id(*, run_id: str, stage: PipelineStage) -> str:
     """Hash the canonical run/stage association, separate from semantic identity."""
 
     return sha256_digest({"run_id": run_id, "stage": stage.value})
+
+
+def resume_event_hash(
+    *,
+    run_id: str,
+    event_index: int,
+    prior_event_hash: str | None,
+    reused_stage_count: int,
+    checkpoint_stage: PipelineStage | str | None,
+    checkpoint_result_row_id: str | None,
+    checkpoint_manifest_hash: str | None,
+    recorded_at: str,
+) -> str:
+    """Hash every immutable resume-event field except the hash itself."""
+
+    return sha256_digest(
+        {
+            "run_id": run_id,
+            "event_index": event_index,
+            "prior_event_hash": prior_event_hash,
+            "reused_stage_count": reused_stage_count,
+            "checkpoint_stage": checkpoint_stage,
+            "checkpoint_result_row_id": checkpoint_result_row_id,
+            "checkpoint_manifest_hash": checkpoint_manifest_hash,
+            "recorded_at": recorded_at,
+        }
+    )

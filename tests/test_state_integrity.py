@@ -1119,12 +1119,14 @@ def test_schema_v2_integrity_failures_are_fixed_and_sanitized(tmp_path: Path, da
                    (run_id, schema_version, subject_id, fixture_hash,
                     producer_version, retry_policy_version, identity_state,
                     execution_mode, status, created_at, updated_at,
-                    error_code, error_summary, reused_stage_count)
+                    error_code, error_summary, reused_stage_count,
+                    latest_resume_event_hash)
                    VALUES ('corrupt-run', '2', 'subject', NULL, 'fixture-v1',
                            'retry-v1', 'corrupt', 'dry_run', 'running',
                            '2026-07-19T00:00:00.000000Z',
-                           '2026-07-19T00:00:00.000000Z', NULL, NULL, 0)"""
-            )
+                           '2026-07-19T00:00:00.000000Z', NULL, NULL, 0,
+                           'sha256:4444444444444444444444444444444444444444444444444444444444444444')"""
+                )
         else:
             connection.execute(
                 """INSERT INTO checkpoints

@@ -20,6 +20,7 @@ from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
     make_result_row_id,
+    resume_event_hash,
     reusable_key_digest,
     stage_input_hash,
     stage_manifest_hash,
@@ -40,6 +41,7 @@ from skillscout.domain.models import (
     PersistedAttemptRecord,
     PersistedCheckpointRecord,
     PersistedRunRecord,
+    ResumeEvent,
     RunIdentity,
     RunRecord,
     StageAttempt,
@@ -49,7 +51,7 @@ from skillscout.domain.models import (
     validate_manifest_bytes,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_STATE_DB_BYTES = 67_108_864
 MAX_LEGACY_BIND_CANDIDATES = 32
 _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
@@ -88,7 +90,7 @@ class _IndexDescriptor:
     columns: tuple[tuple[int, int, str], ...]
 
 
-def _schema_statements(suffix: str = "") -> tuple[str, ...]:
+def _schema_v2_statements(suffix: str = "") -> tuple[str, ...]:
     runs = f"runs{suffix}"
     attempts = f"stage_attempts{suffix}"
     results = f"stage_results{suffix}"
@@ -184,14 +186,47 @@ def _schema_statements(suffix: str = "") -> tuple[str, ...]:
     )
 
 
+def _schema_statements(suffix: str = "") -> tuple[str, ...]:
+    """Return the sole schema-v3 descriptor set used for create and rebuild."""
+
+    runs = f"runs{suffix}"
+    results = f"stage_results{suffix}"
+    events = f"resume_events{suffix}"
+    statements = list(_schema_v2_statements(suffix))
+    statements[0] = statements[0].replace(
+        "reused_stage_count INTEGER NOT NULL DEFAULT 0,",
+        f"""reused_stage_count INTEGER NOT NULL DEFAULT 0,
+            latest_resume_event_hash TEXT NOT NULL
+                REFERENCES {events}(event_hash) DEFERRABLE INITIALLY DEFERRED,""",
+        1,
+    )
+    statements.append(
+        f"""CREATE TABLE {events} (
+            event_hash TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES {runs}(run_id),
+            event_index INTEGER NOT NULL,
+            prior_event_hash TEXT REFERENCES {events}(event_hash),
+            reused_stage_count INTEGER NOT NULL,
+            checkpoint_stage TEXT,
+            checkpoint_result_row_id TEXT REFERENCES {results}(result_row_id),
+            checkpoint_manifest_hash TEXT,
+            recorded_at TEXT NOT NULL,
+            UNIQUE (run_id, event_index)
+        )"""
+    )
+    return tuple(statements)
+
+
 def _normalize_schema_sql(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
-def _expected_schema_sql() -> MappingProxyType[str, str]:
+def _expected_schema_sql(
+    statements: tuple[str, ...] | None = None,
+) -> MappingProxyType[str, str]:
     expected: dict[str, str] = {}
     pattern = re.compile(r"^CREATE (?:UNIQUE )?(?:TABLE|INDEX) ([^\s(]+)", re.I)
-    for statement in _schema_statements():
+    for statement in statements or _schema_statements():
         matched = pattern.match(statement)
         if matched is None:
             raise RuntimeError("invalid trusted schema statement")
@@ -200,7 +235,8 @@ def _expected_schema_sql() -> MappingProxyType[str, str]:
 
 
 _EXPECTED_SCHEMA_SQL = _expected_schema_sql()
-_EXPECTED_NAMED_SCHEMA_OBJECTS = (
+_EXPECTED_V2_SCHEMA_SQL = _expected_schema_sql(_schema_v2_statements())
+_EXPECTED_V2_NAMED_SCHEMA_OBJECTS = (
     ("index", "idx_attempts_reusable", "stage_attempts"),
     ("index", "idx_results_semantic", "stage_results"),
     ("index", "idx_runs_resumable_identity", "runs"),
@@ -209,7 +245,17 @@ _EXPECTED_NAMED_SCHEMA_OBJECTS = (
     ("table", "stage_attempts", "stage_attempts"),
     ("table", "stage_results", "stage_results"),
 )
-_EXPECTED_COLUMNS = MappingProxyType(
+_EXPECTED_NAMED_SCHEMA_OBJECTS = (
+    ("index", "idx_attempts_reusable", "stage_attempts"),
+    ("index", "idx_results_semantic", "stage_results"),
+    ("index", "idx_runs_resumable_identity", "runs"),
+    ("table", "checkpoints", "checkpoints"),
+    ("table", "resume_events", "resume_events"),
+    ("table", "runs", "runs"),
+    ("table", "stage_attempts", "stage_attempts"),
+    ("table", "stage_results", "stage_results"),
+)
+_EXPECTED_V2_COLUMNS = MappingProxyType(
     {
         "runs": (
             _ColumnDescriptor(0, "run_id", "TEXT", 0, None, 1),
@@ -283,7 +329,27 @@ _EXPECTED_COLUMNS = MappingProxyType(
         ),
     }
 )
-_EXPECTED_FOREIGN_KEYS = MappingProxyType(
+_EXPECTED_COLUMNS = MappingProxyType(
+    {
+        **_EXPECTED_V2_COLUMNS,
+        "runs": (
+            *_EXPECTED_V2_COLUMNS["runs"],
+            _ColumnDescriptor(14, "latest_resume_event_hash", "TEXT", 1, None, 0),
+        ),
+        "resume_events": (
+            _ColumnDescriptor(0, "event_hash", "TEXT", 0, None, 1),
+            _ColumnDescriptor(1, "run_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(2, "event_index", "INTEGER", 1, None, 0),
+            _ColumnDescriptor(3, "prior_event_hash", "TEXT", 0, None, 0),
+            _ColumnDescriptor(4, "reused_stage_count", "INTEGER", 1, None, 0),
+            _ColumnDescriptor(5, "checkpoint_stage", "TEXT", 0, None, 0),
+            _ColumnDescriptor(6, "checkpoint_result_row_id", "TEXT", 0, None, 0),
+            _ColumnDescriptor(7, "checkpoint_manifest_hash", "TEXT", 0, None, 0),
+            _ColumnDescriptor(8, "recorded_at", "TEXT", 1, None, 0),
+        ),
+    }
+)
+_EXPECTED_V2_FOREIGN_KEYS = MappingProxyType(
     {
         "runs": (),
         "stage_attempts": (
@@ -333,7 +399,49 @@ _EXPECTED_FOREIGN_KEYS = MappingProxyType(
         ),
     }
 )
-_EXPECTED_INDEXES = MappingProxyType(
+_EXPECTED_FOREIGN_KEYS = MappingProxyType(
+    {
+        **_EXPECTED_V2_FOREIGN_KEYS,
+        "runs": (
+            _ForeignKeyDescriptor(
+                0,
+                0,
+                "resume_events",
+                "latest_resume_event_hash",
+                "event_hash",
+                "NO ACTION",
+                "NO ACTION",
+                "NONE",
+            ),
+        ),
+        "resume_events": (
+            _ForeignKeyDescriptor(
+                0,
+                0,
+                "stage_results",
+                "checkpoint_result_row_id",
+                "result_row_id",
+                "NO ACTION",
+                "NO ACTION",
+                "NONE",
+            ),
+            _ForeignKeyDescriptor(
+                1,
+                0,
+                "resume_events",
+                "prior_event_hash",
+                "event_hash",
+                "NO ACTION",
+                "NO ACTION",
+                "NONE",
+            ),
+            _ForeignKeyDescriptor(
+                2, 0, "runs", "run_id", "run_id", "NO ACTION", "NO ACTION", "NONE"
+            ),
+        ),
+    }
+)
+_EXPECTED_V2_INDEXES = MappingProxyType(
     {
         "runs": (
             _IndexDescriptor(
@@ -425,6 +533,27 @@ _EXPECTED_INDEXES = MappingProxyType(
         ),
     }
 )
+_EXPECTED_INDEXES = MappingProxyType(
+    {
+        **_EXPECTED_V2_INDEXES,
+        "resume_events": (
+            _IndexDescriptor(
+                "sqlite_autoindex_resume_events_2",
+                1,
+                "u",
+                0,
+                ((0, 1, "run_id"), (1, 2, "event_index")),
+            ),
+            _IndexDescriptor(
+                "sqlite_autoindex_resume_events_1",
+                1,
+                "pk",
+                0,
+                ((0, 0, "event_hash"),),
+            ),
+        ),
+    }
+)
 
 
 class SQLiteStateStore:
@@ -490,6 +619,9 @@ class SQLiteStateStore:
                     self._validate_current_schema()
                 elif version == 1:
                     self._migrate_v1(migration_fail_at)
+                    self._persist_startup_snapshot(previous=raw)
+                elif version == 2:
+                    self._migrate_v2()
                     self._persist_startup_snapshot(previous=raw)
                 else:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
@@ -626,9 +758,40 @@ class SQLiteStateStore:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     def _validate_current_schema(self) -> None:
+        self._validate_schema(
+            version=SCHEMA_VERSION,
+            expected_named_objects=_EXPECTED_NAMED_SCHEMA_OBJECTS,
+            schema_sql=_EXPECTED_SCHEMA_SQL,
+            expected_columns_by_table=_EXPECTED_COLUMNS,
+            expected_foreign_keys_by_table=_EXPECTED_FOREIGN_KEYS,
+            expected_indexes_by_table=_EXPECTED_INDEXES,
+        )
+
+    def _validate_v2_schema(self) -> None:
+        self._validate_schema(
+            version=2,
+            expected_named_objects=_EXPECTED_V2_NAMED_SCHEMA_OBJECTS,
+            schema_sql=_EXPECTED_V2_SCHEMA_SQL,
+            expected_columns_by_table=_EXPECTED_V2_COLUMNS,
+            expected_foreign_keys_by_table=_EXPECTED_V2_FOREIGN_KEYS,
+            expected_indexes_by_table=_EXPECTED_V2_INDEXES,
+        )
+
+    def _validate_schema(
+        self,
+        *,
+        version: int,
+        expected_named_objects: tuple[tuple[str, str, str], ...],
+        schema_sql: Mapping[str, str],
+        expected_columns_by_table: Mapping[str, tuple[_ColumnDescriptor, ...]],
+        expected_foreign_keys_by_table: Mapping[
+            str, tuple[_ForeignKeyDescriptor, ...]
+        ],
+        expected_indexes_by_table: Mapping[str, tuple[_IndexDescriptor, ...]],
+    ) -> None:
         try:
-            version = self._db.execute("PRAGMA user_version").fetchone()
-            if version is None or int(version[0]) != SCHEMA_VERSION:
+            stored_version = self._db.execute("PRAGMA user_version").fetchone()
+            if stored_version is None or int(stored_version[0]) != version:
                 raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
             quick_check = self._db.execute("PRAGMA quick_check").fetchall()
             if len(quick_check) != 1 or tuple(quick_check[0]) != ("ok",):
@@ -642,10 +805,10 @@ class SQLiteStateStore:
                        ORDER BY type, name"""
                 )
             )
-            if named_objects != _EXPECTED_NAMED_SCHEMA_OBJECTS:
+            if named_objects != expected_named_objects:
                 raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
 
-            for name, expected_sql in _EXPECTED_SCHEMA_SQL.items():
+            for name, expected_sql in schema_sql.items():
                 row = self._db.execute(
                     "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
                 ).fetchone()
@@ -656,8 +819,8 @@ class SQLiteStateStore:
                 ):
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
 
-            for table, expected_columns in _EXPECTED_COLUMNS.items():
-                columns = tuple(
+            for table, expected_columns in expected_columns_by_table.items():
+                actual_columns = tuple(
                     _ColumnDescriptor(
                         int(row["cid"]),
                         str(row["name"]),
@@ -668,7 +831,7 @@ class SQLiteStateStore:
                     )
                     for row in self._db.execute(f'PRAGMA table_info("{table}")').fetchall()
                 )
-                if columns != expected_columns:
+                if actual_columns != expected_columns:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
 
                 foreign_keys = tuple(
@@ -684,7 +847,7 @@ class SQLiteStateStore:
                     )
                     for row in self._db.execute(f'PRAGMA foreign_key_list("{table}")').fetchall()
                 )
-                if foreign_keys != _EXPECTED_FOREIGN_KEYS[table]:
+                if foreign_keys != expected_foreign_keys_by_table[table]:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
 
                 indexes: list[_IndexDescriptor] = []
@@ -705,7 +868,7 @@ class SQLiteStateStore:
                             index_columns,
                         )
                     )
-                if tuple(indexes) != _EXPECTED_INDEXES[table]:
+                if tuple(indexes) != expected_indexes_by_table[table]:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
 
             if self._db.execute("PRAGMA foreign_key_check").fetchall():
@@ -720,7 +883,7 @@ class SQLiteStateStore:
         try:
             self._validate_v1_source_rows()
             self._db.execute("BEGIN IMMEDIATE")
-            for statement in _schema_statements("_v2"):
+            for statement in _schema_v2_statements("_v2"):
                 self._db.execute(statement)
             self._trip_migration_seam(fail_at, "after_schema")
 
@@ -828,7 +991,7 @@ class SQLiteStateStore:
 
             for table in ("checkpoints", "stage_results", "stage_attempts", "runs"):
                 self._db.execute(f"DROP TABLE {table}")
-            for statement in _schema_statements():
+            for statement in _schema_v2_statements():
                 self._db.execute(statement)
             for table in ("runs", "stage_attempts", "stage_results", "checkpoints"):
                 self._db.execute(f"INSERT INTO {table} SELECT * FROM {table}_v2")
@@ -839,13 +1002,144 @@ class SQLiteStateStore:
                 "runs_v2",
             ):
                 self._db.execute(f"DROP TABLE {table}")
+            self._db.execute("PRAGMA user_version = 2")
+            self._validate_v2_schema()
+            self._db.commit()
+            self._migrate_v2()
+        except Exception:
+            self._db.rollback()
+            self._remove_migration_manifests(created_manifests)
+            raise SafeFailure(ErrorCode.STATE_SCHEMA_MIGRATION_ERROR) from None
+
+    def _migrate_v2(self) -> None:
+        """Rebuild exact pre-event v2 state with genesis-only event authority."""
+
+        try:
+            self._validate_v2_schema()
+            run_rows = self._db.execute("SELECT * FROM runs ORDER BY run_id").fetchall()
+            events: dict[str, ResumeEvent] = {}
+            for row in run_rows:
+                run = self._persisted_run_record(row)
+                legacy_count = row["reused_stage_count"]
+                if type(legacy_count) is not int or legacy_count != 0:
+                    raise ValueError("unattested historical reuse count")
+                if run.identity_state == "bound":
+                    self._verify_run_chain(self._db, run.run_id, run.identity)
+                else:
+                    self._validate_pre_event_legacy_run(run)
+                events[run.run_id] = self._new_resume_event(
+                    run_id=run.run_id,
+                    event_index=0,
+                    prior_event_hash=None,
+                    reused_stage_count=0,
+                    checkpoint=None,
+                    recorded_at=run.created_at,
+                )
+
+            self._db.execute("BEGIN IMMEDIATE")
+            for statement in _schema_statements("_v3"):
+                self._db.execute(statement)
+
+            for row in run_rows:
+                event = events[str(row["run_id"])]
+                self._db.execute(
+                    """INSERT INTO runs_v3
+                       (run_id, schema_version, subject_id, fixture_hash,
+                        producer_version, retry_policy_version, identity_state,
+                        execution_mode, status, created_at, updated_at, error_code,
+                        error_summary, reused_stage_count, latest_resume_event_hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                    (
+                        row["run_id"],
+                        row["schema_version"],
+                        row["subject_id"],
+                        row["fixture_hash"],
+                        row["producer_version"],
+                        row["retry_policy_version"],
+                        row["identity_state"],
+                        row["execution_mode"],
+                        row["status"],
+                        row["created_at"],
+                        row["updated_at"],
+                        row["error_code"],
+                        row["error_summary"],
+                        event.event_hash,
+                    ),
+                )
+                self._insert_resume_event(self._db, event, suffix="_v3")
+
+            for table in ("stage_attempts", "stage_results", "checkpoints"):
+                self._db.execute(f"INSERT INTO {table}_v3 SELECT * FROM {table}")
+
+            for table in ("checkpoints", "stage_results", "stage_attempts", "runs"):
+                self._db.execute(f"DROP TABLE {table}")
+            for statement in _schema_statements():
+                self._db.execute(statement)
+            for table in ("runs", "stage_attempts", "stage_results", "checkpoints"):
+                self._db.execute(f"INSERT INTO {table} SELECT * FROM {table}_v3")
+            self._db.execute("INSERT INTO resume_events SELECT * FROM resume_events_v3")
+            for table in (
+                "resume_events_v3",
+                "checkpoints_v3",
+                "stage_results_v3",
+                "stage_attempts_v3",
+                "runs_v3",
+            ):
+                self._db.execute(f"DROP TABLE {table}")
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._validate_current_schema()
             self._db.commit()
         except Exception:
             self._db.rollback()
-            self._remove_migration_manifests(created_manifests)
             raise SafeFailure(ErrorCode.STATE_SCHEMA_MIGRATION_ERROR) from None
+
+    def _validate_pre_event_legacy_run(self, run: PersistedRunRecord) -> None:
+        """Validate reconstructible v2 legacy facts without binding fixture identity."""
+
+        attempts = tuple(
+            self._persisted_attempt_record(row)
+            for row in self._db.execute(
+                """SELECT * FROM stage_attempts WHERE run_id = ?
+                   ORDER BY stage_index, attempt_no, attempt_id""",
+                (run.run_id,),
+            ).fetchall()
+        )
+        result_rows = self._db.execute(
+            """SELECT * FROM stage_results WHERE run_id = ?
+               ORDER BY stage_index, result_row_id""",
+            (run.run_id,),
+        ).fetchall()
+        checkpoint_rows = self._db.execute(
+            """SELECT * FROM checkpoints WHERE run_id = ?
+               ORDER BY stage_index, stage""",
+            (run.run_id,),
+        ).fetchall()
+        if len(result_rows) != len(checkpoint_rows):
+            raise ValueError("legacy result/checkpoint cardinality mismatch")
+        attempts_by_id = {attempt.attempt_id: attempt for attempt in attempts}
+        for expected_index, (result_row, checkpoint_row) in enumerate(
+            zip(result_rows, checkpoint_rows, strict=True)
+        ):
+            stage = tuple(PipelineStage)[expected_index]
+            envelope = self._verify_manifest_row(result_row)
+            checkpoint = self._persisted_checkpoint_record(checkpoint_row)
+            attempt = attempts_by_id.get(envelope.attempt_id)
+            if (
+                attempt is None
+                or attempt.status is not AttemptStatus.SUCCEEDED
+                or envelope.run_id != run.run_id
+                or envelope.subject_id != run.subject_id
+                or envelope.stage is not stage
+                or envelope.stage_index != expected_index
+                or checkpoint.run_id != run.run_id
+                or checkpoint.stage is not stage
+                or checkpoint.stage_index != expected_index
+                or checkpoint.result_row_id != envelope.result_row_id
+                or checkpoint.result_id != envelope.result_id
+                or checkpoint.output_hash != envelope.output_hash
+                or checkpoint.manifest_hash != envelope.manifest_hash
+            ):
+                raise ValueError("legacy canonical association mismatch")
 
     @staticmethod
     def _trip_migration_seam(configured: str | None, current: str) -> None:
@@ -981,6 +1275,87 @@ class SQLiteStateStore:
             raise
         except (IndexError, KeyError, ValidationError, ValueError, TypeError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    @classmethod
+    def _persisted_resume_event(
+        cls, row: Mapping[str, object] | sqlite3.Row
+    ) -> ResumeEvent:
+        del cls
+        try:
+            return ResumeEvent.model_validate(
+                {
+                    "event_hash": row["event_hash"],
+                    "run_id": row["run_id"],
+                    "event_index": row["event_index"],
+                    "prior_event_hash": row["prior_event_hash"],
+                    "reused_stage_count": row["reused_stage_count"],
+                    "checkpoint_stage": (
+                        PipelineStage(str(row["checkpoint_stage"]))
+                        if row["checkpoint_stage"] is not None
+                        else None
+                    ),
+                    "checkpoint_result_row_id": row["checkpoint_result_row_id"],
+                    "checkpoint_manifest_hash": row["checkpoint_manifest_hash"],
+                    "recorded_at": row["recorded_at"],
+                }
+            )
+        except (IndexError, KeyError, ValidationError, ValueError, TypeError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    @staticmethod
+    def _new_resume_event(
+        *,
+        run_id: str,
+        event_index: int,
+        prior_event_hash: str | None,
+        reused_stage_count: int,
+        checkpoint: Checkpoint | None,
+        recorded_at: str,
+    ) -> ResumeEvent:
+        values = {
+            "run_id": run_id,
+            "event_index": event_index,
+            "prior_event_hash": prior_event_hash,
+            "reused_stage_count": reused_stage_count,
+            "checkpoint_stage": checkpoint.stage if checkpoint is not None else None,
+            "checkpoint_result_row_id": (
+                checkpoint.result_row_id if checkpoint is not None else None
+            ),
+            "checkpoint_manifest_hash": (
+                checkpoint.manifest_hash if checkpoint is not None else None
+            ),
+            "recorded_at": recorded_at,
+        }
+        return ResumeEvent(
+            event_hash=resume_event_hash(**values),
+            **values,
+        )
+
+    @staticmethod
+    def _insert_resume_event(
+        database: sqlite3.Connection,
+        event: ResumeEvent,
+        *,
+        suffix: str = "",
+    ) -> None:
+        database.execute(
+            f"""INSERT INTO resume_events{suffix}
+               (event_hash, run_id, event_index, prior_event_hash,
+                reused_stage_count, checkpoint_stage, checkpoint_result_row_id,
+                checkpoint_manifest_hash, recorded_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event.event_hash,
+                event.run_id,
+                event.event_index,
+                event.prior_event_hash,
+                event.reused_stage_count,
+                event.checkpoint_stage.value if event.checkpoint_stage is not None else None,
+                event.checkpoint_result_row_id,
+                event.checkpoint_manifest_hash,
+                event.recorded_at,
+            ),
+        )
 
     def _validate_v1_source_rows(self) -> None:
         attempts = self._db.execute("SELECT * FROM stage_attempts").fetchall()
@@ -1209,25 +1584,43 @@ class SQLiteStateStore:
         except DurableWriteError:
             pass
 
-    def create_run(self, run_id: str, identity: RunIdentity, created_at: str) -> None:
-        self._write_transaction(
-            """INSERT INTO runs
-               (run_id, schema_version, subject_id, fixture_hash, producer_version,
-                retry_policy_version, identity_state, execution_mode, status,
-                created_at, updated_at, error_code, error_summary, reused_stage_count)
-               VALUES (?, ?, ?, ?, ?, ?, 'bound', 'dry_run', 'running', ?, ?,
-                       NULL, NULL, 0)""",
-            (
-                run_id,
-                identity.schema_version,
-                identity.subject_id,
-                identity.fixture_hash,
-                identity.producer_version,
-                identity.retry_policy_version,
-                created_at,
-                created_at,
-            ),
+    def create_run(
+        self, run_id: str, identity: RunIdentity, created_at: str
+    ) -> ResumeEvent:
+        genesis = self._new_resume_event(
+            run_id=run_id,
+            event_index=0,
+            prior_event_hash=None,
+            reused_stage_count=0,
+            checkpoint=None,
+            recorded_at=created_at,
         )
+
+        def mutate(database: sqlite3.Connection) -> ResumeEvent:
+            database.execute(
+                """INSERT INTO runs
+                   (run_id, schema_version, subject_id, fixture_hash, producer_version,
+                    retry_policy_version, identity_state, execution_mode, status,
+                    created_at, updated_at, error_code, error_summary, reused_stage_count,
+                    latest_resume_event_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, 'bound', 'dry_run', 'running', ?, ?,
+                           NULL, NULL, 0, ?)""",
+                (
+                    run_id,
+                    identity.schema_version,
+                    identity.subject_id,
+                    identity.fixture_hash,
+                    identity.producer_version,
+                    identity.retry_policy_version,
+                    created_at,
+                    created_at,
+                    genesis.event_hash,
+                ),
+            )
+            self._insert_resume_event(database, genesis)
+            return genesis
+
+        return self._snapshot_transaction(mutate)
 
     def find_resumable_run(self, identity: RunIdentity) -> RunRecord | None:
         try:

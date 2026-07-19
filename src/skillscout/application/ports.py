@@ -9,6 +9,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 from skillscout.domain.enums import EffectScope, PipelineStage
 from skillscout.domain.models import (
     Checkpoint,
+    ResumeEvent,
     RunIdentity,
     RunRecord,
     StageAttempt,
@@ -126,7 +127,7 @@ class StateStore(Protocol):
 
     def create_run(
         self, run_id: str, identity: RunIdentity, created_at: str
-    ) -> None: ...
+    ) -> ResumeEvent: ...
 
     def find_resumable_run(self, identity: RunIdentity) -> RunRecord | None: ...
 

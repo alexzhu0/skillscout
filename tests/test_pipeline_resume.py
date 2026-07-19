@@ -111,6 +111,15 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
     store = SQLiteStateStore(copied)
     try:
         assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        event_rows = store.connection.execute(
+            "SELECT * FROM resume_events ORDER BY event_index"
+        ).fetchall()
+        assert len(event_rows) == 1
+        assert tuple(event_rows[0])[2:5] == (0, None, 0)
+        migrated_run = store.connection.execute(
+            "SELECT latest_resume_event_hash, reused_stage_count FROM runs"
+        ).fetchone()
+        assert tuple(migrated_run) == (event_rows[0]["event_hash"], 0)
         with pytest.raises(SafeFailure) as unbound:
             store.inspect_run(str(provenance["run_id"]))
         assert unbound.value.code is ErrorCode.STATE_IDENTITY_UNBOUND

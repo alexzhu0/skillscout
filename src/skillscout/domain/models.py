@@ -346,6 +346,62 @@ class Checkpoint(StrictFrozenModel):
     updated_at: NonEmpty
 
 
+class ResumeEvent(StrictFrozenModel):
+    """Immutable invocation decision bound to one exact verified prefix."""
+
+    event_hash: Digest
+    run_id: PersistedIdentifier
+    event_index: PersistedSQLiteInt
+    prior_event_hash: Digest | None
+    reused_stage_count: Annotated[int, Field(ge=0, le=len(tuple(PipelineStage)))]
+    checkpoint_stage: PipelineStage | None
+    checkpoint_result_row_id: Digest | None
+    checkpoint_manifest_hash: Digest | None
+    recorded_at: PersistedTimestamp
+
+    @model_validator(mode="after")
+    def validate_resume_event(self) -> ResumeEvent:
+        checkpoint_tuple = (
+            self.checkpoint_stage,
+            self.checkpoint_result_row_id,
+            self.checkpoint_manifest_hash,
+        )
+        all_null = all(value is None for value in checkpoint_tuple)
+        all_present = all(value is not None for value in checkpoint_tuple)
+
+        if self.event_index == 0:
+            valid_shape = (
+                self.prior_event_hash is None
+                and self.reused_stage_count == 0
+                and all_null
+            )
+        elif self.prior_event_hash is None:
+            valid_shape = False
+        elif self.reused_stage_count == 0:
+            valid_shape = all_null
+        else:
+            valid_shape = all_present and self.reused_stage_count == (
+                self.checkpoint_stage_index + 1
+            )
+        if not valid_shape:
+            raise ValueError("resume event shape is inconsistent")
+
+        from skillscout.domain.canonical import resume_event_hash
+
+        expected_hash = resume_event_hash(
+            **self.model_dump(mode="json", exclude={"event_hash"})
+        )
+        if self.event_hash != expected_hash:
+            raise ValueError("resume event hash is inconsistent")
+        return self
+
+    @property
+    def checkpoint_stage_index(self) -> int:
+        if self.checkpoint_stage is None:
+            raise ValueError("resume event has no checkpoint stage")
+        return tuple(PipelineStage).index(self.checkpoint_stage)
+
+
 class PersistedCheckpointRecord(Checkpoint):
     """Exact sanitized projection of one persisted checkpoint row."""
 
