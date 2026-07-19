@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
+    make_result_row_id,
     reusable_key_digest,
     stage_input_hash,
     stage_manifest_hash,
@@ -278,6 +279,30 @@ def test_reusable_key_has_exact_five_field_preimage() -> None:
         retryable=True,
     )
     assert first.reusable_key_digest == second.reusable_key_digest
+
+
+def test_result_row_identity_is_run_scoped_without_changing_semantic_identity() -> None:
+    semantic_result = make_result_id(
+        subject_id="fixture:approved-workflow",
+        stage=PipelineStage.VALIDATORS,
+        input_hash="sha256:" + "2" * 64,
+        producer_version="fixture-v1",
+        output_hash="sha256:" + "3" * 64,
+    )
+
+    first = make_result_row_id(run_id="run-a", stage=PipelineStage.VALIDATORS)
+    second = make_result_row_id(run_id="run-b", stage=PipelineStage.VALIDATORS)
+
+    assert first == _digest({"run_id": "run-a", "stage": "validators"})
+    assert second == _digest({"run_id": "run-b", "stage": "validators"})
+    assert first != second
+    assert semantic_result == make_result_id(
+        subject_id="fixture:approved-workflow",
+        stage=PipelineStage.VALIDATORS,
+        input_hash="sha256:" + "2" * 64,
+        producer_version="fixture-v1",
+        output_hash="sha256:" + "3" * 64,
+    )
 
 
 @pytest.mark.parametrize(

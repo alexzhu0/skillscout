@@ -15,9 +15,11 @@ import skillscout.adapters.state as state_adapter
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner
 from skillscout.application.ports import ErrorCode, SafeFailure
-from skillscout.domain.enums import RunStatus
+from skillscout.domain.canonical import make_result_row_id
+from skillscout.domain.enums import PipelineStage, RunStatus
 
 APPROVED_FIXTURE = Path(__file__).parent / "fixtures" / "pipeline" / "approved.json"
+FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
 
 
 def _hold_state_lock(database: str, control) -> None:
@@ -418,3 +420,126 @@ def test_parent_swap_during_failed_snapshot_cleanup_never_touches_attacker(
     assert (anchored_parent / "state.db").read_bytes() == prior
     assert attacker_canary.read_bytes() == b"attacker-unchanged"
     assert sorted(path.name for path in attacker_parent.iterdir()) == ["canary"]
+
+
+def test_semantic_result_twins_use_distinct_run_scoped_rows(tmp_path: Path) -> None:
+    database = tmp_path / "semantic-twins.db"
+    store = SQLiteStateStore(database)
+    try:
+        first = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "first"
+        )
+        second = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "second"
+        )
+        rows = store.connection.execute(
+            """SELECT run_id, stage, result_row_id, result_id
+               FROM stage_results ORDER BY stage_index, run_id"""
+        ).fetchall()
+        checkpoints = store.connection.execute(
+            """SELECT c.run_id, c.stage, c.result_row_id, r.run_id AS result_run_id,
+                      c.result_id, r.result_id AS stored_result_id
+               FROM checkpoints c
+               JOIN stage_results r ON r.result_row_id = c.result_row_id
+               ORDER BY c.stage_index, c.run_id"""
+        ).fetchall()
+    finally:
+        store.close()
+
+    assert first.run_id != second.run_id
+    assert len(rows) == 18
+    for stage in PipelineStage:
+        twins = [row for row in rows if row["stage"] == stage.value]
+        assert len(twins) == 2
+        assert twins[0]["result_id"] == twins[1]["result_id"]
+        assert twins[0]["result_row_id"] != twins[1]["result_row_id"]
+        assert {
+            row["result_row_id"] for row in twins
+        } == {
+            make_result_row_id(run_id=first.run_id, stage=stage),
+            make_result_row_id(run_id=second.run_id, stage=stage),
+        }
+    assert all(row["run_id"] == row["result_run_id"] for row in checkpoints)
+    assert all(row["result_id"] == row["stored_result_id"] for row in checkpoints)
+
+
+def test_result_row_constraints_reject_cross_run_checkpoint_and_duplicates(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "constraints.db")
+    try:
+        PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "out"
+        )
+        foreign_keys = store.connection.execute(
+            "PRAGMA foreign_key_list(checkpoints)"
+        ).fetchall()
+        assert any(
+            row["table"] == "stage_results"
+            and row["from"] == "result_row_id"
+            and row["to"] == "result_row_id"
+            for row in foreign_keys
+        )
+
+        result = store.connection.execute(
+            "SELECT * FROM stage_results WHERE stage = 'scout'"
+        ).fetchone()
+        attempt = store.connection.execute(
+            "SELECT * FROM stage_attempts WHERE stage = 'scout'"
+        ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError):
+            store.connection.execute(
+                """INSERT INTO stage_results
+                   SELECT ?, result_id, attempt_id, run_id, schema_version, subject_id,
+                          stage, stage_index, output_json, output_hash, producer_version,
+                          manifest_hash, manifest_path, created_at
+                   FROM stage_results WHERE result_row_id = ?""",
+                ("sha256:" + "a" * 64, result["result_row_id"]),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            store.connection.execute(
+                """INSERT INTO stage_results
+                   SELECT ?, result_id, ?, run_id, schema_version, subject_id,
+                          stage, stage_index, output_json, output_hash, producer_version,
+                          manifest_hash, manifest_path, created_at
+                   FROM stage_results WHERE result_row_id = ?""",
+                (
+                    "sha256:" + "b" * 64,
+                    attempt["attempt_id"],
+                    result["result_row_id"],
+                ),
+            )
+    finally:
+        store.close()
+
+
+def test_v1_migration_preserves_semantic_results_and_adds_row_identity(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "migrated.db"
+    shutil.copy2(FROZEN_DATABASE, database)
+    with _connect(database) as legacy:
+        legacy_results = [
+            str(row[0])
+            for row in legacy.execute(
+                "SELECT result_id FROM stage_results ORDER BY stage_index"
+            )
+        ]
+
+    store = SQLiteStateStore(database)
+    try:
+        migrated = store.connection.execute(
+            """SELECT run_id, stage, result_row_id, result_id
+               FROM stage_results ORDER BY stage_index"""
+        ).fetchall()
+        assert [str(row["result_id"]) for row in migrated] == legacy_results
+        assert all(
+            row["result_row_id"]
+            == make_result_row_id(
+                run_id=str(row["run_id"]), stage=PipelineStage(str(row["stage"]))
+            )
+            for row in migrated
+        )
+        assert store.connection.execute("PRAGMA foreign_key_check").fetchone() is None
+    finally:
+        store.close()
