@@ -314,13 +314,14 @@ def test_output_normalization_is_narrow_and_preserves_failure_facts(tmp_path: Pa
         "node tests/test_x.py::test_failure\n"
         "FAILED arbitrary failure text\n"
         "7 failed, 2 passed in 12.34s\n"
+        "Resolved 13 packages in 0.76ms\n"
     ).encode()
 
     normalized = verifier.normalize_output(raw, repository, workspace)
 
     assert str(workspace).encode() not in normalized
     assert b"<TEMP_ROOT>/state.db" in normalized
-    assert b"in <ELAPSED>s" in normalized
+    assert normalized.count(b"in <ELAPSED>") == 2
     assert b"tests/test_x.py::test_failure" in normalized
     assert b"FAILED arbitrary failure text" in normalized
     assert b"7 failed, 2 passed" in normalized

@@ -42,7 +42,7 @@ EXPECTED_TOP_LEVEL = {
     "deferred",
 }
 NORMALIZATION = {
-    "elapsed_time": "decimal seconds following the literal ' in '",
+    "elapsed_time": "decimal ns/us/ms/s duration following the literal ' in '",
     "temporary_root": "exact per-command temporary workspace path",
 }
 CLI_FACTS = {
@@ -364,7 +364,9 @@ def normalize_output(raw: bytes, repository_root: Path, temporary_root: Path) ->
 
     del repository_root
     normalized = raw.replace(os.fsencode(str(temporary_root)), b"<TEMP_ROOT>")
-    return re.sub(rb"(?<= in )\d+(?:\.\d+)?s\b", b"<ELAPSED>s", normalized)
+    return re.sub(
+        rb"(?<= in )\d+(?:\.\d+)?(?:ns|us|ms|s)\b", b"<ELAPSED>", normalized
+    )
 
 
 def _materialize_argv(
