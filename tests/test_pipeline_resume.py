@@ -463,22 +463,43 @@ def test_run_row_count_cannot_authorize_or_override_persisted_resume_fact(
                 subject, tmp_path / "count-first", fail_after="generator"
             )
         run_id = str(store.connection.execute("SELECT run_id FROM runs").fetchone()[0])
+        before = tuple(
+            store.connection.execute(
+                """SELECT r.status, r.updated_at, COUNT(DISTINCT a.attempt_id),
+                          COUNT(DISTINCT e.event_hash)
+                   FROM runs r
+                   LEFT JOIN stage_attempts a USING (run_id)
+                   LEFT JOIN resume_events e USING (run_id)
+                   WHERE r.run_id = ? GROUP BY r.run_id""",
+                (run_id,),
+            ).fetchone()
+        )
         store.connection.execute(
             "UPDATE runs SET reused_stage_count = 1 WHERE run_id = ?", (run_id,)
         )
-        summary = PipelineRunner(store, FixtureProcessor()).run(
-            subject, tmp_path / "count-resume"
+        with pytest.raises(SafeFailure) as failure:
+            PipelineRunner(store, FixtureProcessor()).run(
+                subject, tmp_path / "count-resume"
+            )
+        after = tuple(
+            store.connection.execute(
+                """SELECT r.status, r.updated_at, COUNT(DISTINCT a.attempt_id),
+                          COUNT(DISTINCT e.event_hash)
+                   FROM runs r
+                   LEFT JOIN stage_attempts a USING (run_id)
+                   LEFT JOIN resume_events e USING (run_id)
+                   WHERE r.run_id = ? GROUP BY r.run_id""",
+                (run_id,),
+            ).fetchone()
         )
-        latest = _resume_events(store, run_id)[-1]
-        persisted_count = store.connection.execute(
-            "SELECT reused_stage_count FROM runs WHERE run_id = ?", (run_id,)
-        ).fetchone()[0]
     finally:
         store.close()
 
-    assert latest.checkpoint_stage is PipelineStage.GENERATOR
-    assert latest.reused_stage_count == summary.reused_stage_count == 6
-    assert persisted_count == 6
+    assert failure.value.as_dict() == {
+        "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+        "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+    }
+    assert after == before
 
 
 def test_complete_run_identity_is_persisted_before_first_attempt(tmp_path: Path) -> None:
