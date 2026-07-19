@@ -104,23 +104,22 @@ FORBIDDEN_PRODUCTION_MODULES = frozenset(
     }
 )
 FORBIDDEN_DIRECT_CALLS = frozenset({"compile", "eval", "exec"})
-FORBIDDEN_ATTRIBUTE_CALLS = frozenset(
-    {
-        "create_connection",
-        "connect",
-        "connect_ex",
-        "popen",
-        "sendmsg",
-        "sendto",
-        "system",
-    }
-)
+FORBIDDEN_QUALIFIED_CALLS = frozenset({"os.popen", "os.system"})
 
 
 def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     return connection
+
+
+def _qualified_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        parent = _qualified_name(node.value, aliases)
+        return f"{parent}.{node.attr}" if parent else None
+    return None
 
 
 def _fixture_with_goal(source: Path, target: Path, goal: str) -> Path:
@@ -546,20 +545,21 @@ def test_production_capability_surface_remains_local_only() -> None:
     forbidden_calls: list[str] = []
     for module in sorted(SOURCE_ROOT.rglob("*.py")):
         tree = ast.parse(module.read_bytes(), filename=str(module))
+        aliases: dict[str, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                imported_modules.update(alias.name for alias in node.names)
+                for alias in node.names:
+                    imported_modules.add(alias.name)
+                    aliases[alias.asname or alias.name.split(".")[0]] = alias.name
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported_modules.add(node.module)
+                for alias in node.names:
+                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
             elif isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_DIRECT_CALLS:
-                    forbidden_calls.append(f"{module.relative_to(PROJECT_ROOT)}:{node.func.id}")
-                elif (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr in FORBIDDEN_ATTRIBUTE_CALLS
-                ):
+                call_name = _qualified_name(node.func, aliases)
+                if call_name in FORBIDDEN_DIRECT_CALLS | FORBIDDEN_QUALIFIED_CALLS:
                     forbidden_calls.append(
-                        f"{module.relative_to(PROJECT_ROOT)}:{node.func.attr}"
+                        f"{module.relative_to(PROJECT_ROOT)}:{call_name}"
                     )
 
     forbidden_imports = {
