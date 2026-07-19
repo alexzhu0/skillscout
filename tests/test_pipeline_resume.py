@@ -859,6 +859,19 @@ def test_supported_writer_state_is_immediately_verifiable_and_inspectable(
         inspection = store.inspect_run(summary.run_id)
         assert inspection["run"]["status"] == "planned_not_published"
         assert len(inspection["results"]) == len(PipelineStage)
+        assert set(inspection["checkpoint"]) == {
+            "run_id",
+            "subject_id",
+            "stage",
+            "stage_index",
+            "result_row_id",
+            "result_id",
+            "output_hash",
+            "manifest_hash",
+            "manifest_path",
+            "updated_at",
+        }
+        assert inspection["checkpoint"]["manifest_path"].startswith("publication_planner/")
     finally:
         store.close()
 

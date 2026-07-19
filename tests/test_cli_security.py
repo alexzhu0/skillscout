@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +15,11 @@ import pytest
 from skillscout import cli
 from skillscout.adapters import fixtures
 from skillscout.adapters.fixtures import load_fixture
+from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
+
+FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
+FROZEN_DATABASE_SHA256 = "49fa8067a2cc7e55b3afb2e2c93aca91f2b3d6cfbaee1bc32242f7b175bc0251"
 
 
 def _valid_fixture() -> dict[str, object]:
@@ -42,6 +49,12 @@ def _all_bytes(root: Path, excluded: set[Path] | None = None) -> bytes:
     )
 
 
+def _connect(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -50,8 +63,7 @@ def _all_bytes(root: Path, excluded: set[Path] | None = None) -> bytes:
         json.dumps(_valid_fixture() | {"unexpected": "value"}).encode(),
         json.dumps(_valid_fixture() | {"schema_version": 1}).encode(),
         json.dumps(
-            _valid_fixture()
-            | {"subject_id": "fixture:../../GITHUB_TOKEN_DO_NOT_DISCLOSE"}
+            _valid_fixture() | {"subject_id": "fixture:../../GITHUB_TOKEN_DO_NOT_DISCLOSE"}
         ).encode(),
     ],
 )
@@ -160,9 +172,7 @@ def test_state_path_canary_is_not_persisted_or_emitted(
     first = capsys.readouterr()
     assert status == 0, first.err
     run_id = str(json.loads(first.out)["run_id"])
-    inspected_status = cli.main(
-        ["inspect-run", run_id, "--state", str(state), "--format", "json"]
-    )
+    inspected_status = cli.main(["inspect-run", run_id, "--state", str(state), "--format", "json"])
     second = capsys.readouterr()
     assert inspected_status == 0, second.err
     assert canary not in first.out
@@ -183,8 +193,6 @@ def test_unexpected_state_exception_is_mapped_without_repr_or_args(
 
     monkeypatch.setattr("skillscout.adapters.state.SQLiteStateStore.inspect_run", hostile_inspect)
     state = tmp_path / "state.db"
-    from skillscout.adapters.state import SQLiteStateStore
-
     SQLiteStateStore(state).close()
     status = cli.main(["inspect-run", "missing", "--state", str(state), "--format", "json"])
     captured = capsys.readouterr()
@@ -199,6 +207,156 @@ def test_unexpected_state_exception_is_mapped_without_repr_or_args(
     surfaces = captured.err.encode() + _all_bytes(tmp_path)
     assert secret.encode() not in surfaces
     assert selected_path.encode() not in surfaces
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "run_error_code",
+        "run_error_summary",
+        "run_status_error_coherence",
+        "run_timestamp",
+        "attempt_error_code",
+        "attempt_error_summary",
+        "attempt_status_error_coherence",
+        "attempt_retryable",
+        "attempt_finished_at",
+        "attempt_request_id",
+        "attempt_latency",
+        "attempt_partial_tokens",
+        "attempt_total_tokens",
+    ],
+)
+def test_persisted_diagnostic_and_telemetry_tampering_is_never_projected(
+    approved_fixture: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    tamper: str,
+) -> None:
+    canary = "github_pat_PERSISTED_DIAGNOSTIC_DO_NOT_DISCLOSE"
+    attacker_path = "/attacker/persisted/private/path"
+    state = tmp_path / f"{tamper}.db"
+    status = cli.main(
+        [
+            "dry-run",
+            "--fixture",
+            str(approved_fixture),
+            "--state",
+            str(state),
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    first = capsys.readouterr()
+    assert status == 0, first.err
+    run_id = str(json.loads(first.out)["run_id"])
+
+    with _connect(state) as connection:
+        if tamper == "run_error_code":
+            connection.execute(
+                "UPDATE runs SET error_code = ?, error_summary = ?",
+                ("attacker_error", canary),
+            )
+        elif tamper == "run_error_summary":
+            connection.execute(
+                "UPDATE runs SET error_code = ?, error_summary = ?",
+                (ErrorCode.PIPELINE_INTERRUPTED.value, canary),
+            )
+        elif tamper == "run_status_error_coherence":
+            connection.execute("UPDATE runs SET status = 'interrupted'")
+        elif tamper == "run_timestamp":
+            connection.execute("UPDATE runs SET updated_at = ?", (attacker_path,))
+        elif tamper == "attempt_error_code":
+            connection.execute(
+                """UPDATE stage_attempts SET error_code = ?, error_summary = ?
+                   WHERE stage = 'scout'""",
+                ("attacker_error", canary),
+            )
+        elif tamper == "attempt_error_summary":
+            connection.execute(
+                """UPDATE stage_attempts SET error_code = ?, error_summary = ?
+                   WHERE stage = 'scout'""",
+                (ErrorCode.PIPELINE_INTERRUPTED.value, canary),
+            )
+        elif tamper == "attempt_status_error_coherence":
+            connection.execute(
+                """UPDATE stage_attempts SET error_code = ?, error_summary = ?
+                   WHERE stage = 'scout'""",
+                (
+                    ErrorCode.PIPELINE_INTERRUPTED.value,
+                    ERROR_SUMMARIES[ErrorCode.PIPELINE_INTERRUPTED],
+                ),
+            )
+        elif tamper == "attempt_retryable":
+            connection.execute("UPDATE stage_attempts SET retryable = 1 WHERE stage = 'scout'")
+        elif tamper == "attempt_finished_at":
+            connection.execute("UPDATE stage_attempts SET finished_at = NULL WHERE stage = 'scout'")
+        elif tamper == "attempt_request_id":
+            connection.execute(
+                "UPDATE stage_attempts SET request_id = ? WHERE stage = 'scout'",
+                (canary,),
+            )
+        elif tamper == "attempt_latency":
+            connection.execute("UPDATE stage_attempts SET latency_ms = -1 WHERE stage = 'scout'")
+        elif tamper == "attempt_partial_tokens":
+            connection.execute("UPDATE stage_attempts SET prompt_tokens = 1 WHERE stage = 'scout'")
+        elif tamper == "attempt_total_tokens":
+            connection.execute(
+                """UPDATE stage_attempts
+                   SET prompt_tokens = 1, completion_tokens = 2, total_tokens = 99
+                   WHERE stage = 'scout'"""
+            )
+        else:
+            raise AssertionError("unknown persisted tamper")
+        connection.commit()
+
+    inspected = cli.main(["inspect-run", run_id, "--state", str(state), "--format", "json"])
+    captured = capsys.readouterr()
+    assert inspected == 1
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "error": {
+            "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+            "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+        }
+    }
+    surfaces = captured.err.encode() + _all_bytes(tmp_path, excluded={state})
+    assert canary.encode() not in surfaces
+    assert attacker_path.encode() not in surfaces
+
+
+def test_legacy_diagnostic_canary_rejects_migration_without_new_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    canary = "OPENAI_API_KEY_LEGACY_DIAGNOSTIC_DO_NOT_DISCLOSE"
+    attacker_path = "/attacker/legacy/private/path"
+    copied = tmp_path / "legacy-canary.db"
+    shutil.copy2(FROZEN_DATABASE, copied)
+    with _connect(copied) as connection:
+        connection.execute(
+            """UPDATE stage_attempts SET error_code = ?, error_summary = ?, request_id = ?
+               WHERE stage = 'scout'""",
+            (ErrorCode.PIPELINE_INTERRUPTED.value, canary, attacker_path),
+        )
+        connection.commit()
+    tampered_source = copied.read_bytes()
+
+    status = cli.main(["inspect-run", "884039fcafca4757a194a9a69ca0e306", "--state", str(copied)])
+    captured = capsys.readouterr()
+    assert status == 1
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "error": {
+            "code": ErrorCode.STATE_SCHEMA_MIGRATION_ERROR.value,
+            "summary": ERROR_SUMMARIES[ErrorCode.STATE_SCHEMA_MIGRATION_ERROR],
+        }
+    }
+    assert copied.read_bytes() == tampered_source
+    assert not copied.with_suffix(".manifests").exists()
+    surfaces = captured.err.encode() + _all_bytes(tmp_path, excluded={copied})
+    assert canary.encode() not in surfaces
+    assert attacker_path.encode() not in surfaces
+    assert hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (FROZEN_DATABASE_SHA256)
 
 
 def test_error_vocabulary_is_closed_ascii_and_bounded() -> None:
