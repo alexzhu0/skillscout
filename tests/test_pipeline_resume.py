@@ -978,6 +978,208 @@ def test_three_transient_attempts_exhaust_one_digest_before_fourth_invocation(
         store.close()
 
 
+def test_fail_once_unexpected_exception_resumes_failed_stage_without_prefix_replay(
+    tmp_path: Path,
+) -> None:
+    credential = "OPENAI_API_KEY_UNEXPECTED_DO_NOT_DISCLOSE_123456"
+    attacker_path = "/attacker/unexpected/private/path"
+    calls: list[PipelineStage] = []
+    failed_once = False
+
+    class FailOnceAtValidators(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            nonlocal failed_once
+            calls.append(stage_input.stage)
+            if stage_input.stage is PipelineStage.VALIDATORS and not failed_once:
+                failed_once = True
+                raise RuntimeError(credential, attacker_path)
+            return super().process(stage_input)
+
+    database = tmp_path / "fail-once-unexpected.db"
+    store = SQLiteStateStore(database)
+    subject = load_fixture(APPROVED_FIXTURE)
+    processor = FailOnceAtValidators()
+    try:
+        with pytest.raises(SafeFailure) as interrupted:
+            PipelineRunner(store, processor).run(subject, tmp_path / "first-output")
+        assert interrupted.value.as_dict() == {
+            "code": ErrorCode.PIPELINE_INTERRUPTED.value,
+            "summary": ERROR_SUMMARIES[ErrorCode.PIPELINE_INTERRUPTED],
+        }
+        assert credential not in str(interrupted.value)
+        assert attacker_path not in str(interrupted.value)
+
+        run_id = str(store.connection.execute("SELECT run_id FROM runs").fetchone()[0])
+        failed_attempt = store.connection.execute(
+            """SELECT status, error_code, error_summary, retryable
+               FROM stage_attempts WHERE stage = 'validators'"""
+        ).fetchone()
+        assert tuple(failed_attempt) == (
+            "failed",
+            ErrorCode.PIPELINE_INTERRUPTED.value,
+            ERROR_SUMMARIES[ErrorCode.PIPELINE_INTERRUPTED],
+            1,
+        )
+        failed_run = store.connection.execute(
+            "SELECT status, error_code, error_summary FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        assert tuple(failed_run) == (
+            "interrupted",
+            ErrorCode.PIPELINE_INTERRUPTED.value,
+            ERROR_SUMMARIES[ErrorCode.PIPELINE_INTERRUPTED],
+        )
+
+        prefix_attempts = tuple(
+            tuple(row)
+            for row in store.connection.execute(
+                "SELECT * FROM stage_attempts WHERE stage_index < 6 ORDER BY stage_index"
+            )
+        )
+        prefix_results = tuple(
+            tuple(row)
+            for row in store.connection.execute(
+                "SELECT * FROM stage_results WHERE stage_index < 6 ORDER BY stage_index"
+            )
+        )
+        prefix_checkpoints = tuple(
+            tuple(row)
+            for row in store.connection.execute(
+                "SELECT * FROM checkpoints WHERE stage_index < 6 ORDER BY stage_index"
+            )
+        )
+        prefix_manifests = {
+            path.relative_to(store.manifest_root).as_posix(): path.read_bytes()
+            for path in store.manifest_root.rglob("*.json")
+        }
+        first_surfaces = database.read_bytes() + b"".join(prefix_manifests.values())
+        assert credential.encode() not in first_surfaces
+        assert attacker_path.encode() not in first_surfaces
+
+        summary = PipelineRunner(store, processor).run(subject, tmp_path / "second-output")
+        assert summary.status.value == "planned_not_published"
+        assert summary.run_id == run_id
+        assert summary.reused_stage_count == 6
+        assert calls.count(PipelineStage.VALIDATORS) == 2
+        assert all(calls.count(stage) == 1 for stage in tuple(PipelineStage)[:6])
+        assert all(calls.count(stage) == 1 for stage in tuple(PipelineStage)[7:])
+        assert prefix_attempts == tuple(
+            tuple(row)
+            for row in store.connection.execute(
+                "SELECT * FROM stage_attempts WHERE stage_index < 6 ORDER BY stage_index"
+            )
+        )
+        assert prefix_results == tuple(
+            tuple(row)
+            for row in store.connection.execute(
+                "SELECT * FROM stage_results WHERE stage_index < 6 ORDER BY stage_index"
+            )
+        )
+        assert prefix_checkpoints == tuple(
+            tuple(row)
+            for row in store.connection.execute(
+                "SELECT * FROM checkpoints WHERE stage_index < 6 ORDER BY stage_index"
+            )
+        )
+        assert all(
+            (store.manifest_root / locator).read_bytes() == payload
+            for locator, payload in prefix_manifests.items()
+        )
+        resume_event = _resume_events(store, run_id)[-1]
+        assert resume_event.reused_stage_count == 6
+        assert resume_event.checkpoint_stage is PipelineStage.GENERATOR
+        attempts = store.connection.execute(
+            """SELECT status, error_code, error_summary, retryable
+               FROM stage_attempts WHERE stage = 'validators' ORDER BY attempt_no"""
+        ).fetchall()
+        assert [tuple(row) for row in attempts] == [
+            (
+                "failed",
+                ErrorCode.PIPELINE_INTERRUPTED.value,
+                ERROR_SUMMARIES[ErrorCode.PIPELINE_INTERRUPTED],
+                1,
+            ),
+            ("succeeded", None, None, 0),
+        ]
+        final_surfaces = database.read_bytes() + b"".join(
+            path.read_bytes()
+            for root in (store.manifest_root, tmp_path / "second-output")
+            for path in root.rglob("*")
+            if path.is_file()
+        )
+        assert credential.encode() not in final_surfaces
+        assert attacker_path.encode() not in final_surfaces
+    finally:
+        store.close()
+
+
+def test_unexpected_exception_exhaustion_is_finite_and_identity_scoped(
+    tmp_path: Path,
+) -> None:
+    credential = "github_pat_UNEXPECTED_RETRY_DO_NOT_DISCLOSE"
+    attacker_path = "/attacker/unexpected/retry/path"
+    calls = 0
+
+    class AlwaysUnexpected(FixtureProcessor):
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            raise RuntimeError(credential, attacker_path, stage_input.stage.value)
+
+    original = load_fixture(APPROVED_FIXTURE)
+    changed = original.model_copy(
+        update={
+            "workflow": original.workflow.model_copy(
+                update={"goal": "A separate unexpected-exception retry identity"}
+            )
+        }
+    )
+    database = tmp_path / "unexpected-exhaustion.db"
+    store = SQLiteStateStore(database)
+    processor = AlwaysUnexpected()
+    try:
+        for _ in range(3):
+            with pytest.raises(SafeFailure) as interrupted:
+                PipelineRunner(store, processor).run(original, tmp_path / "original-output")
+            assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+
+        with pytest.raises(SafeFailure) as exhausted:
+            PipelineRunner(store, processor).run(original, tmp_path / "original-output")
+        assert exhausted.value.code is ErrorCode.RETRY_EXHAUSTED
+        assert calls == 3
+
+        with pytest.raises(SafeFailure) as changed_interrupted:
+            PipelineRunner(store, processor).run(changed, tmp_path / "changed-output")
+        assert changed_interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+        assert calls == 4
+
+        attempts = store.connection.execute(
+            """SELECT reusable_key_digest, status, error_code, error_summary, retryable
+               FROM stage_attempts WHERE stage = 'scout'
+               ORDER BY reusable_key_digest, attempt_no"""
+        ).fetchall()
+        counts: dict[str, int] = {}
+        for row in attempts:
+            digest = str(row["reusable_key_digest"])
+            counts[digest] = counts.get(digest, 0) + 1
+            assert tuple(row)[1:] == (
+                "failed",
+                ErrorCode.PIPELINE_INTERRUPTED.value,
+                ERROR_SUMMARIES[ErrorCode.PIPELINE_INTERRUPTED],
+                1,
+            )
+        assert sorted(counts.values()) == [1, 3]
+        surfaces = database.read_bytes() + b"".join(
+            path.read_bytes()
+            for path in tmp_path.rglob("*")
+            if path.is_file() and path != database
+        )
+        assert credential.encode() not in surfaces
+        assert attacker_path.encode() not in surfaces
+    finally:
+        store.close()
+
+
 def test_permanent_error_is_not_invoked_twice_for_same_digest(tmp_path: Path) -> None:
     calls = 0
 
