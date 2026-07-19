@@ -67,7 +67,13 @@ def _resume_events(store: SQLiteStateStore, run_id: str) -> tuple[ResumeEvent, .
            ORDER BY event_index""",
         (run_id,),
     ).fetchall()
-    return tuple(ResumeEvent.model_validate(dict(row)) for row in rows)
+    events: list[ResumeEvent] = []
+    for row in rows:
+        payload = dict(row)
+        if payload["checkpoint_stage"] is not None:
+            payload["checkpoint_stage"] = PipelineStage(payload["checkpoint_stage"])
+        events.append(ResumeEvent.model_validate(payload))
+    return tuple(events)
 
 
 def test_frozen_fixture_provenance_is_real_interrupted_schema_v1() -> None:

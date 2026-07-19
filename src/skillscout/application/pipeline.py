@@ -1,4 +1,4 @@
-"""Ordered, resumable local-only pipeline over strict schema-v2 contracts."""
+"""Ordered, resumable local-only pipeline over strict schema-v3 contracts."""
 
 from __future__ import annotations
 
@@ -221,23 +221,22 @@ class PipelineRunner:
         if resumable is None:
             run_id = self.ids.new_run_id()
             schema_version = current_identity.schema_version
-            self.state.create_run(run_id, current_identity, self.clock.now())
-            start_index = 0
+            invocation_event = self.state.create_run(
+                run_id, current_identity, self.clock.now()
+            )
+            start_index = invocation_event.reused_stage_count
             previous_output_hash: str | None = None
-            reused_count = 0
         else:
             run_id = resumable.run_id
             schema_version = resumable.schema_version
             checkpoint = self.state.latest_checkpoint(run_id)
-            start_index = checkpoint.stage_index + 1 if checkpoint else 0
+            invocation_event = self.state.record_resume_decision(
+                run_id,
+                checkpoint,
+                self.clock.now(),
+            )
+            start_index = invocation_event.reused_stage_count
             previous_output_hash = checkpoint.output_hash if checkpoint else None
-            reused_count = start_index
-            resumable_status = resumable.status
-            if resumable_status is RunStatus.INTERRUPTED:
-                self.state.set_run_status(run_id, RunStatus.RUNNING.value, self.clock.now())
-            elif resumable_status is not RunStatus.RUNNING:
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-        self.state.set_reused_stage_count(run_id, reused_count)
 
         for stage_index, stage in enumerate(PipelineStage):
             if stage_index < start_index:
@@ -409,7 +408,7 @@ class PipelineRunner:
             run_id=persisted.run_id,
             status=persisted.status,
             last_stage=checkpoint.stage,
-            reused_stage_count=reused_count,
+            reused_stage_count=invocation_event.reused_stage_count,
             publication_plan_path="publication-plan.json",
             remote_writes_attempted=0,
         )

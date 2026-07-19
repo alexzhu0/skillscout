@@ -143,7 +143,12 @@ class StateStore(Protocol):
 
     def reconcile_orphan_running_attempts(self) -> None: ...
 
-    def set_reused_stage_count(self, run_id: str, count: int) -> None: ...
+    def record_resume_decision(
+        self,
+        run_id: str,
+        checkpoint: Checkpoint | None,
+        recorded_at: str,
+    ) -> ResumeEvent: ...
 
     def abandon_stale_running(
         self, run_id: str, stage: PipelineStage, finished_at: str

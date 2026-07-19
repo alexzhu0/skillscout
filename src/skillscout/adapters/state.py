@@ -1,4 +1,4 @@
-"""Transactional schema-v2 SQLite ledger and content-addressed manifests."""
+"""Transactional schema-v3 SQLite ledger and content-addressed manifests."""
 
 from __future__ import annotations
 
@@ -1951,10 +1951,107 @@ class SQLiteStateStore:
     def _run_record(cls, row: sqlite3.Row) -> RunRecord:
         return cls._persisted_run_record(row)
 
-    def set_reused_stage_count(self, run_id: str, count: int) -> None:
-        self._write_transaction(
-            "UPDATE runs SET reused_stage_count = ? WHERE run_id = ?", (count, run_id)
-        )
+    def record_resume_decision(
+        self,
+        run_id: str,
+        checkpoint: Checkpoint | None,
+        recorded_at: str,
+    ) -> ResumeEvent:
+        """Atomically append one verified-prefix invocation decision and head it."""
+
+        def mutate(database: sqlite3.Connection) -> ResumeEvent:
+            chain = self._verify_run_chain(database, run_id, None)
+            run = chain.run
+            if run.status not in {RunStatus.RUNNING, RunStatus.INTERRUPTED}:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            verified_checkpoint = chain.latest_checkpoint
+            selected_checkpoint: Checkpoint | None
+            if checkpoint is None:
+                if verified_checkpoint is not None:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                selected_checkpoint = None
+                reused_stage_count = 0
+            else:
+                if not isinstance(checkpoint, Checkpoint) or verified_checkpoint is None:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                expected_checkpoint = Checkpoint(
+                    run_id=verified_checkpoint.run_id,
+                    subject_id=verified_checkpoint.subject_id,
+                    stage=verified_checkpoint.stage,
+                    stage_index=verified_checkpoint.stage_index,
+                    result_row_id=verified_checkpoint.result_row_id,
+                    result_id=verified_checkpoint.result_id,
+                    output_hash=verified_checkpoint.output_hash,
+                    manifest_hash=verified_checkpoint.manifest_hash,
+                    updated_at=verified_checkpoint.updated_at,
+                )
+                if checkpoint != expected_checkpoint and (
+                    checkpoint.run_id != expected_checkpoint.run_id
+                    or checkpoint.subject_id != expected_checkpoint.subject_id
+                    or checkpoint.stage is not expected_checkpoint.stage
+                    or checkpoint.stage_index != expected_checkpoint.stage_index
+                    or checkpoint.result_row_id != expected_checkpoint.result_row_id
+                    or checkpoint.result_id != expected_checkpoint.result_id
+                    or checkpoint.output_hash != expected_checkpoint.output_hash
+                    or checkpoint.manifest_hash != expected_checkpoint.manifest_hash
+                    or checkpoint.updated_at != expected_checkpoint.updated_at
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                selected_checkpoint = expected_checkpoint
+                reused_stage_count = expected_checkpoint.stage_index + 1
+
+            run_head = database.execute(
+                """SELECT latest_resume_event_hash FROM runs
+                   WHERE run_id = ?""",
+                (run_id,),
+            ).fetchone()
+            if run_head is None or type(run_head["latest_resume_event_hash"]) is not str:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            head_row = database.execute(
+                """SELECT * FROM resume_events
+                   WHERE event_hash = ? AND run_id = ?""",
+                (run_head["latest_resume_event_hash"], run_id),
+            ).fetchone()
+            if head_row is None:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            head = self._persisted_resume_event(head_row)
+            maximum_index = database.execute(
+                "SELECT MAX(event_index) FROM resume_events WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+            if maximum_index != head.event_index or recorded_at < head.recorded_at:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            event = self._new_resume_event(
+                run_id=run_id,
+                event_index=head.event_index + 1,
+                prior_event_hash=head.event_hash,
+                reused_stage_count=reused_stage_count,
+                checkpoint=selected_checkpoint,
+                recorded_at=recorded_at,
+            )
+            self._insert_resume_event(database, event)
+            updated = database.execute(
+                """UPDATE runs
+                   SET latest_resume_event_hash = ?, reused_stage_count = ?,
+                       status = 'running', updated_at = ?, error_code = NULL,
+                       error_summary = NULL
+                   WHERE run_id = ? AND latest_resume_event_hash = ? AND status = ?""",
+                (
+                    event.event_hash,
+                    event.reused_stage_count,
+                    event.recorded_at,
+                    run_id,
+                    head.event_hash,
+                    run.status.value,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            return event
+
+        return self._snapshot_transaction(mutate)
 
     def abandon_stale_running(self, run_id: str, stage: PipelineStage, finished_at: str) -> None:
         summary = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED).as_dict()["summary"]
