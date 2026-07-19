@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Completed 01-06-PLAN.md
-last_updated: "2026-07-19T05:34:13.783Z"
+stopped_at: Completed 01-07-PLAN.md
+last_updated: "2026-07-19T05:58:22.414Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 11
-  completed_plans: 6
+  completed_plans: 7
   percent: 0
 ---
 
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 7 of 11
+**Plan:** 8 of 11
 **Execution:** Six verified gap-closure plans are pending
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
@@ -92,8 +92,8 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T05:34:13.779Z
-**Stopped at:** Completed 01-06-PLAN.md
+**Last session:** 2026-07-19T05:58:22.410Z
+**Stopped at:** Completed 01-07-PLAN.md
 **Resume file:** None
 
 ### Completed
@@ -129,6 +129,7 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 | Phase 01 P04 | 21 min | 3 tasks | 11 files |
 | Phase 01 P05 | 9min | 2 tasks | 5 files |
 | Phase 01 P06 | 16min | 2 tasks | 6 files |
+| Phase 01 P07 | 20min | 2 tasks | 5 files |
 
 ## Decisions
 
@@ -148,3 +149,6 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 - [Phase 01]: Use one immutable producer/schema registry at runtime, migration, manifest write and manifest read boundaries. — Prevent successful evidence that the reader later rejects.
 - [Phase 01]: Validate StagePayload and bound exact canonical manifest bytes before filesystem activity. — Keep untrusted outputs JSON-only, deterministic and resource bounded.
 - [Phase 01]: Close known post-start failures immediately and reconcile indeterminate orphan attempts on next open. — Keep durable lifecycle evidence truthful after failures.
+- [Phase 01]: Never give SQLite an operator pathname — Deserialize bounded descriptor-read bytes into private in-memory connections and serialize candidate snapshots only.
+- [Phase 01]: Use a retained reusable lock inode with kernel-only flock ownership — Process death releases live ownership without lock-file deletion or recreation.
+- [Phase 01]: Make every required local fsync fatal before state promotion — Manifest and publication bytes must be durable before checkpoint or terminal success.
