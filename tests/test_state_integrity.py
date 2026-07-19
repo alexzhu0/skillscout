@@ -1034,6 +1034,46 @@ def test_parent_swap_during_failed_snapshot_cleanup_never_touches_attacker(
     assert sorted(path.name for path in attacker_parent.iterdir()) == ["canary"]
 
 
+@pytest.mark.parametrize(
+    "seam",
+    ["after_backup_unlink", "before_backup_cleanup_directory_fsync"],
+)
+def test_post_commit_backup_cleanup_failure_returns_success_and_reopen_observes_mutation(
+    tmp_path: Path,
+    seam: str,
+) -> None:
+    active = False
+    observed: list[str] = []
+
+    def fail_selected(operation: str) -> None:
+        observed.append(operation)
+        if active and operation == seam:
+            raise OSError("forced post-commit cleanup failure")
+
+    database = tmp_path / f"post-commit-{seam}.db"
+    store = SQLiteStateStore(database, filesystem_seam=fail_selected)
+    active = True
+    store.create_run(
+        "committed-once",
+        _run_identity("post-commit-subject"),
+        "2026-07-19T00:00:00.000000Z",
+    )
+    assert seam in observed
+    assert store.connection.execute(
+        "SELECT COUNT(*) FROM runs WHERE run_id = 'committed-once'"
+    ).fetchone()[0] == 1
+    store.close()
+
+    reopened = SQLiteStateStore(database)
+    try:
+        assert reopened.connection.execute(
+            "SELECT COUNT(*) FROM runs WHERE run_id = 'committed-once'"
+        ).fetchone()[0] == 1
+        assert reopened.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+    finally:
+        reopened.close()
+
+
 def test_semantic_result_twins_use_distinct_run_scoped_rows(tmp_path: Path) -> None:
     database = tmp_path / "semantic-twins.db"
     store = SQLiteStateStore(database)
