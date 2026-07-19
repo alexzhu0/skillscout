@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Completed 01-13-PLAN.md
-last_updated: "2026-07-19T10:27:24.072Z"
+stopped_at: Completed 01-14-PLAN.md
+last_updated: "2026-07-19T10:46:16.451Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 16
-  completed_plans: 13
-  percent: 81
+  completed_plans: 14
+  percent: 88
 ---
 
 # Project State: SkillScout
@@ -24,8 +24,8 @@ progress:
 ## Current Position
 
 **Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 13 of 16
-**Verification:** Previous implementation 3 of 5 must-haves verified; gap remediation 2 of 5 plans complete
+**Plan:** 14 of 16
+**Verification:** Previous implementation 3 of 5 must-haves verified; gap remediation 3 of 5 plans complete
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
 ## Progress
@@ -34,7 +34,7 @@ progress:
 Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
-Phase 1 implementation  [████████░░]  81%
+Phase 1 implementation  [█████████░]  88%
 Phase 1 verification    [██████░░░░]  60%
 ```
 
@@ -44,7 +44,7 @@ Phase 1 verification    [██████░░░░]  60%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 0 |
-| Plans completed | 12/16 |
+| Plans completed | 14/16 |
 
 ## Accumulated Context
 
@@ -89,12 +89,12 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-Plan 01-12 closed CR-01, WR-03, and WR-04 by making the target-directory fsync the snapshot authority commit point, rejecting state/manifest namespace collisions, and enforcing private regular-file admission. CR-02 (`reused_stage_count` full-chain proof), CR-03 (non-echoing invalid CLI arguments), WR-01 (unexpected processor failure recovery), and WR-02 (independently rerunnable evidence authority) remain open for Plans 01-13 through 01-16 and post-execution review. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6.
+Plan 01-12 closed CR-01, WR-03, and WR-04 by making the target-directory fsync the snapshot authority commit point, rejecting state/manifest namespace collisions, and enforcing private regular-file admission. Plan 01-14 closed CR-02 by deriving every reuse projection from the verified resume-event chain and rejecting mismatched run duplicates. CR-03 (non-echoing invalid CLI arguments), WR-01 (unexpected processor failure recovery), and WR-02 (independently rerunnable evidence authority) remain open for Plans 01-15 through 01-16 and post-execution review. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6.
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T10:26:56.529Z
-**Stopped at:** Completed 01-13-PLAN.md
+**Last session:** 2026-07-19T10:45:05.461Z
+**Stopped at:** Completed 01-14-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -123,6 +123,7 @@ Plan 01-12 closed CR-01, WR-03, and WR-04 by making the target-directory fsync t
 | Phase 01 P11 | 15min | 2 tasks | 3 files |
 | Phase 01 P12 | 14min | 2 tasks | 5 files |
 | Phase 01 P13 | 20min | 2 tasks | 8 files |
+| Phase 01-auditable-dry-run-spine P14 | 13 min | 2 tasks | 4 files |
 
 ## Decisions
 
@@ -164,3 +165,6 @@ Plan 01-12 closed CR-01, WR-03, and WR-04 by making the target-directory fsync t
 - [Phase 01]: Treat the resume-event ledger as reuse authority and keep runs.reused_stage_count only as an atomically maintained projection of the current event head.
 - [Phase 01]: Migrate pre-event runs only when historical reuse is absent or zero; reject nonzero schema-v2 claims because no independent event can attest them.
 - [Phase 01]: Commit each resume event, run head, count, running status, and timestamp in one candidate snapshot before stale-attempt reconciliation or processor work.
+- [Phase 01]: Make the final verified ResumeEvent the sole reuse-count authority — Mutable run count and head are accepted only as exact duplicates of the complete event proof.
+- [Phase 01]: Verify migrated bound schema-v2 runs after conservative genesis installation — The exact schema-v3 candidate can use the same event-aware canonical verifier without inventing prior invocations.
+- [Phase 01]: Route authoritative run reads through verify_run_chain — Every public reuse projection must reject the same tamper; no row-only public audit path remains.
