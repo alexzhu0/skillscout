@@ -194,7 +194,9 @@ def _coherently_rewrite_manifest(
     payload = json.loads(old_path.read_bytes())
     payload.update(updates)
     payload["manifest_hash"] = None
-    provisional = StageEnvelope.model_validate(payload)
+    provisional = StageEnvelope.model_validate_json(
+        canonical_json_bytes(payload), strict=True
+    )
     manifest_hash = stage_manifest_hash(provisional)
     envelope = provisional.model_copy(update={"manifest_hash": manifest_hash})
     locator = store._manifest_locator(stage, manifest_hash)
@@ -313,6 +315,12 @@ def test_full_chain_rejects_each_duplicated_persisted_field_tamper(
         run_id = _run_interrupted_in_store(
             store, tmp_path / f"out-{table}-{column}"
         )
+        if table == "checkpoints" and column == "result_row_id":
+            value = store.connection.execute(
+                """SELECT result_row_id FROM stage_results
+                   WHERE run_id = ? AND stage = 'filter'""",
+                (run_id,),
+            ).fetchone()[0]
         where = "run_id = ?" if table == "runs" else "run_id = ? AND stage = 'scout'"
         store.connection.execute(
             f"UPDATE {table} SET {column} = ? WHERE {where}",

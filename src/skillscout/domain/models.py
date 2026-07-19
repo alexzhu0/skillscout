@@ -369,6 +369,28 @@ class PersistedCheckpointRecord(Checkpoint):
         return self
 
 
+class VerifiedRunChain(StrictFrozenModel):
+    """Fully verified persisted authority for one bound run."""
+
+    run: PersistedRunRecord
+    identity: RunIdentity
+    attempts: tuple[PersistedAttemptRecord, ...]
+    results: tuple[StageEnvelope, ...]
+    checkpoints: tuple[PersistedCheckpointRecord, ...]
+
+    @model_validator(mode="after")
+    def validate_verified_chain_shape(self) -> VerifiedRunChain:
+        if self.run.identity_state != "bound" or self.run.identity != self.identity:
+            raise ValueError("verified run identity disagrees")
+        if len(self.results) != len(self.checkpoints):
+            raise ValueError("verified result/checkpoint cardinality disagrees")
+        return self
+
+    @property
+    def latest_checkpoint(self) -> PersistedCheckpointRecord | None:
+        return self.checkpoints[-1] if self.checkpoints else None
+
+
 class PublicationPlan(StrictFrozenModel):
     run_id: NonEmpty
     status: str = "planned_not_published"

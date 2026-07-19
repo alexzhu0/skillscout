@@ -46,6 +46,7 @@ from skillscout.domain.models import (
     StageAttempt,
     StageEnvelope,
     StageInput,
+    VerifiedRunChain,
     validate_manifest_bytes,
 )
 
@@ -1367,6 +1368,259 @@ class SQLiteStateStore:
         except SafeFailure:
             raise
         except (IndexError, TypeError, ValueError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+        except sqlite3.Error:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def verify_run_chain(
+        self,
+        run_id: str,
+        expected_identity: RunIdentity | None = None,
+    ) -> VerifiedRunChain:
+        """Recompute every persisted identity before returning any run authority."""
+
+        return self._verify_run_chain(self._db, run_id, expected_identity)
+
+    def _verify_run_chain(
+        self,
+        database: sqlite3.Connection,
+        run_id: str,
+        expected_identity: RunIdentity | None,
+    ) -> VerifiedRunChain:
+        try:
+            run_row = database.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run_row is None:
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+            run = self._persisted_run_record(run_row)
+            if run.identity_state != "bound":
+                raise SafeFailure(ErrorCode.STATE_IDENTITY_UNBOUND)
+            identity = run.identity
+            if expected_identity is not None and (
+                type(expected_identity) is not RunIdentity or expected_identity != identity
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            if (
+                identity.schema_version,
+                identity.producer_version,
+            ) not in SUPPORTED_PRODUCER_SCHEMAS:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            attempt_rows = database.execute(
+                """SELECT * FROM stage_attempts WHERE run_id = ?
+                   ORDER BY stage_index, attempt_no, attempt_id""",
+                (run_id,),
+            ).fetchall()
+            result_rows = database.execute(
+                """SELECT * FROM stage_results WHERE run_id = ?
+                   ORDER BY stage_index, result_row_id""",
+                (run_id,),
+            ).fetchall()
+            checkpoint_rows = database.execute(
+                """SELECT * FROM checkpoints WHERE run_id = ?
+                   ORDER BY stage_index, stage""",
+                (run_id,),
+            ).fetchall()
+            if len(result_rows) != len(checkpoint_rows):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            stage_count = len(tuple(PipelineStage))
+            completed_count = len(result_rows)
+            if completed_count > stage_count or (
+                run.status is RunStatus.PLANNED_NOT_PUBLISHED
+                and completed_count != stage_count
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            attempts = tuple(
+                self._persisted_attempt_record(row) for row in attempt_rows
+            )
+            attempts_by_id = {attempt.attempt_id: attempt for attempt in attempts}
+            if len(attempts_by_id) != len(attempts):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            attempts_by_stage: dict[int, list[PersistedAttemptRecord]] = {}
+            for attempt in attempts:
+                if (
+                    attempt.run_id != run.run_id
+                    or attempt.subject_id != identity.subject_id
+                    or attempt.producer_version != identity.producer_version
+                    or attempt.retry_policy_version != identity.retry_policy_version
+                    or attempt.stage_index > completed_count
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                attempts_by_stage.setdefault(attempt.stage_index, []).append(attempt)
+            for stage_index, stage_attempts in attempts_by_stage.items():
+                attempt_numbers = tuple(item.attempt_no for item in stage_attempts)
+                if attempt_numbers != tuple(range(1, len(stage_attempts) + 1)):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                succeeded = sum(
+                    attempt.status is AttemptStatus.SUCCEEDED
+                    for attempt in stage_attempts
+                )
+                if succeeded != (1 if stage_index < completed_count else 0):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            if any(index not in attempts_by_stage for index in range(completed_count)):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            results: list[StageEnvelope] = []
+            checkpoints: list[PersistedCheckpointRecord] = []
+            previous_output_hash: str | None = None
+            for expected_index, (result_row, checkpoint_row) in enumerate(
+                zip(result_rows, checkpoint_rows, strict=True)
+            ):
+                expected_stage = tuple(PipelineStage)[expected_index]
+                if (
+                    int(result_row["stage_index"]) != expected_index
+                    or str(result_row["stage"]) != expected_stage.value
+                    or int(checkpoint_row["stage_index"]) != expected_index
+                    or str(checkpoint_row["stage"]) != expected_stage.value
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+                envelope = self._verify_manifest_row(result_row)
+                checkpoint = self._persisted_checkpoint_record(checkpoint_row)
+                attempt = attempts_by_id.get(envelope.attempt_id)
+                if attempt is None or attempt.status is not AttemptStatus.SUCCEEDED:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                stage_input = StageInput(
+                    schema_version=identity.schema_version,
+                    execution_mode=ExecutionMode.DRY_RUN,
+                    subject_id=identity.subject_id,
+                    stage=expected_stage,
+                    previous_output_hash=previous_output_hash,
+                    fixture_hash=(identity.fixture_hash if expected_index == 0 else None),
+                )
+                expected_input_hash = stage_input_hash(stage_input)
+                expected_reusable = reusable_key_digest(
+                    subject_id=identity.subject_id,
+                    stage=expected_stage,
+                    input_hash=expected_input_hash,
+                    producer_version=identity.producer_version,
+                    retry_policy_version=identity.retry_policy_version,
+                )
+                expected_output_hash = stage_output_hash(
+                    schema_version=identity.schema_version,
+                    subject_id=identity.subject_id,
+                    stage=expected_stage,
+                    producer_version=identity.producer_version,
+                    prompt_version=attempt.prompt_version,
+                    policy_version=attempt.policy_version,
+                    model_id=attempt.model_id,
+                    payload=envelope.payload,
+                )
+                expected_result_id = make_result_id(
+                    subject_id=identity.subject_id,
+                    stage=expected_stage,
+                    input_hash=expected_input_hash,
+                    producer_version=identity.producer_version,
+                    output_hash=expected_output_hash,
+                    retry_policy_version=(
+                        None
+                        if identity.schema_version == "1"
+                        else identity.retry_policy_version
+                    ),
+                )
+                expected_result_row_id = make_result_row_id(
+                    run_id=run.run_id, stage=expected_stage
+                )
+                expected_locator = self._manifest_locator(
+                    expected_stage, str(envelope.manifest_hash)
+                )
+                output_json = canonical_json_bytes(envelope.payload).decode("utf-8")
+                if (
+                    envelope.schema_version != identity.schema_version
+                    or envelope.run_id != run.run_id
+                    or envelope.subject_id != identity.subject_id
+                    or envelope.stage is not expected_stage
+                    or envelope.stage_index != expected_index
+                    or envelope.attempt_id != attempt.attempt_id
+                    or envelope.attempt_no != attempt.attempt_no
+                    or envelope.input_hash != expected_input_hash
+                    or envelope.output_hash != expected_output_hash
+                    or envelope.producer_version != identity.producer_version
+                    or envelope.retry_policy_version != identity.retry_policy_version
+                    or envelope.prompt_version != attempt.prompt_version
+                    or envelope.policy_version != attempt.policy_version
+                    or envelope.model_id != attempt.model_id
+                    or envelope.request_id != attempt.request_id
+                    or envelope.created_at != attempt.finished_at
+                    or envelope.result_id != expected_result_id
+                    or envelope.result_row_id != expected_result_row_id
+                    or attempt.stage is not expected_stage
+                    or attempt.stage_index != expected_index
+                    or attempt.input_hash != expected_input_hash
+                    or attempt.reusable_key_digest != expected_reusable
+                    or str(result_row["result_row_id"]) != expected_result_row_id
+                    or str(result_row["result_id"]) != expected_result_id
+                    or str(result_row["attempt_id"]) != attempt.attempt_id
+                    or str(result_row["run_id"]) != run.run_id
+                    or str(result_row["schema_version"]) != identity.schema_version
+                    or str(result_row["subject_id"]) != identity.subject_id
+                    or str(result_row["output_json"]) != output_json
+                    or str(result_row["output_hash"]) != expected_output_hash
+                    or str(result_row["producer_version"])
+                    != identity.producer_version
+                    or str(result_row["manifest_hash"]) != envelope.manifest_hash
+                    or str(result_row["manifest_path"]) != expected_locator
+                    or str(result_row["created_at"]) != envelope.created_at
+                    or checkpoint.run_id != run.run_id
+                    or checkpoint.subject_id != identity.subject_id
+                    or checkpoint.stage is not expected_stage
+                    or checkpoint.stage_index != expected_index
+                    or checkpoint.result_row_id != expected_result_row_id
+                    or checkpoint.result_id != expected_result_id
+                    or checkpoint.output_hash != expected_output_hash
+                    or checkpoint.manifest_hash != envelope.manifest_hash
+                    or checkpoint.manifest_path != expected_locator
+                    or checkpoint.updated_at != envelope.created_at
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                results.append(envelope)
+                checkpoints.append(checkpoint)
+                previous_output_hash = envelope.output_hash
+
+            for attempt in attempts:
+                if attempt.stage_index > completed_count:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                prior_hash = (
+                    None
+                    if attempt.stage_index == 0
+                    else results[attempt.stage_index - 1].output_hash
+                )
+                stage_input = StageInput(
+                    schema_version=identity.schema_version,
+                    execution_mode=ExecutionMode.DRY_RUN,
+                    subject_id=identity.subject_id,
+                    stage=attempt.stage,
+                    previous_output_hash=prior_hash,
+                    fixture_hash=(
+                        identity.fixture_hash if attempt.stage_index == 0 else None
+                    ),
+                )
+                expected_input_hash = stage_input_hash(stage_input)
+                expected_reusable = reusable_key_digest(
+                    subject_id=identity.subject_id,
+                    stage=attempt.stage,
+                    input_hash=expected_input_hash,
+                    producer_version=identity.producer_version,
+                    retry_policy_version=identity.retry_policy_version,
+                )
+                if (
+                    attempt.input_hash != expected_input_hash
+                    or attempt.reusable_key_digest != expected_reusable
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            return VerifiedRunChain(
+                run=run,
+                identity=identity,
+                attempts=attempts,
+                results=tuple(results),
+                checkpoints=tuple(checkpoints),
+            )
+        except SafeFailure:
+            raise
+        except (IndexError, KeyError, ValidationError, ValueError, TypeError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
