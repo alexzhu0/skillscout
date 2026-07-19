@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Completed 01-07-PLAN.md
-last_updated: "2026-07-19T05:58:22.414Z"
+stopped_at: Completed 01-08-PLAN.md
+last_updated: "2026-07-19T06:23:39.349Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 11
-  completed_plans: 7
-  percent: 0
+  completed_plans: 8
+  percent: 73
 ---
 
 # Project State: SkillScout
@@ -24,8 +24,8 @@ progress:
 ## Current Position
 
 **Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 8 of 11
-**Execution:** Six verified gap-closure plans are pending
+**Plan:** 9 of 11
+**Execution:** Three verified gap-closure plans are pending
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
 ## Progress
@@ -34,7 +34,7 @@ progress:
 Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
-Phase 1 implementation  [█████░░░░░]  45%
+Phase 1 implementation  [███████░░░]  73%
 ```
 
 | Metric | Value |
@@ -43,7 +43,7 @@ Phase 1 implementation  [█████░░░░░]  45%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 0 |
-| Plans completed | 5/11 |
+| Plans completed | 8/11 |
 
 ## Accumulated Context
 
@@ -92,23 +92,14 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T05:58:22.410Z
-**Stopped at:** Completed 01-07-PLAN.md
+**Last session:** 2026-07-19T06:23:39.345Z
+**Stopped at:** Completed 01-08-PLAN.md
 **Resume file:** None
 
 ### Completed
 
-- Initialized Git repository and GSD project configuration.
-- Created and committed `PROJECT.md`.
-- Researched stack, features, architecture, risks, Agent Skills specification, GitHub and OpenAI safety constraints.
-- Created and committed all research documents.
-- Confirmed and committed 44 MVP requirements.
-- Drafted a six-phase vertical MVP roadmap and mapped every requirement exactly once.
-- Skipped Phase 1 discussion by explicit user request and completed research, Nyquist validation, pattern mapping, Walking Skeleton design, and four executable plans.
-- Passed two bounded plan-checker revision rounds; the final independent review returned `VERIFICATION PASSED` with no blockers or warnings.
-- Completed all four Phase 1 plans, including the local-only capability firewall, fail-closed state hardening and locked zero-network acceptance.
-- Ran independent verification, identified four root gaps, and created seven sequential gap-closure plans covering every finding.
-- Passed two bounded planner/checker revision rounds; the final independent plan checker returned `VERIFICATION PASSED`.
+- Initialized the project, research, 44 MVP requirements, six-phase roadmap, and the first four independently reviewed Phase 1 plans.
+- Completed Plans 01-01 through 01-08; independent verification identified four root gaps and the reviewed Plans 01-05 through 01-11 cover their closure.
 
 ### Next
 
@@ -130,6 +121,7 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 | Phase 01 P05 | 9min | 2 tasks | 5 files |
 | Phase 01 P06 | 16min | 2 tasks | 6 files |
 | Phase 01 P07 | 20min | 2 tasks | 5 files |
+| Phase 01 P08 | 19min | 2 tasks | 9 files |
 
 ## Decisions
 
@@ -152,3 +144,6 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 - [Phase 01]: Never give SQLite an operator pathname — Deserialize bounded descriptor-read bytes into private in-memory connections and serialize candidate snapshots only.
 - [Phase 01]: Use a retained reusable lock inode with kernel-only flock ownership — Process death releases live ownership without lock-file deletion or recreation.
 - [Phase 01]: Make every required local fsync fatal before state promotion — Manifest and publication bytes must be durable before checkpoint or terminal success.
+- [Phase 01]: Separate semantic result identity from run-scoped row ownership — Stable semantic digests may repeat across runs, while deterministic result_row_id owns stage and checkpoint associations.
+- [Phase 01]: Select resumable runs by complete exact RunIdentity — Schema, subject, fixture, producer, and retry-policy facts must all match before checkpoint reuse.
+- [Phase 01]: Keep migrated v1 runs legacy_unbound until transactional canonical proof — Unbound evidence cannot authorize inspect or resume, and a wrong expected identity must leave state unchanged.
