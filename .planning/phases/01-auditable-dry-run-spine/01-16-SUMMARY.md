@@ -183,10 +183,18 @@ The verifier recomputed the exact source set and immutable inputs, resolved ever
 - **Verification:** 23 adversarial tests and Ruff pass; a fresh record followed by two external-cwd independent reruns matched exactly.
 - **Committed in:** `1e07b85`
 
+**2. [Rule 1 - Tracking integrity] Repaired legacy STATE and ROADMAP projections after registered handler drift**
+- **Found during:** Sequential plan tracking closeout
+- **Issue:** The required handlers correctly counted 16/16 summaries but rewrote the nested STATE plan percentage as the six-phase milestone share (17%) and replaced the legacy ROADMAP `Requirements/Completed` row with incompatible plan-count columns.
+- **Fix:** Preserved the handler's 16/16 completion, date, metric, decisions, and session updates while restoring the established 100% plan projection and four-column requirement row.
+- **Files modified:** `.planning/STATE.md`, `.planning/ROADMAP.md`
+- **Verification:** STATE reports Plan 16 of 16 and 100%; ROADMAP marks 01-16 complete and retains the `Phase/Status/Requirements/Completed` contract.
+- **Committed in:** plan tracking metadata commit
+
 ---
 
-**Total deviations:** 1 auto-fixed (1 Rule 1 bug).  
-**Impact on plan:** The fix is required for reproducible uv output and remains narrower than the plan's allowed elapsed-time normalization; no failure or semantic evidence is removed.
+**Total deviations:** 2 auto-fixed (2 Rule 1 bugs).
+**Impact on plan:** Both fixes preserve the intended evidence and tracking contracts without expanding product scope; no failure or semantic evidence is removed.
 
 ## Issues Encountered
 
