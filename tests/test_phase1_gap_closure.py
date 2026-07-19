@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import re
 import sqlite3
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -20,7 +24,7 @@ EXPECTED_FINDINGS = tuple(
     + [f"WR-{number:02d}" for number in range(1, 4)]
 )
 
-FINDING_NODES: dict[str, tuple[str, ...]] = {
+LEGACY_GAP_FINDING_NODES: dict[str, tuple[str, ...]] = {
     "CR-01": (
         "tests/test_side_effect_policy.py::test_prior_permissive_policy_path_is_not_a_public_runtime_input",
         "tests/test_side_effect_policy.py::test_remote_declaring_processor_is_rejected_before_invocation",
@@ -63,26 +67,59 @@ FINDING_NODES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+CURRENT_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
+    "CR-01": (
+        "tests/test_state_integrity.py::"
+        "test_post_commit_backup_cleanup_failure_returns_success_and_reopen_observes_mutation",
+    ),
+    "CR-02": (
+        "tests/test_state_integrity.py::"
+        "test_resume_event_tamper_is_rejected_by_every_bound_trust_path",
+    ),
+    "CR-03": (
+        "tests/test_cli_security.py::"
+        "test_argparse_failures_are_byte_exact_non_echoing_and_non_durable",
+    ),
+    "WR-01": (
+        "tests/test_pipeline_resume.py::"
+        "test_fail_once_unexpected_exception_resumes_failed_stage_without_prefix_replay",
+    ),
+    "WR-02": (
+        "tests/test_phase1_evidence_verifier.py::"
+        "test_verify_reruns_closed_registry_and_rejects_mismatched_output",
+    ),
+    "WR-03": (
+        "tests/test_state_integrity.py::"
+        "test_state_manifest_namespace_collision_is_rejected_before_creation",
+    ),
+    "WR-04": (
+        "tests/test_state_integrity.py::"
+        "test_existing_state_requires_private_permissions_before_deserialize",
+        "tests/test_state_integrity.py::"
+        "test_existing_manifest_requires_private_single_owner_file_before_decode",
+    ),
+}
+
 ROOT_GAP_NODES: dict[str, tuple[str, ...]] = {
     "1": (
         "tests/test_phase1_gap_closure.py::test_production_capability_surface_remains_local_only",
-        *FINDING_NODES["CR-01"],
+        *LEGACY_GAP_FINDING_NODES["CR-01"],
     ),
     "2": (
-        *FINDING_NODES["CR-03"],
-        *FINDING_NODES["CR-04"],
-        *FINDING_NODES["CR-07"],
-        *FINDING_NODES["CR-08"],
-        *FINDING_NODES["WR-01"],
+        *LEGACY_GAP_FINDING_NODES["CR-03"],
+        *LEGACY_GAP_FINDING_NODES["CR-04"],
+        *LEGACY_GAP_FINDING_NODES["CR-07"],
+        *LEGACY_GAP_FINDING_NODES["CR-08"],
+        *LEGACY_GAP_FINDING_NODES["WR-01"],
     ),
     "3": (
-        *FINDING_NODES["CR-05"],
-        *FINDING_NODES["CR-06"],
-        *FINDING_NODES["WR-02"],
+        *LEGACY_GAP_FINDING_NODES["CR-05"],
+        *LEGACY_GAP_FINDING_NODES["CR-06"],
+        *LEGACY_GAP_FINDING_NODES["WR-02"],
     ),
     "4": (
-        *FINDING_NODES["CR-02"],
-        *FINDING_NODES["WR-03"],
+        *LEGACY_GAP_FINDING_NODES["CR-02"],
+        *LEGACY_GAP_FINDING_NODES["WR-03"],
         "tests/test_phase1_gap_closure.py::test_packaged_cli_changed_a_prime_dual_inspect_gap_acceptance",
         "tests/test_phase1_gap_closure.py::test_packaged_cli_a_b_a_exact_resume_gap_acceptance",
     ),
@@ -521,10 +558,10 @@ def test_packaged_cli_a_b_a_exact_resume_gap_acceptance(
 
 
 def test_gap_finding_node_definitions_exist() -> None:
-    assert tuple(FINDING_NODES) == EXPECTED_FINDINGS
+    assert tuple(LEGACY_GAP_FINDING_NODES) == EXPECTED_FINDINGS
     assert tuple(ROOT_GAP_NODES) == ("1", "2", "3", "4")
     definitions: dict[Path, set[str]] = {}
-    for nodes in (*FINDING_NODES.values(), *ROOT_GAP_NODES.values()):
+    for nodes in (*LEGACY_GAP_FINDING_NODES.values(), *ROOT_GAP_NODES.values()):
         assert nodes
         for node_id in nodes:
             module_name, separator, function_name = node_id.partition("::")
@@ -538,6 +575,69 @@ def test_gap_finding_node_definitions_exist() -> None:
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 }
             assert function_name in definitions[module], node_id
+
+
+def test_current_review_finding_node_definitions_exist() -> None:
+    assert tuple(CURRENT_REVIEW_FINDING_NODES) == (
+        "CR-01",
+        "CR-02",
+        "CR-03",
+        "WR-01",
+        "WR-02",
+        "WR-03",
+        "WR-04",
+    )
+    definitions: dict[Path, set[str]] = {}
+    for nodes in CURRENT_REVIEW_FINDING_NODES.values():
+        assert nodes
+        for node_id in nodes:
+            module_name, separator, function_name = node_id.partition("::")
+            assert separator == "::"
+            module = PROJECT_ROOT / module_name
+            if module not in definitions:
+                tree = ast.parse(module.read_bytes(), filename=str(module))
+                definitions[module] = {
+                    node.name
+                    for node in tree.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+            assert function_name in definitions[module], node_id
+
+
+def test_current_review_composed_packaged_smoke(tmp_path: Path) -> None:
+    node_ids = [
+        str(PROJECT_ROOT / module_name) + "::" + function_name
+        for nodes in CURRENT_REVIEW_FINDING_NODES.values()
+        for node_id in nodes
+        for module_name, separator, function_name in (node_id.partition("::"),)
+        if separator == "::"
+    ]
+    environment = dict(os.environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--rootdir",
+            str(PROJECT_ROOT),
+            "--basetemp",
+            str(tmp_path / "nested-pytest"),
+            *node_ids,
+        ),
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    counts = re.findall(rb"(?<!\d)(\d+) passed\b", completed.stdout + completed.stderr)
+    assert len(counts) == 1 and int(counts[0]) >= len(node_ids)
+    assert b"DO_NOT_DISCLOSE" not in completed.stdout + completed.stderr
 
 
 def test_production_capability_surface_remains_local_only() -> None:
