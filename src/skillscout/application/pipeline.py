@@ -63,7 +63,7 @@ class RetryPolicy:
     version: str = RETRY_POLICY_VERSION
     max_attempts: int = 3
     transient_error_codes: frozenset[ErrorCode] = frozenset(
-        {ErrorCode.STAGE_TRANSIENT_FAILURE}
+        {ErrorCode.PIPELINE_INTERRUPTED, ErrorCode.STAGE_TRANSIENT_FAILURE}
     )
 
     def __post_init__(self) -> None:
