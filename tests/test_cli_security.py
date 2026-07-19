@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +23,128 @@ from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
 
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
 FROZEN_DATABASE_SHA256 = "49fa8067a2cc7e55b3afb2e2c93aca91f2b3d6cfbaee1bc32242f7b175bc0251"
+INVALID_ARGUMENTS_DIAGNOSTIC = (
+    b'{"error":{"code":"invalid_cli_arguments",'
+    b'"summary":"Command-line arguments were rejected."}}\n'
+)
+
+_CREDENTIAL_CANARY = "github_pat_ARGV_DO_NOT_DISCLOSE_123456789"
+_PATH_CANARY = "/private/argv/path/DO_NOT_DISCLOSE"
+_CONTROL_CANARY = "argv-line-one\nargv-line-two\tDO_NOT_DISCLOSE"
+_UNICODE_CANARY = "ARGV_\u79d8\u5bc6_\U0001f512_DO_NOT_DISCLOSE"
+_OVERSIZED_CANARY = "ARGV_OVERSIZED_DO_NOT_DISCLOSE_" + ("x" * 4096)
+
+
+@pytest.mark.parametrize(
+    ("argv", "canaries"),
+    [
+        pytest.param(
+            (
+                "dry-run",
+                "--fixture",
+                _PATH_CANARY,
+                "--state",
+                "state.db",
+                "--output",
+                "output",
+                "--fail-after",
+                _CREDENTIAL_CANARY,
+            ),
+            (_PATH_CANARY, _CREDENTIAL_CANARY),
+            id="invalid_choice",
+        ),
+        pytest.param(
+            (
+                "dry-run",
+                "--fixture",
+                _PATH_CANARY,
+                "--state",
+                "state.db",
+                "--output",
+                "output",
+                "--unknown-option",
+                _OVERSIZED_CANARY + _CONTROL_CANARY + _UNICODE_CANARY,
+            ),
+            (
+                _PATH_CANARY,
+                _OVERSIZED_CANARY,
+                _CONTROL_CANARY,
+                _UNICODE_CANARY,
+            ),
+            id="unknown_option",
+        ),
+        pytest.param(
+            (_UNICODE_CANARY,),
+            (_UNICODE_CANARY,),
+            id="unknown_subcommand",
+        ),
+        pytest.param(
+            (
+                "dry-run",
+                "--fixture",
+                _CREDENTIAL_CANARY,
+                "--state",
+                _PATH_CANARY,
+                "--output",
+            ),
+            (_CREDENTIAL_CANARY, _PATH_CANARY),
+            id="missing_value",
+        ),
+        pytest.param(
+            ("dry-run", "--fixture", _CONTROL_CANARY),
+            (_CONTROL_CANARY,),
+            id="missing_required_arguments",
+        ),
+    ],
+)
+def test_argparse_failures_are_byte_exact_non_echoing_and_non_durable(
+    tmp_path: Path,
+    argv: tuple[str, ...],
+    canaries: tuple[str, ...],
+) -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "skillscout.cli", *argv],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == b""
+    assert result.stderr == INVALID_ARGUMENTS_DIAGNOSTIC
+    for canary in canaries:
+        encoded = canary.encode()
+        assert encoded not in result.stdout
+        assert encoded not in result.stderr
+        assert encoded not in _all_bytes(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
+    parser = cli.build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+
+    assert isinstance(parser, cli.SafeArgumentParser)
+    assert set(subparsers.choices) == {"dry-run", "inspect-run"}
+    assert all(isinstance(child, cli.SafeArgumentParser) for child in subparsers.choices.values())
+
+
+def test_help_remains_a_successful_stdout_only_boundary(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "skillscout.cli", "--help"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == b""
+    assert result.stdout.startswith(b"usage: skillscout")
+    assert list(tmp_path.iterdir()) == []
 
 
 def _valid_fixture() -> dict[str, object]:
