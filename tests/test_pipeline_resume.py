@@ -634,3 +634,129 @@ def test_migration_rejects_oversized_output_before_manifest_creation(
     assert not copied.with_suffix(".manifests").exists()
     with _connect(copied) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "seam",
+    ["before_state_file_fsync", "before_state_directory_fsync"],
+)
+def test_state_snapshot_sync_failure_restores_prior_bytes_and_requires_reopen(
+    tmp_path: Path,
+    seam: str,
+) -> None:
+    active = False
+
+    def fail_selected(operation: str) -> None:
+        if active and operation == seam:
+            raise OSError("forced durability failure")
+
+    database = tmp_path / f"snapshot-{seam}.db"
+    store = SQLiteStateStore(database, filesystem_seam=fail_selected)
+    before = database.read_bytes()
+    active = True
+    with pytest.raises(SafeFailure) as failure:
+        store.create_run("not-durable", "subject", "2026-07-19T00:00:00.000000Z")
+    assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    assert store.connection is None
+    assert database.read_bytes() == before
+    store.close()
+
+    reopened = SQLiteStateStore(database)
+    try:
+        assert reopened.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        assert reopened.connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize(
+    "seam",
+    ["before_manifest_file_fsync", "before_manifest_directory_fsync"],
+)
+def test_manifest_sync_failure_never_advances_checkpoint(
+    tmp_path: Path,
+    seam: str,
+) -> None:
+    active = False
+
+    def fail_selected(operation: str) -> None:
+        if active and operation == seam:
+            raise OSError("forced manifest durability failure")
+
+    database = tmp_path / f"manifest-{seam}.db"
+    store = SQLiteStateStore(database, filesystem_seam=fail_selected)
+    active = True
+    try:
+        with pytest.raises(SafeFailure) as failure:
+            PipelineRunner(store, FixtureProcessor()).run(
+                load_fixture(APPROVED_FIXTURE), tmp_path / "output"
+            )
+        assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+        assert store.connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 0
+        assert store.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+        assert store.connection.execute("SELECT status FROM runs").fetchone()[0] == "interrupted"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "seam",
+    [
+        "before_publication_file_fsync",
+        "before_publication_directory_fsync",
+        "before_ancestor_directory_fsync",
+    ],
+)
+def test_publication_sync_failure_prevents_terminal_transition(
+    tmp_path: Path,
+    seam: str,
+) -> None:
+    active = False
+
+    def fail_selected(operation: str) -> None:
+        if active and operation == seam:
+            raise OSError("forced publication durability failure")
+
+    store = SQLiteStateStore(tmp_path / f"publication-{seam}.db")
+    active = True
+    try:
+        with pytest.raises(SafeFailure) as failure:
+            PipelineRunner(store, FixtureProcessor(), filesystem_seam=fail_selected).run(
+                load_fixture(APPROVED_FIXTURE), tmp_path / seam / "nested-output"
+            )
+        assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+        assert store.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 9
+        assert store.connection.execute("SELECT status FROM runs").fetchone()[0] == "running"
+    finally:
+        store.close()
+
+
+def test_publication_is_directory_durable_before_terminal_state_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def observe(operation: str) -> None:
+        events.append(operation)
+
+    output = tmp_path / "publication-output"
+    store = SQLiteStateStore(tmp_path / "publication-order.db")
+    original_set_status = store.set_run_status
+
+    def assert_durable_order(*args: object, **kwargs: object) -> None:
+        if len(args) >= 2 and args[1] == "planned_not_published":
+            assert events[-1] == "after_publication_durable"
+            assert (output / "publication-plan.json").is_file()
+        original_set_status(*args, **kwargs)
+
+    monkeypatch.setattr(store, "set_run_status", assert_durable_order)
+    try:
+        summary = PipelineRunner(
+            store,
+            FixtureProcessor(),
+            filesystem_seam=observe,
+        ).run(load_fixture(APPROVED_FIXTURE), output)
+        assert summary.status.value == "planned_not_published"
+    finally:
+        store.close()
