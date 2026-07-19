@@ -83,11 +83,19 @@ def canonical_v1_digest(
 
 
 class SystemClock:
+    @property
+    def effect_scope(self) -> EffectScope:
+        return EffectScope.NONE
+
     def now(self) -> str:
         return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 class UUIDIdProvider:
+    @property
+    def effect_scope(self) -> EffectScope:
+        return EffectScope.NONE
+
     def new_run_id(self) -> str:
         return uuid.uuid4().hex
 
@@ -409,14 +417,13 @@ def build_dry_run_runtime(
     resolved_clock = clock or SystemClock()
     resolved_ids = ids or UUIDIdProvider()
     complete_registry = (
-        AdapterRegistration("fixture_processor", EffectScope.NONE, processor),
-        AdapterRegistration("sqlite_and_manifests", EffectScope.LOCAL_STATE, state),
-        AdapterRegistration("clock", EffectScope.NONE, resolved_clock),
-        AdapterRegistration("run_ids", EffectScope.NONE, resolved_ids),
+        AdapterRegistration("fixture_processor", processor),
+        AdapterRegistration("sqlite_and_manifests", state),
+        AdapterRegistration("clock", resolved_clock),
+        AdapterRegistration("run_ids", resolved_ids),
         AdapterRegistration(
             "local_publication_planner",
-            EffectScope.LOCAL_STATE,
-            PipelineRunner._write_publication_plan,
+            _LocalPublicationPlanner(),
         ),
         *tuple(registrations),
     )
@@ -430,3 +437,11 @@ def build_dry_run_runtime(
         retry_policy=retry_policy,
     )
     return DryRunRuntime(runner=runner, registrations=validated, policy=resolved_policy)
+
+
+class _LocalPublicationPlanner:
+    """Trusted declaration for the runner's local publication-plan write."""
+
+    @property
+    def effect_scope(self) -> EffectScope:
+        return EffectScope.LOCAL_STATE

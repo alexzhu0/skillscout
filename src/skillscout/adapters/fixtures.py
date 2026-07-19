@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.domain.enums import EffectScope
 from skillscout.domain.models import StageInput
 
 MAX_FIXTURE_BYTES = 65_536
@@ -126,6 +127,10 @@ class FixtureProcessor:
     """Deterministic local processor with no provider or execution capability."""
 
     producer_version = "fixture-v1"
+
+    @property
+    def effect_scope(self) -> EffectScope:
+        return EffectScope.NONE
 
     def process(
         self,

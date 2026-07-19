@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.models import StageAttempt, StageEnvelope, StageInput
@@ -55,6 +55,7 @@ class SafeFailure(Exception):
         return {"code": self.code.value, "summary": ERROR_SUMMARIES[self.code]}
 
 
+@runtime_checkable
 class ScopedAdapter(Protocol):
     """An adapter registration with an explicit, closed effect scope."""
 
@@ -67,12 +68,18 @@ class AdapterRegistration:
     """Immutable declaration of one runtime adapter and its authority."""
 
     name: str
-    scope: EffectScope
     adapter: object
+    scope: EffectScope = field(init=False)
 
     def __post_init__(self) -> None:
-        if not self.name or not isinstance(self.scope, EffectScope):
+        if not isinstance(self.name, str) or not self.name:
             raise ValueError("invalid adapter registration")
+        if not isinstance(self.adapter, ScopedAdapter):
+            raise ValueError("invalid adapter registration")
+        declared_scope = self.adapter.effect_scope
+        if not isinstance(declared_scope, EffectScope):
+            raise ValueError("invalid adapter registration")
+        object.__setattr__(self, "scope", declared_scope)
 
     @property
     def effect_scope(self) -> EffectScope:

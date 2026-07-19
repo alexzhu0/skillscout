@@ -22,6 +22,7 @@ from skillscout.domain.canonical import (
     stage_output_hash,
 )
 from skillscout.domain.enums import (
+    EffectScope,
     ExecutionMode,
     PipelineStage,
     RunStatus,
@@ -116,6 +117,10 @@ def _schema_statements(suffix: str = "") -> tuple[str, ...]:
 
 class SQLiteStateStore:
     """Fail-closed state adapter with explicit v1-to-v2 migration."""
+
+    @property
+    def effect_scope(self) -> EffectScope:
+        return EffectScope.LOCAL_STATE
 
     def __init__(self, path: Path, *, migration_fail_at: str | None = None) -> None:
         if migration_fail_at is not None and migration_fail_at not in _MIGRATION_SEAMS:
