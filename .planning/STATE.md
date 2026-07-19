@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Completed 01-08-PLAN.md
-last_updated: "2026-07-19T06:23:39.349Z"
+stopped_at: Completed 01-09-PLAN.md
+last_updated: "2026-07-19T06:55:07.028Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 11
-  completed_plans: 8
-  percent: 73
+  completed_plans: 9
+  percent: 0
 ---
 
 # Project State: SkillScout
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 9 of 11
+**Plan:** 10 of 11
 **Execution:** Three verified gap-closure plans are pending
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
@@ -92,8 +92,8 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T06:23:39.345Z
-**Stopped at:** Completed 01-08-PLAN.md
+**Last session:** 2026-07-19T06:53:41.164Z
+**Stopped at:** Completed 01-09-PLAN.md
 **Resume file:** None
 
 ### Completed
@@ -122,6 +122,7 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 | Phase 01 P06 | 16min | 2 tasks | 6 files |
 | Phase 01 P07 | 20min | 2 tasks | 5 files |
 | Phase 01 P08 | 19min | 2 tasks | 9 files |
+| Phase 01 P09 | 24min | 2 tasks | 5 files |
 
 ## Decisions
 
@@ -147,3 +148,6 @@ Independent verification found four Phase-1 root gaps. Plans 01-05 through 01-11
 - [Phase 01]: Separate semantic result identity from run-scoped row ownership — Stable semantic digests may repeat across runs, while deterministic result_row_id owns stage and checkpoint associations.
 - [Phase 01]: Select resumable runs by complete exact RunIdentity — Schema, subject, fixture, producer, and retry-policy facts must all match before checkpoint reuse.
 - [Phase 01]: Keep migrated v1 runs legacy_unbound until transactional canonical proof — Unbound evidence cannot authorize inspect or resume, and a wrong expected identity must leave state unchanged.
+- [Phase 01]: Use one immutable schema-v2 descriptor set for creation, acceptance, and migration — A user_version value cannot establish structural or integrity compatibility.
+- [Phase 01]: Treat persisted diagnostics as untrusted until exact closed validation — Public inspect output must never project corrupt, legacy, credential-bearing, or provider-controlled fields.
+- [Phase 01]: Validate schema-v1 source rows before migration copy or manifest creation — Rejected legacy bytes stay unchanged evidence and cannot become new durable surfaces.

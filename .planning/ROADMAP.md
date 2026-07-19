@@ -27,7 +27,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 8/11 plans executed
+**Plans:** 9/11 plans executed
 
 - [x] 01-01-PLAN.md
 - [x] 01-02-PLAN.md
@@ -37,7 +37,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 - [x] 01-06-PLAN.md
 - [x] 01-07-PLAN.md
 - [x] 01-08-PLAN.md
-- [ ] 01-09-PLAN.md
+- [x] 01-09-PLAN.md
 - [ ] 01-10-PLAN.md
 - [ ] 01-11-PLAN.md
 
@@ -194,7 +194,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 | Phase | Status | Requirements | Completed |
 |---|---|---:|---:|
-| 1. Auditable Dry-Run Spine | 8/11 | In Progress|  |
+| 1. Auditable Dry-Run Spine | 9/11 | In Progress|  |
 | 2. Safe Single-Repository Extraction | Not started | 14 | 0/14 |
 | 3. Validated Skill Candidate | Not started | 13 | 0/13 |
 | 4. Controlled Draft PR | Not started | 6 | 0/6 |
