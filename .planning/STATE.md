@@ -4,13 +4,13 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
-status: verifying
-stopped_at: Independent verification found 3 blockers and 4 warnings
-last_updated: "2026-07-19T08:17:22Z"
+status: planned
+stopped_at: Second gap-closure plans 01-12 through 01-16 passed plan verification
+last_updated: "2026-07-19T09:06:16Z"
 progress:
   total_phases: 6
   completed_phases: 0
-  total_plans: 11
+  total_plans: 16
   completed_plans: 11
   percent: 17
 ---
@@ -19,14 +19,14 @@ progress:
 
 **Last updated:** 2026-07-19
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Verification gaps found — Phase 1 remains pending
+**Status:** Gap closure planned — ready for gaps-only execution
 
 ## Current Position
 
-**Phase:** 01 (auditable-dry-run-spine) — GAPS FOUND
-**Plan:** 11 of 11 executed
-**Verification:** 3 of 5 must-haves verified
-**Next command:** `$gsd-plan-phase 1 --gaps`
+**Phase:** 01 (auditable-dry-run-spine) — GAP CLOSURE PLANNED
+**Plan:** 11 of 16 executed; plans 01-12 through 01-16 independently plan-checked
+**Verification:** Previous implementation 3 of 5 must-haves verified; new gap plans passed plan verification
+**Next command:** `$gsd-execute-phase 1 --gaps-only`
 
 ## Progress
 
@@ -34,7 +34,7 @@ progress:
 Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
-Phase 1 implementation  [██████████] 100%
+Phase 1 implementation  [███████░░░]  69%
 Phase 1 verification    [██████░░░░]  60%
 ```
 
@@ -44,7 +44,7 @@ Phase 1 verification    [██████░░░░]  60%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 0 |
-| Plans completed | 11/11 |
+| Plans completed | 11/16 |
 
 ## Accumulated Context
 
@@ -89,19 +89,19 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-Independent verification confirmed three release blockers: snapshot operations can report failure after new state becomes authoritative; `reused_stage_count` is not bound by full-chain proof; and invalid CLI argument handling can echo rejected input outside the fixed diagnostic boundary. Four additional warnings remain in `01-REVIEW.md`. Gate-A/Gate-B hashes are unchanged, and WR-04 OS/syscall network denial remains explicitly deferred to Phase 6.
+Independent verification confirmed three release blockers: snapshot operations can report failure after new state becomes authoritative; `reused_stage_count` is not bound by full-chain proof; and invalid CLI argument handling can echo rejected input outside the fixed diagnostic boundary. Four additional warnings remain in `01-REVIEW.md`. Plans 01-12 through 01-16 now cover all seven findings and passed an independent plan-checker, but the findings remain open until those plans execute and post-execution review passes. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6 and is distinct from the current code-review WR-04 ownership/mode finding.
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T08:17:22Z
-**Stopped at:** Independent verification returned gaps_found (3/5)
+**Last session:** 2026-07-19T09:06:16Z
+**Stopped at:** Second gap-closure plans 01-12 through 01-16 passed plan verification
 **Resume file:** None
 
 ### Next
 
-1. Create a new bounded gap-closure plan with `$gsd-plan-phase 1 --gaps`.
-2. Execute only the new gap plans with `$gsd-execute-phase 1 --gaps-only`.
-3. Re-run code review, goal verification, Nyquist validation and the Phase-1 security audit before marking the phase complete.
+1. Execute only plans 01-12 through 01-16 with `$gsd-execute-phase 1 --gaps-only`.
+2. Re-run code review and goal verification against the completed gap implementation.
+3. Run Nyquist validation and the Phase-1 security audit before marking the phase complete.
 
 ---
 *State initialized: 2026-07-16*

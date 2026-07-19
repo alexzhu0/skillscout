@@ -27,7 +27,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 11/11 plans executed; independent verification found gaps
+**Plans:** 11/16 plans executed; gap-closure plans 01-12 through 01-16 planned and independently verified
 
 **Wave 1**
 
@@ -72,6 +72,23 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 **Wave 11** *(blocked on Wave 10 completion)*
 
 - [x] `01-11-PLAN.md` — Locked end-to-end acceptance and an independently verifiable evidence index.
+
+**Wave 12** *(blocked on Wave 11 completion)*
+
+- [ ] `01-12-PLAN.md` — Truthful snapshot commit outcomes, collision-free state namespaces, and private state-file admission.
+
+**Wave 13** *(blocked on Wave 12 completion)*
+
+- [ ] `01-13-PLAN.md` — Immutable resume-event authority with explicit zero-prefix crash semantics.
+
+**Wave 14** *(blocked on Wave 13 completion)*
+
+- [ ] `01-14-PLAN.md` — Full-chain resume-event verification and tamper-proof reuse projections.
+- [ ] `01-15-PLAN.md` — Non-echoing CLI rejection and policy-correct recovery from unexpected processor failures.
+
+**Wave 15** *(blocked on Wave 14 completion)*
+
+- [ ] `01-16-PLAN.md` — Independently rerunnable evidence authority and final seven-finding acceptance.
 
 **Success Criteria:**
 
