@@ -12,7 +12,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 ## Phases
 
-- [x] **Phase 1: Auditable Dry-Run Spine** — 用确定性 fixture 打通所有阶段状态、审计、恢复和副作用防火墙。 (completed 2026-07-19)
+- [ ] **Phase 1: Auditable Dry-Run Spine** — 用确定性 fixture 打通所有阶段状态、审计、恢复和副作用防火墙。
 - [ ] **Phase 2: Safe Single-Repository Extraction** — 从一个指定公共仓库安全地产出 `WorkflowSpec` 或结构化拒绝。
 - [ ] **Phase 3: Validated Skill Candidate** — 把合格 `WorkflowSpec` 转为经过格式、安全和独立审核的本地 Skill 候选。
 - [ ] **Phase 4: Controlled Draft PR** — 在平台权限硬约束下创建或更新一个可追溯 Draft PR。
@@ -27,7 +27,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 16/16 plans complete
+**Plans:** 16/16 plans executed; independent verification found gaps (4/5 must-haves)
 
 - [x] 01-01-PLAN.md
 - [x] 01-02-PLAN.md
@@ -105,7 +105,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Wave 15** *(blocked on Wave 14 completion)*
 
-- [ ] `01-16-PLAN.md` — Independently rerunnable evidence authority and final seven-finding acceptance.
+- [x] `01-16-PLAN.md` — Independently rerunnable evidence authority and final seven-finding acceptance.
 
 **Success Criteria:**
 
@@ -216,7 +216,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 | Phase | Status | Requirements | Completed |
 |---|---|---:|---:|
-| 1. Auditable Dry-Run Spine | Complete | 2 | 2/2 |
+| 1. Auditable Dry-Run Spine | Gaps found | 2 | 0/2 |
 | 2. Safe Single-Repository Extraction | Not started | 14 | 0/14 |
 | 3. Validated Skill Candidate | Not started | 13 | 0/13 |
 | 4. Controlled Draft PR | Not started | 6 | 0/6 |

@@ -4,29 +4,29 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
-status: executing
-stopped_at: Completed 01-16-PLAN.md
-last_updated: "2026-07-19T11:30:22.906Z"
+status: verifying
+stopped_at: Independent verification found crash-recovery and evidence-authority gaps
+last_updated: "2026-07-19T12:00:03Z"
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 0
   total_plans: 16
   completed_plans: 16
-  percent: 100
+  percent: 17
 ---
 
 # Project State: SkillScout
 
 **Last updated:** 2026-07-19
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Ready to execute
+**Status:** Verification gaps found — Phase 1 remains pending
 
 ## Current Position
 
-**Phase:** 01 (auditable-dry-run-spine) — PLAN EXECUTION COMPLETE
-**Plan:** 16 of 16
-**Verification:** Current seven-finding remediation evidence complete; independent post-execution review pending
-**Next command:** `$gsd-code-review 1`
+**Phase:** 01 (auditable-dry-run-spine) — GAPS FOUND
+**Plan:** 16 of 16 executed
+**Verification:** 4 of 5 must-haves verified
+**Next command:** `$gsd-plan-phase 1 --gaps`
 
 ## Progress
 
@@ -35,7 +35,7 @@ Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
 Phase 1 implementation  [██████████] 100%
-Phase 1 verification    [██████░░░░]  60%
+Phase 1 verification    [████████░░]  80%
 ```
 
 | Metric | Value |
@@ -89,18 +89,20 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-Plans 01-12 through 01-15 closed CR-01..CR-03 and WR-01, WR-03, and WR-04 through truthful private snapshots, event-derived reuse authority, closed CLI diagnostics, and finite no-replay recovery. Plan 01-16 closes WR-02 with exact source, AST-node, and independently rerun output authority. Gate-A/Gate-B hashes are unchanged. No current implementation blocker remains; the older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6.
+Plans 01-12 through 01-15 closed the previous three blockers and three of four warnings through truthful private snapshots, event-derived reuse authority, closed CLI diagnostics, and finite no-replay recovery. Independent review and goal verification found two remaining root causes: crash-left deterministic temporary files can permanently block state recovery, and the acceptance evidence is stale/incomplete after review because it omits the reviewed JSON fixtures and maps superseded findings. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6 and is unrelated to these gaps.
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T11:30:22.902Z
-**Stopped at:** Completed 01-16-PLAN.md
+**Last session:** 2026-07-19T12:00:03Z
+**Stopped at:** Independent verification returned gaps_found (4/5)
 **Resume file:** None
 
 ### Next
 
-1. Re-run code review and goal verification against the completed gap implementation.
-2. Run Nyquist validation and the Phase-1 security audit before advancing to Phase 2.
+1. Create bounded gap-closure plans with `$gsd-plan-phase 1 --gaps`.
+2. Execute only the new plans with `$gsd-execute-phase 1 --gaps-only`.
+3. Re-run code review and goal verification; require current `verify --rerun` evidence after bound documents stabilize.
+4. Run Nyquist validation and the Phase-1 security audit before advancing to Phase 2.
 
 ---
 *State initialized: 2026-07-16*
