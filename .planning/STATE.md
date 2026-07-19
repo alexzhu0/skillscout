@@ -5,11 +5,11 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: verifying
-stopped_at: Completed 01-11-PLAN.md
-last_updated: "2026-07-19T07:40:51.893Z"
+stopped_at: Independent verification found 3 blockers and 4 warnings
+last_updated: "2026-07-19T08:17:22Z"
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 0
   total_plans: 11
   completed_plans: 11
   percent: 17
@@ -19,14 +19,14 @@ progress:
 
 **Last updated:** 2026-07-19
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Phase complete — ready for verification
+**Status:** Verification gaps found — Phase 1 remains pending
 
 ## Current Position
 
-**Phase:** 01 (auditable-dry-run-spine) — COMPLETE
-**Plan:** 11 of 11 complete
-**Execution:** Locked gap closure and independent evidence validation passed
-**Next command:** `$gsd-verify-work 1`
+**Phase:** 01 (auditable-dry-run-spine) — GAPS FOUND
+**Plan:** 11 of 11 executed
+**Verification:** 3 of 5 must-haves verified
+**Next command:** `$gsd-plan-phase 1 --gaps`
 
 ## Progress
 
@@ -35,6 +35,7 @@ Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
 Phase 1 implementation  [██████████] 100%
+Phase 1 verification    [██████░░░░]  60%
 ```
 
 | Metric | Value |
@@ -42,7 +43,7 @@ Phase 1 implementation  [██████████] 100%
 | MVP requirements | 44 |
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
-| Phases completed | 1 |
+| Phases completed | 0 |
 | Plans completed | 11/11 |
 
 ## Accumulated Context
@@ -88,13 +89,19 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-No Phase-1 implementation blocker remains. Plans 01-05 through 01-11 closed and regression-protected the four authority, persistence, identity and integrity roots under unchanged Gate-A/Gate-B inputs. WR-04 OS/syscall network denial remains explicitly deferred to Phase 6.
+Independent verification confirmed three release blockers: snapshot operations can report failure after new state becomes authoritative; `reused_stage_count` is not bound by full-chain proof; and invalid CLI argument handling can echo rejected input outside the fixed diagnostic boundary. Four additional warnings remain in `01-REVIEW.md`. Gate-A/Gate-B hashes are unchanged, and WR-04 OS/syscall network denial remains explicitly deferred to Phase 6.
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T07:40:51.889Z
-**Stopped at:** Completed 01-11-PLAN.md
+**Last session:** 2026-07-19T08:17:22Z
+**Stopped at:** Independent verification returned gaps_found (3/5)
 **Resume file:** None
+
+### Next
+
+1. Create a new bounded gap-closure plan with `$gsd-plan-phase 1 --gaps`.
+2. Execute only the new gap plans with `$gsd-execute-phase 1 --gaps-only`.
+3. Re-run code review, goal verification, Nyquist validation and the Phase-1 security audit before marking the phase complete.
 
 ---
 *State initialized: 2026-07-16*

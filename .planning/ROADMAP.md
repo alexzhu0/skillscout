@@ -12,7 +12,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 ## Phases
 
-- [x] **Phase 1: Auditable Dry-Run Spine** — 用确定性 fixture 打通所有阶段状态、审计、恢复和副作用防火墙。 (completed 2026-07-19)
+- [ ] **Phase 1: Auditable Dry-Run Spine** — 用确定性 fixture 打通所有阶段状态、审计、恢复和副作用防火墙。
 - [ ] **Phase 2: Safe Single-Repository Extraction** — 从一个指定公共仓库安全地产出 `WorkflowSpec` 或结构化拒绝。
 - [ ] **Phase 3: Validated Skill Candidate** — 把合格 `WorkflowSpec` 转为经过格式、安全和独立审核的本地 Skill 候选。
 - [ ] **Phase 4: Controlled Draft PR** — 在平台权限硬约束下创建或更新一个可追溯 Draft PR。
@@ -27,19 +27,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 11/11 plans complete
-
-- [x] 01-01-PLAN.md
-- [x] 01-02-PLAN.md
-- [x] 01-03-PLAN.md
-- [x] 01-04-PLAN.md
-- [x] 01-05-PLAN.md
-- [x] 01-06-PLAN.md
-- [x] 01-07-PLAN.md
-- [x] 01-08-PLAN.md
-- [x] 01-09-PLAN.md
-- [x] 01-10-PLAN.md
-- [x] 01-11-PLAN.md
+**Plans:** 11/11 plans executed; independent verification found gaps
 
 **Wave 1**
 
@@ -59,31 +47,31 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] `01-05-PLAN.md` — Immutable Phase-1 authority ceiling and truthful adapter-owned capability declarations.
+- [x] `01-05-PLAN.md` — Immutable Phase-1 authority ceiling and truthful adapter-owned capability declarations.
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
-- [ ] `01-06-PLAN.md` — Bounded JSON contracts, writer/reader symmetry and complete durable lifecycle closure.
+- [x] `01-06-PLAN.md` — Bounded JSON contracts, writer/reader symmetry and complete durable lifecycle closure.
 
 **Wave 7** *(blocked on Wave 6 completion)*
 
-- [ ] `01-07-PLAN.md` — Descriptor-anchored filesystem and SQLite persistence with crash-safe durability.
+- [x] `01-07-PLAN.md` — Descriptor-anchored filesystem and SQLite persistence with crash-safe durability.
 
 **Wave 8** *(blocked on Wave 7 completion)*
 
-- [ ] `01-08-PLAN.md` — Run-scoped result identity, exact reusable identity and A/B/A resume correctness.
+- [x] `01-08-PLAN.md` — Run-scoped result identity, exact reusable identity and A/B/A resume correctness.
 
 **Wave 9** *(blocked on Wave 8 completion)*
 
-- [ ] `01-09-PLAN.md` — Exact SQLite schema fingerprinting and sanitized persisted diagnostics.
+- [x] `01-09-PLAN.md` — Exact SQLite schema fingerprinting and sanitized persisted diagnostics.
 
 **Wave 10** *(blocked on Wave 9 completion)*
 
-- [ ] `01-10-PLAN.md` — Unified full-chain canonical ledger verification across migration, resume and inspect.
+- [x] `01-10-PLAN.md` — Unified full-chain canonical ledger verification across migration, resume and inspect.
 
 **Wave 11** *(blocked on Wave 10 completion)*
 
-- [ ] `01-11-PLAN.md` — Locked end-to-end acceptance and an independently verifiable evidence index.
+- [x] `01-11-PLAN.md` — Locked end-to-end acceptance and an independently verifiable evidence index.
 
 **Success Criteria:**
 
@@ -194,7 +182,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 | Phase | Status | Requirements | Completed |
 |---|---|---:|---:|
-| 1. Auditable Dry-Run Spine | 11/11 | Complete   | 2026-07-19 |
+| 1. Auditable Dry-Run Spine | Gaps found | 2 | 11/11 |
 | 2. Safe Single-Repository Extraction | Not started | 14 | 0/14 |
 | 3. Validated Skill Candidate | Not started | 13 | 0/13 |
 | 4. Controlled Draft PR | Not started | 6 | 0/6 |

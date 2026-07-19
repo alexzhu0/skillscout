@@ -1,81 +1,65 @@
 ---
 phase: 01-auditable-dry-run-spine
-verified: 2026-07-17T07:28:23Z
+verified: 2026-07-19T08:30:00Z
 status: gaps_found
-score: 1/5 must-haves verified
+score: 3/5 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
+re_verification:
+  previous_status: gaps_found
+  previous_score: 1/5
+  gaps_closed:
+    - "The production composition root now enforces a fixed Phase-1 none/local_state authority ceiling."
+    - "Run-scoped result ownership and exact-identity A/B/A resume replace the former global result collision and subject-recency lookup."
+  gaps_remaining:
+    - "Durable snapshot operations can report failure after the replacement state has become authoritative."
+    - "Full-chain validation does not bind the publicly projected reused_stage_count."
+  regressions:
+    - "Invalid CLI argument handling remains outside the fixed diagnostic boundary and can echo the rejected value."
 gaps:
-  - truth: "Dry-run construction enforces an immutable Phase-1 maximum authority before any adapter can run."
+  - truth: "A state mutation's returned outcome agrees with the authoritative state observed after reopen."
     status: failed
-    reason: "The composition root accepts a caller-supplied policy that can allow remote_read/remote_write and labels an arbitrary processor EffectScope.NONE; the verifier reproduced acceptance of a remote_write registration under a permissive policy."
+    reason: "Backup retirement can fail after replacement durability and backup removal; the state transaction then returns state_operation_failed even though reopening observes the new mutation."
     artifacts:
-      - path: "src/skillscout/application/pipeline.py"
-        issue: "build_dry_run_runtime accepts policy= and trusts caller-supplied registration scopes instead of enforcing the Phase-1 ceiling."
-      - path: "src/skillscout/application/ports.py"
-        issue: "AdapterRegistration binds a caller-provided label to an arbitrary object without proving the object's actual authority."
-      - path: "tests/test_side_effect_policy.py"
-        issue: "Tests cover only the default policy, not attempted policy widening or a processor that declares/carries remote authority."
-    missing:
-      - "Make {none, local_state} an immutable upper bound in the production composition root; remove or subset-check policy widening."
-      - "Require a closed, truthful effect declaration from supported concrete adapters/processors and reject remote authority before runner construction."
-      - "Add regression tests for permissive custom policies and mislabeled/remote-capable processors."
-  - truth: "Every accepted stage output becomes bounded, self-consistent and durably readable evidence before its checkpoint or terminal plan commits."
-    status: failed
-    reason: "Writer and reader contracts diverge: fixture-v2 and cap-plus-one manifests can reach planned_not_published but inspect immediately rejects them; post-processor failures can leave running attempts; directory fsync errors are ignored and parent-path checks remain pathname-racy."
-    artifacts:
-      - path: "src/skillscout/application/pipeline.py"
-        issue: "Only processor.process is inside the stage failure boundary; output conversion, hashing, manifest persistence and publication-plan durability are outside it."
+      - path: "src/skillscout/adapters/localfs.py"
+        issue: "atomic_write raises backup_cleanup after the replacement has completed and the backup may already be gone."
       - path: "src/skillscout/adapters/state.py"
-        issue: "The write path has no MAX_MANIFEST_BYTES check, producer acceptance is broader than _SUPPORTED_PRODUCERS, required directory sync failures are swallowed, and operations re-resolve checked parent paths."
+        issue: "_snapshot_transaction treats that cleanup error as a failed mutation and poisons the store without reconciling the authoritative snapshot."
+    missing:
+      - "Define a single authoritative commit point: after replacement durability, treat backup retirement as recoverable housekeeping or retain deterministic recovery evidence."
+      - "Add a regression that fails after backup unlink and asserts the API outcome matches the row set visible after reopen."
+  - truth: "Full-chain validation binds every run-level audit fact returned by inspect-run."
+    status: failed
+    reason: "reused_stage_count is accepted from the mutable runs row, returned by VerifiedRunChain, and projected by inspect_run without derivation from an immutable resume event or comparison with the verified checkpoint prefix."
+    artifacts:
+      - path: "src/skillscout/adapters/state.py"
+        issue: "_verify_run_chain verifies stage identities but does not attest reused_stage_count before returning the run record."
       - path: "src/skillscout/domain/models.py"
-        issue: "StageEnvelope.payload is an unbounded dict[str, Any] rather than a bounded JSON-only output contract."
+        issue: "PersistedRunRecord only range-checks reused_stage_count; it cannot establish provenance or correctness."
     missing:
-      - "Use one producer/schema registry on both write and read paths and reject unsupported versions before run creation."
-      - "Validate JSON-only bounded stage output and canonical manifest bytes before creating a file or advancing an attempt."
-      - "Cover the entire post-start_attempt lifecycle with closed failure transitions so attempt/run state is accurate at failure time."
-      - "Anchor writes to verified directory descriptors and treat required file/directory fsync failure as fatal before DB checkpoint or terminal status."
-  - truth: "The ledger verifier fully binds canonical run, attempt, result, checkpoint and manifest identity and exposes only validated diagnostics."
+      - "Persist a content-addressed resume decision or derive the count from verified resume/checkpoint evidence."
+      - "Reject any denormalized count that differs from the verified event/prefix and add public-projection tamper coverage."
+  - truth: "Invalid CLI arguments emit only a fixed bounded diagnostic and never echo rejected operator input."
     status: failed
-    reason: "A coherently rehashed manifest with a forged noncanonical result_id passed verify_completed_results; inspect_run returns unvalidated run/attempt rows and reproduced a credential canary verbatim; schema-v2 open validates only a small column subset."
+    reason: "Argument parsing runs before the CLI try/SafeFailure boundary, and argparse's default error path includes rejected values in stderr."
     artifacts:
-      - path: "src/skillscout/adapters/state.py"
-        issue: "_verify_manifest_row does not recompute result_id or bind all duplicated attempt/envelope/checkpoint identity; inspect_run uses dict(row); _validate_current_schema is not an exact schema/integrity fingerprint."
-      - path: "src/skillscout/domain/models.py"
-        issue: "There are no strict persisted-row projection models enforcing status/error/telemetry coherence."
-      - path: "src/skillscout/application/ports.py"
-        issue: "The closed ERROR_SUMMARIES boundary is not applied to persisted diagnostics before inspect output."
+      - path: "src/skillscout/cli.py"
+        issue: "build_parser().parse_args(argv) executes before the sanitized exception boundary and uses default ArgumentParser.error/exit behavior."
     missing:
-      - "Centralize one full-chain verifier that joins all four tables, recomputes StageInput/input/reuse/output/result/manifest identities, enforces exact stage order/cardinality and is used by migration, resume, inspect and completed-result checks."
-      - "Parse persisted rows through strict models; require ErrorCode plus the exact fixed summary and reject any mismatch without echoing stored content."
-      - "Validate the complete schema/index/constraint/foreign-key fingerprint and SQLite integrity before accepting user_version=2."
-      - "Add one corruption regression per canonical duplicate field, including result_id, reusable digest, attempt number, stage relabel/order and diagnostic canaries."
-  - truth: "Retry and resume select the exact matching identity and remain correct across valid input/producer/policy evolution without replay or collision."
-    status: failed
-    reason: "stage_results.result_id is globally unique while semantic result_id excludes run_id; changing a fixture after a Generator checkpoint reproduced state_operation_failed and left the new run running. Resume also considers only the newest unfinished run for a subject, so A/B/A revisions can miss the matching checkpoint."
-    artifacts:
-      - path: "src/skillscout/adapters/state.py"
-        issue: "result_id is the global stage_results primary key and find_resumable_run returns only one subject-level candidate."
-      - path: "src/skillscout/domain/canonical.py"
-        issue: "make_result_id intentionally creates semantic identity but the database also uses it as row identity."
-      - path: "src/skillscout/application/pipeline.py"
-        issue: "One mismatching newest candidate causes creation of a new run without searching for an older exact identity match."
-    missing:
-      - "Separate run-scoped row identity from semantic result digest, or model reusable semantic results plus run/result associations."
-      - "Persist/query complete run identity and select an exact resumable candidate rather than only the latest subject row."
-      - "Add changed A' completion/dual-inspect and A-interrupt/B-interrupt/A-resume regressions."
+      - "Use a non-echoing parser error boundary with one fixed allowlisted invalid-arguments diagnostic."
+      - "Add subprocess coverage for invalid choices, unknown options, and missing values using credential/path canaries."
 deferred:
-  - truth: "Prove zero outbound network at the OS/syscall boundary in addition to Python socket sentinels."
+  - truth: "Prove zero outbound network at the OS/syscall boundary in addition to the Python socket sentinel."
     addressed_in: "Phase 6"
-    evidence: "Phase 6 is the explicit Adversarial MVP Acceptance phase with live canary evidence; extend that acceptance environment with OS-level network denial. This does not defer the Phase-1 immutable capability-ceiling gap above."
+    evidence: "The legacy WR-04 item in 01-GAP-VALIDATION.md remains assigned to the Adversarial MVP Acceptance phase; it is distinct from the current review's existing-state permission warning."
 ---
 
 # Phase 1: Auditable Dry-Run Spine Verification Report
 
 **Phase Goal:** 用户可以用冻结 fixture 运行一条从候选输入到“拟发布结果”的完整流水线；所有阶段都有版本化结构结果、可恢复 checkpoint，并且 dry-run 在架构层阻止远程写入。
-**Verified:** 2026-07-17T07:28:23Z
+**Verified:** 2026-07-19T08:30:00Z
 **Status:** gaps_found
-**Re-verification:** No — initial verification
+**Re-verification:** Yes — after the original four-gap closure sequence
 
 ## Goal Achievement
 
@@ -83,96 +67,120 @@ deferred:
 
 | # | Roadmap success criterion | Status | Evidence |
 |---|---|---|---|
-| 1 | 冻结 fixture 依次经过九个阶段并产生完整 stage ledger。 | ✓ VERIFIED | The named installed-CLI and happy-path tests passed independently; actual code wires `cli.main` → `build_dry_run_runtime` → `PipelineRunner` → SQLite/manifests and the approved fixture creates nine ordered attempts/results/checkpoints. |
-| 2 | 每个 stage result 都携带完整的版本、稳定身份、hash、时间、attempt 与适用版本/telemetry。 | ✗ FAILED | Fields exist in `StageEnvelope`, but persisted duplicate identity is not fully bound or recomputed, persisted diagnostics bypass the closed allowlist, and a forged noncanonical `result_id` passed completed-result verification. This is not auditable evidence. |
-| 3 | 暂时性失败后从最近成功 checkpoint 恢复且不重复已完成副作用。 | ✗ FAILED | The nominal Generator-interrupt/resume and frozen-v1 Validators-first paths pass, but valid identity evolution collides with a prior global semantic result ID and leaves a new run `running`; candidate lookup also cannot select an older exact A identity after B. |
-| 4 | dry-run 通过架构级无写入 adapter 只能生成 publication plan。 | ✗ FAILED | The default CLI reaches `planned_not_published`, but the composition root can be widened by its caller and accepts arbitrary processor authority labeled `NONE`; a verification probe accepted an explicit `remote_write` registration. |
-| 5 | 稳定 hash、非法状态跃迁和 schema 不兼容由契约测试拒绝。 | ✗ FAILED | Unit tests cover nominal hashes/transitions, but the read verifier accepted a coherently rehashed noncanonical result identity, writer-accepted producer/manifest states can be reader-incompatible, and schema-v2 validation checks only a subset. |
+| 1 | 冻结 fixture 依次经过九个阶段并产生完整 stage ledger。 | ✓ VERIFIED | `STAGE_SEQUENCE` is the closed nine-stage enum order; the three packaged-CLI acceptance flows and related focused checks passed (35 selected tests total, 1.60s). |
+| 2 | 每个 stage result 携带完整版本、身份、hash、时间、attempt 和适用版本/telemetry，并形成可信审计结果。 | ✗ FAILED | Stage-envelope fields and canonical checks exist, but a public run-level audit fact, `reused_stage_count`, is not bound by the full-chain proof and can be altered while verification and inspect still accept it. |
+| 3 | 暂时性失败后从最近成功 checkpoint 恢复且不重复已完成副作用。 | ✗ FAILED | Nominal transient retry and exact A/B/A recovery work, but a durability-cleanup failure can return failure after the mutation is authoritative; an unexpected one-time processor interruption is also persisted as non-retryable. |
+| 4 | dry-run 通过架构级无写入 adapter，只生成 publication plan。 | ✓ VERIFIED | The composition root accepts only supported concrete local adapters under `PHASE_ONE_MAX_SCOPES`; the remote-declaring adapter regression and packaged flows pass with `remote_writes_attempted=0`. |
+| 5 | 相同 fixture/version 的 hash 稳定，非法状态跃迁或不兼容 schema 被拒绝。 | ✓ VERIFIED | Canonical hashing, strict models, exact schema fingerprinting and the parameterized duplicated-field tamper checks are substantive and wired; the selected canonical tamper matrix passed. |
 
-**Score:** 1/5 truths verified (0 present-but-behavior-unverified)
+**Score:** 3/5 roadmap must-haves verified
 
-### Required Artifacts
+The repository's reported full suite is green (`200 passed`), but that result does not cover the three blocker paths above or the four warning paths below. Test count is therefore not evidence that the phase goal is fully achieved.
+
+### Plan Must-Have Reconciliation
+
+All PLAN frontmatter truths from `01-01` through `01-11` were rechecked against the current implementation. The supply-chain gates, bounded fixture reader, strict contracts, schema migration, exact identity lookup, sealed authority, descriptor-anchored I/O, canonical stage-chain verification and local publication plan are present and wired. The following PLAN-level claims remain contradicted:
+
+- `01-07`: every durability failure has a truthful resumable outcome — contradicted by post-commit backup-cleanup failure.
+- `01-10`: one verifier binds every publicly trusted ledger fact — contradicted by unattested `reused_stage_count`.
+- `01-02` / `01-04`: every CLI diagnostic is closed and canary-free — contradicted by default argparse error output.
+- `01-06`: every interruption has consistent retry semantics — incomplete for unexpected processor exceptions.
+- `01-11`: the evidence index is independently bound to current product/test execution — incomplete because its verifier accepts asserted command results without source/output binding.
+
+## Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |---|---|---|---|
-| `src/skillscout/cli.py` | Packaged dry-run and inspect boundary | ✓ SUBSTANTIVE / WIRED | CLI is real, invokes fixture/state/runtime paths and returns closed top-level failures. |
-| `src/skillscout/application/pipeline.py` | Ordered recovery pipeline and immutable no-remote composition | ✗ PARTIAL | Nine-stage behavior is substantive, but the composition ceiling is caller-widenable and post-processor persistence is outside the failure boundary. |
-| `src/skillscout/adapters/fixtures.py` | Strict bounded single-descriptor fixture reader | ✓ VERIFIED | 65,536-byte bound, type/identity/change checks and strict schema are present and exercised by focused tests. |
-| `src/skillscout/adapters/state.py` | Transactional, content-addressed, fully verified ledger | ✗ PARTIAL | Real schema/migration/manifests exist, but writer/read symmetry, full-chain canonical verification, schema fingerprint, diagnostic projection and durability/path anchoring are incomplete. |
-| `src/skillscout/domain/models.py` / `canonical.py` | Strict immutable contracts and canonical identities | ⚠️ PARTIAL | Models/hash functions are substantive, but unbounded payload and semantic-result/row-identity conflation break the persisted contract. |
-| `tests/fixtures/state/v1-cli.db` | Frozen real interrupted v1 evidence | ✓ VERIFIED | SHA-256 `49fa8067a2cc7e55b3afb2e2c93aca91f2b3d6cfbaee1bc32242f7b175bc0251`; named migration/resume test passed. |
-| `uv.lock` | Gate-B-authorized graph | ✓ VERIFIED | SHA-256 `caeeddcf4a6d5758d0b4182b49bf87730c2351a6f9d06986ebf612c7e5b4ac32` matches the approved value. |
+| `src/skillscout/cli.py` | Packaged dry-run/inspect and closed diagnostics | ⚠️ PARTIAL | Runtime commands are substantive and wired; parser failures bypass the closed diagnostic boundary. |
+| `src/skillscout/application/pipeline.py` | Ordered recovery pipeline and sealed local composition | ⚠️ PARTIAL | Nine-stage, exact-identity and local-only behavior are real; unexpected exceptions become non-retryable interruptions. |
+| `src/skillscout/adapters/fixtures.py` | Bounded one-descriptor fixture reader | ✓ VERIFIED | Strict fixture parsing and deterministic fixture processor are substantive and exercised. |
+| `src/skillscout/adapters/localfs.py` | Descriptor-anchored durable atomic writes | ✗ PARTIAL | Anchoring and mandatory sync logic exist, but backup cleanup can make the reported transaction outcome disagree with reopened state. |
+| `src/skillscout/adapters/state.py` | Transactional, content-addressed, fully verified ledger | ✗ PARTIAL | The schema, migration, manifests and chain verifier are substantive; run-level reuse provenance is unbound, path collision is possible, and existing file permissions are not checked. |
+| `src/skillscout/domain/models.py` / `canonical.py` | Strict immutable contracts and canonical identities | ✓ VERIFIED | Bounded JSON, strict persisted projections and canonical stage/result identities are present and used. |
+| `tests/fixtures/state/v1-cli.db` | Frozen interrupted v1 migration evidence | ✓ VERIFIED | Current SHA-256 remains `49fa8067a2cc7e55b3afb2e2c93aca91f2b3d6cfbaee1bc32242f7b175bc0251`. |
+| `uv.lock` | Gate-B-approved dependency graph | ✓ VERIFIED | Current SHA-256 remains `caeeddcf4a6d5758d0b4182b49bf87730c2351a6f9d06986ebf612c7e5b4ac32`. |
+| `tools/verify_phase1_gap_evidence.py` | Independent evidence validation | ⚠️ PARTIAL | It validates canonical document shape and two immutable hashes, but not current source/test bytes, captured command output, or named-node definitions. |
 
-### Key Link Verification
+## Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| `pyproject.toml` | `skillscout.cli:main` | Packaged entry point | ✓ WIRED | Named packaged CLI tests execute the real entry point. |
-| `cli.py` | `fixtures.py` | `load_fixture` before state construction | ✓ WIRED | Invalid fixture tests show rejection before DB creation. |
-| `pipeline.py` | `state.py` | running attempt before processor | ✓ WIRED | Code and probe test show identity is persisted before `process`. |
-| `state.py` | manifests/checkpoints | manifest before DB commit | ⚠️ PARTIAL | Ordering exists, but oversized/unsupported state is committed and directory durability failures are ignored. |
-| persisted ledger | `inspect-run` | strict integrity + sanitized projection | ✗ NOT_WIRED | Manifest rows are partially checked; raw run/attempt rows are projected without strict validation. |
-| dry-run composition | side-effect policy | immutable Phase-1 ceiling | ✗ NOT_WIRED | Default policy is safe, but a caller-supplied permissive policy widens it. |
+| `pyproject.toml` | `skillscout.cli:main` | Packaged entry point | ✓ WIRED | The real packaged command path is exercised by acceptance tests. |
+| `cli.py` | fixture/state/runtime | `load_fixture` → `SQLiteStateStore` → `build_dry_run_runtime` | ✓ WIRED | Approved fixture reaches the real local pipeline. |
+| `pipeline.py` | `state.py` | attempt identity, manifest, checkpoint and resume operations | ✓ WIRED | Stage lifecycle is connected; failure truthfulness/retry semantics have uncovered edge-path defects. |
+| `state.py` | `localfs.py` | anchored read/atomic replace | ⚠️ PARTIAL | The connection is real, but post-commit backup cleanup is treated as rollback/failure. |
+| persisted ledger | `inspect-run` | `verify_run_chain` then model projection | ✗ PARTIAL | Stage facts are recomputed; `reused_stage_count` reaches output without equivalent provenance proof. |
+| CLI argv | fixed diagnostic vocabulary | parser error path | ✗ NOT_WIRED | Default argparse output is outside `SafeFailure` handling. |
+| gap evidence JSON | standalone verifier | canonical parsing and literal checks | ⚠️ PARTIAL | Command success assertions are not bound to the product/test tree or captured output. |
 
-### Data-Flow Trace (Level 4)
+## Data-Flow Trace (Level 4)
 
 | Artifact | Data source | Sink | Status |
 |---|---|---|---|
-| Approved fixture | One bounded descriptor + strict `FixtureSubject` | `StageInput` chain | ✓ FLOWING |
-| Stage output | `StageProcessor.process` | `StageEnvelope` → manifest → SQLite | ✗ HOLLOW-INTEGRITY: output is unbounded and writer/read support differs |
-| Retry identity | Canonical five-field digest | attempt index/resume | ⚠️ PARTIAL: nominal same-identity path works; run/result identity evolution is broken |
-| Durable diagnostics | SQLite run/attempt rows | `inspect-run` JSON | ✗ UNSAFE: persisted values flow verbatim without allowlist validation |
-| Publication plan | Final local stage | `publication-plan.json` | ⚠️ PARTIAL: nominal local-only output works; directory durability and capability ceiling are incomplete |
+| Stage ledger | Frozen fixture → `StageInput` → processor payload | manifest + SQLite result/checkpoint | ✓ FLOWING |
+| Publication plan | Verified nine-stage chain | local `publication-plan.json` | ✓ FLOWING; no remote publisher exists |
+| Snapshot mutation result | candidate serialized DB + backup lifecycle | caller outcome and reopened state | ✗ INCONSISTENT after backup-cleanup failure |
+| Reuse audit fact | mutable `runs.reused_stage_count` | `VerifiedRunChain` and inspect JSON | ✗ UNATTESTED |
+| Invalid CLI value | raw argv | argparse stderr | ✗ UNSANITIZED |
+| Evidence command result | literals in `01-GAP-VALIDATION.md` | standalone validity result | ⚠️ SELF-ASSERTED / STALE-RISK |
 
-### Behavioral Spot-Checks
-
-All Python commands used the approved repository-local uv/managed-CPython/no-download prefix and `--locked`; no network, remote write, candidate code or secret access was used.
+## Behavioral Spot-Checks
 
 | Behavior | Result | Status |
 |---|---|---|
-| Happy nine-stage CLI, interrupt/resume/inspect, default remote-scope rejection and frozen-v1 migration | 5 parametrized named checks passed in 0.40s | ✓ PASS |
-| Custom permissive policy with explicit `remote_write` registration | Registration accepted (`true`) | ✗ FAIL |
-| `producer_version=fixture-v2` writer/read symmetry | Run returned `planned_not_published`; inspect returned `state_integrity_error` | ✗ FAIL |
-| Manifest larger than `MAX_MANIFEST_BYTES` | Run returned `planned_not_published`; inspect returned `state_integrity_error` | ✗ FAIL |
-| Tampered persisted attempt diagnostic | Credential canary appeared in `inspect_run` JSON | ✗ FAIL |
-| Changed fixture after Generator checkpoint | New run returned `state_operation_failed`; statuses were old `interrupted`, new `running` | ✗ FAIL |
-| Coherently rehashed forged `result_id` | `verify_completed_results` accepted `sha256:ffff…ffff` | ✗ FAIL |
+| Packaged happy/resume/inspect, changed A-prime, exact A/B/A, frozen-v1 Validators-first resume, finite transient budget, remote-declaring adapter rejection and canonical tamper matrix | 35 selected tests passed in 1.60s | ✓ PASS |
+| Snapshot failure outcome matches reopened state | Post-gap review reproduced `state_operation_failed` while the requested row was present after reopen; current control flow confirms the replacement precedes failing backup retirement | ✗ FAIL |
+| Tampered `reused_stage_count` is rejected | Post-gap review changed a completed run's count and both full-chain verification and inspect accepted the value; current verifier has no count derivation/comparison | ✗ FAIL |
+| Hostile invalid option value stays out of diagnostics | Default argparse choice handling echoes the rejected value before the CLI try block | ✗ FAIL |
+| One-time unexpected processor interruption can retry | First call becomes `pipeline_interrupted`; subsequent unchanged identity is treated as permanent without a second processor invocation | ⚠️ WARNING |
 
-### Probe Execution
+## Probe / Evidence Execution
 
-No phase-declared `probe-*.sh` exists. The CLI/tooling behavior was instead checked through the named tests and isolated temporary-directory reproduction probes listed above.
+No conventional `probe-*.sh` is declared. The Phase-1 standalone evidence validator is not accepted as proof of current product execution: it validates document literals and only recomputes the lock/frozen-DB hashes. The green 200-test record remains useful regression context, but it cannot close uncovered paths.
 
-### Requirements Coverage
+## Requirements Coverage
 
 | Requirement | Source plans | Status | Evidence |
 |---|---|---|---|
-| OPS-01 | 01-01 through 01-04 | ✗ BLOCKED | Structured fields exist, but canonical cross-record identity and public diagnostic integrity are not enforced; writer-created state can be immediately unreadable. |
-| OPS-04 | 01-01 through 01-04 | ✗ BLOCKED | Nominal retry/resume and local publication planning work, but identity evolution collides, exact resume selection is incomplete, and the Phase-1 effect ceiling can be widened. |
+| OPS-01 | `01-01` through `01-11` | ✗ BLOCKED | Structured envelopes and canonical stage facts exist, but a public audit count is not chain-bound, parser diagnostics can disclose rejected input, and existing state/manifest trust lacks permission checks. |
+| OPS-04 | `01-01` through `01-11` | ✗ BLOCKED | Architectural no-remote dry-run and nominal retry/resume work, but the returned persistence outcome can disagree with reopened state and an interruption class is permanently non-retryable. |
 
-No Phase-1 requirement is orphaned from plan frontmatter. REQUIREMENTS.md currently marks both complete, but code evidence does not support that status yet.
+No Phase-1 requirement is orphaned from PLAN frontmatter. `REQUIREMENTS.md` marks OPS-01 and OPS-04 complete, but current code evidence does not support completion.
 
-### Anti-Patterns and Review Finding Disposition
+## Current Review Warnings
 
-No `TBD`, `FIXME`, `XXX`, `TODO`, `HACK` or placeholder marker was found in source/tests. The blockers are behavioral and architectural, not obvious stubs.
+| Finding | File(s) | Status | Impact and required remediation |
+|---|---|---|---|
+| WR-01: unexpected processor exception disables retry | `application/pipeline.py` | ⚠️ WARNING | Classify the first outcome consistently as permanent, or make `PIPELINE_INTERRUPTED` retryable within the finite budget; add fail-once-then-succeed recovery coverage. |
+| WR-02: evidence verifier accepts stale/self-asserted success | `tools/verify_phase1_gap_evidence.py` | ⚠️ WARNING | Bind evidence to a repository tree or explicit source/test/output digests, resolve named nodes, and generate/validate evidence in the same execution job. |
+| WR-03: state filename can collide with manifest directory | `adapters/state.py` | ⚠️ WARNING | Append a disjoint manifest suffix to the complete filename or reject `manifest_root == path` before state creation; add a CLI regression for `.manifests` state names. |
+| WR-04: existing state/manifests lack owner/mode validation | `adapters/localfs.py`, `adapters/state.py` | ⚠️ WARNING | Apply the private regular-file owner/mode check before deserializing state and before trusting existing manifests; reject violations with the fixed integrity diagnostic. |
 
-| Finding group | Disposition | Rationale |
-|---|---|---|
-| CR-01 | BLOCKER → Gap 1 | Directly defeats roadmap criterion 4's architecture-level remote-write boundary. |
-| CR-02, CR-03, CR-04, CR-08 | BLOCKER → Gaps 2 and 4 | Writer/read inconsistency, global-ID collision and non-durable commits undermine criteria 1–3 and 5. |
-| CR-05, CR-06 | BLOCKER → Gap 3 | Canonical audit verification and closed diagnostic output are Phase-1 requirements, not later hardening. |
-| CR-07 | BLOCKER → Gap 2 | The plan explicitly claims fail-closed path boundaries; checked ancestors can still be swapped before pathname operations. |
-| WR-01, WR-02, WR-03 | BLOCKER support → Gaps 2–4 | They materially break lifecycle accuracy, incompatible-schema rejection and exact checkpoint recovery. |
-| WR-04 | DEFER to Phase 6 | Add OS/syscall-level network denial to adversarial acceptance. It is not a substitute for fixing the caller-widenable Phase-1 firewall now. |
+The current WR-04 permission warning is not the same item as the legacy `01-GAP-VALIDATION.md` WR-04 deferral. Only the legacy OS/syscall-level network-denial check is deferred to Phase 6.
 
-### Human Verification Required
+## Anti-Patterns and Finding Classification
 
-None. The blocking failures are deterministically observable in code and local reproduction probes. Gate A and Gate B were already explicitly approved and their authoritative hashes still match.
+No placeholder implementation explains the result; the affected files are substantive. The failures are edge-path integrity and privacy defects:
 
-### Gaps Summary
+| Classification | Count | Findings |
+|---|---:|---|
+| 🛑 BLOCKER | 3 | Snapshot outcome/reopen inconsistency; unattested reused count; raw invalid CLI value outside the diagnostic boundary |
+| ⚠️ WARNING | 4 | Retry classification; stale evidence gate; manifest path collision; existing-file ownership/mode checks |
+| Deferred | 1 | OS/syscall-level outbound-network denial in Phase 6 |
 
-Phase 1 has a genuine runnable vertical skeleton and strong nominal tests, but the goal is not yet achieved under its own audit/security claims. Four root concerns remain: immutable authority enforcement; bounded/symmetric/durable write semantics; full-chain canonical verification plus sanitized inspect output; and collision-free exact-identity resume. These are structured in frontmatter for `$gsd-plan-phase --gaps`.
+## Human Verification Required
+
+None. The blocking conditions and warnings are observable in deterministic local code paths and do not require visual, external-service or performance judgment.
+
+## Gaps Summary
+
+Phase 1 now has a real, sealed, local-only nine-stage pipeline with strict stage contracts, exact-identity resume and substantial canonical ledger verification. It is not yet a truthful audit/recovery boundary under all supported failure and input paths. Three blockers remain: persistence can report the wrong durable outcome, a projected reuse fact is not attested, and invalid CLI arguments can bypass fixed diagnostics. The four warnings should be addressed in the same closure pass because they affect retry reliability, evidence freshness and local-state integrity.
+
+### Next Action
+
+Run `$gsd-plan-phase 1 --gaps` and plan one focused closure covering the three frontmatter gaps, with the four warnings as required regression work. Re-run independent verification afterward; do not advance to Phase 2 while the blocker list is non-empty.
 
 ---
 
-_Verified: 2026-07-17T07:28:23Z_
-_Verifier: the agent (gsd-verifier, generic-agent workaround)_
+_Verified: 2026-07-19T08:30:00Z_
+_Verifier: the agent (gsd-verifier)_
