@@ -566,6 +566,56 @@ def test_fresh_interruption_rerun_and_inspect_are_persisted(
     assert payload["attempts"][0]["latency_ms"] is None
 
 
+def test_corrupt_chain_blocks_inspect_and_resume_without_output_or_mutation(
+    approved_fixture: Path, run_cli, tmp_path: Path
+) -> None:
+    state = tmp_path / "corrupt-shared-verifier.db"
+    first_output = tmp_path / "corrupt-first"
+    interrupted = run_cli(
+        "dry-run",
+        "--fixture",
+        str(approved_fixture),
+        "--state",
+        str(state),
+        "--output",
+        str(first_output),
+        "--fail-after",
+        "generator",
+    )
+    _assert_sanitized_error(interrupted, ErrorCode.PIPELINE_INTERRUPTED)
+    with _connect(state) as connection:
+        run_id = str(connection.execute("SELECT run_id FROM runs").fetchone()[0])
+        connection.execute(
+            """UPDATE stage_attempts SET input_hash = ?
+               WHERE run_id = ? AND stage = 'filter'""",
+            ("sha256:" + "f" * 64, run_id),
+        )
+        connection.commit()
+    before = state.read_bytes()
+
+    inspected = run_cli(
+        "inspect-run", run_id, "--state", str(state), "--format", "json"
+    )
+    _assert_sanitized_error(inspected, ErrorCode.STATE_INTEGRITY_ERROR)
+    assert inspected.stdout == ""
+    assert state.read_bytes() == before
+
+    resumed_output = tmp_path / "corrupt-resume"
+    resumed = run_cli(
+        "dry-run",
+        "--fixture",
+        str(approved_fixture),
+        "--state",
+        str(state),
+        "--output",
+        str(resumed_output),
+    )
+    _assert_sanitized_error(resumed, ErrorCode.STATE_INTEGRITY_ERROR)
+    assert resumed.stdout == ""
+    assert not resumed_output.exists()
+    assert state.read_bytes() == before
+
+
 def test_inspect_run_exit_codes_preserve_not_found_and_usage(
     run_cli, tmp_path: Path
 ) -> None:

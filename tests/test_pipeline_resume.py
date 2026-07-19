@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import shutil
 import sqlite3
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner, RetryPolicy
-from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
+from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure, StateStore
 from skillscout.domain.canonical import (
     reusable_key_digest,
     sha256_digest,
@@ -26,6 +28,7 @@ from skillscout.domain.models import (
     RunRecord,
     StageAttempt,
     StageInput,
+    VerifiedRunChain,
 )
 
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
@@ -137,6 +140,7 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
         assert isinstance(bound, RunRecord)
         assert bound.identity_state == "bound"
         assert bound.identity == expected
+        assert isinstance(store.verify_run_chain(bound.run_id, expected), VerifiedRunChain)
         assert store.inspect_run(bound.run_id)["run"]["identity_state"] == "bound"
 
         summary = PipelineRunner(store, CanaryProcessor()).run(subject, tmp_path / "output")
@@ -164,6 +168,66 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
     assert (
         hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (provenance["database_sha256"])
     )
+
+
+def test_legacy_binding_verifies_a_private_candidate_before_durable_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    copied = _copy_frozen(tmp_path)
+    subject = load_fixture(APPROVED_FIXTURE)
+    fixture_hash = sha256_digest(subject.model_dump(mode="json", exclude_none=False))
+    expected = RunIdentity(
+        schema_version="1",
+        subject_id=subject.subject_id,
+        fixture_hash=fixture_hash,
+        producer_version="fixture-v1",
+        retry_policy_version="retry-v1",
+    )
+    store = SQLiteStateStore(copied)
+    original = store._verify_run_chain
+    observed: list[tuple[bool, str, str]] = []
+
+    def observe_candidate(database, run_id: str, identity: RunIdentity | None):
+        row = database.execute(
+            "SELECT identity_state, fixture_hash FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        observed.append(
+            (
+                database is not store.connection,
+                str(row["identity_state"]),
+                str(row["fixture_hash"]),
+            )
+        )
+        return original(database, run_id, identity)
+
+    monkeypatch.setattr(store, "_verify_run_chain", observe_candidate)
+    try:
+        wrong = expected.model_copy(update={"fixture_hash": "sha256:" + "f" * 64})
+        before = copied.read_bytes()
+        assert store.bind_legacy_run(wrong) is None
+        assert copied.read_bytes() == before
+        assert tuple(
+            store.connection.execute(
+                "SELECT identity_state, fixture_hash FROM runs"
+            ).fetchone()
+        ) == ("legacy_unbound", None)
+
+        bound = store.bind_legacy_run(expected)
+        assert bound is not None and bound.identity == expected
+        assert observed == [
+            (True, "bound", wrong.fixture_hash),
+            (True, "bound", expected.fixture_hash),
+        ]
+    finally:
+        store.close()
+
+
+def test_state_store_protocol_matches_domain_typed_verified_chain_contract() -> None:
+    protocol_signature = inspect.signature(StateStore.verify_run_chain)
+    adapter_signature = inspect.signature(SQLiteStateStore.verify_run_chain)
+    assert tuple(protocol_signature.parameters) == tuple(adapter_signature.parameters)
+    assert get_type_hints(StateStore.verify_run_chain)["return"] is VerifiedRunChain
+    assert get_type_hints(SQLiteStateStore.verify_run_chain)["return"] is VerifiedRunChain
 
 
 def test_complete_run_identity_is_persisted_before_first_attempt(tmp_path: Path) -> None:

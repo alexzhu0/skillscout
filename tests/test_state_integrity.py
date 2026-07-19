@@ -503,6 +503,104 @@ def test_full_chain_rejects_result_checkpoint_order_and_cardinality_damage(
         store.close()
 
 
+def test_every_bound_trust_entry_point_delegates_to_one_full_chain_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SQLiteStateStore(tmp_path / "shared-verifier.db")
+    try:
+        run_id = _run_interrupted_in_store(store, tmp_path / "shared-verifier-out")
+        identity = store.read_run(run_id).identity
+        original = store.verify_run_chain
+        calls: list[tuple[str, RunIdentity | None]] = []
+
+        def observed(
+            candidate_run_id: str,
+            expected_identity: RunIdentity | None = None,
+        ):
+            calls.append((candidate_run_id, expected_identity))
+            return original(candidate_run_id, expected_identity)
+
+        monkeypatch.setattr(store, "verify_run_chain", observed)
+        assert store.find_resumable_run(identity).run_id == run_id
+        assert store.latest_checkpoint(run_id).stage is PipelineStage.GENERATOR
+        store.verify_completed_results(run_id, 6)
+        assert store.inspect_run(run_id)["run"]["run_id"] == run_id
+        assert calls == [
+            (run_id, identity),
+            (run_id, None),
+            (run_id, None),
+            (run_id, None),
+        ]
+    finally:
+        store.close()
+
+
+def test_forged_semantic_result_is_rejected_consistently_by_every_trust_path(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "shared-forgery.db")
+    try:
+        run_id = _run_interrupted_in_store(store, tmp_path / "shared-forgery-out")
+        identity = store.read_run(run_id).identity
+        before = tuple(
+            store.connection.execute(
+                """SELECT r.status, r.updated_at, COUNT(DISTINCT a.attempt_id),
+                          COUNT(DISTINCT s.result_row_id), COUNT(DISTINCT c.stage)
+                   FROM runs r
+                   LEFT JOIN stage_attempts a USING (run_id)
+                   LEFT JOIN stage_results s USING (run_id)
+                   LEFT JOIN checkpoints c USING (run_id)
+                   WHERE r.run_id = ? GROUP BY r.run_id""",
+                (run_id,),
+            ).fetchone()
+        )
+        forged = "sha256:" + "f" * 64
+        manifest_hash, locator = _coherently_rewrite_manifest(
+            store, PipelineStage.SCOUT, result_id=forged
+        )
+        store.connection.execute(
+            """UPDATE stage_results
+               SET result_id = ?, manifest_hash = ?, manifest_path = ?
+               WHERE run_id = ? AND stage = 'scout'""",
+            (forged, manifest_hash, locator, run_id),
+        )
+        store.connection.execute(
+            """UPDATE checkpoints
+               SET result_id = ?, manifest_hash = ?, manifest_path = ?
+               WHERE run_id = ? AND stage = 'scout'""",
+            (forged, manifest_hash, locator, run_id),
+        )
+
+        operations = (
+            lambda: store.find_resumable_run(identity),
+            lambda: store.latest_checkpoint(run_id),
+            lambda: store.verify_completed_results(run_id, 6),
+            lambda: store.inspect_run(run_id),
+        )
+        for operation in operations:
+            with pytest.raises(SafeFailure) as failure:
+                operation()
+            assert failure.value.as_dict() == {
+                "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+                "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+            }
+        after = tuple(
+            store.connection.execute(
+                """SELECT r.status, r.updated_at, COUNT(DISTINCT a.attempt_id),
+                          COUNT(DISTINCT s.result_row_id), COUNT(DISTINCT c.stage)
+                   FROM runs r
+                   LEFT JOIN stage_attempts a USING (run_id)
+                   LEFT JOIN stage_results s USING (run_id)
+                   LEFT JOIN checkpoints c USING (run_id)
+                   WHERE r.run_id = ? GROUP BY r.run_id""",
+                (run_id,),
+            ).fetchone()
+        )
+        assert after == before
+    finally:
+        store.close()
+
+
 def test_manifest_paths_use_closed_stage_and_bare_lowercase_hash(tmp_path: Path) -> None:
     database = tmp_path / "ledger.db"
     store = SQLiteStateStore(database)
