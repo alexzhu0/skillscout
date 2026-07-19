@@ -274,6 +274,7 @@ class AnchoredDirectory:
         *,
         max_bytes: int,
         restore_bytes: bytes | object = _MISSING,
+        seam_prefix: str = "",
     ) -> None:
         """Write, fsync, rename and fsync the directory, restoring on failure."""
 
@@ -288,10 +289,15 @@ class AnchoredDirectory:
                 backup_name,
                 restore_bytes,
                 max_bytes=max_bytes,
-                seam_prefix="backup_",
+                seam_prefix=f"{seam_prefix}backup_",
             )
         try:
-            self._atomic_write_once(name, payload, max_bytes=max_bytes, seam_prefix="")
+            self._atomic_write_once(
+                name,
+                payload,
+                max_bytes=max_bytes,
+                seam_prefix=seam_prefix,
+            )
         except DurableWriteError as failure:
             if failure.renamed:
                 self._restore_after_failed_replace(

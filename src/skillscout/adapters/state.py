@@ -294,6 +294,7 @@ class SQLiteStateStore:
                     self._state_name,
                     payload,
                     max_bytes=MAX_STATE_DB_BYTES,
+                    seam_prefix="state_",
                 )
             else:
                 self._state_parent.atomic_write(
@@ -301,6 +302,7 @@ class SQLiteStateStore:
                     payload,
                     max_bytes=MAX_STATE_DB_BYTES,
                     restore_bytes=previous,
+                    seam_prefix="state_",
                 )
         except (DurableWriteError, OSError):
             self._poison()
@@ -791,7 +793,9 @@ class SQLiteStateStore:
                 name,
                 payload,
                 max_bytes=MAX_MANIFEST_BYTES,
+                seam_prefix="manifest_",
             )
+            self._trip_filesystem_seam("after_manifest_durable")
             return target
         except SafeFailure:
             raise
@@ -1157,6 +1161,7 @@ class SQLiteStateStore:
                 payload,
                 max_bytes=MAX_STATE_DB_BYTES,
                 restore_bytes=previous,
+                seam_prefix="state_",
             )
         except (DurableWriteError, OSError):
             candidate.close()

@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-import skillscout.adapters.state as state_adapter
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner, RetryPolicy
@@ -493,7 +492,6 @@ def test_unsupported_producer_is_rejected_before_run_creation(tmp_path: Path) ->
 )
 def test_invalid_or_oversized_output_closes_lifecycle_before_manifest_io(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     output: dict[str, object],
 ) -> None:
     subject = load_fixture(APPROVED_FIXTURE)
@@ -502,16 +500,10 @@ def test_invalid_or_oversized_output_closes_lifecycle_before_manifest_io(
         def process(self, stage_input: StageInput) -> dict[str, object]:
             return output
 
-    opened_paths: list[object] = []
-    original_open = state_adapter.os.open
-
-    def observe_open(path: object, *args: object, **kwargs: object) -> int:
-        opened_paths.append(path)
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(state_adapter.os, "open", observe_open)
+    filesystem_events: list[str] = []
     database = tmp_path / "invalid-output.db"
-    store = SQLiteStateStore(database)
+    store = SQLiteStateStore(database, filesystem_seam=filesystem_events.append)
+    filesystem_events.clear()
     try:
         with pytest.raises(SafeFailure) as failure:
             PipelineRunner(store, InvalidOutputProcessor()).run(
@@ -536,7 +528,7 @@ def test_invalid_or_oversized_output_closes_lifecycle_before_manifest_io(
         )
         assert store.connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 0
         assert store.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
-        assert opened_paths == []
+        assert all("manifest" not in event for event in filesystem_events)
         assert not database.with_suffix(".manifests").exists()
     finally:
         store.close()
@@ -608,7 +600,6 @@ def test_supported_writer_state_is_immediately_verifiable_and_inspectable(
 
 def test_migration_rejects_oversized_output_before_manifest_creation(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     copied = _copy_frozen(tmp_path)
     oversized = {str(index): "x" * MAX_STAGE_STRING_BYTES for index in range(4)}
@@ -619,18 +610,11 @@ def test_migration_rejects_oversized_output_before_manifest_creation(
         )
         connection.commit()
 
-    opened_paths: list[object] = []
-    original_open = state_adapter.os.open
-
-    def observe_open(path: object, *args: object, **kwargs: object) -> int:
-        opened_paths.append(path)
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(state_adapter.os, "open", observe_open)
+    filesystem_events: list[str] = []
     with pytest.raises(SafeFailure) as failure:
-        SQLiteStateStore(copied)
+        SQLiteStateStore(copied, filesystem_seam=filesystem_events.append)
     assert failure.value.code is ErrorCode.STATE_SCHEMA_MIGRATION_ERROR
-    assert opened_paths == []
+    assert all("manifest" not in event for event in filesystem_events)
     assert not copied.with_suffix(".manifests").exists()
     with _connect(copied) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1

@@ -380,3 +380,41 @@ def test_killed_lock_owner_releases_flock_without_recreating_lock_inode(
             process.join(timeout=10)
         parent_control.close()
         child_control.close()
+
+
+def test_parent_swap_during_failed_snapshot_cleanup_never_touches_attacker(
+    tmp_path: Path,
+) -> None:
+    visible_parent = tmp_path / "visible-failure"
+    anchored_parent = tmp_path / "anchored-failure"
+    attacker_parent = tmp_path / "attacker-failure"
+    visible_parent.mkdir(mode=0o700)
+    attacker_parent.mkdir(mode=0o700)
+    attacker_canary = attacker_parent / "canary"
+    attacker_canary.write_bytes(b"attacker-unchanged")
+    swapped = False
+    fail_persist = False
+
+    def swap_then_fail(seam: str) -> None:
+        nonlocal swapped
+        if seam == "after_state_parent_anchor" and not swapped:
+            visible_parent.rename(anchored_parent)
+            visible_parent.symlink_to(attacker_parent, target_is_directory=True)
+            swapped = True
+        if fail_persist and seam == "before_state_directory_fsync":
+            raise OSError("forced post-rename sync failure")
+
+    store = SQLiteStateStore(
+        visible_parent / "state.db",
+        filesystem_seam=swap_then_fail,
+    )
+    prior = (anchored_parent / "state.db").read_bytes()
+    fail_persist = True
+    with pytest.raises(SafeFailure) as failure:
+        store.create_run("not-durable", "subject", "2026-07-19T00:00:00.000000Z")
+    assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    store.close()
+
+    assert (anchored_parent / "state.db").read_bytes() == prior
+    assert attacker_canary.read_bytes() == b"attacker-unchanged"
+    assert sorted(path.name for path in attacker_parent.iterdir()) == ["canary"]

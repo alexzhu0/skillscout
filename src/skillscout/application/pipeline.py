@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import os
-import stat
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Iterable, Mapping, Protocol
+from typing import Callable, Final, Iterable, Mapping, Protocol
 
 from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject
+from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import (
     AdapterRegistration,
@@ -52,6 +51,7 @@ RETRY_POLICY_VERSION = "retry-v1"
 PHASE_ONE_MAX_SCOPES: Final[frozenset[EffectScope]] = frozenset(
     {EffectScope.NONE, EffectScope.LOCAL_STATE}
 )
+MAX_PUBLICATION_PLAN_BYTES: Final[int] = 65_536
 
 
 @dataclass(frozen=True)
@@ -141,12 +141,22 @@ class _PublicationWriter(Protocol):
 class _LocalPublicationPlanner:
     """The only publication capability present in the Phase 1 runtime."""
 
+    def __init__(
+        self,
+        filesystem_seam: Callable[[str], None] | None = None,
+    ) -> None:
+        self._filesystem_seam = filesystem_seam
+
     @property
     def effect_scope(self) -> EffectScope:
         return EffectScope.LOCAL_STATE
 
     def write(self, output_directory: Path, plan: PublicationPlan) -> Path:
-        return PipelineRunner._write_publication_plan(output_directory, plan)
+        return PipelineRunner._write_publication_plan(
+            output_directory,
+            plan,
+            filesystem_seam=self._filesystem_seam,
+        )
 
 
 class PipelineRunner:
@@ -161,13 +171,16 @@ class PipelineRunner:
         ids: IdProvider | None = None,
         retry_policy: RetryPolicy | None = None,
         publication_writer: _PublicationWriter | None = None,
+        filesystem_seam: Callable[[str], None] | None = None,
     ) -> None:
         self.state = state
         self.processor = processor
         self.clock = clock or SystemClock()
         self.ids = ids or UUIDIdProvider()
         self.retry_policy = retry_policy or RetryPolicy()
-        self.publication_writer = publication_writer or _LocalPublicationPlanner()
+        self.publication_writer = publication_writer or _LocalPublicationPlanner(
+            filesystem_seam
+        )
 
     def run(
         self,
@@ -413,71 +426,53 @@ class PipelineRunner:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     @staticmethod
-    def _write_publication_plan(output_directory: Path, plan: PublicationPlan) -> Path:
-        temporary: Path | None = None
-        descriptor = -1
+    def _write_publication_plan(
+        output_directory: Path,
+        plan: PublicationPlan,
+        *,
+        filesystem_seam: Callable[[str], None] | None = None,
+    ) -> Path:
+        anchor: AnchoredDirectory | None = None
         try:
-            if PipelineRunner._path_contains_symlink(output_directory):
-                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-            output_directory.mkdir(parents=True, exist_ok=True)
-            directory_metadata = os.lstat(output_directory)
-            if stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(
-                directory_metadata.st_mode
-            ):
-                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-            target = output_directory / "publication-plan.json"
-            temporary = output_directory / ".publication-plan.json.tmp"
-            if target.is_symlink() or (target.exists() and not target.is_file()):
-                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-            if temporary.exists() or temporary.is_symlink():
-                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
             payload = canonical_json_bytes(plan) + b"\n"
-            descriptor = os.open(
-                temporary,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-                0o600,
+            if len(payload) > MAX_PUBLICATION_PLAN_BYTES:
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+            anchor = AnchoredDirectory.open(
+                output_directory,
+                create=True,
+                filesystem_seam=filesystem_seam,
             )
-            view = memoryview(payload)
-            while view:
-                written = os.write(descriptor, view)
-                view = view[written:]
-            os.fsync(descriptor)
-            os.close(descriptor)
-            descriptor = -1
-            os.replace(temporary, target)
-            return target
+            target_name = "publication-plan.json"
+            previous = anchor.read_bytes(
+                target_name,
+                max_bytes=MAX_PUBLICATION_PLAN_BYTES,
+                missing_ok=True,
+            )
+            if previous is None:
+                anchor.atomic_write(
+                    target_name,
+                    payload,
+                    max_bytes=MAX_PUBLICATION_PLAN_BYTES,
+                    seam_prefix="publication_",
+                )
+            else:
+                anchor.atomic_write(
+                    target_name,
+                    payload,
+                    max_bytes=MAX_PUBLICATION_PLAN_BYTES,
+                    restore_bytes=previous,
+                    seam_prefix="publication_",
+                )
+            if filesystem_seam is not None:
+                filesystem_seam("after_publication_durable")
+            return output_directory / target_name
         except SafeFailure:
             raise
-        except OSError:
+        except (DurableWriteError, OSError):
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
         finally:
-            if descriptor >= 0:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-    @staticmethod
-    def _path_contains_symlink(path: Path) -> bool:
-        absolute = path.absolute()
-        for candidate in reversed((absolute, *absolute.parents)):
-            try:
-                if stat.S_ISLNK(os.lstat(candidate).st_mode):
-                    return True
-            except FileNotFoundError:
-                continue
-            except OSError:
-                return True
-        return False
+            if anchor is not None:
+                anchor.close()
 
 
 def build_dry_run_runtime(
