@@ -27,7 +27,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 14/16 plans executed
+**Plans:** 15/16 plans executed
 
 - [x] 01-01-PLAN.md
 - [x] 01-02-PLAN.md
@@ -43,7 +43,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 - [x] 01-12-PLAN.md
 - [x] 01-13-PLAN.md
 - [x] 01-14-PLAN.md
-- [ ] 01-15-PLAN.md
+- [x] 01-15-PLAN.md
 - [ ] 01-16-PLAN.md
 
 **Wave 1**
@@ -101,7 +101,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 **Wave 14** *(blocked on Wave 13 completion)*
 
 - [x] `01-14-PLAN.md` — Full-chain resume-event verification and tamper-proof reuse projections.
-- [ ] `01-15-PLAN.md` — Non-echoing CLI rejection and policy-correct recovery from unexpected processor failures.
+- [x] `01-15-PLAN.md` — Non-echoing CLI rejection and policy-correct recovery from unexpected processor failures.
 
 **Wave 15** *(blocked on Wave 14 completion)*
 

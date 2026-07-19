@@ -159,7 +159,20 @@ The maximum remains three attempts. No schema, attempt identity, retry-policy ve
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+### Auto-fixed Issues
+
+**1. [Rule 1 - Tracking integrity] Corrected legacy STATE and ROADMAP projections after registered handler drift**
+- **Found during:** Sequential close-out after both tasks.
+- **Issue:** The registered progress handler reported 94% but rewrote the nested STATE percentage as 0, while the roadmap handler interpreted this project's legacy Requirements column as a plan-count column and malformed the Phase 1 row.
+- **Fix:** Ran the required handlers first, then restored the already-established legacy projection fields to the handler's own 15/16 and 94% counts; no product, requirement, or configuration authority changed.
+- **Files modified:** `.planning/STATE.md`, `.planning/ROADMAP.md`
+- **Verification:** STATE shows Plan 15 of 16 and 94%; ROADMAP marks 01-15 complete and retains its four-column Phase/Status/Requirements/Completed contract.
+- **Committed in:** Plan tracking metadata commit.
+
+---
+
+**Total deviations:** 1 auto-fixed (1 Rule 1 tracking-integrity repair).
+**Impact on plan:** Close-out metadata now reflects the completed plan without changing implementation scope or safety behavior.
 
 ## Issues Encountered
 
