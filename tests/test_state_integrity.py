@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import shutil
@@ -15,9 +16,15 @@ import skillscout.adapters.state as state_adapter
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
-from skillscout.domain.canonical import make_result_row_id
+from skillscout.domain.canonical import (
+    canonical_json_bytes,
+    make_result_id,
+    make_result_row_id,
+    reusable_key_digest,
+    stage_manifest_hash,
+)
 from skillscout.domain.enums import PipelineStage, RunStatus
-from skillscout.domain.models import RunIdentity
+from skillscout.domain.models import RunIdentity, StageEnvelope
 
 APPROVED_FIXTURE = Path(__file__).parent / "fixtures" / "pipeline" / "approved.json"
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
@@ -152,6 +159,15 @@ def _run_interrupted(database: Path, output: Path) -> str:
         store.close()
 
 
+def _run_interrupted_in_store(store: SQLiteStateStore, output: Path) -> str:
+    with pytest.raises(SafeFailure) as failure:
+        PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), output, fail_after="generator"
+        )
+    assert failure.value.code is ErrorCode.PIPELINE_INTERRUPTED
+    return str(store.connection.execute("SELECT run_id FROM runs").fetchone()[0])
+
+
 def _checkpoint_facts(database: Path) -> list[tuple[object, ...]]:
     with _connect(database) as connection:
         return [
@@ -161,6 +177,322 @@ def _checkpoint_facts(database: Path) -> list[tuple[object, ...]]:
                 "FROM checkpoints ORDER BY stage_index"
             )
         ]
+
+
+def _coherently_rewrite_manifest(
+    store: SQLiteStateStore,
+    stage: PipelineStage,
+    **updates: object,
+) -> tuple[str, str]:
+    """Rewrite one envelope and every attacker-controlled manifest locator."""
+
+    row = store.connection.execute(
+        "SELECT * FROM stage_results WHERE stage = ?", (stage.value,)
+    ).fetchone()
+    assert row is not None
+    old_path = store.manifest_root / str(row["manifest_path"])
+    payload = json.loads(old_path.read_bytes())
+    payload.update(updates)
+    payload["manifest_hash"] = None
+    provisional = StageEnvelope.model_validate(payload)
+    manifest_hash = stage_manifest_hash(provisional)
+    envelope = provisional.model_copy(update={"manifest_hash": manifest_hash})
+    locator = store._manifest_locator(stage, manifest_hash)
+    target = store.manifest_root / locator
+    target.write_bytes(canonical_json_bytes(envelope))
+    return manifest_hash, locator
+
+
+def _assert_full_chain_integrity_failure(store: SQLiteStateStore, run_id: str) -> None:
+    before = tuple(
+        store.connection.execute(
+            "SELECT COUNT(*) FROM stage_results UNION ALL "
+            "SELECT COUNT(*) FROM checkpoints UNION ALL "
+            "SELECT COUNT(*) FROM stage_attempts"
+        ).fetchall()
+    )
+    with pytest.raises(SafeFailure) as failure:
+        store.verify_run_chain(run_id)
+    assert failure.value.as_dict() == {
+        "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+        "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+    }
+    after = tuple(
+        store.connection.execute(
+            "SELECT COUNT(*) FROM stage_results UNION ALL "
+            "SELECT COUNT(*) FROM checkpoints UNION ALL "
+            "SELECT COUNT(*) FROM stage_attempts"
+        ).fetchall()
+    )
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("fail_after", "expected_count", "expected_status"),
+    [
+        (None, len(tuple(PipelineStage)), RunStatus.PLANNED_NOT_PUBLISHED),
+        ("generator", 6, RunStatus.INTERRUPTED),
+    ],
+)
+def test_verify_run_chain_returns_one_typed_closed_prefix(
+    tmp_path: Path,
+    fail_after: str | None,
+    expected_count: int,
+    expected_status: RunStatus,
+) -> None:
+    store = SQLiteStateStore(tmp_path / f"verified-{fail_after or 'complete'}.db")
+    try:
+        if fail_after is None:
+            run_id = PipelineRunner(store, FixtureProcessor()).run(
+                load_fixture(APPROVED_FIXTURE), tmp_path / "complete"
+            ).run_id
+        else:
+            run_id = _run_interrupted_in_store(store, tmp_path / "interrupted")
+        chain = store.verify_run_chain(run_id)
+        assert type(chain).__name__ == "VerifiedRunChain"
+        assert chain.run.status is expected_status
+        assert chain.identity == chain.run.identity
+        assert len(chain.results) == expected_count
+        assert len(chain.checkpoints) == expected_count
+        assert tuple(result.stage for result in chain.results) == tuple(PipelineStage)[
+            :expected_count
+        ]
+        assert tuple(checkpoint.stage for checkpoint in chain.checkpoints) == tuple(
+            PipelineStage
+        )[:expected_count]
+        assert all(
+            type(attempt).__name__ == "PersistedAttemptRecord"
+            for attempt in chain.attempts
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "value"),
+    [
+        ("runs", "schema_version", "1"),
+        ("runs", "subject_id", "other-subject"),
+        ("runs", "fixture_hash", "sha256:" + "2" * 64),
+        ("runs", "producer_version", "fixture-v2"),
+        ("runs", "retry_policy_version", "retry-v2"),
+        ("stage_attempts", "subject_id", "other-subject"),
+        ("stage_attempts", "stage", "publication_planner"),
+        ("stage_attempts", "stage_index", 8),
+        ("stage_attempts", "attempt_no", 99),
+        ("stage_attempts", "input_hash", "sha256:" + "2" * 64),
+        ("stage_attempts", "producer_version", "fixture-v2"),
+        ("stage_attempts", "retry_policy_version", "retry-v2"),
+        ("stage_attempts", "reusable_key_digest", "sha256:" + "2" * 64),
+        ("stage_results", "schema_version", "1"),
+        ("stage_results", "subject_id", "other-subject"),
+        ("stage_results", "stage", "publication_planner"),
+        ("stage_results", "stage_index", 8),
+        ("stage_results", "output_json", "{}"),
+        ("stage_results", "output_hash", "sha256:" + "2" * 64),
+        ("stage_results", "producer_version", "fixture-v2"),
+        ("stage_results", "result_id", "sha256:" + "2" * 64),
+        ("checkpoints", "subject_id", "other-subject"),
+        ("checkpoints", "stage", "publication_planner"),
+        ("checkpoints", "stage_index", 8),
+        ("checkpoints", "result_row_id", "sha256:" + "2" * 64),
+        ("checkpoints", "result_id", "sha256:" + "2" * 64),
+        ("checkpoints", "output_hash", "sha256:" + "2" * 64),
+        ("checkpoints", "manifest_hash", "sha256:" + "2" * 64),
+        ("checkpoints", "manifest_path", "scout/" + "2" * 64 + ".json"),
+    ],
+)
+def test_full_chain_rejects_each_duplicated_persisted_field_tamper(
+    tmp_path: Path,
+    table: str,
+    column: str,
+    value: object,
+) -> None:
+    store = SQLiteStateStore(tmp_path / f"tamper-{table}-{column}.db")
+    try:
+        run_id = _run_interrupted_in_store(
+            store, tmp_path / f"out-{table}-{column}"
+        )
+        where = "run_id = ?" if table == "runs" else "run_id = ? AND stage = 'scout'"
+        store.connection.execute(
+            f"UPDATE {table} SET {column} = ? WHERE {where}",
+            (value, run_id),
+        )
+        _assert_full_chain_integrity_failure(store, run_id)
+    finally:
+        store.close()
+
+
+def test_full_chain_recomputes_result_id_after_coherent_manifest_rehash(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "coherent-result-id.db")
+    try:
+        run_id = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "coherent-result-id-out"
+        ).run_id
+        forged = "sha256:" + "f" * 64
+        manifest_hash, locator = _coherently_rewrite_manifest(
+            store, PipelineStage.SCOUT, result_id=forged
+        )
+        store.connection.execute(
+            """UPDATE stage_results
+               SET result_id = ?, manifest_hash = ?, manifest_path = ?
+               WHERE run_id = ? AND stage = 'scout'""",
+            (forged, manifest_hash, locator, run_id),
+        )
+        store.connection.execute(
+            """UPDATE checkpoints
+               SET result_id = ?, manifest_hash = ?, manifest_path = ?
+               WHERE run_id = ? AND stage = 'scout'""",
+            (forged, manifest_hash, locator, run_id),
+        )
+        _assert_full_chain_integrity_failure(store, run_id)
+    finally:
+        store.close()
+
+
+def test_full_chain_rebuilds_prior_output_input_and_reusable_identity(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "prior-output.db")
+    try:
+        run_id = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "prior-output-out"
+        ).run_id
+        row = store.connection.execute(
+            """SELECT r.*, a.retry_policy_version FROM stage_results r
+               JOIN stage_attempts a USING (attempt_id)
+               WHERE r.run_id = ? AND r.stage = 'filter'""",
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        forged_input = "sha256:" + "3" * 64
+        forged_reusable = reusable_key_digest(
+            subject_id=str(row["subject_id"]),
+            stage=PipelineStage.FILTER,
+            input_hash=forged_input,
+            producer_version=str(row["producer_version"]),
+            retry_policy_version=str(row["retry_policy_version"]),
+        )
+        forged_result = make_result_id(
+            subject_id=str(row["subject_id"]),
+            stage=PipelineStage.FILTER,
+            input_hash=forged_input,
+            producer_version=str(row["producer_version"]),
+            output_hash=str(row["output_hash"]),
+            retry_policy_version=str(row["retry_policy_version"]),
+        )
+        manifest_hash, locator = _coherently_rewrite_manifest(
+            store,
+            PipelineStage.FILTER,
+            input_hash=forged_input,
+            result_id=forged_result,
+        )
+        store.connection.execute(
+            """UPDATE stage_attempts
+               SET input_hash = ?, reusable_key_digest = ?
+               WHERE run_id = ? AND stage = 'filter'""",
+            (forged_input, forged_reusable, run_id),
+        )
+        store.connection.execute(
+            """UPDATE stage_results
+               SET result_id = ?, manifest_hash = ?, manifest_path = ?
+               WHERE run_id = ? AND stage = 'filter'""",
+            (forged_result, manifest_hash, locator, run_id),
+        )
+        store.connection.execute(
+            """UPDATE checkpoints
+               SET result_id = ?, manifest_hash = ?, manifest_path = ?
+               WHERE run_id = ? AND stage = 'filter'""",
+            (forged_result, manifest_hash, locator, run_id),
+        )
+        _assert_full_chain_integrity_failure(store, run_id)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["missing_checkpoint", "missing_pair", "extra_result", "extra_checkpoint", "reordered"],
+)
+def test_full_chain_rejects_result_checkpoint_order_and_cardinality_damage(
+    tmp_path: Path, damage: str
+) -> None:
+    store = SQLiteStateStore(tmp_path / f"cardinality-{damage}.db")
+    try:
+        run_id = _run_interrupted_in_store(
+            store, tmp_path / f"cardinality-{damage}-out"
+        )
+        if damage == "missing_checkpoint":
+            store.connection.execute(
+                "DELETE FROM checkpoints WHERE run_id = ? AND stage = 'scout'", (run_id,)
+            )
+        elif damage == "missing_pair":
+            store.connection.execute(
+                "DELETE FROM checkpoints WHERE run_id = ? AND stage = 'scout'", (run_id,)
+            )
+            store.connection.execute(
+                "DELETE FROM stage_results WHERE run_id = ? AND stage = 'scout'", (run_id,)
+            )
+        elif damage == "extra_result":
+            source_attempt = store.connection.execute(
+                "SELECT * FROM stage_attempts WHERE run_id = ? AND stage = 'scout'",
+                (run_id,),
+            ).fetchone()
+            source_result = store.connection.execute(
+                "SELECT * FROM stage_results WHERE run_id = ? AND stage = 'scout'",
+                (run_id,),
+            ).fetchone()
+            assert source_attempt is not None and source_result is not None
+            attempt_id = f"{run_id}:publication_planner:2"
+            store.connection.execute(
+                """INSERT INTO stage_attempts
+                   SELECT ?, run_id, subject_id, 'publication_planner', 8, 2, status,
+                          input_hash, producer_version, retry_policy_version,
+                          reusable_key_digest, started_at, finished_at, prompt_version,
+                          policy_version, model_id, request_id, latency_ms, prompt_tokens,
+                          completion_tokens, total_tokens, error_code, error_summary, retryable
+                   FROM stage_attempts WHERE attempt_id = ?""",
+                (attempt_id, source_attempt["attempt_id"]),
+            )
+            store.connection.execute(
+                """INSERT INTO stage_results
+                   SELECT ?, result_id, ?, run_id, schema_version, subject_id,
+                          'publication_planner', 8, output_json, output_hash,
+                          producer_version, manifest_hash, manifest_path, created_at
+                   FROM stage_results WHERE result_row_id = ?""",
+                (
+                    "sha256:" + "4" * 64,
+                    attempt_id,
+                    source_result["result_row_id"],
+                ),
+            )
+        elif damage == "extra_checkpoint":
+            store.connection.execute(
+                """INSERT INTO checkpoints
+                   SELECT run_id, subject_id, 'publication_planner', 8, result_row_id,
+                          result_id, output_hash, manifest_hash, manifest_path, updated_at
+                   FROM checkpoints WHERE run_id = ? AND stage = 'scout'""",
+                (run_id,),
+            )
+        else:
+            for table in ("stage_attempts", "stage_results", "checkpoints"):
+                store.connection.execute(
+                    f"UPDATE {table} SET stage_index = 99 WHERE run_id = ? AND stage = 'scout'",
+                    (run_id,),
+                )
+                store.connection.execute(
+                    f"UPDATE {table} SET stage_index = 0 WHERE run_id = ? AND stage = 'filter'",
+                    (run_id,),
+                )
+                store.connection.execute(
+                    f"UPDATE {table} SET stage_index = 1 WHERE run_id = ? AND stage = 'scout'",
+                    (run_id,),
+                )
+        _assert_full_chain_integrity_failure(store, run_id)
+    finally:
+        store.close()
 
 
 def test_manifest_paths_use_closed_stage_and_bare_lowercase_hash(tmp_path: Path) -> None:
