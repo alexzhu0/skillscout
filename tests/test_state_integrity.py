@@ -1180,6 +1180,199 @@ def test_forged_semantic_result_is_rejected_consistently_by_every_trust_path(
         store.close()
 
 
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "raw_count",
+        "event_count",
+        "head",
+        "event_hash",
+        "checkpoint_reference",
+        "order",
+        "missing",
+        "duplicate",
+        "malformed_zero_prefix",
+    ],
+)
+def test_resume_event_tamper_is_rejected_by_every_bound_trust_path(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    store = SQLiteStateStore(tmp_path / f"trust-entry-{damage}.db")
+    try:
+        run_id = _run_interrupted_in_store(
+            store,
+            tmp_path / f"trust-entry-{damage}-out",
+        )
+        checkpoint = store.latest_checkpoint(run_id)
+        assert checkpoint is not None
+        store.record_resume_decision(run_id, checkpoint, checkpoint.updated_at)
+        chain = store.verify_run_chain(run_id)
+        identity = chain.identity
+        genesis = chain.resume_events[0]
+        latest = chain.resume_events[-1]
+        first_checkpoint = chain.checkpoints[0]
+
+        if damage == "raw_count":
+            store.connection.execute(
+                "UPDATE runs SET reused_stage_count = 5 WHERE run_id = ?",
+                (run_id,),
+            )
+        elif damage == "event_count":
+            _rewrite_resume_event(
+                store,
+                run_id,
+                latest.event_index,
+                reused_stage_count=5,
+            )
+            store.connection.execute(
+                "UPDATE runs SET reused_stage_count = 5 WHERE run_id = ?",
+                (run_id,),
+            )
+        elif damage == "head":
+            store.connection.execute(
+                "UPDATE runs SET latest_resume_event_hash = ? WHERE run_id = ?",
+                (genesis.event_hash, run_id),
+            )
+        elif damage == "event_hash":
+            store.connection.execute(
+                """UPDATE resume_events SET recorded_at = ?
+                   WHERE run_id = ? AND event_index = ?""",
+                ("2026-07-19T00:00:00.000000Z", run_id, latest.event_index),
+            )
+        elif damage == "checkpoint_reference":
+            _rewrite_resume_event(
+                store,
+                run_id,
+                latest.event_index,
+                checkpoint_result_row_id=first_checkpoint.result_row_id,
+            )
+        elif damage == "order":
+            _rewrite_resume_event(
+                store,
+                run_id,
+                latest.event_index,
+                event_index=4,
+            )
+        elif damage == "missing":
+            store.connection.execute("PRAGMA foreign_keys = OFF")
+            store.connection.execute(
+                "DELETE FROM resume_events WHERE event_hash = ?",
+                (latest.event_hash,),
+            )
+            store.connection.execute("PRAGMA foreign_keys = ON")
+        elif damage == "duplicate":
+            duplicate = store._new_resume_event(
+                run_id=run_id,
+                event_index=latest.event_index + 1,
+                prior_event_hash=latest.event_hash,
+                reused_stage_count=latest.reused_stage_count,
+                checkpoint=checkpoint,
+                recorded_at=latest.recorded_at,
+            )
+            store._insert_resume_event(store.connection, duplicate)
+        else:
+            _rewrite_resume_event(
+                store,
+                run_id,
+                latest.event_index,
+                reused_stage_count=0,
+            )
+            store.connection.execute(
+                "UPDATE runs SET reused_stage_count = 0 WHERE run_id = ?",
+                (run_id,),
+            )
+
+        tampered = store.connection.serialize()
+        store._durable_bytes = tampered
+        operations = (
+            lambda: store.find_resumable_run(identity),
+            lambda: store.latest_checkpoint(run_id),
+            lambda: store.verify_completed_results(run_id, 6),
+            lambda: store.read_run(run_id),
+            lambda: store.inspect_run(run_id),
+            lambda: store.record_resume_decision(
+                run_id,
+                checkpoint,
+                "2026-07-19T23:59:59.999999Z",
+            ),
+        )
+        for operation in operations:
+            projection = None
+            with pytest.raises(SafeFailure) as failure:
+                projection = operation()
+            assert projection is None
+            assert failure.value.as_dict() == {
+                "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+                "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+            }
+            assert store.connection.serialize() == tampered
+            assert store._durable_bytes == tampered
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("event_count", [1, 3])
+def test_public_trust_paths_accept_event_proven_zero_prefix_chains(
+    tmp_path: Path,
+    event_count: int,
+) -> None:
+    store = SQLiteStateStore(tmp_path / f"public-zero-prefix-{event_count}.db")
+    run_id = f"public-zero-prefix-{event_count}"
+    identity = _run_identity(f"subject:{run_id}")
+    try:
+        store.create_run(
+            run_id,
+            identity,
+            "2026-07-19T00:00:00.000000Z",
+        )
+        for index in range(1, event_count):
+            store.record_resume_decision(
+                run_id,
+                None,
+                f"2026-07-19T00:00:0{index}.000000Z",
+            )
+
+        assert store.find_resumable_run(identity).run_id == run_id
+        assert store.latest_checkpoint(run_id) is None
+        store.verify_completed_results(run_id, 0)
+        assert store.read_run(run_id).reused_stage_count == 0
+        inspection = store.inspect_run(run_id)
+        assert inspection["reused_stage_count"] == 0
+        assert inspection["run"]["reused_stage_count"] == 0
+    finally:
+        store.close()
+
+
+def test_completed_resumed_inspection_uses_one_verified_count_after_reopen(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "completed-resumed-inspection.db"
+    store = SQLiteStateStore(database)
+    try:
+        run_id = _run_interrupted_in_store(
+            store,
+            tmp_path / "completed-resumed-inspection-first",
+        )
+        summary = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE),
+            tmp_path / "completed-resumed-inspection-second",
+        )
+        assert summary.run_id == run_id
+    finally:
+        store.close()
+
+    reopened = SQLiteStateStore(database)
+    try:
+        inspection = reopened.inspect_run(run_id)
+        assert inspection["run"]["status"] == "planned_not_published"
+        assert inspection["reused_stage_count"] == 6
+        assert inspection["run"]["reused_stage_count"] == 6
+        assert reopened.read_run(run_id).reused_stage_count == 6
+    finally:
+        reopened.close()
+
+
 def test_manifest_paths_use_closed_stage_and_bare_lowercase_hash(tmp_path: Path) -> None:
     database = tmp_path / "ledger.db"
     store = SQLiteStateStore(database)
