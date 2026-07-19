@@ -1,11 +1,12 @@
 ---
 phase: 01-auditable-dry-run-spine
-reviewed: 2026-07-17T07:15:23Z
+reviewed: 2026-07-19T07:59:00Z
 depth: standard
-files_reviewed: 19
+files_reviewed: 22
 files_reviewed_list:
   - src/skillscout/__init__.py
   - src/skillscout/adapters/fixtures.py
+  - src/skillscout/adapters/localfs.py
   - src/skillscout/adapters/state.py
   - src/skillscout/application/pipeline.py
   - src/skillscout/application/ports.py
@@ -19,129 +20,105 @@ files_reviewed_list:
   - tests/fixtures/state/v1-cli.db
   - tests/test_cli_dry_run.py
   - tests/test_cli_security.py
+  - tests/test_phase1_gap_closure.py
   - tests/test_pipeline_resume.py
   - tests/test_side_effect_policy.py
   - tests/test_stage_contracts.py
   - tests/test_state_integrity.py
+  - tools/verify_phase1_gap_evidence.py
 findings:
-  critical: 8
+  critical: 3
   warning: 4
   info: 0
-  total: 12
+  total: 7
 status: issues_found
 ---
 
 # Phase 1: Code Review Report
 
-**Reviewed:** 2026-07-17T07:15:23Z  
-**Depth:** standard (with cross-module trust-chain tracing requested by the orchestrator)  
-**Files Reviewed:** 19  
+**Reviewed:** 2026-07-19T07:59:00Z
+**Depth:** standard
+**Files Reviewed:** 22
 **Status:** issues_found
 
 ## Narrative Findings (AI reviewer)
 
-The complete fixture-to-SQLite-to-manifest-to-resume/inspect path was reviewed under an adversarial FORCE stance. The current suite is green (`72 passed`) and Ruff reports no lint errors, but those checks miss several correctness and security failures at the exact boundaries this phase claims to close. Three failures were reproduced directly: changing a fixture after a Generator checkpoint makes the new run fail with `state_operation_failed`; a run produced with `producer_version="fixture-v2"` reports success and is then rejected by `inspect-run`; and an oversized manifest likewise reaches `planned_not_published` before `inspect-run` reports `state_integrity_error`. A tampered attempt diagnostic is also emitted verbatim by `inspect-run`.
+The current post-gap implementation was reviewed across the fixture boundary, snapshot-backed SQLite ledger, content-addressed manifests, resume logic, CLI diagnostics, and standalone evidence verifier. The checked-in suite passes (`200 passed`), Ruff passes, and the gap-evidence document validates, but those checks miss three release-blocking integrity/disclosure failures and four robustness gaps. Two critical failures were reproduced directly: a state mutation that raises `state_operation_failed` is present after reopen, and a tampered `reused_stage_count` is accepted and emitted by the full-chain verifier.
 
 ## Critical Issues
 
-### CR-01: The capability firewall can be widened by its caller and mislabels every processor as effect-free
+### CR-01: Backup-cleanup failure reports rollback while the new state is durably committed
 
-**File:** `src/skillscout/application/pipeline.py:397-424`  
-**Related:** `src/skillscout/application/pipeline.py:409-415`, `src/skillscout/application/ports.py:58-79`  
-**Issue:** `build_dry_run_runtime` accepts a caller-supplied `SideEffectPolicy` and uses it verbatim at line 423. A caller can therefore pass a policy allowing `remote_read`/`remote_write`, after which the same registrations rejected by the Phase 1 default are accepted. Independently, the processor is wrapped in `AdapterRegistration(..., EffectScope.NONE, processor)` without consulting or constraining the processor's actual authority. The policy validates caller-provided labels, not capabilities. This defeats the claimed composition-time critical boundary: an arbitrary processor with socket, subprocess, or filesystem behavior is blessed as `none`, and a permissive policy can authorize explicitly remote registrations.
+**Classification:** BLOCKER
+**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/localfs.py:310-314`
+**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:2016-2037`
 
-**Fix:** Make the Phase 1 maximum authority immutable. Remove the public policy-widening parameter, or require `requested_policy.allowed_scopes <= SideEffectPolicy.phase_one().allowed_scopes`. Accept only concrete, known local adapter types at the production composition root; do not infer `NONE` for an arbitrary `StageProcessor`. If extensibility is required, make adapters expose a closed `effect_scope` and validate that value, while still keeping an immutable Phase 1 upper bound. Add tests proving a permissive custom policy cannot widen authority and a processor declaring or carrying remote authority is rejected before construction.
+**Issue:** `atomic_write()` first makes the replacement durable, then unlinks the backup with a directory fsync. If that cleanup fsync fails, `unlink()` has already removed the backup and line 314 raises `DurableWriteError("backup_cleanup", renamed=True)` without restoring the prior target. `_snapshot_transaction()` treats this as a failed transaction, poisons the live connection, and returns `state_operation_failed`, even though the replacement snapshot remains on disk. A focused reproduction made `create_run("failed-call", ...)` raise `state_operation_failed`; reopening the database returned the supposedly failed `failed-call` row. Callers can retry after an error and create duplicate or contradictory audit state, so the API's success/failure boundary is false.
 
-### CR-02: Globally unique semantic result IDs make valid identity changes crash a later stage
+**Fix:** Separate replacement durability from best-effort backup retirement. Once the target file and containing directory are durably synced, commit the in-memory candidate and treat backup cleanup as recoverable housekeeping; alternatively retain the backup and record a deterministic recovery state. Do not return failure after a mutation is already authoritative unless reopen can unambiguously select and restore the old generation. Add a regression that injects failure specifically after backup unlink and asserts that the returned outcome matches the state observed after reopen.
 
-**File:** `src/skillscout/adapters/state.py:86-101`  
-**Related:** `src/skillscout/domain/canonical.py:114-134`, `src/skillscout/application/pipeline.py:150-164`, `src/skillscout/application/pipeline.py:264-307`  
-**Issue:** `stage_results.result_id` is a global primary key, while `make_result_id` deliberately excludes `run_id`. When a fixture changes but retains the same `subject_id`, the runner correctly creates a fresh run. The deterministic fixture processor does not include fixture contents in its output, so downstream stages can converge on the same input/output identity as the old run. Their semantic `result_id` then collides with the old run's row. Reproduction: interrupt fixture A after Generator, change only its workflow goal, and run again in the same state store. The new run writes Scout, then fails at Filter with `state_operation_failed`; the new run remains `running`. This violates the changed-identity/fresh-run contract and turns valid input evolution into a database error.
+### CR-02: Full-chain verification trusts an unattested `reused_stage_count`
 
-**Fix:** Separate semantic content identity from row identity. Use a run-scoped row key such as `(run_id, stage)` or a distinct generated `stage_result_row_id`, while storing `result_id` as a non-unique semantic digest. If global semantic deduplication is intended, model a reusable result table plus a run/result association table rather than making one result row belong to exactly one run and attempt. Add a regression test that interrupts A after multiple stages, runs changed A' with the same subject, completes, and inspects both runs.
+**Classification:** BLOCKER
+**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:1549-1555`
+**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:1567-1570`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:1960-1982`
 
-### CR-03: The writer accepts producer versions that the reader later declares corrupt
+**Issue:** `verify_run_chain()` recomputes stage inputs, reusable digests, result identities, output hashes, and manifest hashes, but returns the run row without proving `reused_stage_count`. That field is a standalone mutable column, is not covered by a manifest or immutable resume event, and is projected as verified audit data by `inspect_run()`. Changing a fresh completed run from `reused_stage_count=0` to `9` in the persisted database still makes both `verify_run_chain()` and `inspect_run()` return `9`. This breaks the phase's claim that inspected audit facts are full-chain verified.
 
-**File:** `src/skillscout/adapters/state.py:35-36`  
-**Related:** `src/skillscout/adapters/state.py:787-826`, `src/skillscout/application/pipeline.py:126-140`, `src/skillscout/application/pipeline.py:193-200`  
-**Issue:** The runner accepts any non-empty `processor.producer_version` and can persist a complete successful run, but `_verify_manifest_row` only accepts `fixture-v1`. A processor with `producer_version="fixture-v2"` reaches `planned_not_published`; immediately inspecting that same run raises `state_integrity_error`. The existing retry tests explicitly exercise producer-version changes but never inspect the resulting successful run. The system can therefore create state that its own read path treats as corruption.
+**Fix:** Persist an immutable, content-addressed resume event that records the selected checkpoint and reused prefix, and bind its digest into the run ledger; derive `reused_stage_count` from that verified event instead of trusting the mutable summary column. If the field remains denormalized, compare it with the verified event during `_verify_run_chain()` and reject any mismatch. Add tamper cases for every publicly projected run-level audit fact, including `reused_stage_count`.
 
-**Fix:** Establish one producer-version registry used by both write and read paths. Either reject unsupported versions at runtime construction before creating a run, or persist and support the configured version for verification. Never allow a writer version that the verifier rejects. Add a test that every accepted producer version completes, verifies, resumes, and inspects successfully, and a separate test that an unsupported version is rejected before state creation.
+### CR-03: `argparse` echoes raw hostile arguments outside the sanitized diagnostic boundary
 
-### CR-04: Oversized manifests are committed successfully and become immediately unreadable
+**Classification:** BLOCKER
+**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/cli.py:19-35`
 
-**File:** `src/skillscout/adapters/state.py:624-663`  
-**Related:** `src/skillscout/adapters/state.py:1007-1047`, `src/skillscout/domain/models.py:37-56`, `src/skillscout/application/pipeline.py:242-307`  
-**Issue:** `MAX_MANIFEST_BYTES` is enforced only while reading. `_write_manifest` canonicalizes and writes an unbounded `StageEnvelope.payload` without checking `len(payload)`. A processor returning a string just over the cap produced a 262,940-byte manifest, completed all stages, and returned `planned_not_published`; `inspect_run` then rejected the run as `state_integrity_error`. This is both an integrity failure and an unbounded local-storage path reachable through processor output.
+**Issue:** `parse_args()` executes before the CLI's `try` block, and the default `ArgumentParser.error()` writes the rejected argument verbatim to stderr. For example, `--fail-after github_pat_DO_NOT_DISCLOSE` exits 2 while printing that complete canary. Unknown options similarly echo their raw values. This bypasses the closed `SafeFailure` vocabulary and violates the requirement that credentials and untrusted values never enter logs or diagnostics.
 
-**Fix:** Validate each stage output with a bounded, JSON-only Pydantic contract before hashing. Compute canonical bytes once and reject `len(payload) > MAX_MANIFEST_BYTES` before opening a temporary file or advancing an attempt. Apply the same bound during migration before writing any manifest. Add cap, cap-plus-one, deeply nested, non-JSON, and non-finite output tests that assert the attempt/run are closed with a sanitized failure and no result/checkpoint is committed.
-
-### CR-05: Resume verification does not prove the persisted canonical stage identity
-
-**File:** `src/skillscout/adapters/state.py:787-826`  
-**Related:** `src/skillscout/adapters/state.py:464-513`, `src/skillscout/adapters/state.py:770-785`, `src/skillscout/domain/canonical.py:93-134`  
-**Issue:** `_verify_manifest_row` verifies selected row/envelope fields plus output and manifest hashes, but it never recomputes or checks the canonical `result_id`; never compares `envelope.input_hash`, `retry_policy_version`, or `attempt_no` with the attempt row; and never verifies the persisted `reusable_key_digest`. `resume_identity_matches` checks the attempt row's input/digest but does not bind those values back to the envelope. It also requires contiguous `stage_index` values without requiring `tuple(PipelineStage)[stage_index]` to equal the stored stage. A coherent but relabeled/rehashed persisted chain can therefore pass resume and skip or substitute a mandatory stage. `verify_completed_results` is weaker still because it reads no attempt identity at all.
-
-**Fix:** Centralize one full verifier over a join of run, attempt, result, and checkpoint. For each position, require the exact closed stage, recompute `StageInput`, `input_hash`, `reusable_key_digest`, `output_hash`, schema-specific `result_id` (v1 excludes retry policy; v2 includes it), and `manifest_hash`; compare every duplicate field across all four records. Require checkpoint/result cardinality and order to match. Use this verifier for migration validation, resume, completed-result verification, and inspect. Add one corruption test per omitted field and a stage-relabel/order test.
-
-### CR-06: `inspect-run` emits untrusted persisted diagnostics without the closed error allowlist
-
-**File:** `src/skillscout/adapters/state.py:926-972`  
-**Related:** `src/skillscout/adapters/state.py:238-251`, `src/skillscout/domain/models.py:59-81`, `src/skillscout/application/ports.py:29-55`  
-**Issue:** Run and attempt rows are converted with `dict(row)` and returned verbatim. Their `error_code`, `error_summary`, request/model fields, timestamps, and identifiers are not validated against strict domain models or the fixed `ERROR_SUMMARIES` map. Migration also copies v1 attempt diagnostics wholesale. Writing `OPENAI_API_KEY_DO_NOT_DISCLOSE` into an attempt's `error_summary` causes `inspect_run` to print it even though all manifests still verify. Thus the advertised fixed diagnostic boundary does not cover persisted state, and a legacy, corrupted, or accidentally raw provider error can leak secrets to CLI output.
-
-**Fix:** Parse run and attempt rows into strict persisted-record models before projection. Model `error_code` as `ErrorCode | None`, require the exact mapped summary for that code, enforce status/error coherence and length/ASCII bounds, and reject any mismatch with `STATE_INTEGRITY_ERROR` without echoing the value. Sanitize or omit request/provider metadata from public inspect output unless it has an explicit bounded contract. Validate these invariants during v1 migration as well. Add DB-tampering and migrated-v1 credential-canary tests that byte-search stdout/stderr and durable outputs.
-
-### CR-07: Path checks are vulnerable to parent-directory symlink races
-
-**File:** `src/skillscout/adapters/state.py:120-147`  
-**Related:** `src/skillscout/adapters/state.py:624-663`, `src/skillscout/application/pipeline.py:329-366`  
-**Issue:** State, manifest, and publication output paths are checked with `lstat`/`_path_contains_symlink`, then later opened or replaced by pathname. Another local actor can rename a checked parent and replace it with a symlink between the check and `sqlite3.connect`, `os.open`, or `os.replace`. `O_NOFOLLOW` protects only the final path component; it does not prevent following a swapped ancestor. The static symlink tests cannot exercise this TOCTOU window. A race can therefore redirect supposedly local writes outside the selected directory or connect to a different database.
-
-**Fix:** Anchor filesystem operations to opened directory descriptors. Open each trusted parent with `O_DIRECTORY|O_NOFOLLOW`, verify it with `fstat`, create/open children relative to `dir_fd`, and use dir-fd-relative rename/unlink operations so ancestors cannot be re-resolved. For SQLite, either place the database in an application-owned, non-writable-by-others directory and verify the connected file identity with a supported secure-open/VFS strategy, or fail closed when that guarantee cannot be established. Add adversarial tests that swap parents at instrumented seams, not only pre-existing symlink tests.
-
-### CR-08: Manifest durability errors are ignored before the checkpoint commits
-
-**File:** `src/skillscout/adapters/state.py:647-673`  
-**Related:** `src/skillscout/adapters/state.py:618-623`, `src/skillscout/adapters/state.py:690-768`, `src/skillscout/application/pipeline.py:348-366`  
-**Issue:** After replacing a manifest, directory `fsync` errors are silently swallowed, and newly created parent directory entries are not durably synced through the hierarchy. `_commit_success` then commits the result/checkpoint. The publication plan similarly renames its file without syncing the directory before the run becomes terminal. A filesystem error or power loss can therefore leave SQLite claiming a durable result or terminal plan while the referenced file is absent. This contradicts the phase's manifest-before-database durability invariant and is a data-loss risk.
-
-**Fix:** Treat every required file and directory sync failure as `STATE_OPERATION_FAILED`; do not commit the result/checkpoint or terminal run status afterward. Sync the file, the containing directory after rename, and any newly created parent directory entries up to an already durable root. If a platform cannot provide this guarantee, explicitly fail or use a single transactional storage mechanism instead of silently weakening durability. Add injected file-fsync and directory-fsync failure tests that assert zero checkpoint advance and a resumable, non-terminal run.
+**Fix:** Use a parser subclass whose `error()`/`exit()` emits only a fixed bounded diagnostic (for example, a new allowlisted `invalid_cli_arguments` code) without including the offending token, or pre-validate argv through a non-echoing parser boundary. Preserve exit code 2 if desired, but add subprocess tests with credential and path canaries for invalid choices, unknown options, and missing values.
 
 ## Warnings
 
-### WR-01: Failures after processor invocation leave a durable running attempt
+### WR-01: An unexpected processor exception permanently disables retry for that stage identity
 
-**File:** `src/skillscout/application/pipeline.py:242-307`  
-**Issue:** The exception boundary covers only `processor.process`. Conversion with `dict(output)`, canonical serialization, model construction, manifest writing, and database completion happen outside it. Type errors, non-JSON values, oversized output rejection after CR-04 is fixed, or state/manifest failures can exit while the attempt and run remain `running`; they are only rewritten as abandoned/interrupted on a later invocation. This makes the persisted lifecycle inaccurate at the moment of failure and maps some processor contract violations to the generic CLI state error.
+**Classification:** WARNING
+**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/pipeline.py:311-318`
+**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/pipeline.py:262-273`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/pipeline.py:426-433`
 
-**Fix:** Put the entire post-`start_attempt` stage lifecycle behind one explicit failure boundary. Validate output before persistence, classify processor-contract and state failures into closed codes, and atomically mark the attempt/run whenever the state store remains writable. For an indeterminate database failure, record a recovery marker or make the next-open reconciliation explicit and tested.
+**Issue:** An arbitrary processor exception is translated to `PIPELINE_INTERRUPTED`, but `_close_started_attempt()` marks only `STAGE_TRANSIENT_FAILURE` retryable. The next invocation sees a non-retryable failed attempt through `has_permanent_failure()` and raises `STAGE_PERMANENT_FAILURE` without calling the processor again. A one-time internal exception was reproduced as `pipeline_interrupted` on the first run and `stage_permanent_failure` on the second, with the processor call count still one. This contradicts resumable failure behavior and the meaning of an interruption.
 
-### WR-02: Schema-v2 validation accepts only a small column subset rather than the actual schema
+**Fix:** Classify unexpected exceptions consistently: either store them as an explicit permanent failure on the first run, or treat sanitized `PIPELINE_INTERRUPTED` as retryable under the finite retry budget. Add a fail-once-then-succeed resume test.
 
-**File:** `src/skillscout/adapters/state.py:196-228`  
-**Issue:** `_validate_current_schema` checks a handful of column names and foreign-key violations. It does not verify the remaining required columns, types, nullability, primary/unique keys, check constraints, foreign-key definitions, retry index, or database integrity. A `user_version=2` database with the checked column names but an incompatible layout can open successfully and fail later as an operation error, bypass uniqueness/transition assumptions, or emit malformed inspect data.
+### WR-02: The standalone evidence verifier accepts stale or self-asserted command success
 
-**Fix:** Validate an exact versioned schema fingerprint: full `table_info`/`foreign_key_list`/`index_list` expectations, required SQL constraints, and `PRAGMA quick_check` or `integrity_check`. Reject any mismatch during open as `STATE_SCHEMA_INCOMPATIBLE` before reads or writes. Add malformed-v2 fixtures for missing non-subset columns, constraints, and index definitions.
+**Classification:** WARNING
+**File:** `/Users/alexzhu/Lenovo/skillscout/tools/verify_phase1_gap_evidence.py:158-189`
+**Related:** `/Users/alexzhu/Lenovo/skillscout/tools/verify_phase1_gap_evidence.py:192-228`
 
-### WR-03: Resume selection checks only the newest run for a subject
+**Issue:** The verifier checks that the document claims fixed exit codes/counts and that node strings look like pytest IDs; it does not bind those claims to command output, the reviewed source/test bytes, or even the existence and contents of the named test functions. Only `uv.lock` and the frozen database are hashed. Consequently the unchanged evidence document remains valid after arbitrary product/test edits and can be constructed with the expected success literals without running a command. This is a false-positive quality gate, not independent verification of the claimed full suite.
 
-**File:** `src/skillscout/adapters/state.py:432-439`  
-**Related:** `src/skillscout/application/pipeline.py:150-164`  
-**Issue:** `find_resumable_run` returns one latest `running`/`interrupted` row by subject. If that row belongs to fixture identity B while an older interrupted run matches identity A, rerunning A discards the candidate after one mismatch and creates a third run instead of resuming the matching A run. Alternating revisions of the same subject therefore defeats idempotent recovery and compounds the result-ID collision in CR-02.
+**Fix:** Bind evidence to an immutable repository tree or an explicit digest set covering production and test files, include digests of captured command outputs, and have the verifier resolve every named node against the bound test sources. Prefer generating and validating the evidence in the same CI job that executes the commands, with the commit/tree identity recorded.
 
-**Fix:** Persist the complete run identity (fixture/input root, producer version, retry-policy version, schema) on `runs` and query by it, or return ordered candidates and verify until an exact match is found. Add an A-interrupt, B-interrupt, A-resume regression test.
+### WR-03: A valid state filename can collide with its derived manifest directory
 
-### WR-04: The socket sentinel does not prove zero outbound network behavior
+**Classification:** WARNING
+**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:456-459`
 
-**File:** `tests/conftest.py:22-38`  
-**Related:** `tests/test_cli_dry_run.py:156-182`  
-**Issue:** The sentinel patches `socket.socket.connect` and `socket.create_connection` only. Outbound UDP via `sendto`/`sendmsg`, `connect_ex`, and other OS/network paths remain available. The subprocess CLI tests also execute outside this monkeypatch. Consequently the green test is evidence for two Python call sites, not the claimed zero-network capability.
+**Issue:** `self.manifest_root = self.path.with_suffix(".manifests")` equals `self.path` whenever the operator selects a state file already ending in `.manifests`. The database is created successfully, but the first stage then tries to open that regular file as the manifest directory and fails with `state_integrity_error`, leaving an interrupted run. The CLI accepts this filename and provides no early validation.
 
-**Fix:** Run the acceptance command in an OS-level network-denied sandbox/namespace and fail on any attempted network syscall. As a secondary unit-test layer, patch `connect_ex`, `sendto`, `sendmsg`, and DNS-resolution entry points and exercise the packaged subprocess under the same restriction. Keep source/dependency capability omission checks, because monkeypatching alone is not a security boundary.
+**Fix:** Derive a disjoint sibling name (for example, append `.manifests` to the complete database filename) or explicitly reject any path where `manifest_root == path` before creating state. Add a CLI regression for `.manifests`-suffixed state names.
+
+### WR-04: Existing state snapshots are accepted without private ownership or mode checks
+
+**Classification:** WARNING
+**File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/localfs.py:227-241`
+**Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:479-484`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/adapters/state.py:92-98`
+
+**Issue:** New snapshots and the lock use mode `0600`, and the lock is checked with `stat_is_private_regular()`, but `read_bytes()` validates only regular-file type, symlink status, and size. A pre-existing state database owned by another user or writable by group/other is accepted as authoritative when its parent is owner-controlled but traversable (for example, mode `0755`). This weakens the local tamper boundary and makes run-level metadata forgery materially easier.
+
+**Fix:** Before deserializing state, require owner identity, link/type expectations, and no group/other permission bits, matching the lock policy. Apply an equivalent check to existing manifest files before treating them as immutable evidence. Reject violations with the fixed state-integrity diagnostic and add mode/ownership regression tests.
 
 ---
 
-_Reviewed: 2026-07-17T07:15:23Z_  
-_Reviewer: the agent (gsd-code-reviewer, generic-agent workaround)_  
+_Reviewed: 2026-07-19T07:59:00Z_
+_Reviewer: the agent (gsd-code-reviewer)_
 _Depth: standard_
