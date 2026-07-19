@@ -73,7 +73,7 @@ def test_approved_fixture_reaches_planned_not_published(
 
     state_path = tmp_path / "state.db"
     with _connect(state_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
         attempts = connection.execute(
             """SELECT stage, status, input_hash, producer_version, retry_policy_version,
@@ -414,7 +414,7 @@ def test_fail_after_generator_is_durable_and_stops_before_validators(
     )
     _assert_sanitized_error(result, ErrorCode.PIPELINE_INTERRUPTED)
     with _connect(state) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         run = connection.execute("SELECT status FROM runs").fetchone()
         assert run["status"] == "interrupted"
         checkpoints = connection.execute(
