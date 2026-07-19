@@ -23,6 +23,7 @@ class ErrorCode(StrEnum):
     RETRY_EXHAUSTED = "retry_exhausted"
     STAGE_TRANSIENT_FAILURE = "stage_transient_failure"
     STAGE_PERMANENT_FAILURE = "stage_permanent_failure"
+    STAGE_OUTPUT_INVALID = "stage_output_invalid"
     FORBIDDEN_EFFECT_SCOPE = "forbidden_effect_scope"
 
 
@@ -37,6 +38,7 @@ ERROR_SUMMARIES: dict[ErrorCode, str] = {
     ErrorCode.RETRY_EXHAUSTED: "Stage retry budget was exhausted.",
     ErrorCode.STAGE_TRANSIENT_FAILURE: "Stage processing failed temporarily.",
     ErrorCode.STAGE_PERMANENT_FAILURE: "Stage processing failed permanently.",
+    ErrorCode.STAGE_OUTPUT_INVALID: "Stage output violated its closed contract.",
     ErrorCode.FORBIDDEN_EFFECT_SCOPE: "Dry-run adapter authority was rejected.",
 }
 
