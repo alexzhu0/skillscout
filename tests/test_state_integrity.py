@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import shutil
 import sqlite3
@@ -17,6 +18,13 @@ from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.enums import RunStatus
 
 APPROVED_FIXTURE = Path(__file__).parent / "fixtures" / "pipeline" / "approved.json"
+
+
+def _hold_state_lock(database: str, control) -> None:
+    store = SQLiteStateStore(Path(database))
+    control.send("locked")
+    control.recv()
+    store.close()
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -336,3 +344,39 @@ def test_oversized_serialized_state_fails_before_sqlite_deserialize(
         before.st_ino,
         before.st_size,
     )
+
+
+def test_killed_lock_owner_releases_flock_without_recreating_lock_inode(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "killed.db"
+    lock = tmp_path / ".killed.db.lock"
+    context = multiprocessing.get_context("spawn")
+    parent_control, child_control = context.Pipe()
+    process = context.Process(
+        target=_hold_state_lock,
+        args=(str(database), child_control),
+    )
+    process.start()
+    try:
+        assert parent_control.recv() == "locked"
+        identity = (os.lstat(lock).st_dev, os.lstat(lock).st_ino)
+        with pytest.raises(SafeFailure) as failure:
+            SQLiteStateStore(database)
+        assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+        process.kill()
+        process.join(timeout=10)
+        assert not process.is_alive()
+
+        reopened = SQLiteStateStore(database)
+        try:
+            assert reopened.connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            assert (os.lstat(lock).st_dev, os.lstat(lock).st_ino) == identity
+        finally:
+            reopened.close()
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=10)
+        parent_control.close()
+        child_control.close()

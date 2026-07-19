@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import sqlite3
 import stat
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, TypeVar
 
 from pydantic import ValidationError
 
+from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.canonical import (
     canonical_json_bytes,
@@ -38,8 +40,19 @@ from skillscout.domain.models import (
 )
 
 SCHEMA_VERSION = 2
+MAX_STATE_DB_BYTES = 67_108_864
 _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
 _DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-f]{64})$")
+_T = TypeVar("_T")
+
+
+def stat_is_private_regular(metadata: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_uid == os.getuid()
+        and metadata.st_mode & 0o077 == 0
+    )
 
 
 def _schema_statements(suffix: str = "") -> tuple[str, ...]:
@@ -120,77 +133,179 @@ def _schema_statements(suffix: str = "") -> tuple[str, ...]:
 
 
 class SQLiteStateStore:
-    """Fail-closed state adapter with explicit v1-to-v2 migration."""
+    """Exclusive descriptor-anchored serialized SQLite state adapter."""
 
     @property
     def effect_scope(self) -> EffectScope:
         return EffectScope.LOCAL_STATE
 
-    def __init__(self, path: Path, *, migration_fail_at: str | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        migration_fail_at: str | None = None,
+        filesystem_seam: Callable[[str], None] | None = None,
+    ) -> None:
         if migration_fail_at is not None and migration_fail_at not in _MIGRATION_SEAMS:
             raise ValueError("unknown migration failure seam")
-        self.path = path
-        self.manifest_root = path.with_suffix(".manifests")
-        try:
-            path_metadata = os.lstat(path)
-            existed = True
-            if stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISREG(path_metadata.st_mode):
-                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
-        except FileNotFoundError:
-            existed = False
-        except SafeFailure:
-            raise
-        except OSError:
-            raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE) from None
-        if self._path_contains_symlink(path.parent):
-            code = (
-                ErrorCode.STATE_SCHEMA_INCOMPATIBLE
-                if existed
-                else ErrorCode.STATE_OPERATION_FAILED
-            )
-            raise SafeFailure(code)
+        self.path = Path(os.path.abspath(os.fspath(path)))
+        self.manifest_root = self.path.with_suffix(".manifests")
+        self._state_name = AnchoredDirectory.validate_child_name(self.path.name)
+        self._manifest_name = AnchoredDirectory.validate_child_name(self.manifest_root.name)
+        self._filesystem_seam = filesystem_seam
+        self._state_parent: AnchoredDirectory | None = None
+        self._manifest_anchor: AnchoredDirectory | None = None
+        self._manifest_stage_anchors: dict[PipelineStage, AnchoredDirectory] = {}
+        self._lock_descriptor = -1
+        self._durable_bytes: bytes | None = None
+        self._poisoned = False
         self.connection: sqlite3.Connection | None = None
+        existed = False
         try:
-            if not existed:
-                path.parent.mkdir(parents=True, exist_ok=True)
-            self.connection = sqlite3.connect(path, isolation_level=None)
-            self.connection.row_factory = sqlite3.Row
-            self.connection.execute("PRAGMA foreign_keys = ON")
-            if not existed:
+            self._require_snapshot_support()
+            self._state_parent = AnchoredDirectory.open(
+                self.path.parent,
+                create=True,
+                filesystem_seam=filesystem_seam,
+            )
+            self._trip_filesystem_seam("after_state_parent_anchor")
+            self._acquire_lock()
+            self._trip_filesystem_seam("before_state_read")
+            existed = self._state_parent.stat_child(self._state_name) is not None
+            raw = self._state_parent.read_bytes(
+                self._state_name,
+                max_bytes=MAX_STATE_DB_BYTES,
+                missing_ok=True,
+            )
+            existed = raw is not None
+            self.connection = self._new_memory_connection()
+            if raw is None:
                 self._create_current_schema()
+                self._persist_startup_snapshot(previous=None)
             else:
                 try:
+                    self.connection.deserialize(raw)
+                    self._durable_bytes = raw
                     version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
-                except sqlite3.Error:
+                except (MemoryError, OverflowError, sqlite3.Error):
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE) from None
                 if version == SCHEMA_VERSION:
                     self._validate_current_schema()
                 elif version == 1:
                     self._migrate_v1(migration_fail_at)
+                    self._persist_startup_snapshot(previous=raw)
                 else:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
             self._reconcile_orphan_running_attempts()
         except SafeFailure:
-            if self.connection is not None:
-                self.connection.close()
+            self.close()
             raise
-        except (OSError, sqlite3.Error):
-            if self.connection is not None:
-                self.connection.close()
+        except (DurableWriteError, OSError, sqlite3.Error):
+            self.close()
             code = ErrorCode.STATE_SCHEMA_INCOMPATIBLE if existed else ErrorCode.STATE_OPERATION_FAILED
             raise SafeFailure(code) from None
 
     @classmethod
     def open(
-        cls, path: Path, *, migration_fail_at: str | None = None
+        cls,
+        path: Path,
+        *,
+        migration_fail_at: str | None = None,
+        filesystem_seam: Callable[[str], None] | None = None,
     ) -> SQLiteStateStore:
-        return cls(path, migration_fail_at=migration_fail_at)
+        return cls(
+            path,
+            migration_fail_at=migration_fail_at,
+            filesystem_seam=filesystem_seam,
+        )
 
     @property
     def _db(self) -> sqlite3.Connection:
-        if self.connection is None:
+        if self.connection is None or self._poisoned:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
         return self.connection
+
+    @staticmethod
+    def _require_snapshot_support() -> None:
+        if not all(
+            callable(getattr(sqlite3.Connection, name, None))
+            for name in ("serialize", "deserialize")
+        ):
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        if not all(hasattr(fcntl, name) for name in ("flock", "LOCK_EX", "LOCK_NB")):
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+
+    @staticmethod
+    def _new_memory_connection() -> sqlite3.Connection:
+        connection = sqlite3.connect(":memory:", isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
+
+    def _trip_filesystem_seam(self, name: str) -> None:
+        if self._filesystem_seam is not None:
+            self._filesystem_seam(name)
+
+    def _acquire_lock(self) -> None:
+        assert self._state_parent is not None
+        lock_name = AnchoredDirectory.validate_child_name(f".{self._state_name}.lock")
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            descriptor = os.open(
+                lock_name,
+                flags,
+                0o600,
+                dir_fd=self._state_parent.descriptor,
+            )
+            anchored = os.stat(
+                lock_name,
+                dir_fd=self._state_parent.descriptor,
+                follow_symlinks=False,
+            )
+            opened = os.fstat(descriptor)
+            if (
+                (anchored.st_dev, anchored.st_ino) != (opened.st_dev, opened.st_ino)
+                or not stat_is_private_regular(opened)
+            ):
+                raise OSError("invalid lock file")
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_descriptor = descriptor
+        except (BlockingIOError, OSError):
+            if "descriptor" in locals():
+                os.close(descriptor)
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def _serialize(self, connection: sqlite3.Connection) -> bytes:
+        try:
+            payload = connection.serialize()
+        except (OverflowError, sqlite3.Error):
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        if type(payload) is not bytes or len(payload) > MAX_STATE_DB_BYTES:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        return payload
+
+    def _persist_startup_snapshot(self, *, previous: bytes | None) -> None:
+        assert self._state_parent is not None
+        payload = self._serialize(self._db)
+        try:
+            self._trip_filesystem_seam("before_state_persist")
+            if previous is None:
+                self._state_parent.atomic_write(
+                    self._state_name,
+                    payload,
+                    max_bytes=MAX_STATE_DB_BYTES,
+                )
+            else:
+                self._state_parent.atomic_write(
+                    self._state_name,
+                    payload,
+                    max_bytes=MAX_STATE_DB_BYTES,
+                    restore_bytes=previous,
+                )
+        except (DurableWriteError, OSError):
+            self._poison()
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        self._durable_bytes = payload
 
     def _create_current_schema(self) -> None:
         try:
@@ -413,23 +528,39 @@ class SQLiteStateStore:
             raise ValueError("migration foreign key failure")
 
     def _remove_migration_manifests(self, paths: Iterable[Path]) -> None:
+        stages: set[PipelineStage] = set()
         for path in paths:
             try:
-                path.unlink(missing_ok=True)
-            except OSError:
+                relative = path.relative_to(self.manifest_root)
+                stage = PipelineStage(relative.parts[0])
+                if len(relative.parts) != 2:
+                    continue
+                anchor = self._manifest_stage_anchor(stage, create=False)
+                anchor.unlink(relative.parts[1], missing_ok=True, sync=True)
+                stages.add(stage)
+            except (DurableWriteError, OSError, ValueError):
                 pass
-        if self.manifest_root.exists():
-            for directory in sorted(
-                (path for path in self.manifest_root.rglob("*") if path.is_dir()), reverse=True
-            ):
-                try:
-                    directory.rmdir()
-                except OSError:
-                    pass
+        for stage in stages:
+            anchor = self._manifest_stage_anchors.pop(stage, None)
+            if anchor is not None:
+                anchor.close()
             try:
-                self.manifest_root.rmdir()
-            except OSError:
+                if self._manifest_anchor is not None:
+                    self._manifest_anchor.remove_child_directory(
+                        stage.value, missing_ok=True
+                    )
+            except DurableWriteError:
                 pass
+        if self._manifest_anchor is not None:
+            self._manifest_anchor.close()
+            self._manifest_anchor = None
+        try:
+            if self._state_parent is not None:
+                self._state_parent.remove_child_directory(
+                    self._manifest_name, missing_ok=True
+                )
+        except DurableWriteError:
+            pass
 
     def create_run(
         self, run_id: str, subject_id: str, created_at: str, schema_version: str = "2"
@@ -647,78 +778,36 @@ class SQLiteStateStore:
         except (OverflowError, TypeError, ValueError):
             raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID) from None
         target = self._manifest_path(envelope.stage, envelope.manifest_hash)
-        descriptor = -1
-        temporary: Path | None = None
         try:
-            if self._path_contains_symlink(self.manifest_root):
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if self._path_contains_symlink(target.parent):
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            parent_metadata = os.lstat(target.parent)
-            if not stat.S_ISDIR(parent_metadata.st_mode):
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            if target.exists() or target.is_symlink():
-                if self._read_manifest_bytes(target) != payload:
+            anchor = self._manifest_stage_anchor(envelope.stage, create=True)
+            name = target.name
+            if anchor.stat_child(name) is not None:
+                existing = anchor.read_bytes(name, max_bytes=MAX_MANIFEST_BYTES)
+                if existing != payload:
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                 return target
-            temporary = target.with_name(f".{target.name}.tmp")
-            if temporary.exists() or temporary.is_symlink():
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            descriptor = os.open(
-                temporary,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-                0o600,
+            self._trip_filesystem_seam("before_manifest_write")
+            anchor.atomic_write(
+                name,
+                payload,
+                max_bytes=MAX_MANIFEST_BYTES,
             )
-            view = memoryview(payload)
-            while view:
-                written = os.write(descriptor, view)
-                view = view[written:]
-            os.fsync(descriptor)
-            os.close(descriptor)
-            descriptor = -1
-            os.replace(temporary, target)
-            temporary = None
-            try:
-                directory = os.open(target.parent, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
-            except OSError:
-                pass
             return target
         except SafeFailure:
             raise
-        except OSError:
+        except (DurableWriteError, OSError):
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
-        finally:
-            if descriptor >= 0:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def _commit_success(self, envelope: StageEnvelope, manifest_path: Path) -> None:
         del manifest_path
         if envelope.manifest_hash is None:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         manifest_locator = self._manifest_locator(envelope.stage, envelope.manifest_hash)
-        try:
-            self._db.execute("BEGIN IMMEDIATE")
-            run = self._db.execute(
+        def mutate(database: sqlite3.Connection) -> None:
+            run = database.execute(
                 "SELECT status FROM runs WHERE run_id = ?", (envelope.run_id,)
             ).fetchone()
-            previous = self._db.execute(
+            previous = database.execute(
                 "SELECT MAX(stage_index) FROM checkpoints WHERE run_id = ?",
                 (envelope.run_id,),
             ).fetchone()
@@ -730,7 +819,7 @@ class SQLiteStateStore:
                 or tuple(PipelineStage)[envelope.stage_index] is not envelope.stage
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            self._db.execute(
+            database.execute(
                 """INSERT INTO stage_results
                    (result_id, attempt_id, run_id, schema_version, subject_id, stage,
                     stage_index, output_json, output_hash, producer_version, manifest_hash,
@@ -752,14 +841,14 @@ class SQLiteStateStore:
                     envelope.created_at,
                 ),
             )
-            updated = self._db.execute(
+            updated = database.execute(
                 """UPDATE stage_attempts SET status = 'succeeded', finished_at = ?
                    WHERE attempt_id = ? AND status = 'running'""",
                 (envelope.created_at, envelope.attempt_id),
             )
             if updated.rowcount != 1:
                 raise sqlite3.IntegrityError("attempt was not running")
-            self._db.execute(
+            database.execute(
                 """INSERT INTO checkpoints
                    (run_id, subject_id, stage, stage_index, result_id, output_hash,
                     manifest_hash, manifest_path, updated_at)
@@ -776,17 +865,12 @@ class SQLiteStateStore:
                     envelope.created_at,
                 ),
             )
-            self._db.execute(
+            database.execute(
                 "UPDATE runs SET updated_at = ? WHERE run_id = ?",
                 (envelope.created_at, envelope.run_id),
             )
-            self._db.commit()
-        except SafeFailure:
-            self._db.rollback()
-            raise
-        except (IndexError, sqlite3.Error):
-            self._db.rollback()
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+        self._snapshot_transaction(mutate)
 
     def verify_completed_results(self, run_id: str, count: int) -> None:
         try:
@@ -859,9 +943,8 @@ class SQLiteStateStore:
         *,
         retryable: bool,
     ) -> None:
-        try:
-            self._db.execute("BEGIN IMMEDIATE")
-            self._db.execute(
+        def mutate(database: sqlite3.Connection) -> None:
+            database.execute(
                 """UPDATE stage_attempts
                    SET status = 'failed', finished_at = ?, error_code = ?, error_summary = ?,
                        retryable = ?
@@ -874,18 +957,12 @@ class SQLiteStateStore:
                     attempt_id,
                 ),
             )
-            self._db.execute(
+            database.execute(
                 """UPDATE runs SET status = 'interrupted', updated_at = ?, error_code = ?,
                           error_summary = ? WHERE run_id = ?""",
                 (finished_at, failure.code.value, failure.as_dict()["summary"], run_id),
             )
-            self._db.commit()
-        except sqlite3.Error:
-            try:
-                self._db.rollback()
-            except sqlite3.Error:
-                pass
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        self._snapshot_transaction(mutate)
 
     def _reconcile_orphan_running_attempts(self) -> None:
         """Deterministically close attempts left running by an indeterminate failure."""
@@ -893,23 +970,28 @@ class SQLiteStateStore:
         failure = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
         summary = failure.as_dict()["summary"]
         try:
-            self._db.execute("BEGIN IMMEDIATE")
             rows = self._db.execute(
                 """SELECT a.run_id, MAX(a.started_at) AS last_started_at
                    FROM stage_attempts a JOIN runs r USING (run_id)
                    WHERE a.status = 'running' AND r.status = 'running'
                    GROUP BY a.run_id ORDER BY a.run_id"""
             ).fetchall()
+        except sqlite3.Error:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        if not rows:
+            return
+
+        def mutate(database: sqlite3.Connection) -> None:
             for row in rows:
                 run_id = str(row["run_id"])
-                updated_attempts = self._db.execute(
+                updated_attempts = database.execute(
                     """UPDATE stage_attempts
                        SET status = 'abandoned', finished_at = started_at,
                            error_code = ?, error_summary = ?, retryable = 1
                        WHERE run_id = ? AND status = 'running'""",
                     (failure.code.value, summary, run_id),
                 )
-                updated_run = self._db.execute(
+                updated_run = database.execute(
                     """UPDATE runs
                        SET status = 'interrupted', updated_at = ?, error_code = ?,
                            error_summary = ?
@@ -923,13 +1005,8 @@ class SQLiteStateStore:
                 )
                 if updated_attempts.rowcount < 1 or updated_run.rowcount != 1:
                     raise sqlite3.IntegrityError("orphan reconciliation lost its target")
-            self._db.commit()
-        except sqlite3.Error:
-            try:
-                self._db.rollback()
-            except sqlite3.Error:
-                pass
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+        self._snapshot_transaction(mutate)
 
     def set_run_status(
         self,
@@ -938,9 +1015,8 @@ class SQLiteStateStore:
         updated_at: str,
         failure: SafeFailure | None = None,
     ) -> None:
-        try:
-            self._db.execute("BEGIN IMMEDIATE")
-            row = self._db.execute(
+        def mutate(database: sqlite3.Connection) -> None:
+            row = database.execute(
                 "SELECT status FROM runs WHERE run_id = ?", (run_id,)
             ).fetchone()
             if row is None:
@@ -948,7 +1024,7 @@ class SQLiteStateStore:
             current = RunStatus(str(row["status"]))
             successor = RunStatus(status)
             validate_run_transition(current, successor)
-            updated = self._db.execute(
+            updated = database.execute(
                 """UPDATE runs SET status = ?, updated_at = ?, error_code = ?, error_summary = ?
                    WHERE run_id = ? AND status = ?""",
                 (
@@ -962,16 +1038,11 @@ class SQLiteStateStore:
             )
             if updated.rowcount != 1:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            self._db.commit()
-        except SafeFailure:
-            self._db.rollback()
-            raise
+
+        try:
+            self._snapshot_transaction(mutate)
         except (ValueError, TypeError):
-            self._db.rollback()
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
-        except sqlite3.Error:
-            self._db.rollback()
-            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     def read_run(self, run_id: str) -> dict[str, Any]:
         try:
@@ -1044,13 +1115,69 @@ class SQLiteStateStore:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     def _write_transaction(self, statement: str, parameters: tuple[object, ...]) -> None:
+        def mutate(database: sqlite3.Connection) -> None:
+            database.execute(statement, parameters)
+
+        self._snapshot_transaction(mutate)
+
+    def _snapshot_transaction(
+        self, mutation: Callable[[sqlite3.Connection], _T]
+    ) -> _T:
+        if self._durable_bytes is None or self._poisoned:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        candidate = self._new_memory_connection()
         try:
-            self._db.execute("BEGIN IMMEDIATE")
-            self._db.execute(statement, parameters)
-            self._db.commit()
-        except sqlite3.Error:
-            self._db.rollback()
+            candidate.deserialize(self._durable_bytes)
+            candidate.execute("PRAGMA foreign_keys = ON")
+            candidate.execute("BEGIN IMMEDIATE")
+            result = mutation(candidate)
+            candidate.commit()
+            payload = self._serialize(candidate)
+        except SafeFailure:
+            try:
+                candidate.rollback()
+            except sqlite3.Error:
+                pass
+            candidate.close()
+            raise
+        except (IndexError, OverflowError, sqlite3.Error):
+            try:
+                candidate.rollback()
+            except sqlite3.Error:
+                pass
+            candidate.close()
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+        assert self._state_parent is not None
+        previous = self._durable_bytes
+        try:
+            self._trip_filesystem_seam("before_state_persist")
+            self._state_parent.atomic_write(
+                self._state_name,
+                payload,
+                max_bytes=MAX_STATE_DB_BYTES,
+                restore_bytes=previous,
+            )
+        except (DurableWriteError, OSError):
+            candidate.close()
+            self._poison()
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+        current = self.connection
+        self.connection = candidate
+        self._durable_bytes = payload
+        if current is not None:
+            current.close()
+        return result
+
+    def _poison(self) -> None:
+        self._poisoned = True
+        if self.connection is not None:
+            try:
+                self.connection.close()
+            except sqlite3.Error:
+                pass
+            self.connection = None
 
     def close(self) -> None:
         if self.connection is not None:
@@ -1059,6 +1186,45 @@ class SQLiteStateStore:
             except sqlite3.Error:
                 pass
             self.connection = None
+        for anchor in self._manifest_stage_anchors.values():
+            anchor.close()
+        self._manifest_stage_anchors.clear()
+        if self._manifest_anchor is not None:
+            self._manifest_anchor.close()
+            self._manifest_anchor = None
+        if self._lock_descriptor >= 0:
+            try:
+                os.close(self._lock_descriptor)
+            except OSError:
+                pass
+            self._lock_descriptor = -1
+        if self._state_parent is not None:
+            self._state_parent.close()
+            self._state_parent = None
+
+    def _manifest_stage_anchor(
+        self, stage: PipelineStage, *, create: bool
+    ) -> AnchoredDirectory:
+        if not isinstance(stage, PipelineStage):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        cached = self._manifest_stage_anchors.get(stage)
+        if cached is not None:
+            return cached
+        try:
+            if self._manifest_anchor is None:
+                assert self._state_parent is not None
+                self._manifest_anchor = self._state_parent.open_child_directory(
+                    self._manifest_name,
+                    create=create,
+                )
+            anchor = self._manifest_anchor.open_child_directory(
+                stage.value,
+                create=create,
+            )
+        except DurableWriteError:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+        self._manifest_stage_anchors[stage] = anchor
+        return anchor
 
     def _manifest_path(self, stage: PipelineStage, manifest_hash: str) -> Path:
         return self.manifest_root / self._manifest_locator(stage, manifest_hash)
@@ -1073,62 +1239,19 @@ class SQLiteStateStore:
         return f"{stage.value}/{matched.group(1)}.json"
 
     def _read_manifest_bytes(self, path: Path) -> bytes:
-        descriptor = -1
         try:
-            if self._path_contains_symlink(path):
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            before = os.lstat(path)
-            if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_MANIFEST_BYTES:
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            descriptor = os.open(
-                path,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            relative = path.relative_to(self.manifest_root)
+            if len(relative.parts) != 2:
+                raise ValueError("manifest locator depth")
+            stage = PipelineStage(relative.parts[0])
+            anchor = self._manifest_stage_anchor(stage, create=False)
+            payload = anchor.read_bytes(
+                relative.parts[1],
+                max_bytes=MAX_MANIFEST_BYTES,
             )
-            opened = os.fstat(descriptor)
-            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            chunks: list[bytes] = []
-            consumed = 0
-            while True:
-                chunk = os.read(descriptor, min(8192, MAX_MANIFEST_BYTES + 1 - consumed))
-                if not chunk:
-                    break
-                consumed += len(chunk)
-                if consumed > MAX_MANIFEST_BYTES:
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                chunks.append(chunk)
-            after = os.fstat(descriptor)
-            def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
-                return (
-                    value.st_dev,
-                    value.st_ino,
-                    value.st_size,
-                    value.st_mtime_ns,
-                    value.st_ctime_ns,
-                )
-            if identity(opened) != identity(after):
-                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            return b"".join(chunks)
+            assert payload is not None
+            return payload
         except SafeFailure:
             raise
-        except (OSError, OverflowError):
+        except (AssertionError, DurableWriteError, OSError, ValueError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
-        finally:
-            if descriptor >= 0:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-
-    @staticmethod
-    def _path_contains_symlink(path: Path) -> bool:
-        absolute = path.absolute()
-        for candidate in reversed((absolute, *absolute.parents)):
-            try:
-                if stat.S_ISLNK(os.lstat(candidate).st_mode):
-                    return True
-            except FileNotFoundError:
-                continue
-            except OSError:
-                return True
-        return False
