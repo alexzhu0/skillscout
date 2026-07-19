@@ -45,6 +45,7 @@ def _connect(path: Path) -> sqlite3.Connection:
 def _copy_frozen(tmp_path: Path) -> Path:
     copied = tmp_path / "migrating.db"
     shutil.copy2(FROZEN_DATABASE, copied)
+    copied.chmod(0o600)
     return copied
 
 
