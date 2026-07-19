@@ -4,28 +4,28 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
-status: planned
-stopped_at: Second gap-closure plans 01-12 through 01-16 passed plan verification
-last_updated: "2026-07-19T09:06:16Z"
+status: executing
+stopped_at: Completed 01-12-PLAN.md
+last_updated: "2026-07-19T09:58:19.903Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 16
-  completed_plans: 11
-  percent: 17
+  completed_plans: 12
+  percent: 75
 ---
 
 # Project State: SkillScout
 
 **Last updated:** 2026-07-19
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Gap closure planned — ready for gaps-only execution
+**Status:** Ready to execute
 
 ## Current Position
 
-**Phase:** 01 (auditable-dry-run-spine) — GAP CLOSURE PLANNED
-**Plan:** 11 of 16 executed; plans 01-12 through 01-16 independently plan-checked
-**Verification:** Previous implementation 3 of 5 must-haves verified; new gap plans passed plan verification
+**Phase:** 01 (auditable-dry-run-spine) — EXECUTING
+**Plan:** 12 of 16
+**Verification:** Previous implementation 3 of 5 must-haves verified; gap remediation 1 of 5 plans complete
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
 ## Progress
@@ -34,7 +34,7 @@ progress:
 Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
-Phase 1 implementation  [███████░░░]  69%
+Phase 1 implementation  [████████░░]  75%
 Phase 1 verification    [██████░░░░]  60%
 ```
 
@@ -44,7 +44,7 @@ Phase 1 verification    [██████░░░░]  60%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 0 |
-| Plans completed | 11/16 |
+| Plans completed | 12/16 |
 
 ## Accumulated Context
 
@@ -89,17 +89,17 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-Independent verification confirmed three release blockers: snapshot operations can report failure after new state becomes authoritative; `reused_stage_count` is not bound by full-chain proof; and invalid CLI argument handling can echo rejected input outside the fixed diagnostic boundary. Four additional warnings remain in `01-REVIEW.md`. Plans 01-12 through 01-16 now cover all seven findings and passed an independent plan-checker, but the findings remain open until those plans execute and post-execution review passes. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6 and is distinct from the current code-review WR-04 ownership/mode finding.
+Plan 01-12 closed CR-01, WR-03, and WR-04 by making the target-directory fsync the snapshot authority commit point, rejecting state/manifest namespace collisions, and enforcing private regular-file admission. CR-02 (`reused_stage_count` full-chain proof), CR-03 (non-echoing invalid CLI arguments), WR-01 (unexpected processor failure recovery), and WR-02 (independently rerunnable evidence authority) remain open for Plans 01-13 through 01-16 and post-execution review. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6.
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T09:06:16Z
-**Stopped at:** Second gap-closure plans 01-12 through 01-16 passed plan verification
+**Last session:** 2026-07-19T09:58:19.899Z
+**Stopped at:** Completed 01-12-PLAN.md
 **Resume file:** None
 
 ### Next
 
-1. Execute only plans 01-12 through 01-16 with `$gsd-execute-phase 1 --gaps-only`.
+1. Execute only plans 01-13 through 01-16 with `$gsd-execute-phase 1 --gaps-only`.
 2. Re-run code review and goal verification against the completed gap implementation.
 3. Run Nyquist validation and the Phase-1 security audit before marking the phase complete.
 
@@ -121,6 +121,7 @@ Independent verification confirmed three release blockers: snapshot operations c
 | Phase 01 P09 | 24min | 2 tasks | 5 files |
 | Phase 01 P10 | 19min | 2 tasks | 7 files |
 | Phase 01 P11 | 15min | 2 tasks | 3 files |
+| Phase 01 P12 | 14min | 2 tasks | 5 files |
 
 ## Decisions
 
@@ -155,3 +156,6 @@ Independent verification confirmed three release blockers: snapshot operations c
 - [Phase 01]: Preserve the historical schema-v1 semantic result preimage — Migrated and newly completed v1 stages must remain one canonical chain.
 - [Phase 01]: Keep generated evidence outside standard pytest — Acyclic validation requires product and quality results to exist before the evidence document, followed by one standalone validation pass.
 - [Phase 01]: Keep WR-04 deferred to Phase 6 — OS/syscall network denial is adversarial acceptance work and is not falsely claimed as a Phase-1 fix.
+- [Phase 01]: Use the target directory fsync as the snapshot authority commit point — Post-commit backup retirement cannot truthfully report rollback
+- [Phase 01]: Use one private regular-file predicate for state, manifest, and lock evidence — Every local evidence reader must enforce the same ownership, link, type, and mode boundary
+- [Phase 01]: Reject equal state and derived manifest namespaces before filesystem creation — Operator-selected leaves cannot alias internal evidence directories

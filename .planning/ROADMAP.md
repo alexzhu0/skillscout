@@ -27,7 +27,24 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 11/16 plans executed; gap-closure plans 01-12 through 01-16 planned and independently verified
+**Plans:** 12/16 plans executed
+
+- [x] 01-01-PLAN.md
+- [x] 01-02-PLAN.md
+- [x] 01-03-PLAN.md
+- [x] 01-04-PLAN.md
+- [x] 01-05-PLAN.md
+- [x] 01-06-PLAN.md
+- [x] 01-07-PLAN.md
+- [x] 01-08-PLAN.md
+- [x] 01-09-PLAN.md
+- [x] 01-10-PLAN.md
+- [x] 01-11-PLAN.md
+- [x] 01-12-PLAN.md
+- [ ] 01-13-PLAN.md
+- [ ] 01-14-PLAN.md
+- [ ] 01-15-PLAN.md
+- [ ] 01-16-PLAN.md
 
 **Wave 1**
 
@@ -75,7 +92,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Wave 12** *(blocked on Wave 11 completion)*
 
-- [ ] `01-12-PLAN.md` — Truthful snapshot commit outcomes, collision-free state namespaces, and private state-file admission.
+- [x] `01-12-PLAN.md` — Truthful snapshot commit outcomes, collision-free state namespaces, and private state-file admission.
 
 **Wave 13** *(blocked on Wave 12 completion)*
 
@@ -199,7 +216,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 | Phase | Status | Requirements | Completed |
 |---|---|---:|---:|
-| 1. Auditable Dry-Run Spine | Gaps found | 2 | 11/11 |
+| 1. Auditable Dry-Run Spine | In Progress | 2 | 2/2 |
 | 2. Safe Single-Repository Extraction | Not started | 14 | 0/14 |
 | 3. Validated Skill Candidate | Not started | 13 | 0/13 |
 | 4. Controlled Draft PR | Not started | 6 | 0/6 |
