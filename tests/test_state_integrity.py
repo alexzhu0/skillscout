@@ -14,7 +14,7 @@ from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 import skillscout.adapters.state as state_adapter
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner
-from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
 from skillscout.domain.canonical import make_result_row_id
 from skillscout.domain.enums import PipelineStage, RunStatus
 from skillscout.domain.models import RunIdentity
@@ -178,8 +178,10 @@ def test_manifest_paths_use_closed_stage_and_bare_lowercase_hash(tmp_path: Path)
 
     for row in rows:
         digest = str(row["manifest_hash"])
-        expected = database.with_suffix(".manifests") / str(row["stage"]) / (
-            digest.removeprefix("sha256:") + ".json"
+        expected = (
+            database.with_suffix(".manifests")
+            / str(row["stage"])
+            / (digest.removeprefix("sha256:") + ".json")
         )
         assert Path(str(row["manifest_path"])) == Path(str(row["stage"])) / (
             digest.removeprefix("sha256:") + ".json"
@@ -264,9 +266,7 @@ def test_unsupported_persisted_identity_fails_closed(
     finally:
         store.close()
     with _connect(database) as connection:
-        connection.execute(
-            f"UPDATE stage_results SET {column} = ? WHERE stage = 'scout'", (value,)
-        )
+        connection.execute(f"UPDATE stage_results SET {column} = ? WHERE stage = 'scout'", (value,))
         connection.commit()
 
     store = SQLiteStateStore(database)
@@ -351,6 +351,46 @@ def test_malformed_schema_v2_fingerprint_is_rejected_without_mutation(
     assert database.read_bytes() == before
 
 
+@pytest.mark.parametrize("damage", ["quick_check", "foreign_key_check"])
+def test_schema_v2_integrity_failures_are_fixed_and_sanitized(tmp_path: Path, damage: str) -> None:
+    database = tmp_path / f"schema-integrity-{damage}.db"
+    SQLiteStateStore(database).close()
+    with _connect(database) as connection:
+        if damage == "quick_check":
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            connection.execute(
+                """INSERT INTO runs
+                   (run_id, schema_version, subject_id, fixture_hash,
+                    producer_version, retry_policy_version, identity_state,
+                    execution_mode, status, created_at, updated_at,
+                    error_code, error_summary, reused_stage_count)
+                   VALUES ('corrupt-run', '2', 'subject', NULL, 'fixture-v1',
+                           'retry-v1', 'corrupt', 'dry_run', 'running',
+                           '2026-07-19T00:00:00.000000Z',
+                           '2026-07-19T00:00:00.000000Z', NULL, NULL, 0)"""
+            )
+        else:
+            connection.execute(
+                """INSERT INTO checkpoints
+                   (run_id, subject_id, stage, stage_index, result_row_id,
+                    result_id, output_hash, manifest_hash, manifest_path, updated_at)
+                   VALUES ('orphan-run', 'subject', 'scout', 0, 'orphan-row',
+                           'orphan-result', 'orphan-output', 'orphan-manifest',
+                           'scout/orphan.json', '2026-07-19T00:00:00.000000Z')"""
+            )
+        connection.commit()
+    before = database.read_bytes()
+
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(database)
+
+    assert failure.value.as_dict() == {
+        "code": ErrorCode.STATE_SCHEMA_INCOMPATIBLE.value,
+        "summary": ERROR_SUMMARIES[ErrorCode.STATE_SCHEMA_INCOMPATIBLE],
+    }
+    assert database.read_bytes() == before
+
+
 def test_symlinked_manifest_root_is_rejected_without_external_write(tmp_path: Path) -> None:
     database = tmp_path / "state.db"
     store = SQLiteStateStore(database)
@@ -378,9 +418,7 @@ def test_symlinked_output_directory_is_rejected_without_external_write(
     store = SQLiteStateStore(tmp_path / "state.db")
     try:
         with pytest.raises(SafeFailure) as failure:
-            PipelineRunner(store, FixtureProcessor()).run(
-                load_fixture(APPROVED_FIXTURE), output
-            )
+            PipelineRunner(store, FixtureProcessor()).run(load_fixture(APPROVED_FIXTURE), output)
         assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
     finally:
         store.close()
@@ -403,9 +441,7 @@ def test_state_uses_private_memory_sqlite_and_one_reusable_live_lock(
     lock = tmp_path / ".serialized.db.lock"
     first_lock_identity = (os.lstat(lock).st_dev, os.lstat(lock).st_ino)
     try:
-        first.create_run(
-            "run-1", _run_identity("subject-1"), "2026-07-19T00:00:00.000000Z"
-        )
+        first.create_run("run-1", _run_identity("subject-1"), "2026-07-19T00:00:00.000000Z")
         with pytest.raises(SafeFailure) as failure:
             SQLiteStateStore(database)
         assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
@@ -551,9 +587,7 @@ def test_parent_swap_during_failed_snapshot_cleanup_never_touches_attacker(
     prior = (anchored_parent / "state.db").read_bytes()
     fail_persist = True
     with pytest.raises(SafeFailure) as failure:
-        store.create_run(
-            "not-durable", _run_identity("subject"), "2026-07-19T00:00:00.000000Z"
-        )
+        store.create_run("not-durable", _run_identity("subject"), "2026-07-19T00:00:00.000000Z")
     assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
     store.close()
 
@@ -593,9 +627,7 @@ def test_semantic_result_twins_use_distinct_run_scoped_rows(tmp_path: Path) -> N
         assert len(twins) == 2
         assert twins[0]["result_id"] == twins[1]["result_id"]
         assert twins[0]["result_row_id"] != twins[1]["result_row_id"]
-        assert {
-            row["result_row_id"] for row in twins
-        } == {
+        assert {row["result_row_id"] for row in twins} == {
             make_result_row_id(run_id=first.run_id, stage=stage),
             make_result_row_id(run_id=second.run_id, stage=stage),
         }
@@ -614,9 +646,7 @@ def test_result_row_constraints_reject_cross_run_checkpoint_and_duplicates(
         second = PipelineRunner(store, FixtureProcessor()).run(
             load_fixture(APPROVED_FIXTURE), tmp_path / "out-second"
         )
-        foreign_keys = store.connection.execute(
-            "PRAGMA foreign_key_list(checkpoints)"
-        ).fetchall()
+        foreign_keys = store.connection.execute("PRAGMA foreign_key_list(checkpoints)").fetchall()
         assert any(
             row["table"] == "stage_results"
             and row["from"] == "result_row_id"
@@ -678,9 +708,7 @@ def test_v1_migration_preserves_semantic_results_and_adds_row_identity(
     with _connect(database) as legacy:
         legacy_results = [
             str(row[0])
-            for row in legacy.execute(
-                "SELECT result_id FROM stage_results ORDER BY stage_index"
-            )
+            for row in legacy.execute("SELECT result_id FROM stage_results ORDER BY stage_index")
         ]
 
     store = SQLiteStateStore(database)
@@ -692,9 +720,7 @@ def test_v1_migration_preserves_semantic_results_and_adds_row_identity(
         assert [str(row["result_id"]) for row in migrated] == legacy_results
         assert all(
             row["result_row_id"]
-            == make_result_row_id(
-                run_id=str(row["run_id"]), stage=PipelineStage(str(row["stage"]))
-            )
+            == make_result_row_id(run_id=str(row["run_id"]), stage=PipelineStage(str(row["stage"])))
             for row in migrated
         )
         assert store.connection.execute("PRAGMA foreign_key_check").fetchone() is None

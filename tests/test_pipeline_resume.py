@@ -58,8 +58,8 @@ def _schema_fingerprint(path: Path) -> tuple[tuple[object, ...], ...]:
 
 def test_frozen_fixture_provenance_is_real_interrupted_schema_v1() -> None:
     provenance = json.loads(FROZEN_PROVENANCE.read_text())
-    assert hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (
-        provenance["database_sha256"]
+    assert (
+        hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (provenance["database_sha256"])
     )
     assert "skillscout dry-run" in provenance["command"]
     assert "--fail-after generator" in provenance["command"]
@@ -69,9 +69,12 @@ def test_frozen_fixture_provenance_is_real_interrupted_schema_v1() -> None:
             "run_id": provenance["run_id"],
             "status": "interrupted",
         }
-        assert connection.execute(
-            "SELECT COUNT(*) FROM stage_attempts WHERE stage = 'validators'"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM stage_attempts WHERE stage = 'validators'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path) -> None:
@@ -124,9 +127,10 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
         before_wrong_bind = copied.read_bytes()
         assert store.bind_legacy_run(wrong) is None
         assert copied.read_bytes() == before_wrong_bind
-        assert store.connection.execute(
-            "SELECT identity_state FROM runs"
-        ).fetchone()[0] == "legacy_unbound"
+        assert (
+            store.connection.execute("SELECT identity_state FROM runs").fetchone()[0]
+            == "legacy_unbound"
+        )
 
         expected = wrong.model_copy(update={"fixture_hash": fixture_hash})
         bound = store.bind_legacy_run(expected)
@@ -135,9 +139,7 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
         assert bound.identity == expected
         assert store.inspect_run(bound.run_id)["run"]["identity_state"] == "bound"
 
-        summary = PipelineRunner(store, CanaryProcessor()).run(
-            subject, tmp_path / "output"
-        )
+        summary = PipelineRunner(store, CanaryProcessor()).run(subject, tmp_path / "output")
         assert summary.run_id == provenance["run_id"]
         assert summary.reused_stage_count == 6
         assert calls == [
@@ -159,8 +161,8 @@ def test_migrated_frozen_run_resumes_at_validators_without_replay(tmp_path: Path
     finally:
         store.close()
 
-    assert hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (
-        provenance["database_sha256"]
+    assert (
+        hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (provenance["database_sha256"])
     )
 
 
@@ -178,9 +180,7 @@ def test_complete_run_identity_is_persisted_before_first_attempt(tmp_path: Path)
             assert dict(row) == {
                 "schema_version": "2",
                 "subject_id": subject.subject_id,
-                "fixture_hash": sha256_digest(
-                    subject.model_dump(mode="json", exclude_none=False)
-                ),
+                "fixture_hash": sha256_digest(subject.model_dump(mode="json", exclude_none=False)),
                 "producer_version": "fixture-v1",
                 "retry_policy_version": "retry-v1",
                 "identity_state": "bound",
@@ -290,9 +290,7 @@ def test_a_interrupt_b_interrupt_a_rerun_resumes_exact_a_without_touching_b(
     original = load_fixture(APPROVED_FIXTURE)
     changed = original.model_copy(
         update={
-            "workflow": original.workflow.model_copy(
-                update={"goal": "B canonical workflow goal"}
-            )
+            "workflow": original.workflow.model_copy(update={"goal": "B canonical workflow goal"})
         }
     )
     store = SQLiteStateStore(tmp_path / "a-b-a.db")
@@ -341,9 +339,7 @@ def test_a_interrupt_b_interrupt_a_rerun_resumes_exact_a_without_touching_b(
                 calls.append(stage_input.stage)
                 return super().process(stage_input)
 
-        resumed = PipelineRunner(store, ResumeCanary()).run(
-            original, tmp_path / "a-resumed"
-        )
+        resumed = PipelineRunner(store, ResumeCanary()).run(original, tmp_path / "a-resumed")
         assert resumed.run_id == a_run
         assert resumed.reused_stage_count == 6
         assert calls == [
@@ -375,9 +371,7 @@ def test_a_interrupt_b_interrupt_a_rerun_resumes_exact_a_without_touching_b(
 
 
 @pytest.mark.parametrize("seam", ["after_schema", "after_copy", "after_validation"])
-def test_forced_migration_failure_rolls_back_to_intact_v1(
-    tmp_path: Path, seam: str
-) -> None:
+def test_forced_migration_failure_rolls_back_to_intact_v1(tmp_path: Path, seam: str) -> None:
     copied = _copy_frozen(tmp_path)
     with pytest.raises(SafeFailure) as failure:
         SQLiteStateStore(copied, migration_fail_at=seam)
@@ -387,9 +381,7 @@ def test_forced_migration_failure_rolls_back_to_intact_v1(
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         assert tables == {"runs", "stage_attempts", "stage_results", "checkpoints"}
         assert connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 6
@@ -404,9 +396,7 @@ def test_missing_database_creates_v2_and_existing_v2_is_idempotent(tmp_path: Pat
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         assert {"runs", "stage_attempts", "stage_results", "checkpoints"} <= tables
     second = SQLiteStateStore(database)
@@ -526,9 +516,7 @@ def test_stale_running_attempt_is_abandoned_before_monotonic_replacement(
         RunIdentity(
             schema_version="2",
             subject_id=subject.subject_id,
-            fixture_hash=sha256_digest(
-                subject.model_dump(mode="json", exclude_none=False)
-            ),
+            fixture_hash=sha256_digest(subject.model_dump(mode="json", exclude_none=False)),
             producer_version="fixture-v1",
             retry_policy_version="retry-v1",
         ),
@@ -697,9 +685,9 @@ def test_changed_identity_gets_fresh_budget_and_never_reuses_old_checkpoint(
                     original, tmp_path / "old-output"
                 )
         success = VersionedSuccess(new_processor_version)
-        summary = PipelineRunner(
-            budget_store, success, retry_policy=new_policy
-        ).run(changed_subject, tmp_path / "new-output")
+        summary = PipelineRunner(budget_store, success, retry_policy=new_policy).run(
+            changed_subject, tmp_path / "new-output"
+        )
         assert summary.status.value == "planned_not_published"
         assert success.calls[0] is PipelineStage.SCOUT
         digest_counts = budget_store.connection.execute(
@@ -716,14 +704,14 @@ def test_changed_identity_gets_fresh_budget_and_never_reuses_old_checkpoint(
     first_processor = VersionedSuccess(old_processor_version)
     try:
         with pytest.raises(SafeFailure):
-            PipelineRunner(
-                checkpoint_store, first_processor, retry_policy=old_policy
-            ).run(original, tmp_path / "checkpoint-old", fail_after="scout")
+            PipelineRunner(checkpoint_store, first_processor, retry_policy=old_policy).run(
+                original, tmp_path / "checkpoint-old", fail_after="scout"
+            )
         old_run_id = checkpoint_store.connection.execute("SELECT run_id FROM runs").fetchone()[0]
         second_processor = VersionedSuccess(new_processor_version)
-        summary = PipelineRunner(
-            checkpoint_store, second_processor, retry_policy=new_policy
-        ).run(changed_subject, tmp_path / "checkpoint-new")
+        summary = PipelineRunner(checkpoint_store, second_processor, retry_policy=new_policy).run(
+            changed_subject, tmp_path / "checkpoint-new"
+        )
         assert summary.run_id != old_run_id
         assert summary.reused_stage_count == 0
         assert second_processor.calls[0] is PipelineStage.SCOUT
@@ -785,9 +773,7 @@ def test_invalid_or_oversized_output_closes_lifecycle_before_manifest_io(
     filesystem_events.clear()
     try:
         with pytest.raises(SafeFailure) as failure:
-            PipelineRunner(store, InvalidOutputProcessor()).run(
-                subject, tmp_path / "output"
-            )
+            PipelineRunner(store, InvalidOutputProcessor()).run(subject, tmp_path / "output")
         assert failure.value.code is ErrorCode.STAGE_OUTPUT_INVALID
         attempt = store.connection.execute(
             "SELECT status, error_code, error_summary FROM stage_attempts"

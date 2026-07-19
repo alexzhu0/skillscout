@@ -8,7 +8,9 @@ import os
 import re
 import sqlite3
 import stat
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Iterable, TypeVar
 
 from pydantic import ValidationError
@@ -49,6 +51,37 @@ MAX_LEGACY_BIND_CANDIDATES = 32
 _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
 _DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-f]{64})$")
 _T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class _ColumnDescriptor:
+    cid: int
+    name: str
+    declared_type: str
+    not_null: int
+    default_value: str | None
+    primary_key_position: int
+
+
+@dataclass(frozen=True)
+class _ForeignKeyDescriptor:
+    identifier: int
+    sequence: int
+    target_table: str
+    from_column: str
+    to_column: str
+    on_update: str
+    on_delete: str
+    match: str
+
+
+@dataclass(frozen=True)
+class _IndexDescriptor:
+    name: str
+    unique: int
+    origin: str
+    partial: int
+    columns: tuple[tuple[int, int, str], ...]
 
 
 def stat_is_private_regular(metadata: os.stat_result) -> bool:
@@ -156,6 +189,249 @@ def _schema_statements(suffix: str = "") -> tuple[str, ...]:
     )
 
 
+def _normalize_schema_sql(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip()).casefold()
+
+
+def _expected_schema_sql() -> MappingProxyType[str, str]:
+    expected: dict[str, str] = {}
+    pattern = re.compile(r"^CREATE (?:UNIQUE )?(?:TABLE|INDEX) ([^\s(]+)", re.I)
+    for statement in _schema_statements():
+        matched = pattern.match(statement)
+        if matched is None:
+            raise RuntimeError("invalid trusted schema statement")
+        expected[matched.group(1)] = _normalize_schema_sql(statement)
+    return MappingProxyType(expected)
+
+
+_EXPECTED_SCHEMA_SQL = _expected_schema_sql()
+_EXPECTED_NAMED_SCHEMA_OBJECTS = (
+    ("index", "idx_attempts_reusable", "stage_attempts"),
+    ("index", "idx_results_semantic", "stage_results"),
+    ("index", "idx_runs_resumable_identity", "runs"),
+    ("table", "checkpoints", "checkpoints"),
+    ("table", "runs", "runs"),
+    ("table", "stage_attempts", "stage_attempts"),
+    ("table", "stage_results", "stage_results"),
+)
+_EXPECTED_COLUMNS = MappingProxyType(
+    {
+        "runs": (
+            _ColumnDescriptor(0, "run_id", "TEXT", 0, None, 1),
+            _ColumnDescriptor(1, "schema_version", "TEXT", 1, None, 0),
+            _ColumnDescriptor(2, "subject_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(3, "fixture_hash", "TEXT", 0, None, 0),
+            _ColumnDescriptor(4, "producer_version", "TEXT", 1, None, 0),
+            _ColumnDescriptor(5, "retry_policy_version", "TEXT", 1, None, 0),
+            _ColumnDescriptor(6, "identity_state", "TEXT", 1, None, 0),
+            _ColumnDescriptor(7, "execution_mode", "TEXT", 1, None, 0),
+            _ColumnDescriptor(8, "status", "TEXT", 1, None, 0),
+            _ColumnDescriptor(9, "created_at", "TEXT", 1, None, 0),
+            _ColumnDescriptor(10, "updated_at", "TEXT", 1, None, 0),
+            _ColumnDescriptor(11, "error_code", "TEXT", 0, None, 0),
+            _ColumnDescriptor(12, "error_summary", "TEXT", 0, None, 0),
+            _ColumnDescriptor(13, "reused_stage_count", "INTEGER", 1, "0", 0),
+        ),
+        "stage_attempts": (
+            _ColumnDescriptor(0, "attempt_id", "TEXT", 0, None, 1),
+            _ColumnDescriptor(1, "run_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(2, "subject_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(3, "stage", "TEXT", 1, None, 0),
+            _ColumnDescriptor(4, "stage_index", "INTEGER", 1, None, 0),
+            _ColumnDescriptor(5, "attempt_no", "INTEGER", 1, None, 0),
+            _ColumnDescriptor(6, "status", "TEXT", 1, None, 0),
+            _ColumnDescriptor(7, "input_hash", "TEXT", 1, None, 0),
+            _ColumnDescriptor(8, "producer_version", "TEXT", 1, None, 0),
+            _ColumnDescriptor(9, "retry_policy_version", "TEXT", 1, None, 0),
+            _ColumnDescriptor(10, "reusable_key_digest", "TEXT", 1, None, 0),
+            _ColumnDescriptor(11, "started_at", "TEXT", 1, None, 0),
+            _ColumnDescriptor(12, "finished_at", "TEXT", 0, None, 0),
+            _ColumnDescriptor(13, "prompt_version", "TEXT", 0, None, 0),
+            _ColumnDescriptor(14, "policy_version", "TEXT", 0, None, 0),
+            _ColumnDescriptor(15, "model_id", "TEXT", 0, None, 0),
+            _ColumnDescriptor(16, "request_id", "TEXT", 0, None, 0),
+            _ColumnDescriptor(17, "latency_ms", "INTEGER", 0, None, 0),
+            _ColumnDescriptor(18, "prompt_tokens", "INTEGER", 0, None, 0),
+            _ColumnDescriptor(19, "completion_tokens", "INTEGER", 0, None, 0),
+            _ColumnDescriptor(20, "total_tokens", "INTEGER", 0, None, 0),
+            _ColumnDescriptor(21, "error_code", "TEXT", 0, None, 0),
+            _ColumnDescriptor(22, "error_summary", "TEXT", 0, None, 0),
+            _ColumnDescriptor(23, "retryable", "INTEGER", 1, "0", 0),
+        ),
+        "stage_results": (
+            _ColumnDescriptor(0, "result_row_id", "TEXT", 0, None, 1),
+            _ColumnDescriptor(1, "result_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(2, "attempt_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(3, "run_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(4, "schema_version", "TEXT", 1, None, 0),
+            _ColumnDescriptor(5, "subject_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(6, "stage", "TEXT", 1, None, 0),
+            _ColumnDescriptor(7, "stage_index", "INTEGER", 1, None, 0),
+            _ColumnDescriptor(8, "output_json", "TEXT", 1, None, 0),
+            _ColumnDescriptor(9, "output_hash", "TEXT", 1, None, 0),
+            _ColumnDescriptor(10, "producer_version", "TEXT", 1, None, 0),
+            _ColumnDescriptor(11, "manifest_hash", "TEXT", 1, None, 0),
+            _ColumnDescriptor(12, "manifest_path", "TEXT", 1, None, 0),
+            _ColumnDescriptor(13, "created_at", "TEXT", 1, None, 0),
+        ),
+        "checkpoints": (
+            _ColumnDescriptor(0, "run_id", "TEXT", 1, None, 1),
+            _ColumnDescriptor(1, "subject_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(2, "stage", "TEXT", 1, None, 2),
+            _ColumnDescriptor(3, "stage_index", "INTEGER", 1, None, 0),
+            _ColumnDescriptor(4, "result_row_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(5, "result_id", "TEXT", 1, None, 0),
+            _ColumnDescriptor(6, "output_hash", "TEXT", 1, None, 0),
+            _ColumnDescriptor(7, "manifest_hash", "TEXT", 1, None, 0),
+            _ColumnDescriptor(8, "manifest_path", "TEXT", 1, None, 0),
+            _ColumnDescriptor(9, "updated_at", "TEXT", 1, None, 0),
+        ),
+    }
+)
+_EXPECTED_FOREIGN_KEYS = MappingProxyType(
+    {
+        "runs": (),
+        "stage_attempts": (
+            _ForeignKeyDescriptor(
+                0, 0, "runs", "run_id", "run_id", "NO ACTION", "NO ACTION", "NONE"
+            ),
+        ),
+        "stage_results": (
+            _ForeignKeyDescriptor(
+                0, 0, "runs", "run_id", "run_id", "NO ACTION", "NO ACTION", "NONE"
+            ),
+            _ForeignKeyDescriptor(
+                1,
+                0,
+                "stage_attempts",
+                "attempt_id",
+                "attempt_id",
+                "NO ACTION",
+                "NO ACTION",
+                "NONE",
+            ),
+        ),
+        "checkpoints": (
+            _ForeignKeyDescriptor(
+                0,
+                0,
+                "stage_results",
+                "result_row_id",
+                "result_row_id",
+                "NO ACTION",
+                "NO ACTION",
+                "NONE",
+            ),
+            _ForeignKeyDescriptor(
+                0,
+                1,
+                "stage_results",
+                "run_id",
+                "run_id",
+                "NO ACTION",
+                "NO ACTION",
+                "NONE",
+            ),
+            _ForeignKeyDescriptor(
+                1, 0, "runs", "run_id", "run_id", "NO ACTION", "NO ACTION", "NONE"
+            ),
+        ),
+    }
+)
+_EXPECTED_INDEXES = MappingProxyType(
+    {
+        "runs": (
+            _IndexDescriptor(
+                "idx_runs_resumable_identity",
+                0,
+                "c",
+                0,
+                (
+                    (0, 1, "schema_version"),
+                    (1, 2, "subject_id"),
+                    (2, 3, "fixture_hash"),
+                    (3, 4, "producer_version"),
+                    (4, 5, "retry_policy_version"),
+                    (5, 6, "identity_state"),
+                    (6, 8, "status"),
+                    (7, 10, "updated_at"),
+                    (8, 0, "run_id"),
+                ),
+            ),
+            _IndexDescriptor("sqlite_autoindex_runs_1", 1, "pk", 0, ((0, 0, "run_id"),)),
+        ),
+        "stage_attempts": (
+            _IndexDescriptor(
+                "idx_attempts_reusable",
+                0,
+                "c",
+                0,
+                ((0, 10, "reusable_key_digest"),),
+            ),
+            _IndexDescriptor(
+                "sqlite_autoindex_stage_attempts_2",
+                1,
+                "u",
+                0,
+                (
+                    (0, 1, "run_id"),
+                    (1, 2, "subject_id"),
+                    (2, 3, "stage"),
+                    (3, 5, "attempt_no"),
+                ),
+            ),
+            _IndexDescriptor(
+                "sqlite_autoindex_stage_attempts_1",
+                1,
+                "pk",
+                0,
+                ((0, 0, "attempt_id"),),
+            ),
+        ),
+        "stage_results": (
+            _IndexDescriptor("idx_results_semantic", 0, "c", 0, ((0, 1, "result_id"),)),
+            _IndexDescriptor(
+                "sqlite_autoindex_stage_results_4",
+                1,
+                "u",
+                0,
+                ((0, 0, "result_row_id"), (1, 3, "run_id")),
+            ),
+            _IndexDescriptor(
+                "sqlite_autoindex_stage_results_3",
+                1,
+                "u",
+                0,
+                ((0, 3, "run_id"), (1, 6, "stage")),
+            ),
+            _IndexDescriptor(
+                "sqlite_autoindex_stage_results_2",
+                1,
+                "u",
+                0,
+                ((0, 2, "attempt_id"),),
+            ),
+            _IndexDescriptor(
+                "sqlite_autoindex_stage_results_1",
+                1,
+                "pk",
+                0,
+                ((0, 0, "result_row_id"),),
+            ),
+        ),
+        "checkpoints": (
+            _IndexDescriptor(
+                "sqlite_autoindex_checkpoints_1",
+                1,
+                "pk",
+                0,
+                ((0, 0, "run_id"), (1, 2, "stage")),
+            ),
+        ),
+    }
+)
+
+
 class SQLiteStateStore:
     """Exclusive descriptor-anchored serialized SQLite state adapter."""
 
@@ -226,7 +502,9 @@ class SQLiteStateStore:
             raise
         except (DurableWriteError, OSError, sqlite3.Error):
             self.close()
-            code = ErrorCode.STATE_SCHEMA_INCOMPATIBLE if existed else ErrorCode.STATE_OPERATION_FAILED
+            code = (
+                ErrorCode.STATE_SCHEMA_INCOMPATIBLE if existed else ErrorCode.STATE_OPERATION_FAILED
+            )
             raise SafeFailure(code) from None
 
     @classmethod
@@ -287,10 +565,10 @@ class SQLiteStateStore:
                 follow_symlinks=False,
             )
             opened = os.fstat(descriptor)
-            if (
-                (anchored.st_dev, anchored.st_ino) != (opened.st_dev, opened.st_ino)
-                or not stat_is_private_regular(opened)
-            ):
+            if (anchored.st_dev, anchored.st_ino) != (
+                opened.st_dev,
+                opened.st_ino,
+            ) or not stat_is_private_regular(opened):
                 raise OSError("invalid lock file")
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self._lock_descriptor = descriptor
@@ -339,59 +617,103 @@ class SQLiteStateStore:
             for statement in _schema_statements():
                 self._db.execute(statement)
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self._validate_current_schema()
             self._db.commit()
+        except SafeFailure:
+            self._db.rollback()
+            raise
         except sqlite3.Error:
             self._db.rollback()
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     def _validate_current_schema(self) -> None:
-        required = {
-            "runs": {
-                "run_id",
-                "schema_version",
-                "subject_id",
-                "fixture_hash",
-                "producer_version",
-                "retry_policy_version",
-                "identity_state",
-                "status",
-                "reused_stage_count",
-            },
-            "stage_attempts": {
-                "attempt_id",
-                "input_hash",
-                "producer_version",
-                "retry_policy_version",
-                "reusable_key_digest",
-            },
-            "stage_results": {
-                "result_row_id",
-                "result_id",
-                "manifest_hash",
-                "manifest_path",
-                "output_hash",
-            },
-            "checkpoints": {
-                "result_row_id",
-                "result_id",
-                "manifest_hash",
-                "manifest_path",
-                "output_hash",
-            },
-        }
         try:
-            for table, columns in required.items():
-                actual = {
-                    str(row["name"])
-                    for row in self._db.execute(f"PRAGMA table_info({table})").fetchall()
-                }
-                if not columns <= actual:
+            version = self._db.execute("PRAGMA user_version").fetchone()
+            if version is None or int(version[0]) != SCHEMA_VERSION:
+                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+            quick_check = self._db.execute("PRAGMA quick_check").fetchall()
+            if len(quick_check) != 1 or tuple(quick_check[0]) != ("ok",):
+                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+
+            named_objects = tuple(
+                tuple(row)
+                for row in self._db.execute(
+                    """SELECT type, name, tbl_name FROM sqlite_master
+                       WHERE name NOT LIKE 'sqlite_%'
+                       ORDER BY type, name"""
+                )
+            )
+            if named_objects != _EXPECTED_NAMED_SCHEMA_OBJECTS:
+                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+
+            for name, expected_sql in _EXPECTED_SCHEMA_SQL.items():
+                row = self._db.execute(
+                    "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
+                ).fetchone()
+                if (
+                    row is None
+                    or type(row["sql"]) is not str
+                    or _normalize_schema_sql(row["sql"]) != expected_sql
+                ):
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
-            if self._db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+
+            for table, expected_columns in _EXPECTED_COLUMNS.items():
+                columns = tuple(
+                    _ColumnDescriptor(
+                        int(row["cid"]),
+                        str(row["name"]),
+                        str(row["type"]),
+                        int(row["notnull"]),
+                        row["dflt_value"],
+                        int(row["pk"]),
+                    )
+                    for row in self._db.execute(f'PRAGMA table_info("{table}")').fetchall()
+                )
+                if columns != expected_columns:
+                    raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+
+                foreign_keys = tuple(
+                    _ForeignKeyDescriptor(
+                        int(row["id"]),
+                        int(row["seq"]),
+                        str(row["table"]),
+                        str(row["from"]),
+                        str(row["to"]),
+                        str(row["on_update"]),
+                        str(row["on_delete"]),
+                        str(row["match"]),
+                    )
+                    for row in self._db.execute(f'PRAGMA foreign_key_list("{table}")').fetchall()
+                )
+                if foreign_keys != _EXPECTED_FOREIGN_KEYS[table]:
+                    raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+
+                indexes: list[_IndexDescriptor] = []
+                for row in self._db.execute(f'PRAGMA index_list("{table}")').fetchall():
+                    index_name = str(row["name"])
+                    index_columns = tuple(
+                        (int(item["seqno"]), int(item["cid"]), str(item["name"]))
+                        for item in self._db.execute(
+                            f'PRAGMA index_info("{index_name}")'
+                        ).fetchall()
+                    )
+                    indexes.append(
+                        _IndexDescriptor(
+                            index_name,
+                            int(row["unique"]),
+                            str(row["origin"]),
+                            int(row["partial"]),
+                            index_columns,
+                        )
+                    )
+                if tuple(indexes) != _EXPECTED_INDEXES[table]:
+                    raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+
+            if self._db.execute("PRAGMA foreign_key_check").fetchall():
                 raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
         except SafeFailure:
             raise
-        except sqlite3.Error:
+        except (KeyError, TypeError, ValueError, sqlite3.Error):
             raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE) from None
 
     def _migrate_v1(self, fail_at: str | None) -> None:
@@ -441,9 +763,7 @@ class SQLiteStateStore:
                     raise ValueError("unsupported migrated producer identity")
                 provisional = StageEnvelope(
                     schema_version="1",
-                    result_row_id=make_result_row_id(
-                        run_id=str(row["run_id"]), stage=stage
-                    ),
+                    result_row_id=make_result_row_id(run_id=str(row["run_id"]), stage=stage),
                     result_id=str(row["result_id"]),
                     run_id=str(row["run_id"]),
                     attempt_id=str(row["attempt_id"]),
@@ -508,30 +828,19 @@ class SQLiteStateStore:
 
             for table in ("checkpoints", "stage_results", "stage_attempts", "runs"):
                 self._db.execute(f"DROP TABLE {table}")
-            for old, new in (
-                ("runs_v2", "runs"),
-                ("stage_attempts_v2", "stage_attempts"),
-                ("stage_results_v2", "stage_results"),
-                ("checkpoints_v2", "checkpoints"),
+            for statement in _schema_statements():
+                self._db.execute(statement)
+            for table in ("runs", "stage_attempts", "stage_results", "checkpoints"):
+                self._db.execute(f"INSERT INTO {table} SELECT * FROM {table}_v2")
+            for table in (
+                "checkpoints_v2",
+                "stage_results_v2",
+                "stage_attempts_v2",
+                "runs_v2",
             ):
-                self._db.execute(f"ALTER TABLE {old} RENAME TO {new}")
-            self._db.execute("DROP INDEX idx_attempts_reusable_v2")
-            self._db.execute("DROP INDEX idx_results_semantic_v2")
-            self._db.execute("DROP INDEX idx_runs_resumable_identity_v2")
-            self._db.execute(
-                """CREATE INDEX idx_runs_resumable_identity ON runs(
-                    schema_version, subject_id, fixture_hash, producer_version,
-                    retry_policy_version, identity_state, status, updated_at DESC,
-                    run_id DESC
-                )"""
-            )
-            self._db.execute(
-                "CREATE INDEX idx_attempts_reusable ON stage_attempts(reusable_key_digest)"
-            )
-            self._db.execute(
-                "CREATE INDEX idx_results_semantic ON stage_results(result_id)"
-            )
+                self._db.execute(f"DROP TABLE {table}")
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self._validate_current_schema()
             self._db.commit()
         except Exception:
             self._db.rollback()
@@ -636,9 +945,7 @@ class SQLiteStateStore:
                 anchor.close()
             try:
                 if self._manifest_anchor is not None:
-                    self._manifest_anchor.remove_child_directory(
-                        stage.value, missing_ok=True
-                    )
+                    self._manifest_anchor.remove_child_directory(stage.value, missing_ok=True)
             except DurableWriteError:
                 pass
         if self._manifest_anchor is not None:
@@ -646,9 +953,7 @@ class SQLiteStateStore:
             self._manifest_anchor = None
         try:
             if self._state_parent is not None:
-                self._state_parent.remove_child_directory(
-                    self._manifest_name, missing_ok=True
-                )
+                self._state_parent.remove_child_directory(self._manifest_name, missing_ok=True)
         except DurableWriteError:
             pass
 
@@ -786,19 +1091,19 @@ class SQLiteStateStore:
                 if str(row["manifest_path"]) != expected:
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                 values = {
-                        key: row[key]
-                        for key in (
-                            "run_id",
-                            "subject_id",
-                            "stage",
-                            "stage_index",
-                            "result_row_id",
-                            "result_id",
-                            "output_hash",
-                            "manifest_hash",
-                            "updated_at",
-                        )
-                    }
+                    key: row[key]
+                    for key in (
+                        "run_id",
+                        "subject_id",
+                        "stage",
+                        "stage_index",
+                        "result_row_id",
+                        "result_id",
+                        "output_hash",
+                        "manifest_hash",
+                        "updated_at",
+                    )
+                }
                 values["stage"] = stage
                 return Checkpoint.model_validate(values)
             return None
@@ -880,9 +1185,7 @@ class SQLiteStateStore:
                     producer_version=identity.producer_version,
                     output_hash=envelope.output_hash,
                     retry_policy_version=(
-                        None
-                        if identity.schema_version == "1"
-                        else identity.retry_policy_version
+                        None if identity.schema_version == "1" else identity.retry_policy_version
                     ),
                 )
                 if (
@@ -928,9 +1231,7 @@ class SQLiteStateStore:
             "UPDATE runs SET reused_stage_count = ? WHERE run_id = ?", (count, run_id)
         )
 
-    def abandon_stale_running(
-        self, run_id: str, stage: PipelineStage, finished_at: str
-    ) -> None:
+    def abandon_stale_running(self, run_id: str, stage: PipelineStage, finished_at: str) -> None:
         summary = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED).as_dict()["summary"]
         self._write_transaction(
             """UPDATE stage_attempts
@@ -970,9 +1271,7 @@ class SQLiteStateStore:
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
-    def next_attempt_no(
-        self, run_id: str, stage: PipelineStage, reusable_digest: str
-    ) -> int:
+    def next_attempt_no(self, run_id: str, stage: PipelineStage, reusable_digest: str) -> int:
         del reusable_digest
         try:
             row = self._db.execute(
@@ -1068,6 +1367,7 @@ class SQLiteStateStore:
         if envelope.manifest_hash is None:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         manifest_locator = self._manifest_locator(envelope.stage, envelope.manifest_hash)
+
         def mutate(database: sqlite3.Connection) -> None:
             run = database.execute(
                 "SELECT status FROM runs WHERE run_id = ?", (envelope.run_id,)
@@ -1236,6 +1536,7 @@ class SQLiteStateStore:
                           error_summary = ? WHERE run_id = ?""",
                 (finished_at, failure.code.value, failure.as_dict()["summary"], run_id),
             )
+
         self._snapshot_transaction(mutate)
 
     def reconcile_orphan_running_attempts(self) -> None:
@@ -1290,9 +1591,7 @@ class SQLiteStateStore:
         failure: SafeFailure | None = None,
     ) -> None:
         def mutate(database: sqlite3.Connection) -> None:
-            row = database.execute(
-                "SELECT status FROM runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
+            row = database.execute("SELECT status FROM runs WHERE run_id = ?", (run_id,)).fetchone()
             if row is None:
                 raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
             current = RunStatus(str(row["status"]))
@@ -1320,9 +1619,7 @@ class SQLiteStateStore:
 
     def read_run(self, run_id: str) -> RunRecord:
         try:
-            run = self._db.execute(
-                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
+            run = self._db.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
             if run is None:
                 raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
             record = self._run_record(run)
@@ -1403,9 +1700,7 @@ class SQLiteStateStore:
 
         self._snapshot_transaction(mutate)
 
-    def _snapshot_transaction(
-        self, mutation: Callable[[sqlite3.Connection], _T]
-    ) -> _T:
+    def _snapshot_transaction(self, mutation: Callable[[sqlite3.Connection], _T]) -> _T:
         if self._durable_bytes is None or self._poisoned:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
         candidate = self._new_memory_connection()
@@ -1486,9 +1781,7 @@ class SQLiteStateStore:
             self._state_parent.close()
             self._state_parent = None
 
-    def _manifest_stage_anchor(
-        self, stage: PipelineStage, *, create: bool
-    ) -> AnchoredDirectory:
+    def _manifest_stage_anchor(self, stage: PipelineStage, *, create: bool) -> AnchoredDirectory:
         if not isinstance(stage, PipelineStage):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         cached = self._manifest_stage_anchors.get(stage)
