@@ -7,12 +7,16 @@ import multiprocessing
 import os
 import shutil
 import sqlite3
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
+import skillscout.adapters.localfs as localfs_adapter
 import skillscout.adapters.state as state_adapter
+from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
@@ -755,6 +759,108 @@ def test_symlinked_state_target_is_rejected_without_touching_target(tmp_path: Pa
         SQLiteStateStore(link)
     assert failure.value.code is ErrorCode.STATE_SCHEMA_INCOMPATIBLE
     assert target.read_bytes() == before
+
+
+def test_state_manifest_namespace_collision_is_rejected_before_creation(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "COLLISION_CANARY_DO_NOT_DISCLOSE.manifests"
+
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(state)
+
+    assert failure.value.as_dict() == {
+        "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+        "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+    }
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o602])
+def test_existing_state_requires_private_permissions_before_deserialize(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+) -> None:
+    database = tmp_path / f"unsafe-mode-{mode:o}.db"
+    SQLiteStateStore(database).close()
+    database.chmod(mode)
+
+    def reject_deserialize() -> None:
+        raise AssertionError("unsafe state reached SQLite")
+
+    monkeypatch.setattr(
+        SQLiteStateStore,
+        "_new_memory_connection",
+        staticmethod(reject_deserialize),
+    )
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(database)
+    assert failure.value.code is ErrorCode.STATE_SCHEMA_INCOMPATIBLE
+
+
+def test_existing_state_requires_one_link(tmp_path: Path) -> None:
+    database = tmp_path / "linked.db"
+    SQLiteStateStore(database).close()
+    os.link(database, tmp_path / "linked-alias.db")
+
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(database)
+
+    assert failure.value.code is ErrorCode.STATE_SCHEMA_INCOMPATIBLE
+
+
+def test_private_file_predicate_rejects_foreign_owner_and_missing_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    effective_uid = os.geteuid()
+    foreign = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_nlink=1,
+        st_uid=effective_uid + 1,
+    )
+    with pytest.raises(DurableWriteError):
+        AnchoredDirectory._require_private_regular(foreign)
+
+    private = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_nlink=1,
+        st_uid=effective_uid,
+    )
+    monkeypatch.setattr(localfs_adapter.os, "geteuid", None)
+    with pytest.raises(DurableWriteError):
+        AnchoredDirectory._require_private_regular(private)
+
+
+@pytest.mark.parametrize("damage", ["permission", "hardlink"])
+def test_existing_manifest_requires_private_single_owner_file_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    store = SQLiteStateStore(tmp_path / f"manifest-{damage}.db")
+    try:
+        run_id = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / f"manifest-{damage}-out"
+        ).run_id
+        row = store.connection.execute(
+            "SELECT manifest_path FROM stage_results ORDER BY stage_index LIMIT 1"
+        ).fetchone()
+        manifest = store.manifest_root / str(row["manifest_path"])
+        if damage == "permission":
+            manifest.chmod(0o640)
+        else:
+            os.link(manifest, manifest.with_suffix(".linked"))
+
+        def reject_decode(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("unsafe manifest reached JSON decoding")
+
+        monkeypatch.setattr(StageEnvelope, "model_validate_json", reject_decode)
+        with pytest.raises(SafeFailure) as failure:
+            store.verify_run_chain(run_id)
+        assert failure.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize(

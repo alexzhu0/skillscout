@@ -359,6 +359,37 @@ def test_legacy_diagnostic_canary_rejects_migration_without_new_evidence(
     assert hashlib.sha256(FROZEN_DATABASE.read_bytes()).hexdigest() == (FROZEN_DATABASE_SHA256)
 
 
+def test_cli_rejects_colliding_state_namespace_without_disclosure(
+    approved_fixture: Path,
+    tmp_path: Path,
+    run_cli,
+) -> None:
+    canary = "github_pat_COLLIDING_STATE_DO_NOT_DISCLOSE"
+    state = tmp_path / f"{canary}.manifests"
+
+    result = run_cli(
+        "dry-run",
+        "--fixture",
+        str(approved_fixture),
+        "--state",
+        str(state),
+        "--output",
+        str(tmp_path / "output"),
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": {
+            "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+            "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+        }
+    }
+    assert canary not in result.stdout
+    assert canary not in result.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_error_vocabulary_is_closed_ascii_and_bounded() -> None:
     assert set(ERROR_SUMMARIES) == set(ErrorCode)
     assert all(summary.isascii() and len(summary) <= 160 for summary in ERROR_SUMMARIES.values())
