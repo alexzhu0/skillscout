@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Completed 01-12-PLAN.md
-last_updated: "2026-07-19T09:58:19.903Z"
+stopped_at: Completed 01-13-PLAN.md
+last_updated: "2026-07-19T10:27:24.072Z"
 progress:
   total_phases: 6
   completed_phases: 0
   total_plans: 16
-  completed_plans: 12
-  percent: 75
+  completed_plans: 13
+  percent: 81
 ---
 
 # Project State: SkillScout
@@ -24,8 +24,8 @@ progress:
 ## Current Position
 
 **Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 12 of 16
-**Verification:** Previous implementation 3 of 5 must-haves verified; gap remediation 1 of 5 plans complete
+**Plan:** 13 of 16
+**Verification:** Previous implementation 3 of 5 must-haves verified; gap remediation 2 of 5 plans complete
 **Next command:** `$gsd-execute-phase 1 --gaps-only`
 
 ## Progress
@@ -34,7 +34,7 @@ progress:
 Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
-Phase 1 implementation  [████████░░]  75%
+Phase 1 implementation  [████████░░]  81%
 Phase 1 verification    [██████░░░░]  60%
 ```
 
@@ -93,8 +93,8 @@ Plan 01-12 closed CR-01, WR-03, and WR-04 by making the target-directory fsync t
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T09:58:19.899Z
-**Stopped at:** Completed 01-12-PLAN.md
+**Last session:** 2026-07-19T10:26:56.529Z
+**Stopped at:** Completed 01-13-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -122,6 +122,7 @@ Plan 01-12 closed CR-01, WR-03, and WR-04 by making the target-directory fsync t
 | Phase 01 P10 | 19min | 2 tasks | 7 files |
 | Phase 01 P11 | 15min | 2 tasks | 3 files |
 | Phase 01 P12 | 14min | 2 tasks | 5 files |
+| Phase 01 P13 | 20min | 2 tasks | 8 files |
 
 ## Decisions
 
@@ -159,3 +160,7 @@ Plan 01-12 closed CR-01, WR-03, and WR-04 by making the target-directory fsync t
 - [Phase 01]: Use the target directory fsync as the snapshot authority commit point — Post-commit backup retirement cannot truthfully report rollback
 - [Phase 01]: Use one private regular-file predicate for state, manifest, and lock evidence — Every local evidence reader must enforce the same ownership, link, type, and mode boundary
 - [Phase 01]: Reject equal state and derived manifest namespaces before filesystem creation — Operator-selected leaves cannot alias internal evidence directories
+- [Phase 01]: Represent every invocation boundary as a content-addressed event; genesis alone is ordinal zero and every reopened run appends a later event.
+- [Phase 01]: Treat the resume-event ledger as reuse authority and keep runs.reused_stage_count only as an atomically maintained projection of the current event head.
+- [Phase 01]: Migrate pre-event runs only when historical reuse is absent or zero; reject nonzero schema-v2 claims because no independent event can attest them.
+- [Phase 01]: Commit each resume event, run head, count, running status, and timestamp in one candidate snapshot before stale-attempt reconciliation or processor work.

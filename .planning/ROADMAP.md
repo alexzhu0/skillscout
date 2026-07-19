@@ -27,7 +27,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 12/16 plans executed
+**Plans:** 13/16 plans executed
 
 - [x] 01-01-PLAN.md
 - [x] 01-02-PLAN.md
@@ -41,7 +41,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 - [x] 01-10-PLAN.md
 - [x] 01-11-PLAN.md
 - [x] 01-12-PLAN.md
-- [ ] 01-13-PLAN.md
+- [x] 01-13-PLAN.md
 - [ ] 01-14-PLAN.md
 - [ ] 01-15-PLAN.md
 - [ ] 01-16-PLAN.md
