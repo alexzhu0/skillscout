@@ -6,19 +6,38 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import NoReturn, Sequence
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import STAGE_SEQUENCE, build_dry_run_runtime
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
 
-__all__ = ["ERROR_SUMMARIES", "ErrorCode", "build_parser", "main"]
+__all__ = ["ERROR_SUMMARIES", "ErrorCode", "SafeArgumentParser", "build_parser", "main"]
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="skillscout")
-    commands = parser.add_subparsers(dest="command", required=True)
+class SafeArgumentParser(argparse.ArgumentParser):
+    """Argument parser that discards rejected input and generated failure detail."""
+
+    def error(self, _message: str) -> NoReturn:
+        self.exit(2)
+
+    def exit(self, status: int = 0, message: str | None = None) -> NoReturn:
+        if status == 0:
+            super().exit(status, message)
+        failure = SafeFailure(ErrorCode.INVALID_CLI_ARGUMENTS)
+        diagnostic = json.dumps(
+            {"error": failure.as_dict()}, sort_keys=True, separators=(",", ":")
+        )
+        sys.stderr.write(f"{diagnostic}\n")
+        raise SystemExit(2)
+
+
+def build_parser() -> SafeArgumentParser:
+    parser = SafeArgumentParser(prog="skillscout")
+    commands = parser.add_subparsers(
+        dest="command", required=True, parser_class=SafeArgumentParser
+    )
     dry_run = commands.add_parser("dry-run")
     dry_run.add_argument("--fixture", required=True, type=Path)
     dry_run.add_argument("--state", required=True, type=Path)

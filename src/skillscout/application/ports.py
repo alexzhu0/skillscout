@@ -22,6 +22,7 @@ from skillscout.domain.models import (
 class ErrorCode(StrEnum):
     """The complete schema-v1 diagnostic vocabulary."""
 
+    INVALID_CLI_ARGUMENTS = "invalid_cli_arguments"
     INVALID_FIXTURE = "invalid_fixture"
     FIXTURE_CHANGED = "fixture_changed"
     STATE_OPERATION_FAILED = "state_operation_failed"
@@ -38,6 +39,7 @@ class ErrorCode(StrEnum):
 
 
 ERROR_SUMMARIES: dict[ErrorCode, str] = {
+    ErrorCode.INVALID_CLI_ARGUMENTS: "Command-line arguments were rejected.",
     ErrorCode.INVALID_FIXTURE: "Fixture input was rejected.",
     ErrorCode.FIXTURE_CHANGED: "Fixture input changed while it was being read.",
     ErrorCode.STATE_OPERATION_FAILED: "Local state operation failed.",
