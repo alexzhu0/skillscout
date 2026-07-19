@@ -25,7 +25,22 @@ from skillscout.domain.enums import (
     validate_run_transition,
     validate_stage_successor,
 )
-from skillscout.domain.models import StageAttempt, StageEnvelope, StageInput, TokenUsage
+from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
+from skillscout.domain.models import (
+    MAX_MANIFEST_BYTES,
+    MAX_STAGE_COLLECTION_ITEMS,
+    MAX_STAGE_KEY_BYTES,
+    MAX_STAGE_PAYLOAD_DEPTH,
+    MAX_STAGE_PAYLOAD_NODES,
+    MAX_STAGE_STRING_BYTES,
+    SUPPORTED_PRODUCER_SCHEMAS,
+    StageAttempt,
+    StageEnvelope,
+    StageInput,
+    StagePayload,
+    TokenUsage,
+    validate_manifest_bytes,
+)
 
 
 def _digest(value: object) -> str:
@@ -312,3 +327,91 @@ def test_digest_fields_reject_noncanonical_values() -> None:
         _attempt(input_hash="ABC")
     with pytest.raises(ValidationError):
         _envelope(output_hash="sha256:" + "A" * 64)
+
+
+def test_stage_payload_accepts_only_bounded_json_primitives() -> None:
+    payload = StagePayload.model_validate(
+        {
+            "values": [None, True, False, 0, -1, 1.25, "stable"],
+            "nested": {"explicit_null": None},
+        }
+    )
+    assert payload.root["nested"] == {"explicit_null": None}
+    assert canonical_json_bytes(payload) == canonical_json_bytes(payload.root)
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    (
+        {"not-json"},
+        b"not-json",
+        object(),
+        {1: "non-string-key"},
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ),
+)
+def test_stage_payload_rejects_non_json_and_non_finite_values(
+    invalid_value: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        StagePayload.model_validate({"value": invalid_value})
+
+
+def test_stage_payload_enforces_string_key_and_collection_bounds() -> None:
+    StagePayload.model_validate({"value": "x" * MAX_STAGE_STRING_BYTES})
+    StagePayload.model_validate({"k" * MAX_STAGE_KEY_BYTES: None})
+    StagePayload.model_validate({"value": [None] * MAX_STAGE_COLLECTION_ITEMS})
+
+    with pytest.raises(ValidationError):
+        StagePayload.model_validate({"value": "x" * (MAX_STAGE_STRING_BYTES + 1)})
+    with pytest.raises(ValidationError):
+        StagePayload.model_validate({"k" * (MAX_STAGE_KEY_BYTES + 1): None})
+    with pytest.raises(ValidationError):
+        StagePayload.model_validate({"value": [None] * (MAX_STAGE_COLLECTION_ITEMS + 1)})
+
+
+def test_stage_payload_enforces_depth_and_total_node_bounds() -> None:
+    at_limit: object = "leaf"
+    for _ in range(MAX_STAGE_PAYLOAD_DEPTH - 1):
+        at_limit = [at_limit]
+    StagePayload.model_validate({"value": at_limit})
+
+    beyond_limit: object = at_limit
+    beyond_limit = [beyond_limit]
+    with pytest.raises(ValidationError):
+        StagePayload.model_validate({"value": beyond_limit})
+
+    width = min(MAX_STAGE_COLLECTION_ITEMS, 128)
+    node_heavy = {str(index): [None] * width for index in range(width)}
+    assert 1 + width + width * width > MAX_STAGE_PAYLOAD_NODES
+    with pytest.raises(ValidationError):
+        StagePayload.model_validate(node_heavy)
+
+
+def test_stage_envelope_applies_the_same_payload_contract() -> None:
+    with pytest.raises(ValidationError):
+        _envelope(payload={"value": float("nan")})
+
+
+def test_manifest_byte_cap_is_exact_and_uses_closed_stage_output_failure() -> None:
+    at_limit = b"x" * MAX_MANIFEST_BYTES
+    assert validate_manifest_bytes(at_limit) is at_limit
+    with pytest.raises(ValueError):
+        validate_manifest_bytes(at_limit + b"x")
+
+    failure = SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+    assert failure.as_dict() == {
+        "code": "stage_output_invalid",
+        "summary": ERROR_SUMMARIES[ErrorCode.STAGE_OUTPUT_INVALID],
+    }
+    assert failure.as_dict()["summary"].isascii()
+
+
+def test_supported_producer_schema_registry_is_closed_and_immutable() -> None:
+    assert SUPPORTED_PRODUCER_SCHEMAS == frozenset(
+        {("1", "fixture-v1"), ("2", "fixture-v1")}
+    )
+    with pytest.raises(AttributeError):
+        SUPPORTED_PRODUCER_SCHEMAS.add(("2", "fixture-v2"))  # type: ignore[attr-defined]
