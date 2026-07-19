@@ -23,6 +23,7 @@ from skillscout.application.pipeline import (
     canonical_v1_digest,
 )
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
+from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.models import StageInput
 
 
@@ -515,6 +516,12 @@ def test_fresh_interruption_rerun_and_inspect_are_persisted(
         "run_id": run_id,
         "schema_version": "2",
         "subject_id": "fixture:approved-workflow",
+        "fixture_hash": sha256_digest(
+            load_fixture(approved_fixture).model_dump(mode="json", exclude_none=False)
+        ),
+        "producer_version": "fixture-v1",
+        "retry_policy_version": "retry-v1",
+        "identity_state": "bound",
         "execution_mode": "dry_run",
         "status": "planned_not_published",
         "created_at": payload["run"]["created_at"],

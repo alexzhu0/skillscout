@@ -39,6 +39,7 @@ from skillscout.domain.enums import (
 )
 from skillscout.domain.models import (
     PublicationPlan,
+    RunIdentity,
     RunSummary,
     SUPPORTED_PRODUCER_SCHEMAS,
     StageAttempt,
@@ -204,31 +205,34 @@ class PipelineRunner:
             raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
 
         fixture_hash = sha256_digest(subject.model_dump(mode="json", exclude_none=False))
-        resumable = self.state.find_resumable_run(subject.subject_id)
-        if resumable is not None and not self.state.resume_identity_matches(
-            str(resumable["run_id"]),
-            schema_version=str(resumable["schema_version"]),
+        current_identity = RunIdentity(
+            schema_version="2",
             subject_id=subject.subject_id,
             fixture_hash=fixture_hash,
             producer_version=producer_version,
             retry_policy_version=self.retry_policy.version,
-        ):
-            resumable = None
+        )
+        resumable = self.state.find_resumable_run(current_identity)
+        if resumable is None and ("1", producer_version) in SUPPORTED_PRODUCER_SCHEMAS:
+            legacy_identity = current_identity.model_copy(update={"schema_version": "1"})
+            resumable = self.state.find_resumable_run(legacy_identity)
+            if resumable is None:
+                resumable = self.state.bind_legacy_run(legacy_identity)
         if resumable is None:
             run_id = self.ids.new_run_id()
-            schema_version = "2"
-            self.state.create_run(run_id, subject.subject_id, self.clock.now(), schema_version)
+            schema_version = current_identity.schema_version
+            self.state.create_run(run_id, current_identity, self.clock.now())
             start_index = 0
             previous_output_hash: str | None = None
             reused_count = 0
         else:
-            run_id = str(resumable["run_id"])
-            schema_version = str(resumable["schema_version"])
+            run_id = resumable.run_id
+            schema_version = resumable.schema_version
             checkpoint = self.state.latest_checkpoint(run_id)
-            start_index = int(checkpoint["stage_index"]) + 1 if checkpoint else 0
-            previous_output_hash = str(checkpoint["output_hash"]) if checkpoint else None
+            start_index = checkpoint.stage_index + 1 if checkpoint else 0
+            previous_output_hash = checkpoint.output_hash if checkpoint else None
             reused_count = start_index
-            resumable_status = RunStatus(str(resumable["status"]))
+            resumable_status = resumable.status
             if resumable_status is RunStatus.INTERRUPTED:
                 self.state.set_run_status(run_id, RunStatus.RUNNING.value, self.clock.now())
             elif resumable_status is not RunStatus.RUNNING:
@@ -396,10 +400,13 @@ class PipelineRunner:
         self.publication_writer.write(output_directory, PublicationPlan(run_id=run_id))
         self.state.set_run_status(run_id, RunStatus.PLANNED_NOT_PUBLISHED.value, self.clock.now())
         persisted = self.state.read_run(run_id)
+        checkpoint = self.state.latest_checkpoint(run_id)
+        if checkpoint is None:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         return RunSummary(
-            run_id=str(persisted["run_id"]),
-            status=RunStatus(str(persisted["status"])),
-            last_stage=PipelineStage(str(persisted["last_stage"])),
+            run_id=persisted.run_id,
+            status=persisted.status,
+            last_stage=checkpoint.stage,
             reused_stage_count=reused_count,
             publication_plan_path="publication-plan.json",
             remote_writes_attempted=0,

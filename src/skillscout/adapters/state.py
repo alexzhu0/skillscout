@@ -34,6 +34,9 @@ from skillscout.domain.enums import (
 from skillscout.domain.models import (
     MAX_MANIFEST_BYTES,
     SUPPORTED_PRODUCER_SCHEMAS,
+    Checkpoint,
+    RunIdentity,
+    RunRecord,
     StageAttempt,
     StageEnvelope,
     StageInput,
@@ -42,6 +45,7 @@ from skillscout.domain.models import (
 
 SCHEMA_VERSION = 2
 MAX_STATE_DB_BYTES = 67_108_864
+MAX_LEGACY_BIND_CANDIDATES = 32
 _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
 _DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-f]{64})$")
 _T = TypeVar("_T")
@@ -66,13 +70,26 @@ def _schema_statements(suffix: str = "") -> tuple[str, ...]:
             run_id TEXT PRIMARY KEY,
             schema_version TEXT NOT NULL,
             subject_id TEXT NOT NULL,
+            fixture_hash TEXT,
+            producer_version TEXT NOT NULL,
+            retry_policy_version TEXT NOT NULL,
+            identity_state TEXT NOT NULL
+                CHECK (identity_state IN ('bound', 'legacy_unbound')),
             execution_mode TEXT NOT NULL CHECK (execution_mode = 'dry_run'),
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             error_code TEXT,
             error_summary TEXT,
-            reused_stage_count INTEGER NOT NULL DEFAULT 0
+            reused_stage_count INTEGER NOT NULL DEFAULT 0,
+            CHECK (
+                (identity_state = 'bound' AND fixture_hash IS NOT NULL)
+                OR (identity_state = 'legacy_unbound' AND fixture_hash IS NULL)
+            )
+        )""",
+        f"""CREATE INDEX idx_runs_resumable_identity{suffix} ON {runs}(
+            schema_version, subject_id, fixture_hash, producer_version,
+            retry_policy_version, identity_state, status, updated_at DESC, run_id DESC
         )""",
         f"""CREATE TABLE {attempts} (
             attempt_id TEXT PRIMARY KEY,
@@ -203,7 +220,7 @@ class SQLiteStateStore:
                     self._persist_startup_snapshot(previous=raw)
                 else:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
-            self._reconcile_orphan_running_attempts()
+            self.reconcile_orphan_running_attempts()
         except SafeFailure:
             self.close()
             raise
@@ -333,6 +350,10 @@ class SQLiteStateStore:
                 "run_id",
                 "schema_version",
                 "subject_id",
+                "fixture_hash",
+                "producer_version",
+                "retry_policy_version",
+                "identity_state",
                 "status",
                 "reused_stage_count",
             },
@@ -383,9 +404,17 @@ class SQLiteStateStore:
 
             self._db.execute(
                 """INSERT INTO runs_v2
-                   SELECT run_id, '1', subject_id, execution_mode, status, created_at,
-                          updated_at, error_code, error_summary, 0
-                   FROM runs"""
+                   (run_id, schema_version, subject_id, fixture_hash, producer_version,
+                    retry_policy_version, identity_state, execution_mode, status,
+                    created_at, updated_at, error_code, error_summary, reused_stage_count)
+                   SELECT r.run_id, '1', r.subject_id, NULL,
+                          (SELECT MIN(a.producer_version) FROM stage_attempts a
+                           WHERE a.run_id = r.run_id),
+                          (SELECT MIN(a.retry_policy_version) FROM stage_attempts a
+                           WHERE a.run_id = r.run_id),
+                          'legacy_unbound', r.execution_mode, r.status, r.created_at,
+                          r.updated_at, r.error_code, r.error_summary, 0
+                   FROM runs r"""
             )
             self._db.execute(
                 """INSERT INTO stage_attempts_v2
@@ -488,6 +517,14 @@ class SQLiteStateStore:
                 self._db.execute(f"ALTER TABLE {old} RENAME TO {new}")
             self._db.execute("DROP INDEX idx_attempts_reusable_v2")
             self._db.execute("DROP INDEX idx_results_semantic_v2")
+            self._db.execute("DROP INDEX idx_runs_resumable_identity_v2")
+            self._db.execute(
+                """CREATE INDEX idx_runs_resumable_identity ON runs(
+                    schema_version, subject_id, fixture_hash, producer_version,
+                    retry_policy_version, identity_state, status, updated_at DESC,
+                    run_id DESC
+                )"""
+            )
             self._db.execute(
                 "CREATE INDEX idx_attempts_reusable ON stage_attempts(reusable_key_digest)"
             )
@@ -528,6 +565,25 @@ class SQLiteStateStore:
             )
             if expected != row["reusable_key_digest"]:
                 raise ValueError("migration reusable digest mismatch")
+
+        for run in self._db.execute("SELECT * FROM runs_v2"):
+            facts = self._db.execute(
+                """SELECT COUNT(DISTINCT producer_version) AS producer_count,
+                          COUNT(DISTINCT retry_policy_version) AS retry_count,
+                          MIN(producer_version) AS producer_version,
+                          MIN(retry_policy_version) AS retry_policy_version
+                   FROM stage_attempts_v2 WHERE run_id = ?""",
+                (run["run_id"],),
+            ).fetchone()
+            if (
+                int(facts["producer_count"]) != 1
+                or int(facts["retry_count"]) != 1
+                or run["producer_version"] != facts["producer_version"]
+                or run["retry_policy_version"] != facts["retry_policy_version"]
+                or run["fixture_hash"] is not None
+                or run["identity_state"] != "legacy_unbound"
+            ):
+                raise ValueError("migration run identity facts are ambiguous")
 
         for row in self._db.execute(
             """SELECT r.*, a.input_hash, a.prompt_version, a.policy_version, a.model_id
@@ -596,29 +652,127 @@ class SQLiteStateStore:
         except DurableWriteError:
             pass
 
-    def create_run(
-        self, run_id: str, subject_id: str, created_at: str, schema_version: str = "2"
-    ) -> None:
+    def create_run(self, run_id: str, identity: RunIdentity, created_at: str) -> None:
         self._write_transaction(
             """INSERT INTO runs
-               (run_id, schema_version, subject_id, execution_mode, status, created_at,
-                updated_at, error_code, error_summary, reused_stage_count)
-               VALUES (?, ?, ?, 'dry_run', 'running', ?, ?, NULL, NULL, 0)""",
-            (run_id, schema_version, subject_id, created_at, created_at),
+               (run_id, schema_version, subject_id, fixture_hash, producer_version,
+                retry_policy_version, identity_state, execution_mode, status,
+                created_at, updated_at, error_code, error_summary, reused_stage_count)
+               VALUES (?, ?, ?, ?, ?, ?, 'bound', 'dry_run', 'running', ?, ?,
+                       NULL, NULL, 0)""",
+            (
+                run_id,
+                identity.schema_version,
+                identity.subject_id,
+                identity.fixture_hash,
+                identity.producer_version,
+                identity.retry_policy_version,
+                created_at,
+                created_at,
+            ),
         )
 
-    def find_resumable_run(self, subject_id: str) -> sqlite3.Row | None:
+    def find_resumable_run(self, identity: RunIdentity) -> RunRecord | None:
         try:
-            return self._db.execute(
-                """SELECT run_id, schema_version, status FROM runs
-                   WHERE subject_id = ? AND status IN ('running', 'interrupted')
-                   ORDER BY updated_at DESC LIMIT 1""",
-                (subject_id,),
+            row = self._db.execute(
+                """SELECT * FROM runs INDEXED BY idx_runs_resumable_identity
+                   WHERE schema_version = ? AND subject_id = ? AND fixture_hash = ?
+                     AND producer_version = ? AND retry_policy_version = ?
+                     AND identity_state = 'bound'
+                     AND status IN ('running', 'interrupted')
+                   ORDER BY updated_at DESC, run_id DESC LIMIT 1""",
+                (
+                    identity.schema_version,
+                    identity.subject_id,
+                    identity.fixture_hash,
+                    identity.producer_version,
+                    identity.retry_policy_version,
+                ),
             ).fetchone()
+            if row is None:
+                return None
+            record = self._run_record(row)
+            self._identity_chain_matches(
+                self._db,
+                record.run_id,
+                identity,
+                allow_first_input_mismatch=False,
+                require_evidence=False,
+            )
+            return record
+        except SafeFailure:
+            raise
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
-    def latest_checkpoint(self, run_id: str) -> sqlite3.Row | None:
+    def bind_legacy_run(self, expected: RunIdentity) -> RunRecord | None:
+        """Bind one canonically proven v1 candidate without trusting missing facts."""
+
+        try:
+            candidates = self._db.execute(
+                """SELECT run_id FROM runs
+                   WHERE schema_version = ? AND subject_id = ?
+                     AND producer_version = ? AND retry_policy_version = ?
+                     AND identity_state = 'legacy_unbound'
+                     AND status IN ('running', 'interrupted')
+                   ORDER BY updated_at DESC, run_id DESC LIMIT ?""",
+                (
+                    expected.schema_version,
+                    expected.subject_id,
+                    expected.producer_version,
+                    expected.retry_policy_version,
+                    MAX_LEGACY_BIND_CANDIDATES,
+                ),
+            ).fetchall()
+            selected: str | None = None
+            for candidate in candidates:
+                run_id = str(candidate["run_id"])
+                if self._identity_chain_matches(
+                    self._db,
+                    run_id,
+                    expected,
+                    allow_first_input_mismatch=True,
+                    require_evidence=True,
+                ):
+                    selected = run_id
+                    break
+            if selected is None:
+                return None
+
+            def bind(database: sqlite3.Connection) -> RunRecord:
+                row = database.execute(
+                    """SELECT * FROM runs WHERE run_id = ?
+                       AND identity_state = 'legacy_unbound'""",
+                    (selected,),
+                ).fetchone()
+                if row is None or not self._identity_chain_matches(
+                    database,
+                    selected,
+                    expected,
+                    allow_first_input_mismatch=False,
+                    require_evidence=True,
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                updated = database.execute(
+                    """UPDATE runs SET fixture_hash = ?, identity_state = 'bound'
+                       WHERE run_id = ? AND identity_state = 'legacy_unbound'
+                         AND fixture_hash IS NULL""",
+                    (expected.fixture_hash, selected),
+                )
+                if updated.rowcount != 1:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                bound = database.execute(
+                    "SELECT * FROM runs WHERE run_id = ?", (selected,)
+                ).fetchone()
+                return self._run_record(bound)
+
+            return self._snapshot_transaction(bind)
+        except SafeFailure:
+            raise
+        except sqlite3.Error:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def latest_checkpoint(self, run_id: str) -> Checkpoint | None:
         try:
             row = self._db.execute(
                 """SELECT run_id, subject_id, stage, stage_index, result_row_id,
@@ -631,68 +785,143 @@ class SQLiteStateStore:
                 expected = self._manifest_locator(stage, str(row["manifest_hash"]))
                 if str(row["manifest_path"]) != expected:
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            return row
-        except (ValueError, TypeError):
+                values = {
+                        key: row[key]
+                        for key in (
+                            "run_id",
+                            "subject_id",
+                            "stage",
+                            "stage_index",
+                            "result_row_id",
+                            "result_id",
+                            "output_hash",
+                            "manifest_hash",
+                            "updated_at",
+                        )
+                    }
+                values["stage"] = stage
+                return Checkpoint.model_validate(values)
+            return None
+        except (ValidationError, ValueError, TypeError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
         except SafeFailure:
             raise
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
-    def resume_identity_matches(
+    def _identity_chain_matches(
         self,
+        database: sqlite3.Connection,
         run_id: str,
+        identity: RunIdentity,
         *,
-        schema_version: str,
-        subject_id: str,
-        fixture_hash: str,
-        producer_version: str,
-        retry_policy_version: str,
+        allow_first_input_mismatch: bool,
+        require_evidence: bool,
     ) -> bool:
-        """Verify both manifest bytes and current canonical identity before reuse."""
+        """Verify every fact needed for exact reuse or one-time legacy binding."""
 
         try:
-            rows = self._db.execute(
-                """SELECT r.*, a.input_hash, a.producer_version AS attempt_producer,
-                          a.retry_policy_version, a.reusable_key_digest
+            rows = database.execute(
+                """SELECT r.*, a.attempt_no, a.status AS attempt_status,
+                          a.subject_id AS attempt_subject, a.stage AS attempt_stage,
+                          a.stage_index AS attempt_stage_index,
+                          a.input_hash AS attempt_input_hash,
+                          a.producer_version AS attempt_producer,
+                          a.retry_policy_version AS attempt_retry_policy,
+                          a.reusable_key_digest,
+                          c.subject_id AS checkpoint_subject,
+                          c.stage AS checkpoint_stage,
+                          c.stage_index AS checkpoint_stage_index,
+                          c.result_row_id AS checkpoint_result_row_id,
+                          c.result_id AS checkpoint_result_id,
+                          c.output_hash AS checkpoint_output_hash,
+                          c.manifest_hash AS checkpoint_manifest_hash
                    FROM stage_results r JOIN stage_attempts a USING (attempt_id)
+                   LEFT JOIN checkpoints c
+                     ON c.run_id = r.run_id AND c.stage = r.stage
                    WHERE r.run_id = ? ORDER BY r.stage_index""",
                 (run_id,),
             ).fetchall()
+            if require_evidence and not rows:
+                return False
             previous_output_hash: str | None = None
             for expected_index, row in enumerate(rows):
-                if int(row["stage_index"]) != expected_index:
+                stage = PipelineStage(str(row["stage"]))
+                if (
+                    int(row["stage_index"]) != expected_index
+                    or stage is not tuple(PipelineStage)[expected_index]
+                ):
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                 envelope = self._verify_manifest_row(row)
                 stage_input = StageInput(
-                    schema_version=schema_version,
+                    schema_version=identity.schema_version,
                     execution_mode=ExecutionMode.DRY_RUN,
-                    subject_id=subject_id,
-                    stage=PipelineStage(str(row["stage"])),
+                    subject_id=identity.subject_id,
+                    stage=stage,
                     previous_output_hash=previous_output_hash,
-                    fixture_hash=fixture_hash if expected_index == 0 else None,
+                    fixture_hash=identity.fixture_hash if expected_index == 0 else None,
                 )
                 expected_input = stage_input_hash(stage_input)
+                if row["attempt_input_hash"] != expected_input:
+                    if expected_index == 0 and allow_first_input_mismatch:
+                        return False
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                 expected_digest = reusable_key_digest(
-                    subject_id=subject_id,
+                    subject_id=identity.subject_id,
                     stage=stage_input.stage,
                     input_hash=expected_input,
-                    producer_version=producer_version,
-                    retry_policy_version=retry_policy_version,
+                    producer_version=identity.producer_version,
+                    retry_policy_version=identity.retry_policy_version,
+                )
+                expected_result = make_result_id(
+                    subject_id=identity.subject_id,
+                    stage=stage,
+                    input_hash=expected_input,
+                    producer_version=identity.producer_version,
+                    output_hash=envelope.output_hash,
+                    retry_policy_version=(
+                        None
+                        if identity.schema_version == "1"
+                        else identity.retry_policy_version
+                    ),
                 )
                 if (
-                    row["input_hash"] != expected_input
-                    or row["attempt_producer"] != producer_version
-                    or row["retry_policy_version"] != retry_policy_version
+                    row["attempt_status"] != "succeeded"
+                    or row["attempt_subject"] != identity.subject_id
+                    or row["attempt_stage"] != stage.value
+                    or int(row["attempt_stage_index"]) != expected_index
+                    or int(row["attempt_no"]) != envelope.attempt_no
+                    or row["attempt_producer"] != identity.producer_version
+                    or row["attempt_retry_policy"] != identity.retry_policy_version
                     or row["reusable_key_digest"] != expected_digest
+                    or row["result_id"] != expected_result
+                    or row["checkpoint_subject"] != identity.subject_id
+                    or row["checkpoint_stage"] != stage.value
+                    or int(row["checkpoint_stage_index"]) != expected_index
+                    or row["checkpoint_result_row_id"] != row["result_row_id"]
+                    or row["checkpoint_result_id"] != row["result_id"]
+                    or row["checkpoint_output_hash"] != row["output_hash"]
+                    or row["checkpoint_manifest_hash"] != row["manifest_hash"]
                 ):
-                    return False
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                 previous_output_hash = envelope.output_hash
             return True
         except SafeFailure:
             raise
+        except (IndexError, TypeError, ValueError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    @staticmethod
+    def _run_record(row: sqlite3.Row) -> RunRecord:
+        try:
+            values = dict(row)
+            values["execution_mode"] = ExecutionMode(str(values["execution_mode"]))
+            values["status"] = RunStatus(str(values["status"]))
+            return RunRecord.model_validate(values)
+        except (ValidationError, ValueError, TypeError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
     def set_reused_stage_count(self, run_id: str, count: int) -> None:
         self._write_transaction(
@@ -1009,7 +1238,7 @@ class SQLiteStateStore:
             )
         self._snapshot_transaction(mutate)
 
-    def _reconcile_orphan_running_attempts(self) -> None:
+    def reconcile_orphan_running_attempts(self) -> None:
         """Deterministically close attempts left running by an indeterminate failure."""
 
         failure = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
@@ -1089,19 +1318,17 @@ class SQLiteStateStore:
         except (ValueError, TypeError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
-    def read_run(self, run_id: str) -> dict[str, Any]:
+    def read_run(self, run_id: str) -> RunRecord:
         try:
             run = self._db.execute(
-                "SELECT run_id, status FROM runs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
             ).fetchone()
-            checkpoint = self.latest_checkpoint(run_id)
-            if run is None or checkpoint is None:
+            if run is None:
                 raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-            return {
-                "run_id": run["run_id"],
-                "status": run["status"],
-                "last_stage": checkpoint["stage"],
-            }
+            record = self._run_record(run)
+            if record.identity_state != "bound":
+                raise SafeFailure(ErrorCode.STATE_IDENTITY_UNBOUND)
+            return record
         except SafeFailure:
             raise
         except sqlite3.Error:
@@ -1112,14 +1339,21 @@ class SQLiteStateStore:
 
         try:
             run = self._db.execute(
-                """SELECT run_id, schema_version, subject_id, execution_mode, status,
-                          created_at, updated_at, error_code, error_summary,
-                          reused_stage_count
-                   FROM runs WHERE run_id = ?""",
+                "SELECT * FROM runs WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
             if run is None:
                 raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+            run_record = self._run_record(run)
+            if run_record.identity_state != "bound":
+                raise SafeFailure(ErrorCode.STATE_IDENTITY_UNBOUND)
+            self._identity_chain_matches(
+                self._db,
+                run_id,
+                run_record.identity,
+                allow_first_input_mismatch=False,
+                require_evidence=False,
+            )
             attempts = [
                 dict(row)
                 for row in self._db.execute(
@@ -1145,12 +1379,16 @@ class SQLiteStateStore:
                 envelope = self._verify_manifest_row(row)
                 results.append(envelope.model_dump(mode="json", exclude_none=False))
             checkpoint = self.latest_checkpoint(run_id)
-            reused = int(run["reused_stage_count"])
+            reused = run_record.reused_stage_count
             return {
-                "run": dict(run),
+                "run": run_record.model_dump(mode="json", exclude_none=False),
                 "attempts": attempts,
                 "results": results,
-                "checkpoint": dict(checkpoint) if checkpoint is not None else None,
+                "checkpoint": (
+                    checkpoint.model_dump(mode="json", exclude_none=False)
+                    if checkpoint is not None
+                    else None
+                ),
                 "reused_stage_count": reused,
                 "remote_writes_attempted": 0,
             }

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
@@ -183,10 +183,24 @@ class StageAttempt(StrictFrozenModel):
     retryable: bool
 
 
+class RunIdentity(StrictFrozenModel):
+    """Complete immutable authority for creating or resuming one run."""
+
+    schema_version: NonEmpty
+    subject_id: NonEmpty
+    fixture_hash: Digest
+    producer_version: NonEmpty
+    retry_policy_version: NonEmpty
+
+
 class RunRecord(StrictFrozenModel):
     run_id: NonEmpty
     schema_version: NonEmpty
     subject_id: NonEmpty
+    fixture_hash: Digest | None
+    producer_version: NonEmpty
+    retry_policy_version: NonEmpty
+    identity_state: Literal["bound", "legacy_unbound"]
     execution_mode: ExecutionMode
     status: RunStatus
     created_at: NonEmpty
@@ -194,6 +208,26 @@ class RunRecord(StrictFrozenModel):
     error_code: str | None
     error_summary: str | None
     reused_stage_count: NonNegativeInt
+
+    @model_validator(mode="after")
+    def validate_identity_state(self) -> RunRecord:
+        if self.identity_state == "bound" and self.fixture_hash is None:
+            raise ValueError("bound run identity is incomplete")
+        if self.identity_state == "legacy_unbound" and self.fixture_hash is not None:
+            raise ValueError("legacy unbound run carries fixture authority")
+        return self
+
+    @property
+    def identity(self) -> RunIdentity:
+        if self.identity_state != "bound" or self.fixture_hash is None:
+            raise ValueError("run identity is not bound")
+        return RunIdentity(
+            schema_version=self.schema_version,
+            subject_id=self.subject_id,
+            fixture_hash=self.fixture_hash,
+            producer_version=self.producer_version,
+            retry_policy_version=self.retry_policy_version,
+        )
 
 
 class Checkpoint(StrictFrozenModel):

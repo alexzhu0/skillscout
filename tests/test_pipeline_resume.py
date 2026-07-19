@@ -501,7 +501,19 @@ def test_stale_running_attempt_is_abandoned_before_monotonic_replacement(
     subject = load_fixture(APPROVED_FIXTURE)
     store = SQLiteStateStore(tmp_path / "state.db")
     run_id = "stale-run"
-    store.create_run(run_id, subject.subject_id, "2026-07-17T00:00:00.000000Z", "2")
+    store.create_run(
+        run_id,
+        RunIdentity(
+            schema_version="2",
+            subject_id=subject.subject_id,
+            fixture_hash=sha256_digest(
+                subject.model_dump(mode="json", exclude_none=False)
+            ),
+            producer_version="fixture-v1",
+            retry_policy_version="retry-v1",
+        ),
+        "2026-07-17T00:00:00.000000Z",
+    )
     stage_input = StageInput(
         schema_version="2",
         execution_mode=ExecutionMode.DRY_RUN,
@@ -886,7 +898,17 @@ def test_state_snapshot_sync_failure_restores_prior_bytes_and_requires_reopen(
     before = database.read_bytes()
     active = True
     with pytest.raises(SafeFailure) as failure:
-        store.create_run("not-durable", "subject", "2026-07-19T00:00:00.000000Z")
+        store.create_run(
+            "not-durable",
+            RunIdentity(
+                schema_version="2",
+                subject_id="subject",
+                fixture_hash="sha256:" + "1" * 64,
+                producer_version="fixture-v1",
+                retry_policy_version="retry-v1",
+            ),
+            "2026-07-19T00:00:00.000000Z",
+        )
     assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
     assert store.connection is None
     assert database.read_bytes() == before

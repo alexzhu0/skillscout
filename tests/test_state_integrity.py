@@ -17,9 +17,20 @@ from skillscout.application.pipeline import PipelineRunner
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.canonical import make_result_row_id
 from skillscout.domain.enums import PipelineStage, RunStatus
+from skillscout.domain.models import RunIdentity
 
 APPROVED_FIXTURE = Path(__file__).parent / "fixtures" / "pipeline" / "approved.json"
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
+
+
+def _run_identity(subject_id: str) -> RunIdentity:
+    return RunIdentity(
+        schema_version="2",
+        subject_id=subject_id,
+        fixture_hash="sha256:" + "1" * 64,
+        producer_version="fixture-v1",
+        retry_policy_version="retry-v1",
+    )
 
 
 def _hold_state_lock(database: str, control) -> None:
@@ -267,7 +278,9 @@ def test_state_uses_private_memory_sqlite_and_one_reusable_live_lock(
     lock = tmp_path / ".serialized.db.lock"
     first_lock_identity = (os.lstat(lock).st_dev, os.lstat(lock).st_ino)
     try:
-        first.create_run("run-1", "subject-1", "2026-07-19T00:00:00.000000Z")
+        first.create_run(
+            "run-1", _run_identity("subject-1"), "2026-07-19T00:00:00.000000Z"
+        )
         with pytest.raises(SafeFailure) as failure:
             SQLiteStateStore(database)
         assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
@@ -413,7 +426,9 @@ def test_parent_swap_during_failed_snapshot_cleanup_never_touches_attacker(
     prior = (anchored_parent / "state.db").read_bytes()
     fail_persist = True
     with pytest.raises(SafeFailure) as failure:
-        store.create_run("not-durable", "subject", "2026-07-19T00:00:00.000000Z")
+        store.create_run(
+            "not-durable", _run_identity("subject"), "2026-07-19T00:00:00.000000Z"
+        )
     assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
     store.close()
 

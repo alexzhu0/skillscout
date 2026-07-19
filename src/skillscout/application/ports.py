@@ -6,8 +6,15 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Mapping, Protocol, runtime_checkable
 
-from skillscout.domain.enums import EffectScope
-from skillscout.domain.models import StageAttempt, StageEnvelope, StageInput
+from skillscout.domain.enums import EffectScope, PipelineStage
+from skillscout.domain.models import (
+    Checkpoint,
+    RunIdentity,
+    RunRecord,
+    StageAttempt,
+    StageEnvelope,
+    StageInput,
+)
 
 
 class ErrorCode(StrEnum):
@@ -20,6 +27,7 @@ class ErrorCode(StrEnum):
     STATE_SCHEMA_INCOMPATIBLE = "state_schema_incompatible"
     STATE_SCHEMA_MIGRATION_ERROR = "state_schema_migration_error"
     STATE_INTEGRITY_ERROR = "state_integrity_error"
+    STATE_IDENTITY_UNBOUND = "state_identity_unbound"
     RETRY_EXHAUSTED = "retry_exhausted"
     STAGE_TRANSIENT_FAILURE = "stage_transient_failure"
     STAGE_PERMANENT_FAILURE = "stage_permanent_failure"
@@ -35,6 +43,7 @@ ERROR_SUMMARIES: dict[ErrorCode, str] = {
     ErrorCode.STATE_SCHEMA_INCOMPATIBLE: "Local state schema is incompatible.",
     ErrorCode.STATE_SCHEMA_MIGRATION_ERROR: "Local state schema migration failed.",
     ErrorCode.STATE_INTEGRITY_ERROR: "Local state integrity verification failed.",
+    ErrorCode.STATE_IDENTITY_UNBOUND: "Run identity is not bound.",
     ErrorCode.RETRY_EXHAUSTED: "Stage retry budget was exhausted.",
     ErrorCode.STAGE_TRANSIENT_FAILURE: "Stage processing failed temporarily.",
     ErrorCode.STAGE_PERMANENT_FAILURE: "Stage processing failed permanently.",
@@ -115,8 +124,30 @@ class StateStore(Protocol):
     """Provider-independent persistence operations used by the runner."""
 
     def create_run(
-        self, run_id: str, subject_id: str, created_at: str, schema_version: str
+        self, run_id: str, identity: RunIdentity, created_at: str
     ) -> None: ...
+
+    def find_resumable_run(self, identity: RunIdentity) -> RunRecord | None: ...
+
+    def bind_legacy_run(self, expected: RunIdentity) -> RunRecord | None: ...
+
+    def latest_checkpoint(self, run_id: str) -> Checkpoint | None: ...
+
+    def reconcile_orphan_running_attempts(self) -> None: ...
+
+    def set_reused_stage_count(self, run_id: str, count: int) -> None: ...
+
+    def abandon_stale_running(
+        self, run_id: str, stage: PipelineStage, finished_at: str
+    ) -> None: ...
+
+    def retry_attempt_count(self, reusable_digest: str) -> int: ...
+
+    def has_permanent_failure(self, reusable_digest: str) -> bool: ...
+
+    def next_attempt_no(
+        self, run_id: str, stage: PipelineStage, reusable_digest: str
+    ) -> int: ...
 
     def start_attempt(
         self,
@@ -146,7 +177,7 @@ class StateStore(Protocol):
         failure: SafeFailure | None = None,
     ) -> None: ...
 
-    def read_run(self, run_id: str) -> Mapping[str, Any]: ...
+    def read_run(self, run_id: str) -> RunRecord: ...
 
     def close(self) -> None: ...
 
