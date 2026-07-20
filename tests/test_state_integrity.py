@@ -2289,3 +2289,77 @@ def test_atomic_write_still_refuses_preexisting_temp_without_recovery(
     assert failure.value.operation == "temporary_exists"
     assert temporary.read_bytes() == b"crash-left-candidate"
     assert target.read_bytes() == b"authoritative-target"
+
+
+def test_startup_recovers_private_state_and_backup_temps(tmp_path: Path) -> None:
+    database = tmp_path / "startup-recover.db"
+    SQLiteStateStore(database).close()
+    state_temporary = tmp_path / ".startup-recover.db.tmp"
+    backup_temporary = tmp_path / "..startup-recover.db.backup.tmp"
+    state_temporary.write_bytes(b"crash-left-state-candidate")
+    state_temporary.chmod(0o600)
+    backup_temporary.write_bytes(b"crash-left-backup-candidate")
+    backup_temporary.chmod(0o600)
+
+    store = SQLiteStateStore(database)
+    try:
+        assert not state_temporary.exists()
+        assert not backup_temporary.exists()
+        store.create_run(
+            "recovered-run",
+            _run_identity("startup-recover-subject"),
+            "2026-07-20T00:00:00.000000Z",
+        )
+        assert store.connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert (
+            store.connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id = 'recovered-run'"
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        store.close()
+
+
+def test_startup_rejects_non_private_state_temp_without_touching_it(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "startup-reject.db"
+    SQLiteStateStore(database).close()
+    before = database.read_bytes()
+    state_temporary = tmp_path / ".startup-reject.db.tmp"
+    state_temporary.write_bytes(b"foreign-candidate")
+    state_temporary.chmod(0o644)
+
+    with pytest.raises(SafeFailure) as failure:
+        SQLiteStateStore(database)
+
+    assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    assert state_temporary.read_bytes() == b"foreign-candidate"
+    assert database.read_bytes() == before
+
+
+def test_write_manifest_recovers_crash_left_temp(tmp_path: Path) -> None:
+    store = SQLiteStateStore(tmp_path / "manifest-temp-recover.db")
+    try:
+        _run_interrupted_in_store(store, tmp_path / "manifest-temp-output")
+        row = store.connection.execute(
+            "SELECT manifest_path FROM stage_results WHERE stage = 'scout'"
+        ).fetchone()
+        locator = str(row["manifest_path"])
+        manifest = store.manifest_root / locator
+        envelope = StageEnvelope.model_validate_json(manifest.read_bytes(), strict=True)
+        assert envelope.manifest_hash is not None
+        assert stage_manifest_hash(envelope) == envelope.manifest_hash
+        manifest.unlink()
+        temporary = manifest.with_name(f".{manifest.name}.tmp")
+        temporary.write_bytes(b"crash-left-candidate")
+        temporary.chmod(0o600)
+
+        written = store._write_manifest(envelope)
+
+        assert not temporary.exists()
+        assert written == manifest
+        assert manifest.read_bytes() == canonical_json_bytes(envelope)
+    finally:
+        store.close()

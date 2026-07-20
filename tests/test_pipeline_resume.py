@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import inspect
 import json
+import multiprocessing
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -13,6 +16,7 @@ from typing import get_type_hints
 import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
+from skillscout.adapters.localfs import AnchoredDirectory
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.pipeline import PipelineRunner, RetryPolicy
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure, StateStore
@@ -1701,3 +1705,204 @@ def test_publication_is_directory_durable_before_terminal_state_transaction(
         assert summary.status.value == "planned_not_published"
     finally:
         store.close()
+
+
+def _killed_state_writer(database: str, output: str, control) -> None:
+    """Reopen the store and block with a durable state temp before its rename."""
+
+    tripped = False
+
+    def block_at_first_rename(seam: str) -> None:
+        nonlocal tripped
+        if seam == "before_state_rename" and not tripped:
+            tripped = True
+            control.send("temp-created")
+            control.recv()
+
+    store = SQLiteStateStore(Path(database), filesystem_seam=block_at_first_rename)
+    try:
+        PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), Path(output)
+        )
+    finally:
+        store.close()
+
+
+def _hold_publication_lock(output: str, control) -> None:
+    """Hold the publication operation lock until the parent releases it."""
+
+    anchor = AnchoredDirectory.open(Path(output), create=True)
+    try:
+        descriptor = os.open(
+            ".publication-plan.json.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=anchor.descriptor,
+        )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            control.send("locked")
+            control.recv()
+        finally:
+            os.close(descriptor)
+    finally:
+        anchor.close()
+
+
+def test_killed_writer_stale_state_temp_recovers_and_resumes_without_prefix_replay(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "killed-writer.db"
+    state_temporary = tmp_path / ".killed-writer.db.tmp"
+    subject = load_fixture(APPROVED_FIXTURE)
+    store = SQLiteStateStore(database)
+    try:
+        with pytest.raises(SafeFailure) as interrupted:
+            PipelineRunner(store, FixtureProcessor()).run(
+                subject, tmp_path / "prefix-output", fail_after="generator"
+            )
+        assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+        prefix = tuple(
+            tuple(row)
+            for row in store.connection.execute(
+                """SELECT result_row_id, output_hash, manifest_hash
+                   FROM stage_results ORDER BY stage_index"""
+            )
+        )
+        assert len(prefix) == 6
+    finally:
+        store.close()
+    assert not state_temporary.exists()
+
+    context = multiprocessing.get_context("spawn")
+    parent_control, child_control = context.Pipe()
+    process = context.Process(
+        target=_killed_state_writer,
+        args=(str(database), str(tmp_path / "child-output"), child_control),
+    )
+    process.start()
+    try:
+        assert parent_control.recv() == "temp-created"
+        assert state_temporary.is_file()
+        process.kill()
+        process.join(timeout=10)
+        assert not process.is_alive()
+        assert state_temporary.is_file()
+
+        reopened = SQLiteStateStore(database)
+        try:
+            assert not state_temporary.exists()
+            summary = PipelineRunner(reopened, FixtureProcessor()).run(
+                subject, tmp_path / "recovered-output"
+            )
+            assert summary.status.value == "planned_not_published"
+            assert summary.reused_stage_count == 6
+            checkpoints = reopened.connection.execute(
+                "SELECT stage FROM checkpoints ORDER BY stage_index"
+            ).fetchall()
+            assert [str(row[0]) for row in checkpoints] == [
+                stage.value for stage in PipelineStage
+            ]
+            assert (
+                tuple(
+                    tuple(row)
+                    for row in reopened.connection.execute(
+                        """SELECT result_row_id, output_hash, manifest_hash
+                           FROM stage_results
+                           WHERE stage_index < 6 ORDER BY stage_index"""
+                    )
+                )
+                == prefix
+            )
+            assert not state_temporary.exists()
+        finally:
+            reopened.close()
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=10)
+        parent_control.close()
+        child_control.close()
+
+
+def test_publication_stale_temp_recovers_under_retained_operation_lock(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "publication-recovery-output"
+    plan = output / "publication-plan.json"
+    temporary = output / ".publication-plan.json.tmp"
+    lock = output / ".publication-plan.json.lock"
+    store = SQLiteStateStore(tmp_path / "publication-recovery.db")
+    try:
+        first = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), output
+        )
+        assert first.status.value == "planned_not_published"
+    finally:
+        store.close()
+    lock_identity = (os.lstat(lock).st_dev, os.lstat(lock).st_ino)
+    temporary.write_bytes(b"crash-left-candidate")
+    temporary.chmod(0o600)
+
+    reopened = SQLiteStateStore(tmp_path / "publication-recovery.db")
+    try:
+        rerun = PipelineRunner(reopened, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), output
+        )
+        assert rerun.status.value == "planned_not_published"
+        assert rerun.remote_writes_attempted == 0
+    finally:
+        reopened.close()
+
+    payload = json.loads(plan.read_text())
+    assert payload["remote_writes_attempted"] == 0
+    assert not temporary.exists()
+    assert (os.lstat(lock).st_dev, os.lstat(lock).st_ino) == lock_identity
+
+
+def test_concurrent_publication_write_fails_closed_until_lock_holder_exits(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "contended-output"
+    database = tmp_path / "contended.db"
+    context = multiprocessing.get_context("spawn")
+    parent_control, child_control = context.Pipe()
+    process = context.Process(
+        target=_hold_publication_lock,
+        args=(str(output), child_control),
+    )
+    process.start()
+    try:
+        assert parent_control.recv() == "locked"
+        store = SQLiteStateStore(database)
+        try:
+            with pytest.raises(SafeFailure) as failure:
+                PipelineRunner(store, FixtureProcessor()).run(
+                    load_fixture(APPROVED_FIXTURE), output
+                )
+            assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+            assert (
+                store.connection.execute("SELECT status FROM runs").fetchone()[0]
+                == "running"
+            )
+        finally:
+            store.close()
+        parent_control.send("release")
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+        reopened = SQLiteStateStore(database)
+        try:
+            summary = PipelineRunner(reopened, FixtureProcessor()).run(
+                load_fixture(APPROVED_FIXTURE), output
+            )
+            assert summary.status.value == "planned_not_published"
+            assert summary.remote_writes_attempted == 0
+        finally:
+            reopened.close()
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=10)
+        parent_control.close()
+        child_control.close()
