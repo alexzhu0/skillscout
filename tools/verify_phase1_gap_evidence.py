@@ -55,14 +55,18 @@ CLI_FACTS = {
     "remote_writes_attempted": 0,
 }
 CURRENT_FINDING_NODES: dict[str, tuple[str, ...]] = {
-    "CR-01": (
-        "tests/test_pipeline_resume.py::"
-        "test_killed_writer_stale_state_temp_recovers_and_resumes_without_prefix_replay",
+    "IN-01": (
+        "tests/test_phase1_gap_closure.py::"
+        "test_known_issue_in01_dead_local_state_store_alias_remains_as_documented",
     ),
-    "WR-01": (
-        "tests/test_phase1_evidence_verifier.py::"
-        "test_stale_json_fixture_bytes_are_rejected_before_command_credit",
+    "IN-02": (
+        "tests/test_phase1_gap_closure.py::"
+        "test_known_issue_in02_lock_acquisition_duplication_remains_as_documented",
     ),
+}
+CURRENT_FINDING_STATUS: dict[str, str] = {
+    "IN-01": "documented",
+    "IN-02": "documented",
 }
 COMPOSED_SMOKE_NODE = (
     "{repo}/tests/test_phase1_gap_closure.py::"
@@ -480,8 +484,11 @@ def _run_registry(
 
 
 def _finding_records() -> dict[str, dict[str, Any]]:
+    """Map each current review finding to its disposition and digest-bound nodes."""
+
+    _require(tuple(CURRENT_FINDING_STATUS) == tuple(CURRENT_FINDING_NODES))
     return {
-        finding: {"status": "pass", "nodes": list(nodes)}
+        finding: {"status": CURRENT_FINDING_STATUS[finding], "nodes": list(nodes)}
         for finding, nodes in CURRENT_FINDING_NODES.items()
     }
 
@@ -605,7 +612,12 @@ def render_document(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Current Two-Finding Matrix",
+            "## Current Two-Finding Known-Issue Matrix",
+            "",
+            "Both current findings are Info-severity items documented (not fixed) in the",
+            "current review. Each bound node is a deterministic known-issue marker for the",
+            "documented source state, not a fix proof; resolving a finding must break its",
+            "marker and force a fresh re-baseline.",
             "",
             "| Finding | Status | Digest-bound top-level test nodes |",
             "|---|---|---|",
@@ -621,7 +633,7 @@ def render_document(payload: dict[str, Any]) -> str:
             "",
             "The older OS/syscall-boundary outbound-network denial remains assigned only to",
             "Phase 6. It is not owned by any current finding and is distinct from the two",
-            "findings covered as PASS above.",
+            "documented Info findings above.",
             "",
             "## Canonical Machine Evidence",
             "",
