@@ -67,7 +67,7 @@ LEGACY_GAP_FINDING_NODES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-CURRENT_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
+PRIOR_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
     "CR-01": (
         "tests/test_state_integrity.py::"
         "test_post_commit_backup_cleanup_failure_returns_success_and_reopen_observes_mutation",
@@ -97,6 +97,17 @@ CURRENT_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
         "test_existing_state_requires_private_permissions_before_deserialize",
         "tests/test_state_integrity.py::"
         "test_existing_manifest_requires_private_single_owner_file_before_decode",
+    ),
+}
+
+CURRENT_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
+    "CR-01": (
+        "tests/test_pipeline_resume.py::"
+        "test_killed_writer_stale_state_temp_recovers_and_resumes_without_prefix_replay",
+    ),
+    "WR-01": (
+        "tests/test_phase1_evidence_verifier.py::"
+        "test_stale_json_fixture_bytes_are_rejected_before_command_credit",
     ),
 }
 
@@ -577,8 +588,8 @@ def test_gap_finding_node_definitions_exist() -> None:
             assert function_name in definitions[module], node_id
 
 
-def test_current_review_finding_node_definitions_exist() -> None:
-    assert tuple(CURRENT_REVIEW_FINDING_NODES) == (
+def test_prior_review_finding_node_definitions_exist() -> None:
+    assert tuple(PRIOR_REVIEW_FINDING_NODES) == (
         "CR-01",
         "CR-02",
         "CR-03",
@@ -587,6 +598,25 @@ def test_current_review_finding_node_definitions_exist() -> None:
         "WR-03",
         "WR-04",
     )
+    definitions: dict[Path, set[str]] = {}
+    for nodes in PRIOR_REVIEW_FINDING_NODES.values():
+        assert nodes
+        for node_id in nodes:
+            module_name, separator, function_name = node_id.partition("::")
+            assert separator == "::"
+            module = PROJECT_ROOT / module_name
+            if module not in definitions:
+                tree = ast.parse(module.read_bytes(), filename=str(module))
+                definitions[module] = {
+                    node.name
+                    for node in tree.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+            assert function_name in definitions[module], node_id
+
+
+def test_current_review_finding_node_definitions_exist() -> None:
+    assert tuple(CURRENT_REVIEW_FINDING_NODES) == ("CR-01", "WR-01")
     definitions: dict[Path, set[str]] = {}
     for nodes in CURRENT_REVIEW_FINDING_NODES.values():
         assert nodes

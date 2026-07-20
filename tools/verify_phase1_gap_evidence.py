@@ -56,34 +56,12 @@ CLI_FACTS = {
 }
 CURRENT_FINDING_NODES: dict[str, tuple[str, ...]] = {
     "CR-01": (
-        "tests/test_state_integrity.py::"
-        "test_post_commit_backup_cleanup_failure_returns_success_and_reopen_observes_mutation",
-    ),
-    "CR-02": (
-        "tests/test_state_integrity.py::"
-        "test_resume_event_tamper_is_rejected_by_every_bound_trust_path",
-    ),
-    "CR-03": (
-        "tests/test_cli_security.py::"
-        "test_argparse_failures_are_byte_exact_non_echoing_and_non_durable",
+        "tests/test_pipeline_resume.py::"
+        "test_killed_writer_stale_state_temp_recovers_and_resumes_without_prefix_replay",
     ),
     "WR-01": (
-        "tests/test_pipeline_resume.py::"
-        "test_fail_once_unexpected_exception_resumes_failed_stage_without_prefix_replay",
-    ),
-    "WR-02": (
         "tests/test_phase1_evidence_verifier.py::"
-        "test_verify_reruns_closed_registry_and_rejects_mismatched_output",
-    ),
-    "WR-03": (
-        "tests/test_state_integrity.py::"
-        "test_state_manifest_namespace_collision_is_rejected_before_creation",
-    ),
-    "WR-04": (
-        "tests/test_state_integrity.py::"
-        "test_existing_state_requires_private_permissions_before_deserialize",
-        "tests/test_state_integrity.py::"
-        "test_existing_manifest_requires_private_single_owner_file_before_decode",
+        "test_stale_json_fixture_bytes_are_rejected_before_command_credit",
     ),
 }
 COMPOSED_SMOKE_NODE = (
@@ -285,6 +263,8 @@ def _source_paths(repository_root: Path) -> tuple[Path, ...]:
         Path(VERIFIER_PATH),
         Path(REVIEW_PATH),
         Path(VERIFICATION_PATH),
+        Path("tests/fixtures/pipeline/approved.json"),
+        Path("tests/fixtures/state/v1-cli-provenance.json"),
     }
     for relative_root in (Path("src/skillscout"), Path("tests")):
         root = repository_root / relative_root
@@ -625,7 +605,7 @@ def render_document(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Current Seven-Finding Matrix",
+            "## Current Two-Finding Matrix",
             "",
             "| Finding | Status | Digest-bound top-level test nodes |",
             "|---|---|---|",
@@ -640,8 +620,8 @@ def render_document(payload: dict[str, Any]) -> str:
             "## Deferred Item",
             "",
             "The older OS/syscall-boundary outbound-network denial remains assigned only to",
-            "Phase 6. It is distinct from current WR-04 ownership/mode enforcement, which is",
-            "covered as PASS above.",
+            "Phase 6. It is not owned by any current finding and is distinct from the two",
+            "findings covered as PASS above.",
             "",
             "## Canonical Machine Evidence",
             "",
