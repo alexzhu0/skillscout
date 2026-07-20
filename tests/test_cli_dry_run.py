@@ -115,9 +115,11 @@ def test_approved_fixture_reaches_planned_not_published(
         ).fetchall()
         assert [row["stage"] for row in checkpoints] == list(STAGE_SEQUENCE)
 
-    publication_files = [path.name for path in (tmp_path / "output").iterdir()]
-    assert publication_files == ["publication-plan.json"]
-    publication_plan = json.loads((tmp_path / "output" / publication_files[0]).read_text())
+    publication_files = sorted(path.name for path in (tmp_path / "output").iterdir())
+    assert publication_files == [".publication-plan.json.lock", "publication-plan.json"]
+    publication_plan = json.loads(
+        (tmp_path / "output" / "publication-plan.json").read_text()
+    )
     assert publication_plan == {
         "last_stage": "publication_planner",
         "remote_writes_attempted": 0,

@@ -596,6 +596,8 @@ class SQLiteStateStore:
             )
             self._trip_filesystem_seam("after_state_parent_anchor")
             self._acquire_lock()
+            self._state_parent.recover_stale_temporary(self._state_name)
+            self._state_parent.recover_stale_temporary(f".{self._state_name}.backup")
             self._trip_filesystem_seam("before_state_read")
             existed = self._state_parent.stat_child(self._state_name) is not None
             raw = self._state_parent.read_bytes(
@@ -2214,6 +2216,7 @@ class SQLiteStateStore:
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                 return target
             self._trip_filesystem_seam("before_manifest_write")
+            anchor.recover_stale_temporary(name)
             anchor.atomic_write(
                 name,
                 payload,

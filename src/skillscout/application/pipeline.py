@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -436,6 +438,34 @@ class PipelineRunner:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     @staticmethod
+    def _acquire_publication_lock(anchor: AnchoredDirectory, target_name: str) -> int:
+        """Serialize publication writers on a retained kernel-flock inode."""
+
+        lock_name = AnchoredDirectory.validate_child_name(f".{target_name}.lock")
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            descriptor = os.open(lock_name, flags, 0o600, dir_fd=anchor.descriptor)
+            anchored = os.stat(
+                lock_name,
+                dir_fd=anchor.descriptor,
+                follow_symlinks=False,
+            )
+            opened = os.fstat(descriptor)
+            AnchoredDirectory._require_private_regular(anchored)
+            AnchoredDirectory._require_private_regular(opened)
+            if (anchored.st_dev, anchored.st_ino) != (
+                opened.st_dev,
+                opened.st_ino,
+            ):
+                raise OSError("invalid lock file")
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return descriptor
+        except (BlockingIOError, OSError):
+            if "descriptor" in locals():
+                os.close(descriptor)
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    @staticmethod
     def _write_publication_plan(
         output_directory: Path,
         plan: PublicationPlan,
@@ -443,6 +473,7 @@ class PipelineRunner:
         filesystem_seam: Callable[[str], None] | None = None,
     ) -> Path:
         anchor: AnchoredDirectory | None = None
+        lock_descriptor = -1
         try:
             payload = canonical_json_bytes(plan) + b"\n"
             if len(payload) > MAX_PUBLICATION_PLAN_BYTES:
@@ -453,6 +484,11 @@ class PipelineRunner:
                 filesystem_seam=filesystem_seam,
             )
             target_name = "publication-plan.json"
+            lock_descriptor = PipelineRunner._acquire_publication_lock(
+                anchor, target_name
+            )
+            anchor.recover_stale_temporary(target_name)
+            anchor.recover_stale_temporary(f".{target_name}.backup")
             previous = anchor.read_bytes(
                 target_name,
                 max_bytes=MAX_PUBLICATION_PLAN_BYTES,
@@ -481,6 +517,11 @@ class PipelineRunner:
         except (DurableWriteError, OSError):
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
         finally:
+            if lock_descriptor >= 0:
+                try:
+                    os.close(lock_descriptor)
+                except OSError:
+                    pass
             if anchor is not None:
                 anchor.close()
 
