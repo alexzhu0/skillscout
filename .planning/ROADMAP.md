@@ -27,7 +27,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Nothing  
 **Requirements:** OPS-01, OPS-04  
-**Plans:** 16/16 plans executed; independent verification found gaps (4/5 must-haves)
+**Plans:** 16/18 plans executed; gap-closure plans added (01-17 crash recovery, 01-18 evidence authority)
 
 - [x] 01-01-PLAN.md
 - [x] 01-02-PLAN.md
@@ -45,6 +45,8 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 - [x] 01-14-PLAN.md
 - [x] 01-15-PLAN.md
 - [x] 01-16-PLAN.md
+- [ ] 01-17-PLAN.md
+- [ ] 01-18-PLAN.md
 
 **Wave 1**
 
@@ -106,6 +108,14 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 **Wave 15** *(blocked on Wave 14 completion)*
 
 - [x] `01-16-PLAN.md` — Independently rerunnable evidence authority and final seven-finding acceptance.
+
+**Wave 16** *(blocked on Wave 15 completion)*
+
+- [ ] `01-17-PLAN.md` — Coordinated stale-temp crash recovery across state, backup, manifest, and publication-plan writes with a killed-writer no-prefix-replay regression.
+
+**Wave 17** *(blocked on Wave 16 completion)*
+
+- [ ] `01-18-PLAN.md` — Fixture-complete evidence authority, current two-finding map, and freshly recorded independently rerun evidence.
 
 **Success Criteria:**
 
