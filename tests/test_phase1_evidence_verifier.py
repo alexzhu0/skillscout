@@ -54,6 +54,13 @@ def evidence_repository(tmp_path: Path) -> Path:
     frozen = repository / "tests/fixtures/state/v1-cli.db"
     frozen.parent.mkdir(parents=True)
     shutil.copyfile(PROJECT_ROOT / "tests/fixtures/state/v1-cli.db", frozen)
+    approved = repository / "tests/fixtures/pipeline/approved.json"
+    approved.parent.mkdir(parents=True)
+    shutil.copyfile(PROJECT_ROOT / "tests/fixtures/pipeline/approved.json", approved)
+    provenance = repository / "tests/fixtures/state/v1-cli-provenance.json"
+    shutil.copyfile(
+        PROJECT_ROOT / "tests/fixtures/state/v1-cli-provenance.json", provenance
+    )
 
     definitions: dict[str, list[str]] = {}
     for nodes in verifier.CURRENT_FINDING_NODES.values():
@@ -120,6 +127,20 @@ def _replace_source_digest(payload: dict[str, Any], relative: str, digest: str) 
     raise AssertionError(relative)
 
 
+def _drop_source_claim(payload: dict[str, Any], relative: str) -> None:
+    payload["source_digests"] = [
+        record for record in payload["source_digests"] if record["path"] != relative
+    ]
+
+
+def _rename_source_claim(payload: dict[str, Any], relative: str, replacement: str) -> None:
+    for record in payload["source_digests"]:
+        if record["path"] == relative:
+            record["path"] = replacement
+            return
+    raise AssertionError(relative)
+
+
 @pytest.mark.parametrize(
     ("relative", "replacement"),
     [
@@ -140,6 +161,75 @@ def test_verify_rejects_stale_bound_source_bytes(
         verifier.verify_evidence(
             document, evidence_repository, rerun=True, runner=_successful_runner()
         )
+
+
+def test_stale_json_fixture_bytes_are_rejected_before_command_credit(
+    evidence_repository: Path,
+) -> None:
+    document = _document(evidence_repository)
+    document_bytes = document.read_bytes()
+    approved = evidence_repository / "tests/fixtures/pipeline/approved.json"
+    provenance = evidence_repository / "tests/fixtures/state/v1-cli-provenance.json"
+    fixture_paths = (
+        "tests/fixtures/pipeline/approved.json",
+        "tests/fixtures/state/v1-cli-provenance.json",
+    )
+    calls: list[str] = []
+
+    def spy(spec: verifier.CommandSpec, workspace: Path) -> verifier.ProcessCapture:
+        calls.append(spec.id)
+        return _successful_runner()(spec, workspace)
+
+    original_approved = approved.read_bytes()
+    whitespace_only = original_approved.replace(
+        b'\n  "schema_version"', b'\n   "schema_version"', 1
+    )
+    assert whitespace_only != original_approved
+    assert json.loads(whitespace_only) == json.loads(original_approved)
+    approved.write_bytes(whitespace_only)
+    with pytest.raises(verifier.EvidenceError):
+        verifier.verify_evidence(document, evidence_repository, rerun=True, runner=spy)
+    assert calls == []
+    approved.write_bytes(original_approved)
+
+    original_provenance = provenance.read_bytes()
+    parsed_provenance = json.loads(original_provenance)
+    reordered = {key: parsed_provenance[key] for key in reversed(list(parsed_provenance))}
+    key_order_only = (json.dumps(reordered, indent=2) + "\n").encode()
+    assert key_order_only != original_provenance
+    assert json.loads(key_order_only) == parsed_provenance
+    provenance.write_bytes(key_order_only)
+    with pytest.raises(verifier.EvidenceError):
+        verifier.verify_evidence(document, evidence_repository, rerun=True, runner=spy)
+    assert calls == []
+    provenance.write_bytes(original_provenance)
+
+    claimed_paths = [record["path"] for record in _payload(document)["source_digests"]]
+    for relative in fixture_paths:
+        assert claimed_paths.count(relative) == 1
+
+    _rewrite(document, lambda payload: _drop_source_claim(payload, fixture_paths[0]))
+    with pytest.raises(verifier.EvidenceError):
+        verifier.verify_evidence(document, evidence_repository, rerun=True, runner=spy)
+    assert calls == []
+    document.write_bytes(document_bytes)
+
+    _rewrite(document, lambda payload: _drop_source_claim(payload, fixture_paths[1]))
+    with pytest.raises(verifier.EvidenceError):
+        verifier.verify_evidence(document, evidence_repository, rerun=True, runner=spy)
+    assert calls == []
+    document.write_bytes(document_bytes)
+
+    _rewrite(
+        document,
+        lambda payload: _rename_source_claim(
+            payload, fixture_paths[0], "tests/fixtures/pipeline/not-bound.json"
+        ),
+    )
+    with pytest.raises(verifier.EvidenceError):
+        verifier.verify_evidence(document, evidence_repository, rerun=True, runner=spy)
+    assert calls == []
+    document.write_bytes(document_bytes)
 
 
 def test_verify_rejects_new_in_scope_source_until_recorded(
