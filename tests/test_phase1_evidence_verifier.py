@@ -272,7 +272,7 @@ def test_verify_resolves_named_nodes_from_the_digest_bound_ast(
     evidence_repository: Path,
 ) -> None:
     document = _document(evidence_repository)
-    node_id = verifier.CURRENT_FINDING_NODES["CR-01"][0]
+    node_id = verifier.CURRENT_FINDING_NODES["IN-01"][0]
     module_name, function_name = node_id.split("::", 1)
     module = evidence_repository / module_name
     module.write_text(

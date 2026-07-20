@@ -100,7 +100,7 @@ PRIOR_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-CURRENT_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
+CLOSED_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
     "CR-01": (
         "tests/test_pipeline_resume.py::"
         "test_killed_writer_stale_state_temp_recovers_and_resumes_without_prefix_replay",
@@ -108,6 +108,17 @@ CURRENT_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
     "WR-01": (
         "tests/test_phase1_evidence_verifier.py::"
         "test_stale_json_fixture_bytes_are_rejected_before_command_credit",
+    ),
+}
+
+CURRENT_REVIEW_FINDING_NODES: dict[str, tuple[str, ...]] = {
+    "IN-01": (
+        "tests/test_phase1_gap_closure.py::"
+        "test_known_issue_in01_dead_local_state_store_alias_remains_as_documented",
+    ),
+    "IN-02": (
+        "tests/test_phase1_gap_closure.py::"
+        "test_known_issue_in02_lock_acquisition_duplication_remains_as_documented",
     ),
 }
 
@@ -270,6 +281,51 @@ def _manifest_bytes_for_run(
     ]
     root = state.with_suffix(".manifests")
     return {locator: (root / locator).read_bytes() for locator in locators}
+
+
+class _LockHelperNormalizer(ast.NodeTransformer):
+    """Collapse the documented incidental differences between the two lock helpers."""
+
+    def visit_Expr(self, node: ast.Expr) -> ast.stmt | None:
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            return None
+        return self.generic_visit(node)
+
+    def visit_Assert(self, node: ast.Assert) -> None:
+        return None
+
+    def visit_Return(self, node: ast.Return) -> ast.Expr:
+        return ast.Expr(value=ast.Constant(value="<released>"))
+
+    def visit_Assign(self, node: ast.Assign) -> ast.stmt:
+        if any(
+            isinstance(target, ast.Attribute) and target.attr == "_lock_descriptor"
+            for target in node.targets
+        ):
+            return ast.Expr(value=ast.Constant(value="<released>"))
+        return self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.expr:
+        self.generic_visit(node)
+        if isinstance(node.value, ast.Name) and node.value.id == "self":
+            if node.attr == "_state_parent":
+                return ast.Name(id="anchor", ctx=node.ctx)
+            if node.attr == "_state_name":
+                return ast.Name(id="target_name", ctx=node.ctx)
+        return node
+
+
+def _normalized_lock_helper_dump(module: Path, function_name: str) -> str:
+    tree = ast.parse(module.read_bytes(), filename=str(module))
+    matches = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    ]
+    assert len(matches) == 1
+    normalized = _LockHelperNormalizer().visit(matches[0])
+    assert isinstance(normalized, ast.FunctionDef)
+    return ast.dump(ast.Module(body=normalized.body, type_ignores=[]))
 
 
 def test_packaged_cli_happy_interrupt_resume_inspect_gap_acceptance(
@@ -615,8 +671,27 @@ def test_prior_review_finding_node_definitions_exist() -> None:
             assert function_name in definitions[module], node_id
 
 
+def test_closed_review_finding_node_definitions_exist() -> None:
+    assert tuple(CLOSED_REVIEW_FINDING_NODES) == ("CR-01", "WR-01")
+    definitions: dict[Path, set[str]] = {}
+    for nodes in CLOSED_REVIEW_FINDING_NODES.values():
+        assert nodes
+        for node_id in nodes:
+            module_name, separator, function_name = node_id.partition("::")
+            assert separator == "::"
+            module = PROJECT_ROOT / module_name
+            if module not in definitions:
+                tree = ast.parse(module.read_bytes(), filename=str(module))
+                definitions[module] = {
+                    node.name
+                    for node in tree.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+            assert function_name in definitions[module], node_id
+
+
 def test_current_review_finding_node_definitions_exist() -> None:
-    assert tuple(CURRENT_REVIEW_FINDING_NODES) == ("CR-01", "WR-01")
+    assert tuple(CURRENT_REVIEW_FINDING_NODES) == ("IN-01", "IN-02")
     definitions: dict[Path, set[str]] = {}
     for nodes in CURRENT_REVIEW_FINDING_NODES.values():
         assert nodes
@@ -632,6 +707,43 @@ def test_current_review_finding_node_definitions_exist() -> None:
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 }
             assert function_name in definitions[module], node_id
+
+
+def test_known_issue_in01_dead_local_state_store_alias_remains_as_documented() -> None:
+    ports_module = PROJECT_ROOT / "src" / "skillscout" / "application" / "ports.py"
+    ports_tree = ast.parse(ports_module.read_bytes(), filename=str(ports_module))
+    alias_definitions = [
+        node
+        for node in ports_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "LocalStateStore"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "StateStore"
+    ]
+    assert len(alias_definitions) == 1
+    references: list[str] = []
+    for root in (SOURCE_ROOT, PROJECT_ROOT / "tests", PROJECT_ROOT / "tools"):
+        for module in sorted(root.rglob("*.py")):
+            tree = ast.parse(module.read_bytes(), filename=str(module))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and node.id == "LocalStateStore":
+                    references.append(f"{module}:{node.lineno}")
+                elif isinstance(node, ast.Attribute) and node.attr == "LocalStateStore":
+                    references.append(f"{module}:{node.lineno}")
+    assert references == [f"{ports_module}:{alias_definitions[0].lineno}"]
+
+
+def test_known_issue_in02_lock_acquisition_duplication_remains_as_documented() -> None:
+    state_dump = _normalized_lock_helper_dump(
+        SOURCE_ROOT / "adapters" / "state.py", "_acquire_lock"
+    )
+    pipeline_dump = _normalized_lock_helper_dump(
+        SOURCE_ROOT / "application" / "pipeline.py", "_acquire_publication_lock"
+    )
+    assert state_dump == pipeline_dump
 
 
 def test_current_review_composed_packaged_smoke(tmp_path: Path) -> None:
