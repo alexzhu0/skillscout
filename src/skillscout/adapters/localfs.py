@@ -328,6 +328,23 @@ class AnchoredDirectory:
         if had_backup:
             self._retire_backup_after_commit(backup_name)
 
+    def recover_stale_temporary(self, name: str) -> None:
+        """Discard a crash-left deterministic temp after private-file admission.
+
+        The caller must hold the operation's serialization authority: a temp
+        admitted here can only belong to a dead former lock holder. Anything
+        failing the private regular-file predicate is retained and reported
+        with the unchanged fail-closed error.
+        """
+
+        name = self.validate_child_name(name)
+        temporary = self.validate_child_name(f".{name}.tmp")
+        metadata = self.stat_child(temporary)
+        if metadata is None:
+            return
+        self._require_private_regular(metadata)
+        self.unlink(temporary, missing_ok=False, sync=True)
+
     def _retire_backup_after_commit(self, backup_name: str) -> None:
         """Best-effort housekeeping after the replacement is authoritative."""
 
