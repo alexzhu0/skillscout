@@ -2189,3 +2189,103 @@ def test_v1_migration_preserves_semantic_results_and_adds_row_identity(
         assert store.connection.execute("PRAGMA foreign_key_check").fetchone() is None
     finally:
         store.close()
+
+
+def test_recover_stale_temporary_removes_private_temp_and_fsyncs_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = tmp_path / "recovery"
+    directory.mkdir(mode=0o700)
+    target = directory / "state.db"
+    target.write_bytes(b"authoritative-target")
+    target.chmod(0o600)
+    temporary = directory / ".state.db.tmp"
+    temporary.write_bytes(b"crash-left-candidate")
+    temporary.chmod(0o600)
+    with AnchoredDirectory.open(directory, create=True) as anchor:
+        events: list[tuple[str, int]] = []
+        real_unlink = localfs_adapter.os.unlink
+        real_fsync = localfs_adapter.os.fsync
+
+        def observe_unlink(name, *, dir_fd):
+            events.append(("unlink", dir_fd))
+            return real_unlink(name, dir_fd=dir_fd)
+
+        def observe_fsync(descriptor):
+            events.append(("fsync", descriptor))
+            return real_fsync(descriptor)
+
+        monkeypatch.setattr(localfs_adapter.os, "unlink", observe_unlink)
+        monkeypatch.setattr(localfs_adapter.os, "fsync", observe_fsync)
+        directory_descriptor = anchor.descriptor
+        anchor.recover_stale_temporary("state.db")
+
+    assert not temporary.exists()
+    assert target.read_bytes() == b"authoritative-target"
+    assert events == [
+        ("unlink", directory_descriptor),
+        ("fsync", directory_descriptor),
+    ]
+
+
+@pytest.mark.parametrize("damage", ["group_mode", "symlink", "hardlink"])
+def test_recover_stale_temporary_rejects_and_retains_non_private_temps(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    directory = tmp_path / f"reject-{damage}"
+    directory.mkdir(mode=0o700)
+    target = directory / "state.db"
+    target.write_bytes(b"authoritative-target")
+    target.chmod(0o600)
+    temporary = directory / ".state.db.tmp"
+    if damage == "symlink":
+        temporary.symlink_to(target.name)
+    else:
+        temporary.write_bytes(b"crash-left-candidate")
+        temporary.chmod(0o600)
+        if damage == "group_mode":
+            temporary.chmod(0o644)
+        else:
+            os.link(temporary, directory / "alias")
+    with AnchoredDirectory.open(directory, create=True) as anchor:
+        with pytest.raises(DurableWriteError):
+            anchor.recover_stale_temporary("state.db")
+
+    assert os.path.lexists(temporary)
+    assert target.read_bytes() == b"authoritative-target"
+
+
+def test_recover_stale_temporary_missing_temp_is_a_noop(tmp_path: Path) -> None:
+    directory = tmp_path / "recover-missing"
+    directory.mkdir(mode=0o700)
+    target = directory / "state.db"
+    target.write_bytes(b"authoritative-target")
+    target.chmod(0o600)
+    before = sorted(path.name for path in directory.iterdir())
+    with AnchoredDirectory.open(directory, create=True) as anchor:
+        anchor.recover_stale_temporary("state.db")
+
+    assert sorted(path.name for path in directory.iterdir()) == before
+    assert target.read_bytes() == b"authoritative-target"
+
+
+def test_atomic_write_still_refuses_preexisting_temp_without_recovery(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "backstop"
+    directory.mkdir(mode=0o700)
+    target = directory / "state.db"
+    target.write_bytes(b"authoritative-target")
+    target.chmod(0o600)
+    temporary = directory / ".state.db.tmp"
+    temporary.write_bytes(b"crash-left-candidate")
+    temporary.chmod(0o600)
+    with AnchoredDirectory.open(directory, create=True) as anchor:
+        with pytest.raises(DurableWriteError) as failure:
+            anchor.atomic_write("state.db", b"replacement", max_bytes=1024)
+
+    assert failure.value.operation == "temporary_exists"
+    assert temporary.read_bytes() == b"crash-left-candidate"
+    assert target.read_bytes() == b"authoritative-target"
