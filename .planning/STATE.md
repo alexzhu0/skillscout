@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
 status: executing
-stopped_at: Plan 01-17 complete (stale-temp crash recovery wired); next 01-18
-last_updated: "2026-07-20T09:32:00Z"
+stopped_at: Plan 01-18 complete (evidence authority gap closed); phase ready for re-review
+last_updated: "2026-07-20T10:06:54.776Z"
 progress:
   total_phases: 1
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 18
-  completed_plans: 17
+  completed_plans: 18
 ---
 
 # Project State: SkillScout
@@ -23,9 +23,9 @@ progress:
 ## Current Position
 
 **Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 17 of 18 complete; next 01-18
-**Verification:** 4 of 5 must-haves verified
-**Next command:** `$gsd-execute-phase 1 --gaps-only`
+**Plan:** 18 of 18 complete; phase plans done
+**Verification:** 4 of 5 must-haves verified (re-review pending with current evidence)
+**Next command:** `$gsd-code-review 1`
 
 ## Progress
 
@@ -43,7 +43,7 @@ Phase 1 verification    [████████░░]  80%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 1 |
-| Plans completed | 17/18 |
+| Plans completed | 18/18 |
 
 ## Accumulated Context
 
@@ -88,19 +88,18 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-Plans 01-12 through 01-15 closed the previous three blockers and three of four warnings through truthful private snapshots, event-derived reuse authority, closed CLI diagnostics, and finite no-replay recovery. Independent review and goal verification found two remaining root causes: crash-left deterministic temporary files can permanently block state recovery, and the acceptance evidence is stale/incomplete after review because it omits the reviewed JSON fixtures and maps superseded findings. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6 and is unrelated to these gaps.
+Plans 01-12 through 01-15 closed the previous three blockers and three of four warnings through truthful private snapshots, event-derived reuse authority, closed CLI diagnostics, and finite no-replay recovery. The two remaining root causes are now closed as well: Plan 01-17 wired owner-validated stale-temp crash recovery into state, manifest, and publication writes with a killed-writer regression, and Plan 01-18 bound both reviewed JSON fixtures into the evidence authority, replaced the finding map with the current CR-01/WR-01 semantics, and recorded fresh independently rerun evidence. Both findings await independent re-review against the stabilized tree. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6 and is unrelated to these gaps.
 
 ## Session Continuity
 
-**Last session:** 2026-07-20T09:32:00Z
-**Stopped at:** Plan 01-17 complete; stale-temp recovery wired into state, manifest, and publication writes
+**Last session:** 2026-07-20T10:06:54.772Z
+**Stopped at:** Plan 01-18 complete; fixture-complete two-finding evidence recorded and independently rerun
 **Resume file:** None
 
 ### Next
 
-1. Execute the remaining gap-closure plan 01-18 with `$gsd-execute-phase 1 --gaps-only`.
-2. Re-run code review and goal verification; require current `verify --rerun` evidence after bound documents stabilize.
-3. Run Nyquist validation and the Phase-1 security audit before advancing to Phase 2.
+1. Re-run code review and goal verification; the current `verify --rerun` evidence is fresh and bound to the stabilized tree (exit 0 from an external cwd).
+2. Run Nyquist validation and the Phase-1 security audit before advancing to Phase 2.
 
 ---
 *State initialized: 2026-07-16*
@@ -126,6 +125,7 @@ Plans 01-12 through 01-15 closed the previous three blockers and three of four w
 | Phase 01-auditable-dry-run-spine P15 | 9 min | 2 tasks | 5 files |
 | Phase 01-auditable-dry-run-spine P16 | 16min | 2 tasks | 4 files |
 | Phase 01-auditable-dry-run-spine P17 | 35min | 2 tasks | 6 files |
+| Phase 01-auditable-dry-run-spine P18 | 19min | 2 tasks | 4 files |
 
 ## Decisions
 
@@ -177,3 +177,5 @@ Plans 01-12 through 01-15 closed the previous three blockers and three of four w
 - [Phase 01]: Normalize only exact temporary roots and elapsed durations after the fixed timing marker — Makes reruns reproducible without removing failures, counts, node names, exit status, or arbitrary output.
 - [Phase 01]: Recover crash-left deterministic temps only under the corresponding retained lock after the private regular-file predicate passes — Rejected temps are retained and the operation fails closed on sanitized codes.
 - [Phase 01]: Serialize publication writers on a retained kernel-flock inode that is never deleted — A live lock holder makes concurrent publication writes fail closed with state_operation_failed.
+- [Phase 01]: Bind both reviewed JSON fixtures as explicit literal paths in the closed evidence source set — Semantically neutral fixture byte changes now stale recorded evidence before command credit.
+- [Phase 01]: Credit exactly the current review's CR-01/WR-01 findings through digest-bound nodes — The superseded seven-finding map survives only under the past-tense prior-review label.
