@@ -4,29 +4,28 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 01
 current_phase_name: auditable-dry-run-spine
-status: verifying
-stopped_at: Independent verification found crash-recovery and evidence-authority gaps
-last_updated: "2026-07-19T12:00:03Z"
+status: executing
+stopped_at: Plan 01-17 complete (stale-temp crash recovery wired); next 01-18
+last_updated: "2026-07-20T09:32:00Z"
 progress:
-  total_phases: 6
+  total_phases: 1
   completed_phases: 0
-  total_plans: 16
-  completed_plans: 16
-  percent: 17
+  total_plans: 18
+  completed_plans: 17
 ---
 
 # Project State: SkillScout
 
-**Last updated:** 2026-07-19
+**Last updated:** 2026-07-20
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Verification gaps found — Phase 1 remains pending
+**Status:** Executing Phase 01
 
 ## Current Position
 
-**Phase:** 01 (auditable-dry-run-spine) — GAPS FOUND
-**Plan:** 16 of 16 executed
+**Phase:** 01 (auditable-dry-run-spine) — EXECUTING
+**Plan:** 17 of 18 complete; next 01-18
 **Verification:** 4 of 5 must-haves verified
-**Next command:** `$gsd-plan-phase 1 --gaps`
+**Next command:** `$gsd-execute-phase 1 --gaps-only`
 
 ## Progress
 
@@ -44,7 +43,7 @@ Phase 1 verification    [████████░░]  80%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 1 |
-| Plans completed | 16/16 |
+| Plans completed | 17/18 |
 
 ## Accumulated Context
 
@@ -93,16 +92,15 @@ Plans 01-12 through 01-15 closed the previous three blockers and three of four w
 
 ## Session Continuity
 
-**Last session:** 2026-07-19T12:00:03Z
-**Stopped at:** Independent verification returned gaps_found (4/5)
+**Last session:** 2026-07-20T09:32:00Z
+**Stopped at:** Plan 01-17 complete; stale-temp recovery wired into state, manifest, and publication writes
 **Resume file:** None
 
 ### Next
 
-1. Create bounded gap-closure plans with `$gsd-plan-phase 1 --gaps`.
-2. Execute only the new plans with `$gsd-execute-phase 1 --gaps-only`.
-3. Re-run code review and goal verification; require current `verify --rerun` evidence after bound documents stabilize.
-4. Run Nyquist validation and the Phase-1 security audit before advancing to Phase 2.
+1. Execute the remaining gap-closure plan 01-18 with `$gsd-execute-phase 1 --gaps-only`.
+2. Re-run code review and goal verification; require current `verify --rerun` evidence after bound documents stabilize.
+3. Run Nyquist validation and the Phase-1 security audit before advancing to Phase 2.
 
 ---
 *State initialized: 2026-07-16*
@@ -127,6 +125,7 @@ Plans 01-12 through 01-15 closed the previous three blockers and three of four w
 | Phase 01-auditable-dry-run-spine P14 | 13 min | 2 tasks | 4 files |
 | Phase 01-auditable-dry-run-spine P15 | 9 min | 2 tasks | 5 files |
 | Phase 01-auditable-dry-run-spine P16 | 16min | 2 tasks | 4 files |
+| Phase 01-auditable-dry-run-spine P17 | 35min | 2 tasks | 6 files |
 
 ## Decisions
 
@@ -176,3 +175,5 @@ Plans 01-12 through 01-15 closed the previous three blockers and three of four w
 - [Phase 01]: Keep the verified resume-event ledger as the sole retry prefix authority — Recovery starts at the failed stage and never replays already verified successful prefix effects.
 - [Phase 01]: Keep evidence documents and verifier outcomes outside the authority they report — Eliminates self-hash and self-success cycles while exact source and fresh output remain independently checkable.
 - [Phase 01]: Normalize only exact temporary roots and elapsed durations after the fixed timing marker — Makes reruns reproducible without removing failures, counts, node names, exit status, or arbitrary output.
+- [Phase 01]: Recover crash-left deterministic temps only under the corresponding retained lock after the private regular-file predicate passes — Rejected temps are retained and the operation fails closed on sanitized codes.
+- [Phase 01]: Serialize publication writers on a retained kernel-flock inode that is never deleted — A live lock holder makes concurrent publication writes fail closed with state_operation_failed.
