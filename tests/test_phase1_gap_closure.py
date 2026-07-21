@@ -164,6 +164,10 @@ FORBIDDEN_PRODUCTION_MODULES = frozenset(
 )
 FORBIDDEN_DIRECT_CALLS = frozenset({"compile", "eval", "exec"})
 FORBIDDEN_QUALIFIED_CALLS = frozenset({"os.popen", "os.system"})
+IMPORT_CARVE_OUTS: dict[str, frozenset[str]] = {
+    "adapters/github.py": frozenset({"httpx"}),
+    "adapters/openai_extract.py": frozenset({"openai"}),
+}
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -783,18 +787,20 @@ def test_current_review_composed_packaged_smoke(tmp_path: Path) -> None:
 
 
 def test_production_capability_surface_remains_local_only() -> None:
-    imported_modules: set[str] = set()
+    module_imports: dict[str, set[str]] = {}
     forbidden_calls: list[str] = []
     for module in sorted(SOURCE_ROOT.rglob("*.py")):
+        relative = module.relative_to(SOURCE_ROOT).as_posix()
+        imported = module_imports.setdefault(relative, set())
         tree = ast.parse(module.read_bytes(), filename=str(module))
         aliases: dict[str, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    imported_modules.add(alias.name)
+                    imported.add(alias.name)
                     aliases[alias.asname or alias.name.split(".")[0]] = alias.name
             elif isinstance(node, ast.ImportFrom) and node.module:
-                imported_modules.add(node.module)
+                imported.add(node.module)
                 for alias in node.names:
                     aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
             elif isinstance(node, ast.Call):
@@ -805,18 +811,24 @@ def test_production_capability_surface_remains_local_only() -> None:
                     )
 
     forbidden_imports = {
-        module
-        for module in imported_modules
+        f"{relative}:{imported_module}"
+        for relative, imported in module_imports.items()
+        for imported_module in imported
         if any(
-            module == forbidden or module.startswith(f"{forbidden}.")
+            imported_module == forbidden or imported_module.startswith(f"{forbidden}.")
             for forbidden in FORBIDDEN_PRODUCTION_MODULES
+            - IMPORT_CARVE_OUTS.get(relative, frozenset())
         )
     }
     assert forbidden_imports == set()
     assert forbidden_calls == []
 
     metadata = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert metadata["project"]["dependencies"] == ["pydantic==2.13.4"]
+    assert metadata["project"]["dependencies"] == [
+        "httpx==0.28.1",
+        "openai==2.46.0",
+        "pydantic==2.13.4",
+    ]
     assert metadata["build-system"]["requires"] == ["uv_build==0.11.29"]
     assert metadata["project"]["scripts"] == {"skillscout": "skillscout.cli:main"}
     assert set(metadata["dependency-groups"]["dev"]) == {

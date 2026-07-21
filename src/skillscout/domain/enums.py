@@ -35,6 +35,7 @@ class RunStatus(StrEnum):
     INTERRUPTED = "interrupted"
     FAILED = "failed"
     PLANNED_NOT_PUBLISHED = "planned_not_published"
+    COMPLETED = "completed"
 
 
 class AttemptStatus(StrEnum):
@@ -50,11 +51,17 @@ _STAGE_SUCCESSORS = {
 }
 _RUN_TRANSITIONS = {
     RunStatus.RUNNING: frozenset(
-        {RunStatus.INTERRUPTED, RunStatus.FAILED, RunStatus.PLANNED_NOT_PUBLISHED}
+        {
+            RunStatus.INTERRUPTED,
+            RunStatus.FAILED,
+            RunStatus.PLANNED_NOT_PUBLISHED,
+            RunStatus.COMPLETED,
+        }
     ),
     RunStatus.INTERRUPTED: frozenset({RunStatus.RUNNING, RunStatus.FAILED}),
     RunStatus.FAILED: frozenset(),
     RunStatus.PLANNED_NOT_PUBLISHED: frozenset(),
+    RunStatus.COMPLETED: frozenset(),
 }
 _ATTEMPT_TRANSITIONS = {
     AttemptStatus.RUNNING: frozenset(

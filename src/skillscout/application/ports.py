@@ -36,6 +36,7 @@ class ErrorCode(StrEnum):
     STAGE_PERMANENT_FAILURE = "stage_permanent_failure"
     STAGE_OUTPUT_INVALID = "stage_output_invalid"
     FORBIDDEN_EFFECT_SCOPE = "forbidden_effect_scope"
+    INVALID_SUBJECT = "invalid_subject"
 
 
 ERROR_SUMMARIES: dict[ErrorCode, str] = {
@@ -53,6 +54,7 @@ ERROR_SUMMARIES: dict[ErrorCode, str] = {
     ErrorCode.STAGE_PERMANENT_FAILURE: "Stage processing failed permanently.",
     ErrorCode.STAGE_OUTPUT_INVALID: "Stage output violated its closed contract.",
     ErrorCode.FORBIDDEN_EFFECT_SCOPE: "Dry-run adapter authority was rejected.",
+    ErrorCode.INVALID_SUBJECT: "Subject input was rejected.",
 }
 
 if not all(summary.isascii() and len(summary) <= 160 for summary in ERROR_SUMMARIES.values()):

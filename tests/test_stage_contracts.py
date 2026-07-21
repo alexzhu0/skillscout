@@ -439,7 +439,7 @@ def test_manifest_byte_cap_is_exact_and_uses_closed_stage_output_failure() -> No
 
 def test_supported_producer_schema_registry_is_closed_and_immutable() -> None:
     assert SUPPORTED_PRODUCER_SCHEMAS == frozenset(
-        {("1", "fixture-v1"), ("2", "fixture-v1")}
+        {("1", "fixture-v1"), ("2", "fixture-v1"), ("2", "phase2-v1")}
     )
     with pytest.raises(AttributeError):
         SUPPORTED_PRODUCER_SCHEMAS.add(("2", "fixture-v2"))  # type: ignore[attr-defined]

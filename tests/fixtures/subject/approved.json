@@ -1,0 +1,5 @@
+{
+  "schema_version": "1",
+  "subject_id": "repo:example/approved-repo",
+  "repository": "https://github.com/example/approved-repo"
+}

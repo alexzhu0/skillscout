@@ -33,7 +33,7 @@ MAX_STAGE_STRING_BYTES = 65_536
 MAX_STAGE_INTEGER_ABS = 9_007_199_254_740_991
 
 SUPPORTED_PRODUCER_SCHEMAS: frozenset[tuple[str, str]] = frozenset(
-    {("1", "fixture-v1"), ("2", "fixture-v1")}
+    {("1", "fixture-v1"), ("2", "fixture-v1"), ("2", "phase2-v1")}
 )
 
 
