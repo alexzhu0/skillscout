@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 01
-current_phase_name: auditable-dry-run-spine
-status: executing
-stopped_at: Plan 01-18 complete (evidence authority gap closed); phase ready for re-review
-last_updated: "2026-07-20T10:06:54.776Z"
+current_phase: 2
+current_phase_name: Safe Single-Repository Extraction
+status: planning
+stopped_at: Phase 1 complete (18/18 plans, verification passed, UAT 6/6, security audit clean) — ready to plan Phase 2
+last_updated: "2026-07-21T03:41:54.849Z"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -18,14 +18,14 @@ progress:
 
 **Last updated:** 2026-07-20
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Executing Phase 01
+**Status:** Ready to plan
 
 ## Current Position
 
-**Phase:** 01 (auditable-dry-run-spine) — EXECUTING
-**Plan:** 18 of 18 complete; phase plans done
-**Verification:** 4 of 5 must-haves verified (re-review pending with current evidence)
-**Next command:** `$gsd-code-review 1`
+**Phase:** 2 — Safe Single-Repository Extraction
+**Plan:** Not started
+**Verification:** Phase 1 passed — 5 of 5 must-haves verified; UAT 6/6 countersigned; security audit 83/83 threats closed
+**Next command:** `/gsd:discuss-phase 2`
 
 ## Progress
 
@@ -34,7 +34,7 @@ Project initialization  [██████████] 100%
 MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
 Phase 1 implementation  [██████████] 100%
-Phase 1 verification    [████████░░]  80%
+Phase 1 verification    [██████████] 100%
 ```
 
 | Metric | Value |
@@ -88,18 +88,18 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-Plans 01-12 through 01-15 closed the previous three blockers and three of four warnings through truthful private snapshots, event-derived reuse authority, closed CLI diagnostics, and finite no-replay recovery. The two remaining root causes are now closed as well: Plan 01-17 wired owner-validated stale-temp crash recovery into state, manifest, and publication writes with a killed-writer regression, and Plan 01-18 bound both reviewed JSON fixtures into the evidence authority, replaced the finding map with the current CR-01/WR-01 semantics, and recorded fresh independently rerun evidence. Both findings await independent re-review against the stabilized tree. Gate-A/Gate-B hashes are unchanged. The older OS/syscall network-denial warning in `01-GAP-VALIDATION.md` remains explicitly deferred to Phase 6 and is unrelated to these gaps.
+None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed snapshot truthfulness, event-derived reuse authority, closed CLI diagnostics, and finite no-replay recovery; Plan 01-17 wired owner-validated stale-temp crash recovery into state, manifest, and publication writes with a killed-writer regression; Plan 01-18 bound both reviewed JSON fixtures into the evidence authority. Independent re-review closed CR-01/WR-01, goal re-verification passed 5/5, UAT countersigned 6/6, and the security audit closed 83/83 register rows. Two Info-level code-quality known issues (IN-01 dead alias, IN-02 lock-helper duplication) are documented in 01-REVIEW.md and bound in evidence. The OS/syscall network-denial item remains explicitly deferred to Phase 6.
 
 ## Session Continuity
 
-**Last session:** 2026-07-20T10:06:54.772Z
-**Stopped at:** Plan 01-18 complete; fixture-complete two-finding evidence recorded and independently rerun
+**Last session:** 2026-07-21T02:15:45Z
+**Stopped at:** Phase 1 complete (18/18 plans, verification passed, UAT 6/6, security audit clean) — ready to plan Phase 2
 **Resume file:** None
 
 ### Next
 
-1. Re-run code review and goal verification; the current `verify --rerun` evidence is fresh and bound to the stabilized tree (exit 0 from an external cwd).
-2. Run Nyquist validation and the Phase-1 security audit before advancing to Phase 2.
+1. Discuss and plan Phase 2 — Safe Single-Repository Extraction (`/gsd:discuss-phase 2`).
+2. Optional cleanup: IN-01/IN-02 Info findings via `/gsd:code-review 01 --fix` (requires evidence re-record afterward).
 
 ---
 *State initialized: 2026-07-16*

@@ -14,7 +14,7 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ 每个流水线阶段都输出带版本的结构化记录，便于审计、重试和故障定位。 — Phase 1（九阶段流水线：StageEnvelope/StageAttempt/不可变 resume 事件，5/5 must-haves 通过）
 
 ### Active
 
@@ -32,7 +32,6 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 - [ ] 系统根据结构化工作流生成符合 Agent Skills 规范的目录包，以 `SKILL.md` 为核心，并可按需包含 `scripts/`、`references/` 和 `assets/`。
 - [ ] 生成内容默认重新表述；仅保留必要的短片段并清晰归因，不复制来源仓库的可执行代码。
 - [ ] 每个生成结果都包含来源仓库、提交 SHA、许可证和所用来源文件等 provenance 信息。
-- [ ] 每个流水线阶段都输出带版本的结构化记录，便于审计、重试和故障定位。
 - [ ] 生成的 Skill 必须通过确定性格式检查、安全检查和来源约束检查。
 - [ ] 独立 LLM Reviewer 必须在不了解生成过程内部推理的前提下评价可复用性、质量、安全性、来源完整性和发布价值。
 - [ ] Reviewer 只输出结构化通过或拒绝结论、置信度、理由、缺失假设和最小修改建议，不得编辑或重写 Skill。
@@ -102,6 +101,11 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 | 以阶段契约而不是固定 Agent 数量定义系统 | 保留启发流程的职责隔离，同时避免为 MVP 引入不必要的多 Agent 编排复杂度 | — Pending |
 | 提取后只向下游传递 WorkflowSpec 与 provenance | 缩小 Prompt Injection 传播面，并让评分、生成和审核可独立测试 | — Pending |
 | Reviewer 只评判、不编辑 | 避免生成者与评判者职责混淆，并保留清晰的审核证据 | — Pending |
+| 描述符锚定本地文件系统 + 确定性原子替换 + flock 下 owner 校验 stale-temp 恢复 | 进程/主机崩溃窗口可在不重放已验证副作用的前提下修复；被拒绝的 temp 保留且 fail closed | ✓ Phase 1 |
+| 内容寻址、全链校验的 SQLite 状态与不可变 resume 事件作为唯一复用权限 | 公共复用计数只能来自已验证事件链，消除重放与篡改面 | ✓ Phase 1 |
+| dry-run 以能力缺失（无 remote adapter）与封闭 scope 上限架构级阻止远程写入 | 无写入不是配置开关而是结构属性；`remote_writes_attempted=0` 可验证 | ✓ Phase 1 |
+| 独立 gap-evidence 权威：封闭 source 摘要集 + AST 绑定 finding 节点 + 外部 cwd record/rerun | 证据可独立重跑、fail-closed；评审/验证文档字节变化即过期，稳定后重新 record | ✓ Phase 1 |
+| descriptor-less 禁止项走人工会签（UAT），honest verifier 不静默通过 | 判断级禁止项永不被自动验证吸收；由人类 countersign 后 verification 才置 passed | ✓ Phase 1 |
 
 ## Evolution
 
@@ -121,4 +125,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-15 after initialization*
+*Last updated: 2026-07-21 after Phase 1*
