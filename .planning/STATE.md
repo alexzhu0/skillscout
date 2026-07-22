@@ -2,30 +2,31 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 02
-current_phase_name: safe-single-repository-extraction
-status: verifying
-stopped_at: Completed 02-04-PLAN.md
-last_updated: "2026-07-22T07:15:25.177Z"
+current_phase: 3
+current_phase_name: Validated Skill Candidate
+status: planning
+stopped_at: Phase 2 verified and complete; ready to plan Phase 3
+last_updated: "2026-07-22T09:57:10Z"
 progress:
-  total_phases: 2
-  completed_phases: 1
+  total_phases: 6
+  completed_phases: 2
   total_plans: 22
   completed_plans: 22
+  percent: 33
 ---
 
 # Project State: SkillScout
 
-**Last updated:** 2026-07-20
+**Last updated:** 2026-07-22
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Phase complete — ready for verification
+**Status:** Ready to plan
 
 ## Current Position
 
-**Phase:** 02 (safe-single-repository-extraction) — EXECUTING
-**Plan:** 4 of 4
-**Verification:** Phase 1 passed — 5 of 5 must-haves verified; UAT 6/6 countersigned; security audit 83/83 threats closed
-**Next command:** `/gsd:discuss-phase 2`
+**Phase:** 3 — Validated Skill Candidate
+**Plan:** Not started
+**Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
+**Next command:** `$gsd-discuss-phase 3`
 
 ## Progress
 
@@ -35,6 +36,7 @@ MVP requirements        [██████████] 100%
 Roadmap approval        [██████████] 100%
 Phase 1 implementation  [██████████] 100%
 Phase 1 verification    [██████████] 100%
+Phase 2 extraction      [██████████] 100%
 ```
 
 | Metric | Value |
@@ -42,8 +44,15 @@ Phase 1 verification    [██████████] 100%
 | MVP requirements | 44 |
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
-| Phases completed | 1 |
-| Plans completed | 18/18 |
+| Phases completed | 2/6 |
+| Plans completed | 22/22 authored plans |
+
+## Project Reference
+
+See: `.planning/PROJECT.md` (updated 2026-07-22)
+
+**Core value:** 安全、可追溯地把公开仓库中的可复用 AI 工作流转化为值得人类审核的标准 Agent Skill Draft PR。
+**Current focus:** Phase 3 — Validated Skill Candidate
 
 ## Accumulated Context
 
@@ -69,6 +78,10 @@ Phase 1 verification    [██████████] 100%
 - Production schedule/manual runs share one non-cancelling concurrency group.
 - Cross-repository publishing uses a least-privilege short-lived GitHub App installation token and protected catalog ruleset.
 - The roadmap uses vertical slices: dry-run spine → single-repo extraction → validated Skill → Draft PR → automated discovery → adversarial acceptance.
+- Phase 2 reads only fixed commits through closed GitHub REST endpoints; tree-derived blob SHAs provide content authority after pinning.
+- Phase 2 runtime authority is capped at REMOTE_READ; candidate text stays memory-only and crosses the semantic boundary only as validated `WorkflowSpec` evidence.
+- OpenAI SDK retries are disabled; the pipeline owns the finite retry budget and decided business outcomes are never re-asked.
+- Completed Phase 2 runs are reused only after full-chain verification, producing zero GitHub/OpenAI calls for the same identity.
 
 ### Scope Boundaries
 
@@ -79,7 +92,7 @@ Phase 1 verification    [██████████] 100%
 
 No product-scope blocker remains. Phase planning will choose implementation-level details such as:
 
-- Concrete GitHub Search query set and organization-level Reader budget ceilings.
+- Concrete GitHub Search query set.
 - Target controlled catalog repository and human reviewer/team identifiers for live canary.
 - Qualification scoring weights, excerpt limit, similarity threshold, and policy versioning process.
 - Exact OpenAI model snapshot after fixture evaluation.
@@ -88,18 +101,18 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed snapshot truthfulness, event-derived reuse authority, closed CLI diagnostics, and finite no-replay recovery; Plan 01-17 wired owner-validated stale-temp crash recovery into state, manifest, and publication writes with a killed-writer regression; Plan 01-18 bound both reviewed JSON fixtures into the evidence authority. Independent re-review closed CR-01/WR-01, goal re-verification passed 5/5, UAT countersigned 6/6, and the security audit closed 83/83 register rows. Two Info-level code-quality known issues (IN-01 dead alias, IN-02 lock-helper duplication) are documented in 01-REVIEW.md and bound in evidence. The OS/syscall network-denial item remains explicitly deferred to Phase 6.
+None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the security audit closed all 19 plan-authored threats. Three Phase 2 Info-level review notes remain non-blocking (`02-REVIEW.md`: IN-01 diagnostic-path consistency, IN-02 defense-in-depth branch, IN-03 reuse reporting projection). Phase 1's authority-bound evidence document remains stale by design after the Gate-B2 lock change; this does not weaken Phase 2's fresh verification. OS/syscall network-denial remains explicitly deferred to Phase 6.
 
 ## Session Continuity
 
-**Last session:** 2026-07-22T07:14:55.173Z
-**Stopped at:** Completed 02-04-PLAN.md
+**Last session:** 2026-07-22T09:57:10Z
+**Stopped at:** Phase 2 verified and complete; ready to plan Phase 3
 **Resume file:** None
 
 ### Next
 
-1. Discuss and plan Phase 2 — Safe Single-Repository Extraction (`/gsd:discuss-phase 2`).
-2. Optional cleanup: IN-01/IN-02 Info findings via `/gsd:code-review 01 --fix` (requires evidence re-record afterward).
+1. Discuss Phase 3 — Validated Skill Candidate (`$gsd-discuss-phase 3`).
+2. Or skip discussion and plan directly (`$gsd-plan-phase 3`).
 
 ---
 *State initialized: 2026-07-16*

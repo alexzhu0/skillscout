@@ -15,19 +15,16 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 ### Validated
 
 - ✓ 每个流水线阶段都输出带版本的结构化记录，便于审计、重试和故障定位。 — Phase 1（九阶段流水线：StageEnvelope/StageAttempt/不可变 resume 事件，5/5 must-haves 通过）
+- ✓ 系统使用确定性规则过滤元数据、仓库状态和许可证；不明确或不在允许列表的许可证必须在 LLM 前失败。 — Phase 2
+- ✓ Reader 仅通过 GitHub REST 读取固定 commit 下的允许文本，按 README → docs → examples → manifests → source 排序，受五类硬预算与显式停止原因约束。 — Phase 2
+- ✓ 所有外部内容均为不可信数据：不 clone、安装、构建、import 或执行候选代码；Prompt Injection 样本无法获得指令或工具权限。 — Phase 2
+- ✓ LLM 仅在确定性门禁通过后执行一次无工具、`store=false` 的严格结构化语义提取，可输出 0–3 个独立工作流。 — Phase 2
+- ✓ 提取后仅有经过证据校验的 `WorkflowSpec` 和有界 provenance 可以进入下游；完整原文只存在于进程内存。 — Phase 2
 
 ### Active
 
 - [ ] 系统可通过每日定时任务和人工触发，使用 GitHub Search API 搜索公开仓库候选。
 - [ ] 单次运行默认最多获取 100 个候选仓库，并最多让 20 个候选进入 LLM 语义分析。
-- [ ] 系统使用确定性规则过滤明显无关、许可证不合格或缺少必要元数据的仓库。
-- [ ] MVP 只处理能明确识别为 MIT、Apache-2.0、BSD 等宽松许可证的仓库。
-- [ ] 系统按 README、docs、examples、package.json、源代码的优先级读取有限的仓库内容。
-- [ ] Reader 在取得足够证据后立即停止读取，并记录已加载文件、总内容预算、停止原因以及是否读取过源代码。
-- [ ] 所有外部内容都被视为不可信数据；系统不得执行来源仓库代码，并必须抵御 Prompt Injection。
-- [ ] LLM 只用于语义判断：识别具有明确目标、输入输出、多步骤流程和工具或模型使用方式，且能脱离原项目复用的 AI 工作流。
-- [ ] 一个来源仓库可以提取多个相互独立的工作流，每个工作流输出可验证的结构化 JSON。
-- [ ] 提取完成后，下游评分、生成、审核和发布阶段只消费规范化 WorkflowSpec 与 provenance，不再直接消费来源仓库的原始文本。
 - [ ] 生成前设置独立的确定性资格门，对来源证据、最少步骤数、可复用性结论、通用性和提取置信度等硬条件进行判定。
 - [ ] 系统根据结构化工作流生成符合 Agent Skills 规范的目录包，以 `SKILL.md` 为核心，并可按需包含 `scripts/`、`references/` 和 `assets/`。
 - [ ] 生成内容默认重新表述；仅保留必要的短片段并清晰归因，不复制来源仓库的可执行代码。
@@ -65,7 +62,7 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 - 内容获取应通过 GitHub REST API 完成，并设置文件类型、文件大小、总字节数和请求数上限；读取源代码只用于补足文档中缺失的语义，不得解析为可执行任务。
 - 工作流资格的最低标准是：有明确目标、可描述的输入输出、多个有序步骤，以及明确的工具或模型使用方式，并可脱离原仓库上下文复用。
 - Agent Skill 输出采用标准目录包；中央仓库中的最终目录布局、命名和清单格式在架构阶段确定。
-- 基线技术栈为 Python 3.12、GitHub REST API、OpenAI Responses API、Pydantic、SQLite、GitHub Actions 和 pytest；研究阶段可在不破坏 MVP 简洁性的前提下调整具体库。
+- 已验证的基线技术栈为 Python 3.13、GitHub REST API + HTTPX、OpenAI Responses API、Pydantic、SQLite 和 pytest；GitHub Actions 在运营阶段接入。
 - MVP 默认预算是每次发现最多 100 个候选、最多 20 个 LLM 分析对象。确定性过滤必须先于任何 LLM 调用。
 - 同一仓库可产出多个 Skill，但每个 Skill 必须具有稳定工作流指纹，以支持去重、更新和 PR 关联。
 - WorkflowSpec 是不可信来源内容与受控生成流水线之间的信任边界；其 schema 至少覆盖目标、输入、步骤、输出、失败模式、来源证据和提取置信度。
@@ -91,21 +88,24 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 | 使用中央受控 Skill 仓库承接 Draft PR | 统一目录、去重、审核、版本和安全政策 | — Pending |
 | Reviewer 通过后才创建 Draft PR | 减少低质量 PR 噪声，同时保留最终人类决策权 | — Pending |
 | MVP 仅扫描公开 GitHub 仓库 | 简化权限模型并减少隐私与凭据风险 | — Pending |
-| MVP 仅接受明确的宽松许可证 | 建立保守、确定性的法律门槛 | — Pending |
-| 一个仓库可生成多个独立 Skill | 仓库可能包含多个可单独复用的工作流，不应被迫合并 | — Pending |
+| MVP 仅接受明确的宽松许可证 | 建立保守、确定性的法律门槛 | ✓ Phase 2 |
+| 一个仓库可生成多个独立 Skill | 仓库可能包含多个可单独复用的工作流，不应被迫合并 | ✓ Phase 2（提取上限 3） |
 | 每日调度并支持人工触发 | 兼顾持续发现与可控调试 | — Pending |
 | 每次最多 100 个候选、20 个 LLM 分析对象 | 为 MVP 建立明确的成本与速率边界 | — Pending |
 | 使用仓库、提交 SHA 和工作流指纹实现幂等 | 避免重复成本与 PR 噪声，同时允许来源更新 | — Pending |
 | 默认重新表述来源内容且不复制可执行代码 | 减少安全、维护和版权风险，同时保留必要归因 | — Pending |
 | 至少 5 个真实公开仓库通过端到端验收 | 验证系统不是仅对单一样例成立 | — Pending |
 | 以阶段契约而不是固定 Agent 数量定义系统 | 保留启发流程的职责隔离，同时避免为 MVP 引入不必要的多 Agent 编排复杂度 | — Pending |
-| 提取后只向下游传递 WorkflowSpec 与 provenance | 缩小 Prompt Injection 传播面，并让评分、生成和审核可独立测试 | — Pending |
+| 提取后只向下游传递 WorkflowSpec 与 provenance | 缩小 Prompt Injection 传播面，并让评分、生成和审核可独立测试 | ✓ Phase 2 |
 | Reviewer 只评判、不编辑 | 避免生成者与评判者职责混淆，并保留清晰的审核证据 | — Pending |
 | 描述符锚定本地文件系统 + 确定性原子替换 + flock 下 owner 校验 stale-temp 恢复 | 进程/主机崩溃窗口可在不重放已验证副作用的前提下修复；被拒绝的 temp 保留且 fail closed | ✓ Phase 1 |
 | 内容寻址、全链校验的 SQLite 状态与不可变 resume 事件作为唯一复用权限 | 公共复用计数只能来自已验证事件链，消除重放与篡改面 | ✓ Phase 1 |
 | dry-run 以能力缺失（无 remote adapter）与封闭 scope 上限架构级阻止远程写入 | 无写入不是配置开关而是结构属性；`remote_writes_attempted=0` 可验证 | ✓ Phase 1 |
 | 独立 gap-evidence 权威：封闭 source 摘要集 + AST 绑定 finding 节点 + 外部 cwd record/rerun | 证据可独立重跑、fail-closed；评审/验证文档字节变化即过期，稳定后重新 record | ✓ Phase 1 |
 | descriptor-less 禁止项走人工会签（UAT），honest verifier 不静默通过 | 判断级禁止项永不被自动验证吸收；由人类 countersign 后 verification 才置 passed | ✓ Phase 1 |
+| 以固定 commit 与 tree-derived blob SHA 作为唯一读取权威 | 禁止 floating ref，使每个证据片段都能追溯到不变的远程内容 | ✓ Phase 2 |
+| OpenAI SDK 内部重试为 0，重试权只属于流水线策略 | 保证一个语义尝试恰好一个 HTTP 请求，业务结果不被反复询问 | ✓ Phase 2 |
+| 完成运行只能经过已验证链的 `find_completed_run` 复用 | 同一仓库/SHA/指纹重跑不产生新远程请求或状态转移 | ✓ Phase 2 |
 
 ## Evolution
 
@@ -125,4 +125,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-21 after Phase 1*
+*Last updated: 2026-07-22 after Phase 2*

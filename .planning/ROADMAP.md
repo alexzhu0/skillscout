@@ -13,7 +13,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 ## Phases
 
 - [x] **Phase 1: Auditable Dry-Run Spine** — 用确定性 fixture 打通所有阶段状态、审计、恢复和副作用防火墙。 (completed 2026-07-21)
-- [ ] **Phase 2: Safe Single-Repository Extraction** — 从一个指定公共仓库安全地产出 `WorkflowSpec` 或结构化拒绝。
+- [x] **Phase 2: Safe Single-Repository Extraction** — 从一个指定公共仓库安全地产出 `WorkflowSpec` 或结构化拒绝。 (completed 2026-07-22)
 - [ ] **Phase 3: Validated Skill Candidate** — 把合格 `WorkflowSpec` 转为经过格式、安全和独立审核的本地 Skill 候选。
 - [ ] **Phase 4: Controlled Draft PR** — 在平台权限硬约束下创建或更新一个可追溯 Draft PR。
 - [ ] **Phase 5: Automated Discovery Operations** — 将已验证的单仓库路径扩展到定时/手动 GitHub Search 和持久状态。
@@ -131,7 +131,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Phase 1  
 **Requirements:** FILT-01, FILT-02, FILT-03, READ-01, READ-02, READ-03, READ-04, READ-05, READ-06, EXTR-01, EXTR-02, EXTR-03, EXTR-04, SEC-01  
-**Plans:** 4/4 plans executed
+**Plans:** 4/4 plans complete
 
 - [x] 02-01-PLAN.md
 - [x] 02-02-PLAN.md
@@ -232,7 +232,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 | Phase | Status | Requirements | Completed |
 |---|---|---:|---:|
 | 1. Auditable Dry-Run Spine | Complete    | 2 | 2026-07-21 |
-| 2. Safe Single-Repository Extraction | In Progress| 14 |  |
+| 2. Safe Single-Repository Extraction | Complete | 14 | 2026-07-22 |
 | 3. Validated Skill Candidate | Not started | 13 | 0/13 |
 | 4. Controlled Draft PR | Not started | 6 | 0/6 |
 | 5. Automated Discovery Operations | Not started | 5 | 0/5 |
