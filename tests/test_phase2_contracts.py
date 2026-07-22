@@ -577,10 +577,10 @@ def test_extractor_response_caps_workflows_at_three() -> None:
         "repository_summary": "A repository.",
         "rejection_reason": None,
     }
-    ExtractorResponse.model_validate({**base, "workflows": []})
-    three = [_workflow_values(title=f"Workflow {index}") for index in range(3)]
+    ExtractorResponse.model_validate({**base, "workflows": ()})
+    three = tuple(_workflow_values(title=f"Workflow {index}") for index in range(3))
     ExtractorResponse.model_validate({**base, "workflows": three})
-    four = [_workflow_values(title=f"Workflow {index}") for index in range(4)]
+    four = tuple(_workflow_values(title=f"Workflow {index}") for index in range(4))
     with pytest.raises(ValidationError):
         ExtractorResponse.model_validate({**base, "workflows": four})
 
