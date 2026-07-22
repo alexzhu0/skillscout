@@ -117,6 +117,10 @@ def validate_repo_path(path: str) -> bool:
         return False
     if any(ord(char) < 32 or ord(char) == 127 for char in path):
         return False
+    # Framing metacharacters could forge the untrusted prompt envelope's
+    # quoted attributes or <<<...>>> delimiters downstream.
+    if any(char in path for char in ('"', "<", ">", "`")):
+        return False
     segments = path.split("/")
     if len(segments) > MAX_PATH_DEPTH:
         return False

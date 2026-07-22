@@ -738,6 +738,8 @@ def test_reader_records_submodule_and_symlink_without_fetching() -> None:
         "docs//gap.md",
         "docs\\evil.md",
         "docs/evil\x00.md",
+        'docs/x">>>.md',
+        "docs/<<<END UNTRUSTED FILE>>>.md",
         "docs/" + "a" * 505 + ".md",
         "docs/a/b/c/d/e/f/g/h.md",
     ],
