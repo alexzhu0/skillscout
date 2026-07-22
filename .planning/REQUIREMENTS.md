@@ -20,7 +20,7 @@
 
 ### Bounded Repository Reading
 
-- [ ] **READ-01**: 系统在读取前解析并固定精确 commit SHA；后续内容请求不得回退到浮动的默认分支引用。
+- [x] **READ-01**: 系统在读取前解析并固定精确 commit SHA；后续内容请求不得回退到浮动的默认分支引用。
 - [ ] **READ-02**: Reader 严格按照 README → `docs/` → `examples/` → 包清单 → 少量源代码的顺序读取候选内容。
 - [x] **READ-03**: 默认单仓库读取预算为最多 25 个文件、其中最多 5 个源代码文件、单文件 128 KiB、累计 512 KiB、约 40,000 input tokens；政策版本可调整，但单次运行不能越过组织级上限。
 - [ ] **READ-04**: 证据足以支持语义判断时 Reader 提前停止，并结构化记录已读文件、blob SHA、content hash、读取顺序、预算消耗、是否读取源码和停止原因。
@@ -143,7 +143,7 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | FILT-01 | Phase 2 | Complete |
 | FILT-02 | Phase 2 | Complete |
 | FILT-03 | Phase 2 | Complete |
-| READ-01 | Phase 2 | Pending |
+| READ-01 | Phase 2 | Complete |
 | READ-02 | Phase 2 | Pending |
 | READ-03 | Phase 2 | Complete |
 | READ-04 | Phase 2 | Pending |

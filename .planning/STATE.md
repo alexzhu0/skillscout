@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 02
 current_phase_name: safe-single-repository-extraction
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-07-22T03:27:04.017Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-07-22T04:51:11.350Z"
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 22
-  completed_plans: 19
+  completed_plans: 20
 ---
 
 # Project State: SkillScout
@@ -23,7 +23,7 @@ progress:
 ## Current Position
 
 **Phase:** 02 (safe-single-repository-extraction) — EXECUTING
-**Plan:** 2 of 4
+**Plan:** 3 of 4
 **Verification:** Phase 1 passed — 5 of 5 must-haves verified; UAT 6/6 countersigned; security audit 83/83 threats closed
 **Next command:** `/gsd:discuss-phase 2`
 
@@ -92,8 +92,8 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 
 ## Session Continuity
 
-**Last session:** 2026-07-22T03:27:04.012Z
-**Stopped at:** Completed 02-01-PLAN.md
+**Last session:** 2026-07-22T04:51:11.343Z
+**Stopped at:** Completed 02-02-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -131,6 +131,7 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 02 P01 | 17 min | 4 tasks | 15 files |
+| Phase 02 P02 | 64min | 3 tasks | 27 files |
 
 ## Decisions
 
@@ -186,3 +187,6 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 - [Phase 01]: Credit exactly the current review's CR-01/WR-01 findings through digest-bound nodes — The superseded seven-finding map survives only under the past-tense prior-review label.
 - [Phase 02]: Admit exactly httpx==0.28.1 and openai==2.46.0 through the two-gate ceremony with no tiktoken, GitHub SDK, tenacity, or VCR library — Supply-chain inputs require separate declaration (Gate A2) and exact-lock-bytes (Gate B2) human approvals; Gate B2 binds all execution to uv.lock SHA-256 a23c47119a50650dd08d45209e2741cf2c5053031bbaef0bde95ca837ec59216
 - [Phase 02]: Re-anchor the Phase 1 evidence verifier LOCK_HASH to the Gate-B2-approved uv.lock bytes — The verifier authority constant must track the human-approved graph; recorded Phase 1 evidence stales by design and awaits Phase 2 re-baselining
+- [Phase 02]: Deliver context and telemetry through additive carriers (StageOutcome/StageContext/ContextStageProcessor) with producer-profile dispatch instead of bumping the StageProcessor signature — Every Phase 1 process(self, stage_input) override subclass and test stays byte-for-byte green; the runner selects the calling convention from the closed PIPELINE_PROFILES map.
+- [Phase 02]: Build one StageContext per stage invocation as a snapshot (subject, copied prior payloads, fresh scratch); resume hydration comes only from the verified chain — A shared mutable context would leak later stage payloads into contexts recorded by earlier invocations; per-invocation scratch forbids cross-stage reuse.
+- [Phase 02]: Blob URLs embed the tree-derived blob SHA (content addressing at the pinned commit); the SHA-in-URL invariant binds tree/license URLs to the pinned commit SHA and forbids any floating ref after resolve_commit — The GitHub blobs API is addressed by blob SHA, so the READ-01 pin-before-read guarantee binds tree/license URLs to the commit SHA and treats the tree-declared blob SHA as transitively pinned content addressing.
