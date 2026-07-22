@@ -16,6 +16,7 @@ from skillscout.application.ports import (
     StageOutcome,
     StageTelemetry,
 )
+from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.enums import EffectScope, PipelineStage
 from skillscout.domain.filtering import (
     ALLOWED_LICENSE_SPDX,
@@ -26,7 +27,19 @@ from skillscout.domain.filtering import (
     evaluate_filter,
 )
 from skillscout.domain.models import StageInput
-from skillscout.domain.reading import assign_tier
+from skillscout.domain.reading import (
+    LFS_POINTER_PREFIX,
+    READER_POLICY_VERSION,
+    ReaderPolicy,
+    ReadTier,
+    RejectionRule,
+    StopReason,
+    TIER_ORDER,
+    assign_tier,
+    estimate_tokens,
+    is_allowlisted_for_tier,
+    validate_repo_path,
+)
 from skillscout.domain.subjects import RepositorySubject
 
 SCOUT_MAX_CANDIDATE_ENTRIES = 512
@@ -38,7 +51,7 @@ _SPECIAL_MODES = frozenset({"160000", "120000"})
 
 
 class PhaseTwoProcessor:
-    """Deterministic Scout/Filter stages; Reader/Extractor arrive in later plans."""
+    """Deterministic Scout/Filter/Reader stages; the Extractor arrives in 02-04."""
 
     producer_version = "phase2-v1"
 
@@ -66,6 +79,8 @@ class PhaseTwoProcessor:
                 return StageOutcome(payload=skipped, telemetry=None)
             if stage_input.stage is PipelineStage.FILTER:
                 return self._filter(stage_input, context)
+            if stage_input.stage is PipelineStage.READER:
+                return self._reader(stage_input, context)
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
 
     def _scout(self, stage_input: StageInput, context: StageContext) -> StageOutcome:
@@ -215,6 +230,141 @@ class PhaseTwoProcessor:
             ),
         )
 
+    def _reader(self, stage_input: StageInput, context: StageContext) -> StageOutcome:
+        started = time.monotonic()
+        scout = context.prior_payloads.get("scout")
+        subject = context.subject
+        if not isinstance(scout, Mapping) or not isinstance(subject, RepositorySubject):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        tree = scout.get("tree")
+        candidates = tree.get("candidates") if isinstance(tree, Mapping) else None
+        if not isinstance(candidates, list):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        owner, repo = _owner_repo(subject)
+        policy = ReaderPolicy()
+
+        survivors: list[tuple[int, str, ReadTier, str, int]] = []
+        rejections: list[dict[str, object]] = []
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            path = candidate.get("path")
+            mode = candidate.get("mode")
+            sha = candidate.get("sha")
+            size = candidate.get("size")
+            if (
+                not isinstance(path, str)
+                or not isinstance(mode, str)
+                or not isinstance(sha, str)
+                or not (size is None or type(size) is int)
+            ):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            if not validate_repo_path(path):
+                rejections.append(_rejection(path, RejectionRule.PATH_VIOLATION, path))
+                continue
+            if mode == "160000":
+                rejections.append(_rejection(path, RejectionRule.SUBMODULE, mode))
+                continue
+            if mode == "120000":
+                rejections.append(_rejection(path, RejectionRule.SYMLINK, mode))
+                continue
+            tier = assign_tier(path)
+            if tier is None or not is_allowlisted_for_tier(tier, path):
+                rejections.append(
+                    _rejection(
+                        path,
+                        RejectionRule.NON_ALLOWLISTED_EXTENSION,
+                        path.rsplit("/", 1)[-1],
+                    )
+                )
+                continue
+            if type(size) is not int:
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            if size > policy.max_file_bytes:
+                rejections.append(
+                    _rejection(path, RejectionRule.OVER_BUDGET_SIZE, str(size))
+                )
+                continue
+            survivors.append((TIER_ORDER.index(tier), path, tier, sha, size))
+        survivors.sort(key=lambda item: (item[0], item[1]))
+
+        files: list[dict[str, object]] = []
+        bundle: dict[str, str] = {}
+        files_read = 0
+        source_files_read = 0
+        total_bytes = 0
+        fetched = False
+        stop_reason = StopReason.CANDIDATES_EXHAUSTED
+        for tier_index, path, tier, sha, size in survivors:
+            if _read_budget_stop(
+                policy,
+                files_read=files_read,
+                source_files_read=source_files_read,
+                total_bytes=total_bytes,
+                tier=tier,
+                size=size,
+            ):
+                stop_reason = StopReason.BUDGET_EXHAUSTED
+                break
+            raw = self._github.get_blob(owner, repo, sha, expected_size=size)
+            fetched = True
+            text, content_rejection = _classify_blob_content(raw)
+            if content_rejection is not None:
+                rule, observed = content_rejection
+                rejections.append(_rejection(path, rule, observed))
+                continue
+            files_read += 1
+            if tier is ReadTier.SOURCE:
+                source_files_read += 1
+            total_bytes += len(raw)
+            bundle[path] = text
+            files.append(
+                {
+                    "path": path,
+                    "tier": tier.value,
+                    "blob_sha": sha,
+                    "size": size,
+                    "content_hash": sha256_digest(raw),
+                    "read_order": files_read,
+                }
+            )
+            if (
+                tier_index >= TIER_ORDER.index(ReadTier.EXAMPLES)
+                and estimate_tokens(total_bytes) >= policy.early_stop_soft_tokens
+            ):
+                stop_reason = StopReason.SOFT_TARGET_REACHED
+                break
+        else:
+            if files_read == 0:
+                stop_reason = StopReason.NO_ALLOWLISTED_FILES
+
+        context.scratch["read_bundle"] = bundle
+        payload: dict[str, object] = {
+            "schema_version": stage_input.schema_version,
+            "stage": stage_input.stage.value,
+            "subject_id": stage_input.subject_id,
+            "outcome": "accepted",
+            "policy_version": READER_POLICY_VERSION,
+            "files": files,
+            "rejections": rejections,
+            "budgets": {
+                "files_read": files_read,
+                "source_files_read": source_files_read,
+                "total_bytes": total_bytes,
+                "estimated_input_tokens": estimate_tokens(total_bytes),
+            },
+            "source_code_loaded": source_files_read > 0,
+            "stop_reason": stop_reason.value,
+        }
+        return StageOutcome(
+            payload=payload,
+            telemetry=StageTelemetry(
+                policy_version=READER_POLICY_VERSION,
+                request_id=self._github.last_request_id if fetched else None,
+                latency_ms=_elapsed_ms(started),
+            ),
+        )
+
     def _telemetry(self, started: float) -> StageTelemetry:
         return StageTelemetry(
             request_id=self._github.last_request_id,
@@ -224,6 +374,44 @@ class PhaseTwoProcessor:
 
 def _elapsed_ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
+
+
+def _rejection(path: str, rule: RejectionRule, observed: str) -> dict[str, object]:
+    return {"path": path, "rule": rule.value, "observed": observed}
+
+
+def _read_budget_stop(
+    policy: ReaderPolicy,
+    *,
+    files_read: int,
+    source_files_read: int,
+    total_bytes: int,
+    tier: ReadTier,
+    size: int,
+) -> bool:
+    """Return whether fetching the next candidate would cross a closed budget."""
+
+    if files_read >= policy.max_files:
+        return True
+    if tier is ReadTier.SOURCE and source_files_read >= policy.max_source_files:
+        return True
+    if total_bytes + size > policy.max_total_bytes:
+        return True
+    return estimate_tokens(total_bytes + size) > policy.max_estimated_input_tokens
+
+
+def _classify_blob_content(raw: bytes) -> tuple[str | None, tuple[RejectionRule, str] | None]:
+    """Decode fetched bytes as inert text or return the closed rejection."""
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, (RejectionRule.BINARY_CONTENT, "utf8_decode_failed")
+    if b"\x00" in raw[:8192]:
+        return None, (RejectionRule.BINARY_CONTENT, "nul_byte_detected")
+    if text.startswith(LFS_POINTER_PREFIX):
+        return None, (RejectionRule.LFS_POINTER, "lfs_pointer_prefix")
+    return text, None
 
 
 def _owner_repo(subject: RepositorySubject) -> tuple[str, str]:

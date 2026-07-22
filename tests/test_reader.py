@@ -228,8 +228,8 @@ EXPECTED_ORDER = [
     "examples/basic.md",
     "pyproject.toml",
     "lib/helper.py",
-    "src/core.py",
     "script.py",
+    "src/core.py",
 ]
 
 
@@ -305,17 +305,12 @@ def test_reader_reads_in_exact_tier_order_with_sorted_paths() -> None:
     telemetry = outcome.telemetry
     assert telemetry is not None
     assert telemetry.policy_version == READER_POLICY_VERSION
-    assert telemetry.request_id == "REQ-BLOB-SYNTH"
+    assert telemetry.request_id == "REQ-BLOB-SRC1"
     assert telemetry.latency_ms is not None and telemetry.latency_ms >= 0
 
 
 def test_budget_gate_boundaries_are_exact_with_a_lowered_policy() -> None:
-    policy = ReaderPolicy(
-        max_files=2,
-        max_source_files=1,
-        max_total_bytes=1000,
-        max_estimated_input_tokens=100,
-    )
+    policy = ReaderPolicy(max_files=2, max_source_files=1, max_total_bytes=1000)
     gate = _read_budget_stop
 
     assert (
@@ -395,9 +390,11 @@ def test_budget_gate_boundaries_are_exact_with_a_lowered_policy() -> None:
         )
         is True
     )
+
+    token_policy = ReaderPolicy(max_estimated_input_tokens=100)
     assert (
         gate(
-            policy,
+            token_policy,
             files_read=0,
             source_files_read=0,
             total_bytes=396,
@@ -408,7 +405,7 @@ def test_budget_gate_boundaries_are_exact_with_a_lowered_policy() -> None:
     )
     assert (
         gate(
-            policy,
+            token_policy,
             files_read=0,
             source_files_read=0,
             total_bytes=396,

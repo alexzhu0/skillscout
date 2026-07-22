@@ -8,7 +8,12 @@ from typing import Mapping
 
 import pytest
 
-from recorded_transport import RecordedResponse, RecordedTransport, recorded_fixture
+from recorded_transport import (
+    RecordedResponse,
+    RecordedTransport,
+    make_blob_fixture,
+    recorded_fixture,
+)
 
 from skillscout.adapters.github import GitHubReadClient
 from skillscout.adapters.state import SQLiteStateStore
@@ -492,7 +497,7 @@ def test_unhandled_stages_fail_closed() -> None:
 
     with pytest.raises(SafeFailure) as failure:
         processor.process(
-            _stage_input(PipelineStage.READER), _context(prior=accepted_prior)
+            _stage_input(PipelineStage.EXTRACTOR), _context(prior=accepted_prior)
         )
     assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
 
@@ -588,10 +593,31 @@ def test_scout_rejected_run_skips_everything_without_content_fetches(
     assert artifact.extractor_outcome == "skipped"
 
 
-def test_accepted_run_fails_closed_at_the_not_yet_implemented_reader(
+def _reader_blob_routes() -> dict[tuple[str, str], RecordedResponse]:
+    def blob(sha: str) -> tuple[str, str]:
+        return ("GET", f"/repos/example/approved-repo/git/blobs/{sha}")
+
+    return {
+        blob("aa01" * 10): recorded_fixture("blob_readme"),
+        blob("bb02" * 10): recorded_fixture("blob_doc"),
+        blob("aa06" * 10): recorded_fixture("blob_example"),
+        blob("cc08" * 10): recorded_fixture("blob_pyproject"),
+        blob("ee10" * 10): make_blob_fixture(
+            b"# lib helper\n" + b"h" * (1500 - 14) + b"\n", sha="ee10" * 10
+        ),
+        blob("dd09" * 10): recorded_fixture("blob_source"),
+        blob("aa11" * 10): make_blob_fixture(
+            b"# script\n" + b"s" * (700 - 10) + b"\n", sha="aa11" * 10
+        ),
+    }
+
+
+def test_accepted_run_fails_closed_at_the_not_yet_implemented_extractor(
     tmp_path: Path,
 ) -> None:
-    processor, recorded = _processor(_routes())
+    routes = _routes()
+    routes.update(_reader_blob_routes())
+    processor, recorded = _processor(routes)
     store = SQLiteStateStore(tmp_path / "state.db")
     try:
         with pytest.raises(SafeFailure) as failure:
@@ -612,8 +638,9 @@ def test_accepted_run_fails_closed_at_the_not_yet_implemented_reader(
     ] == [
         ("scout", AttemptStatus.SUCCEEDED.value, 0, None),
         ("filter", AttemptStatus.SUCCEEDED.value, 0, None),
+        ("reader", AttemptStatus.SUCCEEDED.value, 0, None),
         (
-            "reader",
+            "extractor",
             AttemptStatus.FAILED.value,
             0,
             ErrorCode.STAGE_PERMANENT_FAILURE.value,
