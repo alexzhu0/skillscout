@@ -1,0 +1,14 @@
+{
+  "status": 404,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4986",
+    "x-ratelimit-reset": "1800000000",
+    "x-github-request-id": "REQ-LIC-0004"
+  },
+  "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/licenses/licenses#get-the-license-for-a-repository"
+  }
+}

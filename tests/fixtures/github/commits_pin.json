@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4995",
+    "x-ratelimit-reset": "1800000000",
+    "x-github-request-id": "REQ-PIN-0001"
+  },
+  "body": {
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "node_id": "C_kwDOAAAABdoAKDEy",
+    "commit": {
+      "message": "Recorded pin commit",
+      "author": {
+        "name": "Example Author",
+        "email": "author@example.com",
+        "date": "2026-07-01T00:00:00Z"
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "status": 301,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "location": "https://api.github.com/repos/example/renamed-repo",
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4985",
+    "x-ratelimit-reset": "1800000000",
+    "x-github-request-id": "REQ-REDIR-0001"
+  },
+  "body": {
+    "message": "Moved Permanently",
+    "url": "https://api.github.com/repos/example/renamed-repo",
+    "documentation_url": "https://docs.github.com/rest/guides/best-practices-for-using-the-rest-api#follow-redirects"
+  }
+}

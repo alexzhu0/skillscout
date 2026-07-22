@@ -1,0 +1,38 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4991",
+    "x-ratelimit-reset": "1800000000",
+    "x-github-request-id": "REQ-TREE-0003"
+  },
+  "body": {
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "url": "https://api.github.com/repos/example/approved-repo/git/trees/0123456789abcdef0123456789abcdef01234567",
+    "tree": [
+      {
+        "path": "COPYING",
+        "mode": "100644",
+        "type": "blob",
+        "size": 1300,
+        "sha": "cc13cc13cc13cc13cc13cc13cc13cc13cc13cc13"
+      },
+      {
+        "path": "LICENSE",
+        "mode": "100644",
+        "type": "blob",
+        "size": 1100,
+        "sha": "bb12bb12bb12bb12bb12bb12bb12bb12bb12bb12"
+      },
+      {
+        "path": "README.md",
+        "mode": "100644",
+        "type": "blob",
+        "size": 142,
+        "sha": "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"
+      }
+    ],
+    "truncated": false
+  }
+}

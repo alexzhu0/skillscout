@@ -1,0 +1,100 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4993",
+    "x-ratelimit-reset": "1800000000",
+    "x-github-request-id": "REQ-TREE-0001"
+  },
+  "body": {
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "url": "https://api.github.com/repos/example/approved-repo/git/trees/0123456789abcdef0123456789abcdef01234567",
+    "tree": [
+      {
+        "path": "LICENSE",
+        "mode": "100644",
+        "type": "blob",
+        "size": 1100,
+        "sha": "bb12bb12bb12bb12bb12bb12bb12bb12bb12bb12"
+      },
+      {
+        "path": "README.md",
+        "mode": "100644",
+        "type": "blob",
+        "size": 142,
+        "sha": "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"
+      },
+      {
+        "path": "docs/big.md",
+        "mode": "100644",
+        "type": "blob",
+        "size": 200000,
+        "sha": "ee05ee05ee05ee05ee05ee05ee05ee05ee05ee05"
+      },
+      {
+        "path": "docs/external",
+        "mode": "160000",
+        "type": "commit",
+        "sha": "cc03cc03cc03cc03cc03cc03cc03cc03cc03cc03"
+      },
+      {
+        "path": "docs/guide.md",
+        "mode": "100644",
+        "type": "blob",
+        "size": 800,
+        "sha": "bb02bb02bb02bb02bb02bb02bb02bb02bb02bb02"
+      },
+      {
+        "path": "docs/link.md",
+        "mode": "120000",
+        "type": "blob",
+        "size": 31,
+        "sha": "dd04dd04dd04dd04dd04dd04dd04dd04dd04dd04"
+      },
+      {
+        "path": "examples/basic.md",
+        "mode": "100644",
+        "type": "blob",
+        "size": 400,
+        "sha": "aa06aa06aa06aa06aa06aa06aa06aa06aa06aa06"
+      },
+      {
+        "path": "examples/data.bin",
+        "mode": "100644",
+        "type": "blob",
+        "size": 9000,
+        "sha": "bb07bb07bb07bb07bb07bb07bb07bb07bb07bb07"
+      },
+      {
+        "path": "lib/helper.py",
+        "mode": "100644",
+        "type": "blob",
+        "size": 1500,
+        "sha": "ee10ee10ee10ee10ee10ee10ee10ee10ee10ee10"
+      },
+      {
+        "path": "pyproject.toml",
+        "mode": "100644",
+        "type": "blob",
+        "size": 600,
+        "sha": "cc08cc08cc08cc08cc08cc08cc08cc08cc08cc08"
+      },
+      {
+        "path": "script.py",
+        "mode": "100644",
+        "type": "blob",
+        "size": 700,
+        "sha": "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"
+      },
+      {
+        "path": "src/core.py",
+        "mode": "100644",
+        "type": "blob",
+        "size": 2000,
+        "sha": "dd09dd09dd09dd09dd09dd09dd09dd09dd09dd09"
+      }
+    ],
+    "truncated": false
+  }
+}
