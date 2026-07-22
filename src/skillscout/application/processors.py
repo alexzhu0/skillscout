@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from pydantic import ValidationError
 
@@ -412,6 +412,52 @@ def _classify_blob_content(raw: bytes) -> tuple[str | None, tuple[RejectionRule,
     if text.startswith(LFS_POINTER_PREFIX):
         return None, (RejectionRule.LFS_POINTER, "lfs_pointer_prefix")
     return text, None
+
+
+def hydrate_read_bundle(
+    github_client: GitHubReadClient,
+    owner: str,
+    repo: str,
+    files: Iterable[Mapping[str, object]],
+) -> dict[str, str]:
+    """Rebuild the in-memory read bundle from the persisted read plan.
+
+    Every recorded file is re-fetched at its recorded blob SHA, re-checked
+    against the binary/LFS rejections, and required to match its recorded
+    sha256 content hash exactly; any deviation fails closed.
+    """
+
+    entries: list[tuple[int, str, str, int, str]] = []
+    try:
+        for entry in files:
+            path = entry["path"]
+            blob_sha = entry["blob_sha"]
+            size = entry["size"]
+            content_hash = entry["content_hash"]
+            read_order = entry["read_order"]
+            if (
+                not isinstance(path, str)
+                or not isinstance(blob_sha, str)
+                or type(size) is not int
+                or not isinstance(content_hash, str)
+                or type(read_order) is not int
+            ):
+                raise TypeError("invalid recorded read-plan entry")
+            entries.append((read_order, path, blob_sha, size, content_hash))
+    except (KeyError, TypeError):
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+    entries.sort()
+
+    bundle: dict[str, str] = {}
+    for _read_order, path, blob_sha, size, content_hash in entries:
+        raw = github_client.get_blob(owner, repo, blob_sha, expected_size=size)
+        text, content_rejection = _classify_blob_content(raw)
+        if content_rejection is not None or text is None:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+        if sha256_digest(raw) != content_hash:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+        bundle[path] = text
+    return bundle
 
 
 def _owner_repo(subject: RepositorySubject) -> tuple[str, str]:
