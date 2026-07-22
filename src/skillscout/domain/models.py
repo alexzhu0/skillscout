@@ -477,6 +477,36 @@ class PublicationPlan(StrictFrozenModel):
         return self.model_dump(mode="json", exclude_none=False)
 
 
+class StageOutcomeEntry(StrictFrozenModel):
+    """One stage's closed outcome inside the extraction summary."""
+
+    stage: PipelineStage
+    outcome: str
+
+
+class ExtractionSummary(StrictFrozenModel):
+    """Bounded terminal artifact for one completed phase-two extraction run."""
+
+    run_id: NonEmpty
+    subject_id: NonEmpty
+    repository: NonEmpty
+    pinned_commit_sha: str | None
+    stage_outcomes: tuple[StageOutcomeEntry, ...]
+    extractor_outcome: str
+    workflow_count: NonNegativeInt
+    workflow_fingerprints: Annotated[tuple[str, ...], Field(max_length=3)]
+    remote_writes_attempted: NonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def validate_workflow_count(self) -> ExtractionSummary:
+        if self.workflow_count != len(self.workflow_fingerprints):
+            raise ValueError("workflow count disagrees with fingerprints")
+        return self
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=False)
+
+
 class RunSummary(StrictFrozenModel):
     run_id: NonEmpty
     status: RunStatus

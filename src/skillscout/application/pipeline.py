@@ -19,7 +19,10 @@ from skillscout.application.ports import (
     ErrorCode,
     IdProvider,
     SafeFailure,
+    StageContext,
+    StageOutcome,
     StageProcessor,
+    StageTelemetry,
     StateStore,
 )
 from skillscout.domain.canonical import (
@@ -40,6 +43,7 @@ from skillscout.domain.enums import (
     RunStatus,
 )
 from skillscout.domain.models import (
+    ExtractionSummary,
     PublicationPlan,
     RunIdentity,
     RunSummary,
@@ -47,15 +51,31 @@ from skillscout.domain.models import (
     StageAttempt,
     StageEnvelope,
     StageInput,
+    StageOutcomeEntry,
     StagePayload,
+    VerifiedRunChain,
 )
+from skillscout.domain.subjects import RepositorySubject
 
 STAGE_SEQUENCE = tuple(stage.value for stage in PipelineStage)
 RETRY_POLICY_VERSION = "retry-v1"
 PHASE_ONE_MAX_SCOPES: Final[frozenset[EffectScope]] = frozenset(
     {EffectScope.NONE, EffectScope.LOCAL_STATE}
 )
+PHASE_TWO_MAX_SCOPES: Final[frozenset[EffectScope]] = frozenset(
+    {EffectScope.NONE, EffectScope.LOCAL_STATE, EffectScope.REMOTE_READ}
+)
+PHASE_TWO_STAGE_SEQUENCE: Final[tuple[str, ...]] = tuple(
+    stage.value
+    for stage in (
+        PipelineStage.SCOUT,
+        PipelineStage.FILTER,
+        PipelineStage.READER,
+        PipelineStage.EXTRACTOR,
+    )
+)
 MAX_PUBLICATION_PLAN_BYTES: Final[int] = 65_536
+MAX_EXTRACTION_SUMMARY_BYTES: Final[int] = 65_536
 
 
 @dataclass(frozen=True)
@@ -120,6 +140,10 @@ class SideEffectPolicy:
     def phase_one(cls) -> SideEffectPolicy:
         return cls(PHASE_ONE_MAX_SCOPES)
 
+    @classmethod
+    def phase_two(cls) -> SideEffectPolicy:
+        return cls(PHASE_TWO_MAX_SCOPES)
+
     def validate(
         self, registrations: Iterable[AdapterRegistration]
     ) -> tuple[AdapterRegistration, ...]:
@@ -130,8 +154,49 @@ class SideEffectPolicy:
 
 
 @dataclass(frozen=True)
+class PipelineProfile:
+    """Closed producer-resolved stage slice and terminal behavior."""
+
+    stages: tuple[PipelineStage, ...]
+    uses_context: bool
+    terminal_status: RunStatus
+
+
+PIPELINE_PROFILES: Final[dict[str, PipelineProfile]] = {
+    "fixture-v1": PipelineProfile(
+        tuple(PipelineStage), False, RunStatus.PLANNED_NOT_PUBLISHED
+    ),
+    "phase2-v1": PipelineProfile(
+        (
+            PipelineStage.SCOUT,
+            PipelineStage.FILTER,
+            PipelineStage.READER,
+            PipelineStage.EXTRACTOR,
+        ),
+        True,
+        RunStatus.COMPLETED,
+    ),
+}
+
+if any(
+    profile.stages != tuple(PipelineStage)[: len(profile.stages)]
+    for profile in PIPELINE_PROFILES.values()
+):
+    raise RuntimeError("pipeline profile stages must be a spine prefix")
+
+
+@dataclass(frozen=True)
 class DryRunRuntime:
     """Validated local-only runtime returned by the sole composition root."""
+
+    runner: PipelineRunner
+    registrations: tuple[AdapterRegistration, ...]
+    policy: SideEffectPolicy
+
+
+@dataclass(frozen=True)
+class PhaseTwoRuntime:
+    """Validated remote-read runtime returned by the phase-two composition root."""
 
     runner: PipelineRunner
     registrations: tuple[AdapterRegistration, ...]
@@ -163,6 +228,27 @@ class _LocalPublicationPlanner:
         )
 
 
+class _ExtractionSummaryWriter:
+    """The only extraction-summary capability present in the phase-two runtime."""
+
+    def __init__(
+        self,
+        filesystem_seam: Callable[[str], None] | None = None,
+    ) -> None:
+        self._filesystem_seam = filesystem_seam
+
+    @property
+    def effect_scope(self) -> EffectScope:
+        return EffectScope.LOCAL_STATE
+
+    def write(self, output_directory: Path, summary: ExtractionSummary) -> Path:
+        return PipelineRunner._write_extraction_summary(
+            output_directory,
+            summary,
+            filesystem_seam=self._filesystem_seam,
+        )
+
+
 class PipelineRunner:
     """Persist running identity before work and atomic evidence after work."""
 
@@ -175,6 +261,7 @@ class PipelineRunner:
         ids: IdProvider | None = None,
         retry_policy: RetryPolicy | None = None,
         publication_writer: _PublicationWriter | None = None,
+        extraction_writer: _ExtractionSummaryWriter | None = None,
         filesystem_seam: Callable[[str], None] | None = None,
     ) -> None:
         self.state = state
@@ -185,10 +272,13 @@ class PipelineRunner:
         self.publication_writer = publication_writer or _LocalPublicationPlanner(
             filesystem_seam
         )
+        self.extraction_writer = extraction_writer or _ExtractionSummaryWriter(
+            filesystem_seam
+        )
 
     def run(
         self,
-        subject: FixtureSubject,
+        subject: FixtureSubject | RepositorySubject,
         output_directory: Path,
         fail_after: str | None = None,
     ) -> RunSummary:
@@ -204,6 +294,9 @@ class PipelineRunner:
         except Exception:
             producer_supported = False
         if not producer_supported:
+            raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+        profile = PIPELINE_PROFILES.get(producer_version)
+        if profile is None:
             raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
 
         fixture_hash = sha256_digest(subject.model_dump(mode="json", exclude_none=False))
@@ -240,7 +333,12 @@ class PipelineRunner:
             start_index = invocation_event.reused_stage_count
             previous_output_hash = checkpoint.output_hash if checkpoint else None
 
-        for stage_index, stage in enumerate(PipelineStage):
+        prior_payloads: dict[str, Mapping[str, object]] = {}
+        if profile.uses_context and resumable is not None and start_index > 0:
+            for envelope in self.state.verify_run_chain(run_id).results:
+                prior_payloads[envelope.stage.value] = envelope.payload
+
+        for stage_index, stage in enumerate(profile.stages):
             if stage_index < start_index:
                 continue
             stage_input = StageInput(
@@ -301,7 +399,21 @@ class PipelineRunner:
             self.state.start_attempt(attempt)
 
             try:
-                output: Mapping[str, object] = self.processor.process(stage_input)
+                if profile.uses_context:
+                    context = StageContext(
+                        subject=subject,
+                        prior_payloads=dict(prior_payloads),
+                        scratch={},
+                    )
+                    outcome: StageOutcome | Mapping[str, object] = self.processor.process(  # type: ignore[call-arg]
+                        stage_input,
+                        context,
+                    )
+                else:
+                    outcome = StageOutcome(
+                        payload=self.processor.process(stage_input),
+                        telemetry=None,
+                    )
             except SafeFailure as failure:
                 self._close_started_attempt(
                     attempt_id=attempt_id,
@@ -318,16 +430,33 @@ class PipelineRunner:
                 )
                 raise failure from None
 
+            if (
+                not isinstance(outcome, StageOutcome)
+                or not isinstance(outcome.payload, Mapping)
+                or (
+                    outcome.telemetry is not None
+                    and not isinstance(outcome.telemetry, StageTelemetry)
+                )
+            ):
+                failure = SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+                self._close_started_attempt(
+                    attempt_id=attempt_id,
+                    run_id=run_id,
+                    failure=failure,
+                )
+                raise failure
+
+            telemetry = outcome.telemetry
             try:
-                payload = StagePayload.model_validate(output).root
+                payload = StagePayload.model_validate(outcome.payload).root
                 output_hash = stage_output_hash(
                     schema_version=schema_version,
                     subject_id=subject.subject_id,
                     stage=stage,
                     producer_version=producer_version,
-                    prompt_version=None,
-                    policy_version=None,
-                    model_id=None,
+                    prompt_version=telemetry.prompt_version if telemetry else None,
+                    policy_version=telemetry.policy_version if telemetry else None,
+                    model_id=telemetry.model_id if telemetry else None,
                     payload=payload,
                 )
                 result_id = make_result_id(
@@ -354,10 +483,10 @@ class PipelineRunner:
                     output_hash=output_hash,
                     producer_version=producer_version,
                     retry_policy_version=self.retry_policy.version,
-                    prompt_version=None,
-                    policy_version=None,
-                    model_id=None,
-                    request_id=None,
+                    prompt_version=telemetry.prompt_version if telemetry else None,
+                    policy_version=telemetry.policy_version if telemetry else None,
+                    model_id=telemetry.model_id if telemetry else None,
+                    request_id=telemetry.request_id if telemetry else None,
                     created_at=self.clock.now(),
                     payload=payload,
                     manifest_hash=None,
@@ -375,6 +504,8 @@ class PipelineRunner:
                 raise failure from None
 
             try:
+                if telemetry is not None:
+                    self.state.record_attempt_telemetry(attempt_id, telemetry)
                 self.state.complete_stage(envelope)
             except SafeFailure as failure:
                 self._close_started_attempt(
@@ -392,6 +523,8 @@ class PipelineRunner:
                 )
                 raise failure from None
             previous_output_hash = output_hash
+            if profile.uses_context:
+                prior_payloads[stage.value] = payload
 
             if fail_after == stage.value:
                 failure = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
@@ -400,8 +533,18 @@ class PipelineRunner:
                 )
                 raise failure
 
-        self.publication_writer.write(output_directory, PublicationPlan(run_id=run_id))
-        self.state.set_run_status(run_id, RunStatus.PLANNED_NOT_PUBLISHED.value, self.clock.now())
+        if profile.terminal_status is RunStatus.COMPLETED:
+            chain = self.state.verify_run_chain(run_id)
+            extraction = _build_extraction_summary(chain, subject)
+            self.extraction_writer.write(output_directory, extraction)
+            self.state.set_run_status(run_id, RunStatus.COMPLETED.value, self.clock.now())
+            artifact_name = "extraction-summary.json"
+        else:
+            self.publication_writer.write(output_directory, PublicationPlan(run_id=run_id))
+            self.state.set_run_status(
+                run_id, RunStatus.PLANNED_NOT_PUBLISHED.value, self.clock.now()
+            )
+            artifact_name = "publication-plan.json"
         persisted = self.state.read_run(run_id)
         checkpoint = self.state.latest_checkpoint(run_id)
         if checkpoint is None:
@@ -411,7 +554,7 @@ class PipelineRunner:
             status=persisted.status,
             last_stage=checkpoint.stage,
             reused_stage_count=invocation_event.reused_stage_count,
-            publication_plan_path="publication-plan.json",
+            publication_plan_path=artifact_name,
             remote_writes_attempted=0,
         )
 
@@ -466,24 +609,26 @@ class PipelineRunner:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
     @staticmethod
-    def _write_publication_plan(
+    def _write_durable_artifact(
         output_directory: Path,
-        plan: PublicationPlan,
+        target_name: str,
+        payload: bytes,
         *,
+        max_bytes: int,
+        seam_prefix: str,
+        durable_marker: str,
         filesystem_seam: Callable[[str], None] | None = None,
     ) -> Path:
         anchor: AnchoredDirectory | None = None
         lock_descriptor = -1
         try:
-            payload = canonical_json_bytes(plan) + b"\n"
-            if len(payload) > MAX_PUBLICATION_PLAN_BYTES:
+            if len(payload) > max_bytes:
                 raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
             anchor = AnchoredDirectory.open(
                 output_directory,
                 create=True,
                 filesystem_seam=filesystem_seam,
             )
-            target_name = "publication-plan.json"
             lock_descriptor = PipelineRunner._acquire_publication_lock(
                 anchor, target_name
             )
@@ -491,26 +636,26 @@ class PipelineRunner:
             anchor.recover_stale_temporary(f".{target_name}.backup")
             previous = anchor.read_bytes(
                 target_name,
-                max_bytes=MAX_PUBLICATION_PLAN_BYTES,
+                max_bytes=max_bytes,
                 missing_ok=True,
             )
             if previous is None:
                 anchor.atomic_write(
                     target_name,
                     payload,
-                    max_bytes=MAX_PUBLICATION_PLAN_BYTES,
-                    seam_prefix="publication_",
+                    max_bytes=max_bytes,
+                    seam_prefix=seam_prefix,
                 )
             else:
                 anchor.atomic_write(
                     target_name,
                     payload,
-                    max_bytes=MAX_PUBLICATION_PLAN_BYTES,
+                    max_bytes=max_bytes,
                     restore_bytes=previous,
-                    seam_prefix="publication_",
+                    seam_prefix=seam_prefix,
                 )
             if filesystem_seam is not None:
-                filesystem_seam("after_publication_durable")
+                filesystem_seam(durable_marker)
             return output_directory / target_name
         except SafeFailure:
             raise
@@ -524,6 +669,92 @@ class PipelineRunner:
                     pass
             if anchor is not None:
                 anchor.close()
+
+    @staticmethod
+    def _write_publication_plan(
+        output_directory: Path,
+        plan: PublicationPlan,
+        *,
+        filesystem_seam: Callable[[str], None] | None = None,
+    ) -> Path:
+        payload = canonical_json_bytes(plan) + b"\n"
+        return PipelineRunner._write_durable_artifact(
+            output_directory,
+            "publication-plan.json",
+            payload,
+            max_bytes=MAX_PUBLICATION_PLAN_BYTES,
+            seam_prefix="publication_",
+            durable_marker="after_publication_durable",
+            filesystem_seam=filesystem_seam,
+        )
+
+    @staticmethod
+    def _write_extraction_summary(
+        output_directory: Path,
+        summary: ExtractionSummary,
+        *,
+        filesystem_seam: Callable[[str], None] | None = None,
+    ) -> Path:
+        payload = canonical_json_bytes(summary) + b"\n"
+        return PipelineRunner._write_durable_artifact(
+            output_directory,
+            "extraction-summary.json",
+            payload,
+            max_bytes=MAX_EXTRACTION_SUMMARY_BYTES,
+            seam_prefix="extraction_",
+            durable_marker="after_extraction_durable",
+            filesystem_seam=filesystem_seam,
+        )
+
+
+def _build_extraction_summary(
+    chain: VerifiedRunChain,
+    subject: FixtureSubject | RepositorySubject,
+) -> ExtractionSummary:
+    """Project the verified chain into the bounded phase-two terminal artifact."""
+
+    entries: list[StageOutcomeEntry] = []
+    payloads: dict[PipelineStage, Mapping[str, object]] = {}
+    for envelope in chain.results:
+        outcome = envelope.payload.get("outcome")
+        if not isinstance(outcome, str):
+            raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+        entries.append(StageOutcomeEntry(stage=envelope.stage, outcome=outcome))
+        payloads[envelope.stage] = envelope.payload
+    extractor_payload = payloads.get(PipelineStage.EXTRACTOR)
+    if extractor_payload is None:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+    pinned = payloads.get(PipelineStage.SCOUT, {}).get("pinned_commit_sha")
+    if pinned is not None and not isinstance(pinned, str):
+        raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+
+    workflows = extractor_payload.get("workflows", [])
+    if not isinstance(workflows, list):
+        raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+    fingerprints: list[str] = []
+    for item in workflows:
+        fingerprint = item.get("fingerprint") if isinstance(item, dict) else None
+        if not isinstance(fingerprint, str):
+            raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+        fingerprints.append(fingerprint)
+
+    return ExtractionSummary(
+        run_id=chain.run.run_id,
+        subject_id=chain.run.subject_id,
+        repository=(
+            subject.repository
+            if isinstance(subject, RepositorySubject)
+            else subject.subject_id
+        ),
+        pinned_commit_sha=pinned,
+        stage_outcomes=tuple(entries),
+        extractor_outcome=next(
+            entry.outcome for entry in entries if entry.stage is PipelineStage.EXTRACTOR
+        ),
+        workflow_count=len(fingerprints),
+        workflow_fingerprints=tuple(fingerprints),
+    )
 
 
 def build_dry_run_runtime(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 from pathlib import Path
 from typing import get_type_hints
 
@@ -168,7 +167,7 @@ def test_phase_two_slice_completes_with_context_telemetry_and_summary(tmp_path: 
         assert envelope.request_id == "req-double"
 
     artifact = tmp_path / "output" / "extraction-summary.json"
-    extraction = ExtractionSummary.model_validate(json.loads(artifact.read_bytes()))
+    extraction = ExtractionSummary.model_validate_json(artifact.read_bytes())
     assert extraction.run_id == summary.run_id
     assert extraction.subject_id == subject.subject_id
     assert extraction.repository == subject.repository

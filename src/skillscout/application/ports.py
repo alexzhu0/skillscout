@@ -15,6 +15,7 @@ from skillscout.domain.models import (
     StageAttempt,
     StageEnvelope,
     StageInput,
+    TokenUsage,
     VerifiedRunChain,
 )
 
@@ -114,6 +115,47 @@ class StageProcessor(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+@dataclass(frozen=True)
+class StageTelemetry:
+    """Optional per-invocation telemetry copied onto attempts and envelopes."""
+
+    prompt_version: str | None = None
+    policy_version: str | None = None
+    model_id: str | None = None
+    request_id: str | None = None
+    latency_ms: int | None = None
+    token_usage: TokenUsage | None = None
+
+
+@dataclass(frozen=True)
+class StageOutcome:
+    """One processor result: a bounded JSON payload plus optional telemetry."""
+
+    payload: Mapping[str, Any]
+    telemetry: StageTelemetry | None = None
+
+
+@dataclass(frozen=True)
+class StageContext:
+    """Runtime-only per-invocation context; never persisted or canonicalized."""
+
+    subject: object
+    prior_payloads: dict[str, Mapping[str, Any]]
+    scratch: dict[str, Any]
+
+
+class ContextStageProcessor(Protocol):
+    """Context-aware phase-two stage processor contract."""
+
+    producer_version: str
+
+    def process(
+        self,
+        stage_input: StageInput,
+        context: StageContext,
+    ) -> StageOutcome: ...
+
+
 class Clock(Protocol):
     """Injectable UTC clock used only for audit timestamps."""
 
@@ -169,6 +211,12 @@ class StateStore(Protocol):
     def start_attempt(
         self,
         attempt: StageAttempt,
+    ) -> None: ...
+
+    def record_attempt_telemetry(
+        self,
+        attempt_id: str,
+        telemetry: StageTelemetry,
     ) -> None: ...
 
     def complete_stage(

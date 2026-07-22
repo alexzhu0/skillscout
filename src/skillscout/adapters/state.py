@@ -15,7 +15,12 @@ from typing import Any, Callable, Iterable, Mapping, TypeVar
 from pydantic import ValidationError
 
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
-from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
+from skillscout.application.ports import (
+    ERROR_SUMMARIES,
+    ErrorCode,
+    SafeFailure,
+    StageTelemetry,
+)
 from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
@@ -2187,6 +2192,35 @@ class SQLiteStateStore:
                 int(attempt.retryable),
             ),
         )
+
+    def record_attempt_telemetry(self, attempt_id: str, telemetry: StageTelemetry) -> None:
+        """Copy processor telemetry onto one still-running attempt row."""
+
+        usage = telemetry.token_usage
+
+        def mutate(database: sqlite3.Connection) -> None:
+            updated = database.execute(
+                """UPDATE stage_attempts
+                   SET prompt_version = ?, policy_version = ?, model_id = ?,
+                       request_id = ?, latency_ms = ?, prompt_tokens = ?,
+                       completion_tokens = ?, total_tokens = ?
+                   WHERE attempt_id = ? AND status = 'running'""",
+                (
+                    telemetry.prompt_version,
+                    telemetry.policy_version,
+                    telemetry.model_id,
+                    telemetry.request_id,
+                    telemetry.latency_ms,
+                    usage.prompt_tokens if usage else None,
+                    usage.completion_tokens if usage else None,
+                    usage.total_tokens if usage else None,
+                    attempt_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+
+        self._snapshot_transaction(mutate)
 
     def complete_stage(self, envelope: StageEnvelope) -> None:
         if envelope.manifest_hash is None:
