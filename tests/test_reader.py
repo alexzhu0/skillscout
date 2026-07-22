@@ -14,6 +14,7 @@ from recorded_transport import (
     RecordedTransport,
     make_blob_entry,
     make_blob_fixture,
+    make_tree_fixture,
     recorded_fixture,
 )
 
@@ -27,7 +28,11 @@ from skillscout.application.ports import (
     StageContext,
     StageOutcome,
 )
-from skillscout.application.processors import PhaseTwoProcessor, _read_budget_stop
+from skillscout.application.processors import (
+    PhaseTwoProcessor,
+    _read_budget_stop,
+    hydrate_read_bundle,
+)
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.enums import ExecutionMode, PipelineStage
 from skillscout.domain.models import (
@@ -68,6 +73,8 @@ HELPER_SHA = "ee10ee10ee10ee10ee10ee10ee10ee10ee10ee10"
 PYPROJECT_SHA = "cc08cc08cc08cc08cc08cc08cc08cc08cc08cc08"
 SCRIPT_SHA = "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"
 CORE_SHA = "dd09dd09dd09dd09dd09dd09dd09dd09dd09dd09"
+LFS_SHA = "fa01fa01fa01fa01fa01fa01fa01fa01fa01fa01"
+BINARY_SHA = "fb02fb02fb02fb02fb02fb02fb02fb02fb02fb02"
 
 README_CANARY = "A small reusable workflow repository used by SkillScout recorded tests."
 HELPER_CONTENT = b"# lib helper\n" + b"h" * (1500 - 14) + b"\n"
@@ -231,6 +238,9 @@ EXPECTED_ORDER = [
     "script.py",
     "src/core.py",
 ]
+
+LFS_CONTENT = _fixture_bytes("blob_lfs")
+BINARY_CONTENT = _fixture_bytes("blob_binary")
 
 
 def test_reader_reads_in_exact_tier_order_with_sorted_paths() -> None:
@@ -685,3 +695,228 @@ def test_reader_surfaces_carry_no_full_text_canary(tmp_path: Path) -> None:
     for text in EXPECTED_TEXTS.values():
         assert text.encode() not in reader_manifest
     assert README_CANARY.encode() not in (tmp_path / "state.db").read_bytes()
+
+
+def test_reader_records_submodule_and_symlink_without_fetching() -> None:
+    candidates = [
+        {
+            "path": "docs/external",
+            "mode": "160000",
+            "type": "commit",
+            "size": None,
+            "sha": EXTERNAL_SHA,
+        },
+        {
+            "path": "docs/link.md",
+            "mode": "120000",
+            "type": "blob",
+            "size": 31,
+            "sha": LINK_SHA,
+        },
+    ]
+    routes = {
+        _blob(EXTERNAL_SHA): make_blob_fixture(b"submodule", sha=EXTERNAL_SHA),
+        _blob(LINK_SHA): make_blob_fixture(b"docs/guide.md\n", sha=LINK_SHA),
+    }
+    processor, recorded = _processor(routes)
+    outcome, _context = _reader(processor, candidates)
+    payload = outcome.payload
+
+    assert payload["rejections"] == [
+        {"path": "docs/external", "rule": "submodule", "observed": "160000"},
+        {"path": "docs/link.md", "rule": "symlink", "observed": "120000"},
+    ]
+    assert payload["files"] == []
+    assert payload["stop_reason"] == StopReason.NO_ALLOWLISTED_FILES.value
+    assert recorded.requests == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/../evil.md",
+        "docs//gap.md",
+        "docs\\evil.md",
+        "docs/evil\x00.md",
+        "docs/" + "a" * 505 + ".md",
+        "docs/a/b/c/d/e/f/g/h.md",
+    ],
+)
+def test_reader_records_path_violations_without_fetching(path: str) -> None:
+    sha = "f0" * 20
+    candidates = [{"path": path, "mode": "100644", "type": "blob", "size": 10, "sha": sha}]
+    routes = {_blob(sha): make_blob_fixture(b"0123456789", sha=sha)}
+    processor, recorded = _processor(routes)
+    outcome, _context = _reader(processor, candidates)
+    payload = outcome.payload
+
+    assert payload["rejections"] == [
+        {"path": path, "rule": "path_violation", "observed": path}
+    ]
+    assert payload["files"] == []
+    assert payload["stop_reason"] == StopReason.NO_ALLOWLISTED_FILES.value
+    assert recorded.requests == []
+
+
+def test_reader_records_non_allowlisted_extensions_without_fetching() -> None:
+    candidates, routes = _reader_setup(
+        [
+            ("examples/data.bin", b"\x00" * 32),
+            ("assets/pack.zip", b"PK\x03\x04" * 8),
+        ]
+    )
+    processor, recorded = _processor(routes)
+    outcome, _context = _reader(processor, candidates)
+    payload = outcome.payload
+
+    assert payload["rejections"] == [
+        {
+            "path": "examples/data.bin",
+            "rule": "non_allowlisted_extension",
+            "observed": "data.bin",
+        },
+        {
+            "path": "assets/pack.zip",
+            "rule": "non_allowlisted_extension",
+            "observed": "pack.zip",
+        },
+    ]
+    assert payload["files"] == []
+    assert payload["stop_reason"] == StopReason.NO_ALLOWLISTED_FILES.value
+    assert recorded.requests == []
+
+
+def _rejection_chain(
+    extra_entries: list[dict[str, object]],
+    extra_routes: dict[tuple[str, str], RecordedResponse],
+) -> tuple[StageOutcome, RecordedTransport]:
+    license_entry = make_blob_entry("LICENSE", b"MIT License\n")
+    readme_entry = make_blob_entry("README.md", b"# readme\n")
+    routes = {
+        META: recorded_fixture("repo_mit"),
+        PIN: recorded_fixture("commits_pin"),
+        TREE: make_tree_fixture([license_entry, readme_entry, *extra_entries]),
+        LICENSE: recorded_fixture("license_mit"),
+        _blob(str(readme_entry["sha"])): make_blob_fixture(
+            b"# readme\n", sha=str(readme_entry["sha"])
+        ),
+    }
+    routes.update(extra_routes)
+    processor, recorded = _processor(routes)
+    outcome, _context = _happy_reader_run(processor)
+    return outcome, recorded
+
+
+def test_reader_rejects_binary_content_after_exactly_one_fetch() -> None:
+    binary_entry = make_blob_entry("docs/diagram.md", BINARY_CONTENT, sha=BINARY_SHA)
+    outcome, recorded = _rejection_chain(
+        [binary_entry], {_blob(BINARY_SHA): recorded_fixture("blob_binary")}
+    )
+    payload = outcome.payload
+
+    assert payload["rejections"] == [
+        {"path": "LICENSE", "rule": "non_allowlisted_extension", "observed": "LICENSE"},
+        {
+            "path": "docs/diagram.md",
+            "rule": "binary_content",
+            "observed": "utf8_decode_failed",
+        },
+    ]
+    assert [entry["path"] for entry in payload["files"]] == ["README.md"]
+    assert payload["stop_reason"] == StopReason.CANDIDATES_EXHAUSTED.value
+    assert recorded.call_count(*_blob(BINARY_SHA)) == 1
+
+
+def test_reader_rejects_lfs_pointer_after_exactly_one_fetch() -> None:
+    lfs_entry = make_blob_entry("docs/weights.md", LFS_CONTENT, sha=LFS_SHA)
+    outcome, recorded = _rejection_chain(
+        [lfs_entry], {_blob(LFS_SHA): recorded_fixture("blob_lfs")}
+    )
+    payload = outcome.payload
+
+    assert payload["rejections"] == [
+        {"path": "LICENSE", "rule": "non_allowlisted_extension", "observed": "LICENSE"},
+        {
+            "path": "docs/weights.md",
+            "rule": "lfs_pointer",
+            "observed": "lfs_pointer_prefix",
+        },
+    ]
+    assert [entry["path"] for entry in payload["files"]] == ["README.md"]
+    assert payload["stop_reason"] == StopReason.CANDIDATES_EXHAUSTED.value
+    assert recorded.call_count(*_blob(LFS_SHA)) == 1
+
+
+def _hydration_client(
+    routes: dict[tuple[str, str], RecordedResponse],
+) -> tuple[GitHubReadClient, RecordedTransport]:
+    recorded = RecordedTransport(routes)
+    client = GitHubReadClient(
+        transport=recorded.transport(), sleeper=lambda _seconds: None
+    )
+    return client, recorded
+
+
+def test_hydrate_read_bundle_reproduces_the_scratch_bundle_byte_for_byte() -> None:
+    processor, _recorded = _processor(_happy_routes())
+    outcome, context = _happy_reader_run(processor)
+    files = outcome.payload["files"]
+
+    client, hydration = _hydration_client(_happy_blob_routes())
+    bundle = hydrate_read_bundle(client, "example", "approved-repo", files)
+
+    assert bundle == context.scratch["read_bundle"]
+    assert sum(hydration.calls.values()) == len(files)
+    for entry in files:
+        assert hydration.call_count(*_blob(str(entry["blob_sha"]))) == 1
+
+
+def test_hydrate_read_bundle_fails_closed_on_tampered_bytes() -> None:
+    processor, _recorded = _processor(_happy_routes())
+    outcome, _context = _happy_reader_run(processor)
+    files = outcome.payload["files"]
+
+    tampered_routes = _happy_blob_routes()
+    tampered_routes[_blob(GUIDE_SHA)] = make_blob_fixture(
+        _sized("# tampered guide\n", 800), sha=GUIDE_SHA
+    )
+    client, _hydration = _hydration_client(tampered_routes)
+    with pytest.raises(SafeFailure) as failure:
+        hydrate_read_bundle(client, "example", "approved-repo", files)
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+
+def test_hydrate_read_bundle_fails_closed_on_a_new_content_rejection() -> None:
+    files = [
+        {
+            "path": "docs/diagram.md",
+            "tier": "docs",
+            "blob_sha": BINARY_SHA,
+            "size": len(BINARY_CONTENT),
+            "content_hash": sha256_digest(BINARY_CONTENT),
+            "read_order": 1,
+        }
+    ]
+    client, _hydration = _hydration_client(
+        {_blob(BINARY_SHA): recorded_fixture("blob_binary")}
+    )
+    with pytest.raises(SafeFailure) as failure:
+        hydrate_read_bundle(client, "example", "approved-repo", files)
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+
+def test_reader_run_performs_only_recorded_mock_transport_http(
+    outbound_socket_sentinel: list[object],
+) -> None:
+    processor, recorded = _processor(_happy_routes())
+    outcome, _context = _happy_reader_run(processor)
+
+    assert outcome.payload["outcome"] == "accepted"
+    assert outbound_socket_sentinel == []
+    allowed_paths = {
+        META[1],
+        PIN[1],
+        f"/repos/example/approved-repo/git/trees/{PINNED}",
+        "/repos/example/approved-repo/license",
+    } | {route[1] for route in _happy_blob_routes()}
+    assert {request.url.path for request in recorded.requests} <= allowed_paths

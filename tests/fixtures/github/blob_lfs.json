@@ -1,0 +1,18 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4984",
+    "x-ratelimit-reset": "1800000000",
+    "x-github-request-id": "REQ-BLOB-LFS1"
+  },
+  "body": {
+    "sha": "fa01fa01fa01fa01fa01fa01fa01fa01fa01fa01",
+    "node_id": "B_kwDOAAAABdoAKGFh",
+    "size": 130,
+    "url": "https://api.github.com/repos/example/approved-repo/git/blobs/fa01fa01fa01fa01fa01fa01fa01fa01fa01fa01",
+    "content": "dmVyc2lvbiBodHRwczovL2dpdC1sZnMuZ2l0aHViLmNvbS9zcGVjL3YxCm9pZCBzaGEyNTY6NGQ3YTIxNDk0ZDdhMjE0OTRkN2EyMTQ5NGQ3YTIxNDk0ZDdhMjE0OTRkN2EyMTQ5NGQ3YTIxNDk0ZDdhMjE0OQpzaXplIDk4NzY1Cg==",
+    "encoding": "base64"
+  }
+}
