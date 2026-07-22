@@ -153,7 +153,16 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Phase 2  
 **Requirements:** QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03  
-**Plans:** To be created with phase planning
+**Plans:** 7 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Approve and lock the official validator dependency through Gates A3/B3.
+- [ ] 03-02-PLAN.md — Implement deterministic 100-point workflow qualification and hard failures.
+- [ ] 03-03-PLAN.md — Generate and safely materialize provenance-complete documentation-only Skill packages.
+- [ ] 03-04-PLAN.md — Run layered official, structural, source, and security validation.
+- [ ] 03-05-PLAN.md — Add the independent judge-only Reviewer and exact eligibility gate.
+- [ ] 03-06-PLAN.md — Integrate the additive phase3-v1 pipeline with resume and zero-call reuse.
+- [ ] 03-07-PLAN.md — Deliver the build-candidate CLI, E2E rejection matrix, and phase gate.
 
 **Success Criteria:**
 
