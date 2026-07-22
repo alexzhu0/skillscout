@@ -10,9 +10,9 @@
   "body": {
     "sha": "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01",
     "node_id": "B_kwDOAAAABdoAKGFh",
-    "size": 142,
+    "size": 228,
     "url": "https://api.github.com/repos/example/approved-repo/git/blobs/aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01",
-    "content": "IyBBcHByb3ZlZCBSZXBvCgpBIHNtYWxsIHJldXNhYmxlIHdvcmtmbG93IHJlcG9zaXRvcnkgdXNlZCBieSBTa2lsbFNjb3V0IHJlY29yZGVkIHRlc3RzLgoKIyMgV29ya2Zsb3cKCjEuIFJlYWQgdGhlIGd1aWRlLgoyLiBSdW4gdGhlIGV4YW1wbGUuCg==",
+    "content": "IyBBcHByb3ZlZCBSZXBvCgpBIHNtYWxsIHJldXNhYmxlIHdvcmtmbG93IHJlcG9zaXRvcnkgdXNlZCBieSBTa2lsbFNjb3V0IHJlY29yZGVkIHRlc3RzLgoKIyMgV29ya2Zsb3cKCjEuIFJlYWQgdGhlIGd1aWRlLgoyLiBSdW4gdGhlIGV4YW1wbGUuCgpDQU5BUllfRlVMTF9URVhUX1NFTlRFTkNFX0RPX05PVF9QRVJTSVNUXzlmM2IKQ0FOQVJZX0VWSURFTkNFX1NFTlRFTkNFX1ZFUkJBVElNXzdhMjEK",
     "encoding": "base64"
   }
 }

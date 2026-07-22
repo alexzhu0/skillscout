@@ -288,8 +288,8 @@ def test_reader_reads_in_exact_tier_order_with_sorted_paths() -> None:
     assert payload["budgets"] == {
         "files_read": 7,
         "source_files_read": 3,
-        "total_bytes": 6142,
-        "estimated_input_tokens": 1536,
+        "total_bytes": 6228,
+        "estimated_input_tokens": 1557,
     }
 
     assert payload["rejections"] == [

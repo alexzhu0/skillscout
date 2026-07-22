@@ -29,7 +29,9 @@ PINNED_SHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde
 README_BLOB = "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"
 README_TEXT = (
     b"# Approved Repo\n\nA small reusable workflow repository used by SkillScout "
-    b"recorded tests.\n\n## Workflow\n\n1. Read the guide.\n2. Run the example.\n"
+    b"recorded tests.\n\n## Workflow\n\n1. Read the guide.\n2. Run the example.\n\n"
+    b"CANARY_FULL_TEXT_SENTENCE_DO_NOT_PERSIST_9f3b\n"
+    b"CANARY_EVIDENCE_SENTENCE_VERBATIM_7a21\n"
 )
 CANARY = "github_pat_CANARY_DO_NOT_DISCLOSE_0123456789"
 
@@ -127,7 +129,7 @@ def test_every_content_url_embeds_the_pinned_sha_after_resolution() -> None:
         sha = client.resolve_commit("example", "approved-repo", "main")
         client.get_tree("example", "approved-repo", sha)
         client.get_license("example", "approved-repo", sha)
-        client.get_blob("example", "approved-repo", README_BLOB, expected_size=142)
+        client.get_blob("example", "approved-repo", README_BLOB, expected_size=228)
 
     urls = [str(request.url) for request in recorded.requests]
     assert urls[1].endswith("/commits/main")
@@ -148,7 +150,7 @@ def test_recorded_urls_stay_inside_the_closed_endpoint_set() -> None:
         sha = client.resolve_commit("example", "approved-repo", "main")
         client.get_tree("example", "approved-repo", sha)
         client.get_license("example", "approved-repo", sha)
-        client.get_blob("example", "approved-repo", README_BLOB, expected_size=142)
+        client.get_blob("example", "approved-repo", README_BLOB, expected_size=228)
 
     allowed = (
         f"https://api.github.com{META[1]}",
@@ -219,7 +221,7 @@ def test_license_endpoint_spdx_is_reported_verbatim_for_filter_comparison() -> N
 def test_blob_round_trip_and_tree_declared_size_recheck() -> None:
     recorded = RecordedTransport(_routes())
     with _client(recorded) as client:
-        content = client.get_blob("example", "approved-repo", README_BLOB, expected_size=142)
+        content = client.get_blob("example", "approved-repo", README_BLOB, expected_size=228)
     assert content == README_TEXT
 
     with _client(RecordedTransport(_routes())) as client:
@@ -248,7 +250,7 @@ def test_blob_rejects_wrong_encoding_declared_size_and_bad_base64() -> None:
         routes[BLOB] = RecordedResponse(status=200, headers=base.headers, body=body)
         with _client(RecordedTransport(routes)) as client:
             with pytest.raises(SafeFailure) as failure:
-                client.get_blob("example", "approved-repo", README_BLOB, expected_size=142)
+                client.get_blob("example", "approved-repo", README_BLOB, expected_size=228)
         assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
 
 
@@ -432,7 +434,7 @@ def test_canary_token_stays_in_the_authorization_header_only(
         sha = client.resolve_commit("example", "approved-repo", "main")
         client.get_tree("example", "approved-repo", sha)
         client.get_license("example", "approved-repo", sha)
-        client.get_blob("example", "approved-repo", README_BLOB, expected_size=142)
+        client.get_blob("example", "approved-repo", README_BLOB, expected_size=228)
 
     for request in recorded.requests:
         assert request.headers["authorization"] == f"Bearer {CANARY}"

@@ -1,0 +1,36 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": "resp_ext_0007",
+    "object": "response",
+    "created_at": 1783000000,
+    "status": "completed",
+    "model": "gpt-5.6-terra-2026-07-22",
+    "output": [
+      {
+        "id": "msg_0007",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "{\"repository_summary\": \"The repository cites files beyond the read record.\", \"rejection_reason\": null, \"workflows\": [{\"title\": \"Fabricated evidence workflow\", \"goal\": \"Follow a checklist that cites files outside the read record.\", \"applicability\": [\"Repositories with hidden policy files.\"], \"non_goals\": [\"Verifying evidence.\"], \"preconditions\": [\"None.\"], \"inputs\": [\"Repository files.\"], \"steps\": [{\"instruction\": \"Read the hidden policy file.\", \"evidence\": [{\"path\": \"docs/hidden.md\", \"blob_sha\": \"ffffffffffffffffffffffffffffffffffffffff\", \"excerpt\": \"Hidden policy.\", \"supports\": \"Fabricated path.\"}]}, {\"instruction\": \"Confirm the guide hash.\", \"evidence\": [{\"path\": \"docs/guide.md\", \"blob_sha\": \"aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01\", \"excerpt\": \"This guide describes the reusable review workflow end to end.\", \"supports\": \"Mismatched blob sha.\"}]}, {\"instruction\": \"Quote the guide.\", \"evidence\": [{\"path\": \"docs/guide.md\", \"blob_sha\": \"bb02bb02bb02bb02bb02bb02bb02bb02bb02bb02\", \"excerpt\": \"This sentence never appears in the recorded guide blob.\", \"supports\": \"Non-verbatim excerpt.\"}]}], \"outputs\": [\"A fabricated checklist.\"], \"failure_modes\": [\"The hidden file is absent.\"], \"prohibited_actions\": [\"Checking blob hashes.\"], \"required_approvals\": [\"None.\"], \"assumptions\": [\"The hidden file exists.\"], \"evidence\": [{\"path\": \"docs/guide.md\", \"blob_sha\": \"bb02bb02bb02bb02bb02bb02bb02bb02bb02bb02\", \"excerpt\": \"Another sentence that is not present in the guide blob.\", \"supports\": \"Non-verbatim workflow evidence.\"}], \"confidence\": 0.6}]}",
+            "annotations": []
+          }
+        ]
+      }
+    ],
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "tools": [],
+    "usage": {
+      "input_tokens": 705,
+      "output_tokens": 190,
+      "total_tokens": 895
+    }
+  }
+}
