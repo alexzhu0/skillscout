@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Mapping
 
 import httpx
 import pytest
@@ -30,7 +29,6 @@ from skillscout.adapters.subjects import load_subject
 from skillscout.application.pipeline import PipelineRunner
 from skillscout.application.ports import StageContext
 from skillscout.application.processors import PhaseTwoProcessor
-from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.enums import (
     AttemptStatus,
     ExecutionMode,
