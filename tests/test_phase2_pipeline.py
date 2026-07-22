@@ -9,14 +9,19 @@ from typing import get_type_hints
 import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject, load_fixture
+from skillscout.adapters.github import GitHubReadClient
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.adapters.subjects import load_subject
 from skillscout.application import pipeline
 from skillscout.application.pipeline import (
     PHASE_TWO_STAGE_SEQUENCE,
+    PhaseTwoRuntime,
     PipelineRunner,
+    build_dry_run_runtime,
+    build_phase_two_runtime,
 )
 from skillscout.application.ports import (
+    AdapterRegistration,
     ErrorCode,
     SafeFailure,
     StageContext,
@@ -24,7 +29,8 @@ from skillscout.application.ports import (
     StageTelemetry,
     StateStore,
 )
-from skillscout.domain.enums import PipelineStage, RunStatus
+from skillscout.application.processors import PhaseTwoProcessor
+from skillscout.domain.enums import EffectScope, PipelineStage, RunStatus
 from skillscout.domain.models import ExtractionSummary, StageInput, TokenUsage
 from skillscout.domain.subjects import RepositorySubject
 
@@ -306,3 +312,138 @@ def test_state_store_protocol_exposes_record_attempt_telemetry() -> None:
     protocol_signature = inspect.signature(StateStore.record_attempt_telemetry)
     adapter_signature = inspect.signature(SQLiteStateStore.record_attempt_telemetry)
     assert tuple(protocol_signature.parameters) == tuple(adapter_signature.parameters)
+
+
+def test_phase_two_root_constructs_the_closed_six_registration_registry(
+    tmp_path: Path,
+) -> None:
+    client = GitHubReadClient()
+    processor = PhaseTwoProcessor(client)
+    state = SQLiteStateStore(tmp_path / "state.db")
+    try:
+        runtime = build_phase_two_runtime(state, processor)
+        assert isinstance(runtime, PhaseTwoRuntime)
+        assert tuple(registration.name for registration in runtime.registrations) == (
+            "phase2_processor",
+            "sqlite_and_manifests",
+            "github_read",
+            "clock",
+            "run_ids",
+            "extraction_summary_writer",
+        )
+        assert runtime.registrations[0].adapter is processor
+        assert runtime.registrations[1].adapter is state
+        assert runtime.registrations[2].adapter is client
+        assert {registration.scope for registration in runtime.registrations} == {
+            EffectScope.NONE,
+            EffectScope.LOCAL_STATE,
+            EffectScope.REMOTE_READ,
+        }
+        assert runtime.policy.allowed_scopes == pipeline.PHASE_TWO_MAX_SCOPES
+        assert all(
+            registration.scope in runtime.policy.allowed_scopes
+            for registration in runtime.registrations
+        )
+        assert runtime.runner.processor is processor
+        assert runtime.runner.state is state
+    finally:
+        state.close()
+        client.close()
+
+
+def test_phase_two_policy_rejects_remote_write_before_invocation() -> None:
+    class RemoteWriteCanary:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @property
+        def effect_scope(self) -> EffectScope:
+            return EffectScope.REMOTE_WRITE
+
+        def invoke(self) -> None:
+            self.calls += 1
+
+    canary = RemoteWriteCanary()
+    registration = AdapterRegistration("canary", canary)
+    with pytest.raises(SafeFailure) as failure:
+        pipeline.SideEffectPolicy.phase_two().validate((registration,))
+    assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
+    assert canary.calls == 0
+
+
+def test_phase_two_root_has_no_policy_or_registration_inputs(tmp_path: Path) -> None:
+    client = GitHubReadClient()
+    processor = PhaseTwoProcessor(client)
+    state = SQLiteStateStore(tmp_path / "state.db")
+    try:
+        with pytest.raises(TypeError):
+            build_phase_two_runtime(
+                state, processor, policy=pipeline.SideEffectPolicy.phase_two()
+            )
+        with pytest.raises(TypeError):
+            build_phase_two_runtime(state, processor, registrations=())
+    finally:
+        state.close()
+        client.close()
+
+
+def test_phase_two_root_rejects_wrong_concrete_types(tmp_path: Path) -> None:
+    class CountingFixture(FixtureProcessor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def process(self, stage_input: StageInput) -> dict[str, object]:
+            self.calls += 1
+            return super().process(stage_input)
+
+    class SubclassedPhaseTwo(PhaseTwoProcessor):
+        pass
+
+    class UnsupportedLocalState:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @property
+        def effect_scope(self) -> EffectScope:
+            return EffectScope.LOCAL_STATE
+
+    state = SQLiteStateStore(tmp_path / "state.db")
+    wrong_processor = CountingFixture()
+    try:
+        with pytest.raises(SafeFailure) as failure:
+            build_phase_two_runtime(state, wrong_processor)
+        assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
+        assert wrong_processor.calls == 0
+
+        with pytest.raises(SafeFailure) as failure:
+            build_phase_two_runtime(state, SubclassedPhaseTwo(GitHubReadClient()))
+        assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
+
+        wrong_state = UnsupportedLocalState()
+        with pytest.raises(SafeFailure) as failure:
+            build_phase_two_runtime(wrong_state, PhaseTwoProcessor(GitHubReadClient()))
+        assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
+        assert wrong_state.calls == 0
+    finally:
+        state.close()
+
+
+def test_phase_one_root_rejects_the_phase_two_processor(tmp_path: Path) -> None:
+    class CountingPhaseTwo(PhaseTwoProcessor):
+        def __init__(self, github: GitHubReadClient) -> None:
+            super().__init__(github)
+            self.calls = 0
+
+        def process(self, stage_input: StageInput, context: StageContext) -> StageOutcome:
+            self.calls += 1
+            return super().process(stage_input, context)
+
+    state = SQLiteStateStore(tmp_path / "state.db")
+    processor = CountingPhaseTwo(GitHubReadClient())
+    try:
+        with pytest.raises(SafeFailure) as failure:
+            build_dry_run_runtime(state, processor)
+        assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
+        assert processor.calls == 0
+    finally:
+        state.close()
