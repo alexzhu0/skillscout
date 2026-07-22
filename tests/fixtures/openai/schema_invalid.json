@@ -1,0 +1,36 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": "resp_ext_0005",
+    "object": "response",
+    "created_at": 1783000000,
+    "status": "completed",
+    "model": "gpt-5.6-terra-2026-07-22",
+    "output": [
+      {
+        "id": "msg_0005",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "{\"unexpected\": true}",
+            "annotations": []
+          }
+        ]
+      }
+    ],
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "tools": [],
+    "usage": {
+      "input_tokens": 600,
+      "output_tokens": 10,
+      "total_tokens": 610
+    }
+  }
+}

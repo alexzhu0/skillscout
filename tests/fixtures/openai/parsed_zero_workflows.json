@@ -1,0 +1,36 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": "resp_ext_0002",
+    "object": "response",
+    "created_at": 1783000000,
+    "status": "completed",
+    "model": "gpt-5.6-terra-2026-07-22",
+    "output": [
+      {
+        "id": "msg_0002",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "{\"repository_summary\": \"The repository holds generated data tables without any reusable agent workflow.\", \"rejection_reason\": \"No reusable agent workflow could be identified in the read files.\", \"workflows\": []}",
+            "annotations": []
+          }
+        ]
+      }
+    ],
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "tools": [],
+    "usage": {
+      "input_tokens": 640,
+      "output_tokens": 48,
+      "total_tokens": 688
+    }
+  }
+}

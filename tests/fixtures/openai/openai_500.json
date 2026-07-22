@@ -1,0 +1,14 @@
+{
+  "status": 500,
+  "headers": {
+    "content-type": "application/json",
+    "x-request-id": "req_ext_500"
+  },
+  "body": {
+    "error": {
+      "message": "Recorded upstream failure.",
+      "type": "server_error",
+      "code": "internal_error"
+    }
+  }
+}

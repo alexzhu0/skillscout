@@ -1,0 +1,35 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": "resp_ext_0003",
+    "object": "response",
+    "created_at": 1783000000,
+    "status": "completed",
+    "model": "gpt-5.6-terra-2026-07-22",
+    "output": [
+      {
+        "id": "msg_0003",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "refusal",
+            "refusal": "I cannot extract workflows from this content."
+          }
+        ]
+      }
+    ],
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "tools": [],
+    "usage": {
+      "input_tokens": 611,
+      "output_tokens": 22,
+      "total_tokens": 633
+    }
+  }
+}

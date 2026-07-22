@@ -1,0 +1,15 @@
+{
+  "status": 429,
+  "headers": {
+    "content-type": "application/json",
+    "retry-after": "0",
+    "x-request-id": "req_ext_429"
+  },
+  "body": {
+    "error": {
+      "message": "Rate limit reached for the recorded tenant.",
+      "type": "rate_limit_error",
+      "code": "rate_limit_exceeded"
+    }
+  }
+}

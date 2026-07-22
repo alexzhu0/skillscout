@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 
 FIXTURES = Path(__file__).parent / "fixtures" / "github"
+OPENAI_FIXTURES = Path(__file__).parent / "fixtures" / "openai"
 
 
 @dataclass(frozen=True)
@@ -22,10 +23,8 @@ class RecordedResponse:
     body: bytes
 
 
-def recorded_fixture(name: str) -> RecordedResponse:
-    """Load one recorded response fixture without any network access."""
-
-    parsed = json.loads((FIXTURES / f"{name}.json").read_bytes())
+def _load_fixture(directory: Path, name: str) -> RecordedResponse:
+    parsed = json.loads((directory / f"{name}.json").read_bytes())
     body = parsed["body"]
     payload = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
     return RecordedResponse(
@@ -33,6 +32,18 @@ def recorded_fixture(name: str) -> RecordedResponse:
         headers={str(key): str(value) for key, value in parsed["headers"].items()},
         body=payload,
     )
+
+
+def recorded_fixture(name: str) -> RecordedResponse:
+    """Load one recorded GitHub response fixture without any network access."""
+
+    return _load_fixture(FIXTURES, name)
+
+
+def recorded_openai_fixture(name: str) -> RecordedResponse:
+    """Load one recorded OpenAI response fixture without any network access."""
+
+    return _load_fixture(OPENAI_FIXTURES, name)
 
 
 def git_blob_id(content: bytes) -> str:
