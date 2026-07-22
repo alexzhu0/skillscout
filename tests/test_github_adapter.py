@@ -131,8 +131,10 @@ def test_every_content_url_embeds_the_pinned_sha_after_resolution() -> None:
 
     urls = [str(request.url) for request in recorded.requests]
     assert urls[1].endswith("/commits/main")
+    assert PINNED in urls[2]
+    assert PINNED in urls[3]
+    assert README_BLOB in urls[4]
     for url in urls[2:]:
-        assert PINNED in url
         assert "main" not in url
     assert recorded.call_count(*TREE) == 1
     assert recorded.call_count(*LICENSE) == 1
