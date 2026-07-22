@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 02
 current_phase_name: safe-single-repository-extraction
 status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-07-22T04:51:11.350Z"
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-07-22T05:43:26.406Z"
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 22
-  completed_plans: 20
+  completed_plans: 21
 ---
 
 # Project State: SkillScout
@@ -23,7 +23,7 @@ progress:
 ## Current Position
 
 **Phase:** 02 (safe-single-repository-extraction) — EXECUTING
-**Plan:** 3 of 4
+**Plan:** 4 of 4
 **Verification:** Phase 1 passed — 5 of 5 must-haves verified; UAT 6/6 countersigned; security audit 83/83 threats closed
 **Next command:** `/gsd:discuss-phase 2`
 
@@ -92,8 +92,8 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 
 ## Session Continuity
 
-**Last session:** 2026-07-22T04:51:11.343Z
-**Stopped at:** Completed 02-02-PLAN.md
+**Last session:** 2026-07-22T05:43:26.401Z
+**Stopped at:** Completed 02-03-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -132,6 +132,7 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 |------|----------|-------|-------|
 | Phase 02 P01 | 17 min | 4 tasks | 15 files |
 | Phase 02 P02 | 64min | 3 tasks | 27 files |
+| Phase 02 P03 | 43min | 2 tasks | 10 files |
 
 ## Decisions
 
@@ -190,3 +191,5 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 - [Phase 02]: Deliver context and telemetry through additive carriers (StageOutcome/StageContext/ContextStageProcessor) with producer-profile dispatch instead of bumping the StageProcessor signature — Every Phase 1 process(self, stage_input) override subclass and test stays byte-for-byte green; the runner selects the calling convention from the closed PIPELINE_PROFILES map.
 - [Phase 02]: Build one StageContext per stage invocation as a snapshot (subject, copied prior payloads, fresh scratch); resume hydration comes only from the verified chain — A shared mutable context would leak later stage payloads into contexts recorded by earlier invocations; per-invocation scratch forbids cross-stage reuse.
 - [Phase 02]: Blob URLs embed the tree-derived blob SHA (content addressing at the pinned commit); the SHA-in-URL invariant binds tree/license URLs to the pinned commit SHA and forbids any floating ref after resolve_commit — The GitHub blobs API is addressed by blob SHA, so the READ-01 pin-before-read guarantee binds tree/license URLs to the commit SHA and treats the tree-declared blob SHA as transitively pinned content addressing.
+- [Phase 02]: Prove the max_total_bytes ±1 boundary on the pure _read_budget_stop predicate with a lowered ReaderPolicy while handler tests prove the four reachable gates at the real defaults — Under the organization ceilings the 40000-token estimate gate (160000 bytes at ceil(bytes/4)) always binds before the 524288-byte total gate, so the total gate is unreachable through the handler; lowering budgets is ceiling-legal and keeps the defaults-only production construction untouched
+- [Phase 02]: Populate reader telemetry request_id only when the stage fetched at least one blob — A zero-fetch run would otherwise inherit a stale X-GitHub-Request-Id from the filter stage's license response, misattributing telemetry across stages
