@@ -297,8 +297,11 @@ class GitHubReadClient:
         raw = _validate_json(_RawBlob, body)
         if raw.encoding != "base64":
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        # GitHub wraps blob base64 at 60 characters; strip whitespace so the
+        # strict alphabet check binds the real wire format.
+        compact = "".join(raw.content.split())
         try:
-            content = base64.b64decode(raw.content, validate=True)
+            content = base64.b64decode(compact, validate=True)
         except (binascii.Error, ValueError):
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
         if len(content) != raw.size or raw.size != expected_size:

@@ -230,6 +230,15 @@ def test_blob_round_trip_and_tree_declared_size_recheck() -> None:
     assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
 
 
+def test_blob_accepts_github_sixty_char_wrapped_base64() -> None:
+    routes = _routes()
+    routes[BLOB] = recorded_fixture("blob_readme_wrapped")
+    recorded = RecordedTransport(routes)
+    with _client(recorded) as client:
+        content = client.get_blob("example", "approved-repo", README_BLOB, expected_size=228)
+    assert content == README_TEXT
+
+
 def test_blob_rejects_wrong_encoding_declared_size_and_bad_base64() -> None:
     base = recorded_fixture("blob_readme")
     parsed = json.loads(base.body)
@@ -243,6 +252,9 @@ def test_blob_rejects_wrong_encoding_declared_size_and_bad_base64() -> None:
     bad_base64 = dict(parsed)
     bad_base64["content"] = "!!!not-base64!!!"
     variants.append(bad_base64)
+    wrapped_bad_base64 = dict(parsed)
+    wrapped_bad_base64["content"] = "!!!not-base64!!!\n" + parsed["content"][:60]
+    variants.append(wrapped_bad_base64)
 
     for variant in variants:
         body = json.dumps(variant).encode()
