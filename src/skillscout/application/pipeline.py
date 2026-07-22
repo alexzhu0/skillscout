@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Final, Iterable, Mapping, Protocol
 
 from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject
+from skillscout.adapters.github import GitHubReadClient
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import (
@@ -25,6 +26,7 @@ from skillscout.application.ports import (
     StageTelemetry,
     StateStore,
 )
+from skillscout.application.processors import PhaseTwoProcessor
 from skillscout.domain.canonical import (
     canonical_json_bytes,
     make_result_id,
@@ -803,3 +805,52 @@ def build_dry_run_runtime(
         publication_writer=publication_writer,
     )
     return DryRunRuntime(runner=runner, registrations=validated, policy=resolved_policy)
+
+
+def build_phase_two_runtime(
+    state: SQLiteStateStore,
+    processor: PhaseTwoProcessor,
+) -> PhaseTwoRuntime:
+    """Construct the closed phase-two runtime under its remote-read ceiling."""
+
+    if type(processor) is not PhaseTwoProcessor or type(state) is not SQLiteStateStore:
+        raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
+    resolved_clock = SystemClock()
+    resolved_ids = UUIDIdProvider()
+    extraction_writer = _ExtractionSummaryWriter()
+    try:
+        complete_registry = (
+            AdapterRegistration("phase2_processor", processor),
+            AdapterRegistration("sqlite_and_manifests", state),
+            AdapterRegistration("github_read", processor.github),
+            AdapterRegistration("clock", resolved_clock),
+            AdapterRegistration("run_ids", resolved_ids),
+            AdapterRegistration("extraction_summary_writer", extraction_writer),
+        )
+    except ValueError:
+        raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE) from None
+
+    resolved_policy = SideEffectPolicy.phase_two()
+    validated = resolved_policy.validate(complete_registry)
+    expected_types = (
+        PhaseTwoProcessor,
+        SQLiteStateStore,
+        GitHubReadClient,
+        SystemClock,
+        UUIDIdProvider,
+        _ExtractionSummaryWriter,
+    )
+    if any(
+        type(registration.adapter) is not expected
+        for registration, expected in zip(validated, expected_types, strict=True)
+    ):
+        raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
+
+    runner = PipelineRunner(
+        state,
+        processor,
+        clock=resolved_clock,
+        ids=resolved_ids,
+        extraction_writer=extraction_writer,
+    )
+    return PhaseTwoRuntime(runner=runner, registrations=validated, policy=resolved_policy)
