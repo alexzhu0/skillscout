@@ -1,0 +1,18 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4984",
+    "x-ratelimit-reset": "1800000000",
+    "x-github-request-id": "REQ-BLOB-PYP1"
+  },
+  "body": {
+    "sha": "cc08cc08cc08cc08cc08cc08cc08cc08cc08cc08",
+    "node_id": "B_kwDOAAAABdoAKGFh",
+    "size": 600,
+    "url": "https://api.github.com/repos/example/approved-repo/git/blobs/cc08cc08cc08cc08cc08cc08cc08cc08cc08cc08",
+    "content": "W3Byb2plY3RdCm5hbWUgPSAiYXBwcm92ZWQtcmVwbyIKdmVyc2lvbiA9ICIxLjAuMCIKZGVzY3JpcHRpb24gPSAiU21hbGwgcmV1c2FibGUgd29ya2Zsb3cgcmVwb3NpdG9yeSB1c2VkIGluIHJlY29yZGVkIHRlc3RzIgpyZXF1aXJlcy1weXRob24gPSAiPj0zLjExIgpkZXBlbmRlbmNpZXMgPSBbXQoKW3Byb2plY3Qub3B0aW9uYWwtZGVwZW5kZW5jaWVzXQpkZXYgPSBbInB5dGVzdD09OC4wLjAiXQoKW2J1aWxkLXN5c3RlbV0KcmVxdWlyZXMgPSBbInNldHVwdG9vbHM9PTY4LjAuMCJdCmJ1aWxkLWJhY2tlbmQgPSAic2V0dXB0b29scy5idWlsZF9tZXRhIgoKW3Rvb2wucnVmZl0KbGluZS1sZW5ndGggPSAxMDAKIyBwYWQ6cHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAK",
+    "encoding": "base64"
+  }
+}

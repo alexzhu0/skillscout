@@ -1,0 +1,18 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4984",
+    "x-ratelimit-reset": "1800000000",
+    "x-github-request-id": "REQ-BLOB-EXA1"
+  },
+  "body": {
+    "sha": "aa06aa06aa06aa06aa06aa06aa06aa06aa06aa06",
+    "node_id": "B_kwDOAAAABdoAKGFh",
+    "size": 400,
+    "url": "https://api.github.com/repos/example/approved-repo/git/blobs/aa06aa06aa06aa06aa06aa06aa06aa06aa06aa06",
+    "content": "IyBCYXNpYyBFeGFtcGxlCgpSdW4gdGhlIHdvcmtmbG93IG9uIGEgc21hbGwgaW5wdXQgc2V0LgoKMS4gQ29weSB0aGUgbWFuaWZlc3QuCjIuIEZvbGxvdyB0aGUgZ3VpZGUgc3RlcHMuCjMuIENvbXBhcmUgdGhlIG91dGNvbWUgd2l0aCB0aGUgZXhwZWN0ZWQgbG9nLgo8IS0tIHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAgLS0+Cg==",
+    "encoding": "base64"
+  }
+}

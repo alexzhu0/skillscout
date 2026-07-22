@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +32,89 @@ def recorded_fixture(name: str) -> RecordedResponse:
         status=parsed["status"],
         headers={str(key): str(value) for key, value in parsed["headers"].items()},
         body=payload,
+    )
+
+
+def git_blob_id(content: bytes) -> str:
+    """Derive the deterministic git blob identifier for exact content bytes."""
+
+    return hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+
+
+def make_blob_entry(
+    path: str,
+    content: bytes,
+    *,
+    sha: str | None = None,
+    mode: str = "100644",
+) -> dict[str, object]:
+    """Build one deterministic tree entry for a blob with exact content bytes."""
+
+    return {
+        "path": path,
+        "mode": mode,
+        "type": "blob",
+        "size": len(content),
+        "sha": sha or git_blob_id(content),
+    }
+
+
+def make_tree_fixture(
+    entries: list[dict[str, object]],
+    *,
+    truncated: bool = False,
+    request_id: str = "REQ-TREE-SYNTH",
+) -> RecordedResponse:
+    """Synthesize a recorded tree response from explicit entries."""
+
+    body = json.dumps(
+        {
+            "sha": "aa00aa00aa00aa00aa00aa00aa00aa00aa00aa00",
+            "url": "https://api.github.com/repos/example/approved-repo/git/trees/aa00",
+            "tree": entries,
+            "truncated": truncated,
+        },
+        separators=(",", ":"),
+    ).encode()
+    return RecordedResponse(
+        status=200,
+        headers={
+            "content-type": "application/json; charset=utf-8",
+            "x-github-request-id": request_id,
+        },
+        body=body,
+    )
+
+
+def make_blob_fixture(
+    content: bytes,
+    *,
+    sha: str | None = None,
+    request_id: str = "REQ-BLOB-SYNTH",
+) -> RecordedResponse:
+    """Synthesize a recorded base64 blob response for exact content bytes."""
+
+    resolved_sha = sha or git_blob_id(content)
+    body = json.dumps(
+        {
+            "sha": resolved_sha,
+            "size": len(content),
+            "url": (
+                "https://api.github.com/repos/example/approved-repo"
+                f"/git/blobs/{resolved_sha}"
+            ),
+            "content": base64.b64encode(content).decode("ascii"),
+            "encoding": "base64",
+        },
+        separators=(",", ":"),
+    ).encode()
+    return RecordedResponse(
+        status=200,
+        headers={
+            "content-type": "application/json; charset=utf-8",
+            "x-github-request-id": request_id,
+        },
+        body=body,
     )
 
 
