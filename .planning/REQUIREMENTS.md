@@ -29,10 +29,10 @@
 
 ### Workflow Extraction
 
-- [ ] **EXTR-01**: Extractor 使用无工具的 LLM 请求和严格 Structured Output 判断候选是否包含可复用 AI 工作流；拒绝和 schema 失败必须是可诊断的结构化结果。
+- [x] **EXTR-01**: Extractor 使用无工具的 LLM 请求和严格 Structured Output 判断候选是否包含可复用 AI 工作流；拒绝和 schema 失败必须是可诊断的结构化结果。
 - [x] **EXTR-02**: 单个仓库最多提取 3 个相互独立的工作流，每个工作流具有独立证据和稳定 workflow fingerprint。
 - [x] **EXTR-03**: 每个 `WorkflowSpec` 至少包含目标、适用条件、非目标、前置条件、输入、顺序步骤、输出、失败模式、禁止动作、必要审批、假设、证据引用和置信度。
-- [ ] **EXTR-04**: `WorkflowSpec` 是原始仓库内容与下游之间的唯一语义信任边界；提取完成后 Generator、Reviewer 和 Publisher 不得接收完整 README、文档或源码原文。
+- [x] **EXTR-04**: `WorkflowSpec` 是原始仓库内容与下游之间的唯一语义信任边界；提取完成后 Generator、Reviewer 和 Publisher 不得接收完整 README、文档或源码原文。
 
 ### Qualification
 
@@ -76,7 +76,7 @@
 
 ### Security Controls
 
-- [ ] **SEC-01**: 所有 OpenAI 请求默认 `store=false`，不提供 Web、MCP、shell、代码解释器或其他工具，不包含 GitHub/OpenAI 密钥，并将仓库内容作为低优先级不可信输入处理。
+- [x] **SEC-01**: 所有 OpenAI 请求默认 `store=false`，不提供 Web、MCP、shell、代码解释器或其他工具，不包含 GitHub/OpenAI 密钥，并将仓库内容作为低优先级不可信输入处理。
 - [ ] **SEC-02**: CI 使用最小 GitHub Actions 权限、固定第三方 Action commit SHA、受保护发布环境和结构化日志字段 allowlist；候选仓库数据不得直接插值到 shell 命令。
 
 ### MVP Verification
@@ -149,10 +149,10 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | READ-04 | Phase 2 | Complete |
 | READ-05 | Phase 2 | Complete |
 | READ-06 | Phase 2 | Complete |
-| EXTR-01 | Phase 2 | Pending |
+| EXTR-01 | Phase 2 | Complete |
 | EXTR-02 | Phase 2 | Complete |
 | EXTR-03 | Phase 2 | Complete |
-| EXTR-04 | Phase 2 | Pending |
+| EXTR-04 | Phase 2 | Complete |
 | QUAL-01 | Phase 3 | Pending |
 | QUAL-02 | Phase 3 | Pending |
 | GEN-01 | Phase 3 | Pending |
@@ -175,7 +175,7 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | OPS-02 | Phase 5 | Pending |
 | OPS-03 | Phase 5 | Pending |
 | OPS-04 | Phase 1 | Complete |
-| SEC-01 | Phase 2 | Pending |
+| SEC-01 | Phase 2 | Complete |
 | SEC-02 | Phase 4 | Pending |
 | TEST-01 | Phase 6 | Pending |
 | TEST-02 | Phase 6 | Pending |

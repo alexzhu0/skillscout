@@ -4,21 +4,21 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 02
 current_phase_name: safe-single-repository-extraction
-status: executing
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-07-22T05:43:26.406Z"
+status: verifying
+stopped_at: Completed 02-04-PLAN.md
+last_updated: "2026-07-22T07:15:25.177Z"
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 22
-  completed_plans: 21
+  completed_plans: 22
 ---
 
 # Project State: SkillScout
 
 **Last updated:** 2026-07-20
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Ready to execute
+**Status:** Phase complete — ready for verification
 
 ## Current Position
 
@@ -92,8 +92,8 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 
 ## Session Continuity
 
-**Last session:** 2026-07-22T05:43:26.401Z
-**Stopped at:** Completed 02-03-PLAN.md
+**Last session:** 2026-07-22T07:14:55.173Z
+**Stopped at:** Completed 02-04-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -133,6 +133,7 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 | Phase 02 P01 | 17 min | 4 tasks | 15 files |
 | Phase 02 P02 | 64min | 3 tasks | 27 files |
 | Phase 02 P03 | 43min | 2 tasks | 10 files |
+| Phase 02 P04 | 56min | 3 tasks | 33 files |
 
 ## Decisions
 
@@ -193,3 +194,6 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 - [Phase 02]: Blob URLs embed the tree-derived blob SHA (content addressing at the pinned commit); the SHA-in-URL invariant binds tree/license URLs to the pinned commit SHA and forbids any floating ref after resolve_commit — The GitHub blobs API is addressed by blob SHA, so the READ-01 pin-before-read guarantee binds tree/license URLs to the commit SHA and treats the tree-declared blob SHA as transitively pinned content addressing.
 - [Phase 02]: Prove the max_total_bytes ±1 boundary on the pure _read_budget_stop predicate with a lowered ReaderPolicy while handler tests prove the four reachable gates at the real defaults — Under the organization ceilings the 40000-token estimate gate (160000 bytes at ceil(bytes/4)) always binds before the 524288-byte total gate, so the total gate is unreachable through the handler; lowering budgets is ceiling-legal and keeps the defaults-only production construction untouched
 - [Phase 02]: Populate reader telemetry request_id only when the stage fetched at least one blob — A zero-fetch run would otherwise inherit a stale X-GitHub-Request-Id from the filter stage's license response, misattributing telemetry across stages
+- [Phase 02]: Bind SDK retry to zero and let the runner RetryPolicy own re-attempts — one extract() is exactly one recorded HTTP request, so the one-call-per-attempt discipline is structural rather than configurational — A single responses.parse call site with max_retries=0; business outcomes are succeeded attempts and only 429/5xx/timeout/connection map to stage_transient_failure
+- [Phase 02]: Reuse a completed phase-two run only through an additive find_completed_run seam and a runner short-circuit gated on the COMPLETED terminal — no new run rows, events or status transitions, and the fixture-v1 terminal path stays byte-identical — The plan-mandated zero-call idempotent rerun had no existing seam (find_resumable_run matches running/interrupted only and completed-to-completed transitions are illegal); the gated short-circuit rewrites the summary artifact through the durable core without touching Phase 1 semantics
+- [Phase 02]: Prefer the per-invocation scratch bundle and rebuild it through hash-verified hydrate_read_bundle on fresh contexts — the runner shape always hydrates, so resume re-issues blob GETs only for byte-verified hydration — Per-invocation StageContext scratch never crosses stages in the runner; hydration against recorded content hashes preserves the no-raw-text-persistence boundary without weakening resume integrity
