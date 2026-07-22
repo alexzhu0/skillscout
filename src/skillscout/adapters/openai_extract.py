@@ -153,23 +153,27 @@ class OpenAIExtractionClient:
         refusal_text: str | None = None,
         incomplete_reason: str | None = None,
     ) -> ExtractionResult:
-        usage = None
-        if response is not None and response.usage is not None:
-            usage = TokenUsage(
-                prompt_tokens=response.usage.input_tokens,
-                completion_tokens=response.usage.output_tokens,
-                total_tokens=response.usage.total_tokens,
+        try:
+            usage = None
+            if response is not None and response.usage is not None:
+                usage = TokenUsage(
+                    prompt_tokens=response.usage.input_tokens,
+                    completion_tokens=response.usage.output_tokens,
+                    total_tokens=response.usage.total_tokens,
+                )
+            return ExtractionResult(
+                status=status,
+                response=parsed,
+                refusal_text=refusal_text,
+                incomplete_reason=incomplete_reason,
+                request_id=(response.id if response is not None else None),
+                model=(response.model if response is not None else None),
+                usage=usage,
+                latency_ms=max(0, int((time.monotonic() - started) * 1000)),
             )
-        return ExtractionResult(
-            status=status,
-            response=parsed,
-            refusal_text=refusal_text,
-            incomplete_reason=incomplete_reason,
-            request_id=(response.id if response is not None else None),
-            model=(response.model if response is not None else None),
-            usage=usage,
-            latency_ms=max(0, int((time.monotonic() - started) * 1000)),
-        )
+        except ValidationError:
+            # Provider-controlled telemetry violates the closed result shape.
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
 
 
 def _first_refusal(response: Any) -> str | None:

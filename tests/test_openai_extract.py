@@ -218,6 +218,28 @@ def test_rate_limit_maps_to_transient_failure_with_one_request() -> None:
     assert recorded.call_count(*RESPONSES) == 1
 
 
+def test_non_conforming_provider_telemetry_collapses_into_the_closed_failure_set() -> None:
+    base = recorded_openai_fixture("parsed_2_workflows")
+    negative_usage = json.loads(base.body)
+    negative_usage["usage"]["input_tokens"] = -1
+    over_long_id = json.loads(base.body)
+    over_long_id["id"] = "r" * 300
+    for variant in (negative_usage, over_long_id):
+        recorded = RecordedTransport(
+            {
+                RESPONSES: RecordedResponse(
+                    status=200,
+                    headers=base.headers,
+                    body=json.dumps(variant).encode(),
+                )
+            }
+        )
+        with pytest.raises(SafeFailure) as failure:
+            _client(recorded).extract(user_payload=USER_PAYLOAD)
+        assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+        assert recorded.call_count(*RESPONSES) == 1
+
+
 def test_server_error_maps_to_transient_failure_with_one_request() -> None:
     recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("openai_500")})
     with pytest.raises(SafeFailure) as failure:
