@@ -2596,6 +2596,13 @@ class SQLiteStateStore:
                 pass
             candidate.close()
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        except Exception:
+            try:
+                candidate.rollback()
+            except sqlite3.Error:
+                pass
+            candidate.close()
+            raise
 
         assert self._state_parent is not None
         previous = self._durable_bytes

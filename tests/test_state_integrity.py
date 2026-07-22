@@ -1517,6 +1517,36 @@ def test_illegal_terminal_run_transition_is_rejected_without_mutation(
         store.close()
 
 
+def test_failed_snapshot_transaction_closes_the_candidate_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "transition-leak.db"
+    store = SQLiteStateStore(database)
+    candidates: list[sqlite3.Connection] = []
+    original = store._new_memory_connection
+
+    def tracking() -> sqlite3.Connection:
+        connection = original()
+        candidates.append(connection)
+        return connection
+
+    monkeypatch.setattr(store, "_new_memory_connection", tracking)
+    try:
+        summary = PipelineRunner(store, FixtureProcessor()).run(
+            load_fixture(APPROVED_FIXTURE), tmp_path / "out"
+        )
+        candidates.clear()
+        with pytest.raises(SafeFailure) as failure:
+            store.set_run_status(summary.run_id, RunStatus.RUNNING.value, "hostile-time")
+        assert failure.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+        assert len(candidates) == 1
+        with pytest.raises(sqlite3.ProgrammingError):
+            candidates[0].execute("SELECT 1")
+    finally:
+        store.close()
+
+
 def test_symlinked_state_target_is_rejected_without_touching_target(tmp_path: Path) -> None:
     target = tmp_path / "target.db"
     SQLiteStateStore(target).close()
