@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 2
-current_phase_name: Safe Single-Repository Extraction
+current_phase: 02
+current_phase_name: safe-single-repository-extraction
 status: executing
-stopped_at: Phase 1 complete (18/18 plans, verification passed, UAT 6/6, security audit clean) — ready to plan Phase 2
-last_updated: "2026-07-21T08:01:21.094Z"
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-07-22T03:27:04.017Z"
 progress:
-  total_phases: 1
+  total_phases: 2
   completed_phases: 1
-  total_plans: 18
-  completed_plans: 18
+  total_plans: 22
+  completed_plans: 19
 ---
 
 # Project State: SkillScout
@@ -22,8 +22,8 @@ progress:
 
 ## Current Position
 
-**Phase:** 2 — Safe Single-Repository Extraction
-**Plan:** Not started
+**Phase:** 02 (safe-single-repository-extraction) — EXECUTING
+**Plan:** 2 of 4
 **Verification:** Phase 1 passed — 5 of 5 must-haves verified; UAT 6/6 countersigned; security audit 83/83 threats closed
 **Next command:** `/gsd:discuss-phase 2`
 
@@ -92,8 +92,8 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 
 ## Session Continuity
 
-**Last session:** 2026-07-21T02:15:45Z
-**Stopped at:** Phase 1 complete (18/18 plans, verification passed, UAT 6/6, security audit clean) — ready to plan Phase 2
+**Last session:** 2026-07-22T03:27:04.012Z
+**Stopped at:** Completed 02-01-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -126,6 +126,11 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 | Phase 01-auditable-dry-run-spine P16 | 16min | 2 tasks | 4 files |
 | Phase 01-auditable-dry-run-spine P17 | 35min | 2 tasks | 6 files |
 | Phase 01-auditable-dry-run-spine P18 | 19min | 2 tasks | 4 files |
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 02 P01 | 17 min | 4 tasks | 15 files |
 
 ## Decisions
 
@@ -179,3 +184,5 @@ None. Phase 1 closed all historical blockers: Plans 01-12 through 01-15 fixed sn
 - [Phase 01]: Serialize publication writers on a retained kernel-flock inode that is never deleted — A live lock holder makes concurrent publication writes fail closed with state_operation_failed.
 - [Phase 01]: Bind both reviewed JSON fixtures as explicit literal paths in the closed evidence source set — Semantically neutral fixture byte changes now stale recorded evidence before command credit.
 - [Phase 01]: Credit exactly the current review's CR-01/WR-01 findings through digest-bound nodes — The superseded seven-finding map survives only under the past-tense prior-review label.
+- [Phase 02]: Admit exactly httpx==0.28.1 and openai==2.46.0 through the two-gate ceremony with no tiktoken, GitHub SDK, tenacity, or VCR library — Supply-chain inputs require separate declaration (Gate A2) and exact-lock-bytes (Gate B2) human approvals; Gate B2 binds all execution to uv.lock SHA-256 a23c47119a50650dd08d45209e2741cf2c5053031bbaef0bde95ca837ec59216
+- [Phase 02]: Re-anchor the Phase 1 evidence verifier LOCK_HASH to the Gate-B2-approved uv.lock bytes — The verifier authority constant must track the human-approved graph; recorded Phase 1 evidence stales by design and awaits Phase 2 re-baselining

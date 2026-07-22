@@ -14,24 +14,24 @@
 
 ### Deterministic Filtering
 
-- [ ] **FILT-01**: 系统使用确定性规则拒绝非公开、已归档、fork、缺少默认分支或缺少 README 的明显不合格仓库。
-- [ ] **FILT-02**: 系统只接受明确识别为 `MIT`、`Apache-2.0`、`BSD-2-Clause` 或 `BSD-3-Clause` 的单一仓库级许可证；缺失、`NOASSERTION`、非标准、多重或冲突许可证均被拒绝。
-- [ ] **FILT-03**: 每条过滤规则输出规则版本、观察值、`pass/fail/not_applicable` 结果和可读理由；许可证及其他硬门槛不得交给 LLM 判断。
+- [x] **FILT-01**: 系统使用确定性规则拒绝非公开、已归档、fork、缺少默认分支或缺少 README 的明显不合格仓库。
+- [x] **FILT-02**: 系统只接受明确识别为 `MIT`、`Apache-2.0`、`BSD-2-Clause` 或 `BSD-3-Clause` 的单一仓库级许可证；缺失、`NOASSERTION`、非标准、多重或冲突许可证均被拒绝。
+- [x] **FILT-03**: 每条过滤规则输出规则版本、观察值、`pass/fail/not_applicable` 结果和可读理由；许可证及其他硬门槛不得交给 LLM 判断。
 
 ### Bounded Repository Reading
 
 - [ ] **READ-01**: 系统在读取前解析并固定精确 commit SHA；后续内容请求不得回退到浮动的默认分支引用。
 - [ ] **READ-02**: Reader 严格按照 README → `docs/` → `examples/` → 包清单 → 少量源代码的顺序读取候选内容。
-- [ ] **READ-03**: 默认单仓库读取预算为最多 25 个文件、其中最多 5 个源代码文件、单文件 128 KiB、累计 512 KiB、约 40,000 input tokens；政策版本可调整，但单次运行不能越过组织级上限。
+- [x] **READ-03**: 默认单仓库读取预算为最多 25 个文件、其中最多 5 个源代码文件、单文件 128 KiB、累计 512 KiB、约 40,000 input tokens；政策版本可调整，但单次运行不能越过组织级上限。
 - [ ] **READ-04**: 证据足以支持语义判断时 Reader 提前停止，并结构化记录已读文件、blob SHA、content hash、读取顺序、预算消耗、是否读取源码和停止原因。
-- [ ] **READ-05**: Reader 拒绝二进制、压缩包、Git 子模块、Git LFS 内容、超预算文件、路径穿越和其他不在文本 allowlist 中的内容。
+- [x] **READ-05**: Reader 拒绝二进制、压缩包、Git 子模块、Git LFS 内容、超预算文件、路径穿越和其他不在文本 allowlist 中的内容。
 - [ ] **READ-06**: 系统不得 clone 候选仓库、下载 release artifact、安装依赖、执行构建、import 候选包、运行示例或以任何方式执行候选仓库代码。
 
 ### Workflow Extraction
 
 - [ ] **EXTR-01**: Extractor 使用无工具的 LLM 请求和严格 Structured Output 判断候选是否包含可复用 AI 工作流；拒绝和 schema 失败必须是可诊断的结构化结果。
-- [ ] **EXTR-02**: 单个仓库最多提取 3 个相互独立的工作流，每个工作流具有独立证据和稳定 workflow fingerprint。
-- [ ] **EXTR-03**: 每个 `WorkflowSpec` 至少包含目标、适用条件、非目标、前置条件、输入、顺序步骤、输出、失败模式、禁止动作、必要审批、假设、证据引用和置信度。
+- [x] **EXTR-02**: 单个仓库最多提取 3 个相互独立的工作流，每个工作流具有独立证据和稳定 workflow fingerprint。
+- [x] **EXTR-03**: 每个 `WorkflowSpec` 至少包含目标、适用条件、非目标、前置条件、输入、顺序步骤、输出、失败模式、禁止动作、必要审批、假设、证据引用和置信度。
 - [ ] **EXTR-04**: `WorkflowSpec` 是原始仓库内容与下游之间的唯一语义信任边界；提取完成后 Generator、Reviewer 和 Publisher 不得接收完整 README、文档或源码原文。
 
 ### Qualification
@@ -140,18 +140,18 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | DISC-01 | Phase 5 | Pending |
 | DISC-02 | Phase 5 | Pending |
 | DISC-03 | Phase 5 | Pending |
-| FILT-01 | Phase 2 | Pending |
-| FILT-02 | Phase 2 | Pending |
-| FILT-03 | Phase 2 | Pending |
+| FILT-01 | Phase 2 | Complete |
+| FILT-02 | Phase 2 | Complete |
+| FILT-03 | Phase 2 | Complete |
 | READ-01 | Phase 2 | Pending |
 | READ-02 | Phase 2 | Pending |
-| READ-03 | Phase 2 | Pending |
+| READ-03 | Phase 2 | Complete |
 | READ-04 | Phase 2 | Pending |
-| READ-05 | Phase 2 | Pending |
+| READ-05 | Phase 2 | Complete |
 | READ-06 | Phase 2 | Pending |
 | EXTR-01 | Phase 2 | Pending |
-| EXTR-02 | Phase 2 | Pending |
-| EXTR-03 | Phase 2 | Pending |
+| EXTR-02 | Phase 2 | Complete |
+| EXTR-03 | Phase 2 | Complete |
 | EXTR-04 | Phase 2 | Pending |
 | QUAL-01 | Phase 3 | Pending |
 | QUAL-02 | Phase 3 | Pending |

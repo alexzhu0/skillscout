@@ -131,7 +131,12 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Phase 1  
 **Requirements:** FILT-01, FILT-02, FILT-03, READ-01, READ-02, READ-03, READ-04, READ-05, READ-06, EXTR-01, EXTR-02, EXTR-03, EXTR-04, SEC-01  
-**Plans:** To be created with phase planning
+**Plans:** 1/4 plans executed
+
+- [x] 02-01-PLAN.md
+- [ ] 02-02-PLAN.md
+- [ ] 02-03-PLAN.md
+- [ ] 02-04-PLAN.md
 
 **Success Criteria:**
 
@@ -227,7 +232,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 | Phase | Status | Requirements | Completed |
 |---|---|---:|---:|
 | 1. Auditable Dry-Run Spine | Complete    | 2 | 2026-07-21 |
-| 2. Safe Single-Repository Extraction | Not started | 14 | 0/14 |
+| 2. Safe Single-Repository Extraction | In Progress| 14 |  |
 | 3. Validated Skill Candidate | Not started | 13 | 0/13 |
 | 4. Controlled Draft PR | Not started | 6 | 0/6 |
 | 5. Automated Discovery Operations | Not started | 5 | 0/5 |
