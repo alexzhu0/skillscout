@@ -129,7 +129,7 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
     )
 
     assert isinstance(parser, cli.SafeArgumentParser)
-    assert set(subparsers.choices) == {"dry-run", "inspect-run"}
+    assert set(subparsers.choices) == {"dry-run", "extract-repo", "inspect-run"}
     assert all(isinstance(child, cli.SafeArgumentParser) for child in subparsers.choices.values())
 
 

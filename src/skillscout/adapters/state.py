@@ -1657,6 +1657,33 @@ class SQLiteStateStore:
         except sqlite3.Error:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
+    def find_completed_run(self, identity: RunIdentity) -> RunRecord | None:
+        """Return the latest bound completed run for one exact canonical identity."""
+
+        try:
+            row = self._db.execute(
+                """SELECT * FROM runs INDEXED BY idx_runs_resumable_identity
+                   WHERE schema_version = ? AND subject_id = ? AND fixture_hash = ?
+                     AND producer_version = ? AND retry_policy_version = ?
+                     AND identity_state = 'bound'
+                     AND status = 'completed'
+                   ORDER BY updated_at DESC, run_id DESC LIMIT 1""",
+                (
+                    identity.schema_version,
+                    identity.subject_id,
+                    identity.fixture_hash,
+                    identity.producer_version,
+                    identity.retry_policy_version,
+                ),
+            ).fetchone()
+            if row is None:
+                return None
+            return self.verify_run_chain(str(row["run_id"]), identity).run
+        except SafeFailure:
+            raise
+        except sqlite3.Error:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
     def bind_legacy_run(self, expected: RunIdentity) -> RunRecord | None:
         """Bind one canonically proven v1 candidate without trusting missing facts."""
 

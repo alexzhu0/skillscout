@@ -10,6 +10,7 @@ import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject, load_fixture
 from skillscout.adapters.github import GitHubReadClient
+from skillscout.adapters.openai_extract import OpenAIExtractionClient
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.adapters.subjects import load_subject
 from skillscout.application import pipeline
@@ -194,6 +195,54 @@ def test_phase_two_slice_completes_with_context_telemetry_and_summary(tmp_path: 
     ]
 
 
+def test_completed_phase_two_run_is_fully_reused_without_reexecution(
+    tmp_path: Path,
+) -> None:
+    subject = load_subject(APPROVED_SUBJECT)
+    first_processor = DoublePhaseTwoProcessor()
+    store = SQLiteStateStore(tmp_path / "state.db")
+    try:
+        first = PipelineRunner(store, first_processor).run(subject, tmp_path / "output")
+        assert first.status is RunStatus.COMPLETED
+        assert len(first_processor.calls) == 4
+
+        second_processor = DoublePhaseTwoProcessor()
+        second = PipelineRunner(store, second_processor).run(subject, tmp_path / "output")
+    finally:
+        store.close()
+
+    assert second.run_id == first.run_id
+    assert second.status is RunStatus.COMPLETED
+    assert second.last_stage is PipelineStage.EXTRACTOR
+    assert second.reused_stage_count == 4
+    assert second.publication_plan_path == "extraction-summary.json"
+    assert second.remote_writes_attempted == 0
+    assert second_processor.calls == []
+    artifact = ExtractionSummary.model_validate_json(
+        (tmp_path / "output" / "extraction-summary.json").read_bytes()
+    )
+    assert artifact.run_id == first.run_id
+    assert artifact.workflow_fingerprints == FINGERPRINTS
+
+
+def test_fixture_terminal_rerun_still_starts_a_fresh_run(tmp_path: Path) -> None:
+    fixture = load_fixture(APPROVED_FIXTURE)
+    first_processor = FixtureProcessor()
+    store = SQLiteStateStore(tmp_path / "state.db")
+    try:
+        first = PipelineRunner(store, first_processor).run(fixture, tmp_path / "output")
+        assert first.status is RunStatus.PLANNED_NOT_PUBLISHED
+        second = PipelineRunner(store, FixtureProcessor()).run(
+            fixture, tmp_path / "output"
+        )
+    finally:
+        store.close()
+
+    assert second.status is RunStatus.PLANNED_NOT_PUBLISHED
+    assert second.run_id != first.run_id
+    assert second.reused_stage_count == 0
+
+
 def test_resume_hydrates_prior_payloads_without_replaying_succeeded_stages(
     tmp_path: Path,
 ) -> None:
@@ -314,11 +363,12 @@ def test_state_store_protocol_exposes_record_attempt_telemetry() -> None:
     assert tuple(protocol_signature.parameters) == tuple(adapter_signature.parameters)
 
 
-def test_phase_two_root_constructs_the_closed_six_registration_registry(
+def test_phase_two_root_constructs_the_closed_seven_registration_registry(
     tmp_path: Path,
 ) -> None:
     client = GitHubReadClient()
-    processor = PhaseTwoProcessor(client)
+    openai_client = OpenAIExtractionClient(api_key="sk-phase-two-root-test")
+    processor = PhaseTwoProcessor(client, openai_client)
     state = SQLiteStateStore(tmp_path / "state.db")
     try:
         runtime = build_phase_two_runtime(state, processor)
@@ -327,6 +377,7 @@ def test_phase_two_root_constructs_the_closed_six_registration_registry(
             "phase2_processor",
             "sqlite_and_manifests",
             "github_read",
+            "openai_extract",
             "clock",
             "run_ids",
             "extraction_summary_writer",
@@ -334,6 +385,7 @@ def test_phase_two_root_constructs_the_closed_six_registration_registry(
         assert runtime.registrations[0].adapter is processor
         assert runtime.registrations[1].adapter is state
         assert runtime.registrations[2].adapter is client
+        assert runtime.registrations[3].adapter is openai_client
         assert {registration.scope for registration in runtime.registrations} == {
             EffectScope.NONE,
             EffectScope.LOCAL_STATE,
@@ -349,6 +401,7 @@ def test_phase_two_root_constructs_the_closed_six_registration_registry(
     finally:
         state.close()
         client.close()
+        openai_client.close()
 
 
 def test_phase_two_policy_rejects_remote_write_before_invocation() -> None:
@@ -373,7 +426,9 @@ def test_phase_two_policy_rejects_remote_write_before_invocation() -> None:
 
 def test_phase_two_root_has_no_policy_or_registration_inputs(tmp_path: Path) -> None:
     client = GitHubReadClient()
-    processor = PhaseTwoProcessor(client)
+    processor = PhaseTwoProcessor(
+        client, OpenAIExtractionClient(api_key="sk-phase-two-root-test")
+    )
     state = SQLiteStateStore(tmp_path / "state.db")
     try:
         with pytest.raises(TypeError):
@@ -399,6 +454,9 @@ def test_phase_two_root_rejects_wrong_concrete_types(tmp_path: Path) -> None:
     class SubclassedPhaseTwo(PhaseTwoProcessor):
         pass
 
+    class SubclassedOpenAI(OpenAIExtractionClient):
+        pass
+
     class UnsupportedLocalState:
         def __init__(self) -> None:
             self.calls = 0
@@ -419,9 +477,29 @@ def test_phase_two_root_rejects_wrong_concrete_types(tmp_path: Path) -> None:
             build_phase_two_runtime(state, SubclassedPhaseTwo(GitHubReadClient()))
         assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
 
+        with pytest.raises(SafeFailure) as failure:
+            build_phase_two_runtime(state, PhaseTwoProcessor(GitHubReadClient()))
+        assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
+
+        with pytest.raises(SafeFailure) as failure:
+            build_phase_two_runtime(
+                state,
+                PhaseTwoProcessor(
+                    GitHubReadClient(),
+                    SubclassedOpenAI(api_key="sk-phase-two-root-test"),
+                ),
+            )
+        assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
+
         wrong_state = UnsupportedLocalState()
         with pytest.raises(SafeFailure) as failure:
-            build_phase_two_runtime(wrong_state, PhaseTwoProcessor(GitHubReadClient()))
+            build_phase_two_runtime(
+                wrong_state,
+                PhaseTwoProcessor(
+                    GitHubReadClient(),
+                    OpenAIExtractionClient(api_key="sk-phase-two-root-test"),
+                ),
+            )
         assert failure.value.code is ErrorCode.FORBIDDEN_EFFECT_SCOPE
         assert wrong_state.calls == 0
     finally:

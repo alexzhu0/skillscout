@@ -9,9 +9,18 @@ from pathlib import Path
 from typing import NoReturn, Sequence
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
+from skillscout.adapters.github import GitHubReadClient
+from skillscout.adapters.openai_extract import OpenAIExtractionClient
 from skillscout.adapters.state import SQLiteStateStore
-from skillscout.application.pipeline import STAGE_SEQUENCE, build_dry_run_runtime
+from skillscout.adapters.subjects import load_subject
+from skillscout.application.pipeline import (
+    PHASE_TWO_STAGE_SEQUENCE,
+    STAGE_SEQUENCE,
+    build_dry_run_runtime,
+    build_phase_two_runtime,
+)
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
+from skillscout.application.processors import PhaseTwoProcessor
 
 __all__ = ["ERROR_SUMMARIES", "ErrorCode", "SafeArgumentParser", "build_parser", "main"]
 
@@ -43,6 +52,11 @@ def build_parser() -> SafeArgumentParser:
     dry_run.add_argument("--state", required=True, type=Path)
     dry_run.add_argument("--output", required=True, type=Path)
     dry_run.add_argument("--fail-after", choices=STAGE_SEQUENCE)
+    extract_repo = commands.add_parser("extract-repo")
+    extract_repo.add_argument("--subject", required=True, type=Path)
+    extract_repo.add_argument("--state", required=True, type=Path)
+    extract_repo.add_argument("--output", required=True, type=Path)
+    extract_repo.add_argument("--fail-after", choices=PHASE_TWO_STAGE_SEQUENCE)
     inspect_run = commands.add_parser("inspect-run")
     inspect_run.add_argument("run_id")
     inspect_run.add_argument("--state", required=True, type=Path)
@@ -57,6 +71,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "inspect-run":
             state = SQLiteStateStore(arguments.state)
             payload = state.inspect_run(arguments.run_id)
+        elif arguments.command == "extract-repo":
+            subject = load_subject(arguments.subject)
+            state = SQLiteStateStore(arguments.state)
+            runtime = build_phase_two_runtime(
+                state,
+                PhaseTwoProcessor(GitHubReadClient(), OpenAIExtractionClient()),
+            )
+            payload = runtime.runner.run(
+                subject,
+                arguments.output,
+                fail_after=arguments.fail_after,
+            ).as_dict()
         else:
             subject = load_fixture(arguments.fixture)
             state = SQLiteStateStore(arguments.state)

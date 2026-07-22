@@ -13,6 +13,7 @@ from typing import Callable, Final, Iterable, Mapping, Protocol
 from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject
 from skillscout.adapters.github import GitHubReadClient
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
+from skillscout.adapters.openai_extract import OpenAIExtractionClient
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import (
     AdapterRegistration,
@@ -315,6 +316,27 @@ class PipelineRunner:
             resumable = self.state.find_resumable_run(legacy_identity)
             if resumable is None:
                 resumable = self.state.bind_legacy_run(legacy_identity)
+        if (
+            resumable is None
+            and profile.terminal_status is RunStatus.COMPLETED
+        ):
+            completed = self.state.find_completed_run(current_identity)
+            if completed is not None:
+                chain = self.state.verify_run_chain(completed.run_id, current_identity)
+                self.extraction_writer.write(
+                    output_directory, _build_extraction_summary(chain, subject)
+                )
+                completed_checkpoint = self.state.latest_checkpoint(completed.run_id)
+                if completed_checkpoint is None:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                return RunSummary(
+                    run_id=completed.run_id,
+                    status=RunStatus.COMPLETED,
+                    last_stage=completed_checkpoint.stage,
+                    reused_stage_count=len(profile.stages),
+                    publication_plan_path="extraction-summary.json",
+                    remote_writes_attempted=0,
+                )
         if resumable is None:
             run_id = self.ids.new_run_id()
             schema_version = current_identity.schema_version
@@ -815,6 +837,9 @@ def build_phase_two_runtime(
 
     if type(processor) is not PhaseTwoProcessor or type(state) is not SQLiteStateStore:
         raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
+    openai_client = processor.openai
+    if type(openai_client) is not OpenAIExtractionClient:
+        raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
     resolved_clock = SystemClock()
     resolved_ids = UUIDIdProvider()
     extraction_writer = _ExtractionSummaryWriter()
@@ -823,6 +848,7 @@ def build_phase_two_runtime(
             AdapterRegistration("phase2_processor", processor),
             AdapterRegistration("sqlite_and_manifests", state),
             AdapterRegistration("github_read", processor.github),
+            AdapterRegistration("openai_extract", openai_client),
             AdapterRegistration("clock", resolved_clock),
             AdapterRegistration("run_ids", resolved_ids),
             AdapterRegistration("extraction_summary_writer", extraction_writer),
@@ -836,6 +862,7 @@ def build_phase_two_runtime(
         PhaseTwoProcessor,
         SQLiteStateStore,
         GitHubReadClient,
+        OpenAIExtractionClient,
         SystemClock,
         UUIDIdProvider,
         _ExtractionSummaryWriter,
