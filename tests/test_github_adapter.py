@@ -394,6 +394,19 @@ def test_cross_host_redirect_is_permanent() -> None:
     assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
 
 
+def test_over_long_redirect_location_collapses_into_the_closed_failure_set() -> None:
+    redirect = recorded_fixture("redirect_301")
+    routes = _routes()
+    routes[META] = replace(
+        redirect,
+        headers={**redirect.headers, "location": "https://api.github.com/" + "a" * 600},
+    )
+    with _client(RecordedTransport(routes)) as client:
+        with pytest.raises(SafeFailure) as failure:
+            client.get_repo_metadata("example", "approved-repo")
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+
 def test_second_redirect_is_permanent() -> None:
     redirect = recorded_fixture("redirect_301")
     routes = _routes()

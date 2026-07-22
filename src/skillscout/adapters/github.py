@@ -330,7 +330,10 @@ class GitHubReadClient:
                     if location is None or not _is_same_host(location):
                         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
                     self._redirects.append(
-                        RedirectFacts(from_url=from_url, to_url=location)
+                        _validate(
+                            RedirectFacts,
+                            {"from_url": from_url, "to_url": location},
+                        )
                     )
                     current = location
                     followed = True
