@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-07-23T08:38:49.200Z"
+stopped_at: Completed 03-03-PLAN.md
+last_updated: "2026-07-23T09:18:25.477Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 36
-  completed_plans: 24
+  completed_plans: 25
   percent: 33
 ---
 
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 03 (validated-skill-candidate) — EXECUTING
-**Plan:** 3 of 14
+**Plan:** 4 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-23T08:38:49.194Z
-**Stopped at:** Completed 03-02-PLAN.md
+**Last session:** 2026-07-23T09:18:25.473Z
+**Stopped at:** Completed 03-03-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -149,6 +149,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 02 P04 | 56min | 3 tasks | 33 files |
 | Phase 03 P01 | 1 min | 1 tasks | 4 files |
 | Phase 03 P02 | 5min | 1 tasks | 6 files |
+| Phase 03 P03 | 4 min | 1 tasks | 4 files |
 
 ## Decisions
 
@@ -214,3 +215,4 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 02]: Prefer the per-invocation scratch bundle and rebuild it through hash-verified hydrate_read_bundle on fresh contexts — the runner shape always hydrates, so resume re-issues blob GETs only for byte-verified hydration — Per-invocation StageContext scratch never crosses stages in the runner; hydration against recorded content hashes preserves the no-raw-text-persistence boundary without weakening resume integrity
 - [Phase 03]: Approved Gate A3 for exactly skills-ref==0.1.1 and wheel SHA-256 d35db5bb8de71ae301daf5ca9cb71f8a555e8c6f83a6d40e46a5bc09f8f461b5 — Human approval is limited to registry-only dependency declaration and graph resolution for separate Gate B3 review; it does not authorize installation, import, tests, validator execution, or a substitute validator.
 - [Phase 03]: Gate B3 must approve the exact skills-ref registry lock digest and artifact graph before any installation, import, test, or validator invocation. — The A3 approval permits only registry-only resolution; it does not authorize dependency use.
+- [Phase 03]: Approved Gate B3 for exact uv.lock SHA-256 b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004. — Every later dependency-backed command requires a fresh dependency-free equality preflight; B3 does not authorize merge, publishing, source-repository execution, a substitute validator, or unapproved credentials.
