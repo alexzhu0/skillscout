@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import fcntl
+import json
+import os
+import stat
 from pathlib import PurePosixPath
-from typing import Annotated, Final, Literal
+from pathlib import Path
+from typing import Annotated, Callable, Final, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.domain.candidate_authority import WorkflowSpecAuthorityV1
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.extraction import WorkflowEvidence
@@ -503,3 +509,505 @@ class FrozenSkillPackageV1(StrictFrozenModel):
         if package_digest(manifest) != self.package_identity:
             raise ValueError("frozen package identity mismatch")
         return self
+
+
+def _yaml_scalar(value: str) -> str:
+    """Serialize one scalar through YAML's JSON-compatible quoted subset."""
+
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _markdown_list(values: tuple[str, ...]) -> str:
+    return "\n".join(f"- {value}" for value in values)
+
+
+def _validate_semantic_safety(
+    draft: GeneratedSkillDraft,
+    authority: GenerationAuthorityProjectionV1,
+) -> None:
+    semantic_text = "\n".join(
+        (
+            draft.description,
+            draft.overview,
+            *draft.when_to_use,
+            *draft.inputs,
+            *draft.steps,
+            *draft.outputs,
+            *draft.failure_handling,
+            *draft.approvals,
+            *draft.limitations,
+            *(reference.body for reference in draft.references),
+        )
+    ).casefold()
+    forbidden = (
+        "```",
+        "scripts/",
+        "chmod +x",
+        "curl ",
+        "| sh",
+        "| bash",
+        "pip install",
+        "npm install",
+        "download and execute",
+    )
+    if any(marker in semantic_text for marker in forbidden):
+        raise ValueError("generated draft requests executable or supply-chain behavior")
+
+    evidence_by_path: dict[str, tuple[str, ...]] = {}
+    for evidence in authority.workflow_spec_authority.workflow_spec.evidence:
+        evidence_by_path[evidence.path] = (
+            *evidence_by_path.get(evidence.path, ()),
+            evidence.excerpt,
+        )
+    for quote in draft.quotes:
+        if quote.commit_sha != authority.exact_commit_sha:
+            raise ValueError("quote does not cite the exact source commit")
+        excerpts = evidence_by_path.get(quote.source_path, ())
+        if not any(quote.text in excerpt for excerpt in excerpts):
+            raise ValueError("quote is not supported by verified source evidence")
+
+
+def _provenance(
+    *,
+    draft: GeneratedSkillDraft,
+    authority: GenerationAuthorityProjectionV1,
+    identity: GeneratedArtifactIdentityV1,
+    request_id: str,
+    usage: TokenUsage,
+    latency_ms: int,
+) -> PackageProvenanceV1:
+    workflow_authority = authority.workflow_spec_authority
+    return PackageProvenanceV1(
+        schema_version=PROVENANCE_SCHEMA_VERSION,
+        generated_artifact_identity=identity,
+        generation_authority=authority,
+        workflow_spec_authority=workflow_authority,
+        selected_workflow_fingerprint=authority.selected_workflow_fingerprint,
+        repository_url=authority.repository_url,
+        repository_id=authority.repository_id,
+        exact_commit_sha=authority.exact_commit_sha,
+        license_spdx=authority.license_spdx,
+        source_evidence=workflow_authority.workflow_spec.evidence,
+        quotes=draft.quotes,
+        phase2_run_id=authority.phase2_run_id,
+        phase2_verified_chain_anchor=authority.phase2_verified_chain_anchor,
+        lineage_id=authority.lineage_id,
+        stable_slug=authority.stable_slug,
+        qualification_report_digest=authority.qualification_report_digest,
+        qualification_report_schema_version=(
+            authority.qualification_report_schema_version
+        ),
+        qualification_policy_version=authority.qualification_policy_version,
+        qualification_threshold_version=authority.qualification_threshold_version,
+        configured_generator_model_id=authority.configured_generator_model_id,
+        actual_generator_model_id=authority.actual_generator_model_id,
+        generator_prompt_version=authority.generator_prompt_version,
+        generator_output_schema_version=authority.generator_output_schema_version,
+        generator_policy_version=authority.generator_policy_version,
+        generator_producer_version=authority.generator_producer_version,
+        phase3_profile_version=authority.phase3_profile_version,
+        retry_policy_version=authority.retry_policy_version,
+        renderer_version=authority.renderer_version,
+        artifact_schema_version=authority.artifact_schema_version,
+        provenance_schema_version=authority.provenance_schema_version,
+        request_id=request_id,
+        usage=usage,
+        latency_ms=latency_ms,
+    )
+
+
+def _skill_markdown(
+    *,
+    draft: GeneratedSkillDraft,
+    authority: GenerationAuthorityProjectionV1,
+) -> bytes:
+    sections = (
+        "---",
+        f"name: {_yaml_scalar(authority.stable_slug)}",
+        f"description: {_yaml_scalar(draft.description)}",
+        f"license: {_yaml_scalar(authority.license_spdx)}",
+        "metadata:",
+        f"  source_repository: {_yaml_scalar(authority.repository_url)}",
+        f"  source_commit: {_yaml_scalar(authority.exact_commit_sha)}",
+        "---",
+        "",
+        "# Overview",
+        "",
+        draft.overview,
+        "",
+        "## When to use",
+        "",
+        _markdown_list(draft.when_to_use),
+        "",
+        "## Inputs",
+        "",
+        _markdown_list(draft.inputs),
+        "",
+        "## Procedure",
+        "",
+        "\n".join(
+            f"{index}. {instruction}"
+            for index, instruction in enumerate(draft.steps, start=1)
+        ),
+        "",
+        "## Outputs",
+        "",
+        _markdown_list(draft.outputs),
+        "",
+        "## Failure handling",
+        "",
+        _markdown_list(draft.failure_handling),
+        "",
+        "## Required approvals",
+        "",
+        _markdown_list(draft.approvals),
+        "",
+        "## Limitations",
+        "",
+        _markdown_list(draft.limitations),
+    )
+    quote_section: tuple[str, ...] = ()
+    if draft.quotes:
+        quote_lines = tuple(
+            (
+                f'> "{quote.text}" — `{quote.source_path}` at '
+                f"`{quote.commit_sha}`"
+            )
+            for quote in draft.quotes
+        )
+        quote_section = ("", "## Source excerpts", "", *quote_lines)
+    return ("\n".join((*sections, *quote_section)) + "\n").encode("utf-8")
+
+
+def render_skill_package(
+    *,
+    draft: GeneratedSkillDraft,
+    authority: GenerationAuthorityProjectionV1,
+    request_id: str,
+    usage: TokenUsage,
+    latency_ms: int,
+) -> FrozenSkillPackageV1:
+    """Render one deterministic documentation-only Skill package in memory."""
+
+    if (
+        type(draft) is not GeneratedSkillDraft
+        or type(authority) is not GenerationAuthorityProjectionV1
+        or type(usage) is not TokenUsage
+    ):
+        raise TypeError("renderer requires strict generation contracts")
+    if type(request_id) is not str or not request_id or len(request_id) > 256:
+        raise ValueError("request id is outside the closed bounds")
+    if type(latency_ms) is not int or latency_ms < 0:
+        raise ValueError("latency is outside the closed bounds")
+
+    _validate_semantic_safety(draft, authority)
+    identity = generated_artifact_identity(draft=draft, authority=authority)
+    provenance = _provenance(
+        draft=draft,
+        authority=authority,
+        identity=identity,
+        request_id=request_id,
+        usage=usage,
+        latency_ms=latency_ms,
+    )
+    files: list[RenderedFileV1] = [
+        RenderedFileV1(
+            path="SKILL.md",
+            content=_skill_markdown(draft=draft, authority=authority),
+            mode=0o644,
+            is_symlink=False,
+        ),
+        RenderedFileV1(
+            path="references/provenance.json",
+            content=canonical_json_bytes(provenance) + b"\n",
+            mode=0o644,
+            is_symlink=False,
+        ),
+    ]
+    files.extend(
+        RenderedFileV1(
+            path=f"references/{reference.name}.md",
+            content=(f"# {reference.title}\n\n{reference.body}\n").encode("utf-8"),
+            mode=0o644,
+            is_symlink=False,
+        )
+        for reference in draft.references
+    )
+    frozen_files = tuple(sorted(files, key=lambda file: file.path))
+    manifest = RenderedPackageManifestV1.from_files(frozen_files)
+    return FrozenSkillPackageV1(
+        schema_version=FROZEN_PACKAGE_SCHEMA_VERSION,
+        stable_slug=authority.stable_slug,
+        generated_artifact_identity=identity,
+        provenance=provenance,
+        files=frozen_files,
+        rendered_manifest=manifest,
+        package_identity=package_digest(manifest),
+    )
+
+
+def _acquire_package_lock(anchor: AnchoredDirectory, stable_slug: str) -> int:
+    lock_name = AnchoredDirectory.validate_child_name(f".{stable_slug}.lock")
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = -1
+    try:
+        descriptor = os.open(lock_name, flags, 0o600, dir_fd=anchor.descriptor)
+        anchored = os.stat(
+            lock_name,
+            dir_fd=anchor.descriptor,
+            follow_symlinks=False,
+        )
+        opened = os.fstat(descriptor)
+        AnchoredDirectory._require_private_regular(anchored)
+        AnchoredDirectory._require_private_regular(opened)
+        if (anchored.st_dev, anchored.st_ino) != (opened.st_dev, opened.st_ino):
+            raise OSError("package lock identity changed")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return descriptor
+    except (BlockingIOError, OSError) as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise DurableWriteError("package_lock") from error
+
+
+def _write_rendered_leaf(
+    directory: AnchoredDirectory,
+    name: str,
+    content: bytes,
+) -> None:
+    directory.atomic_write(
+        name,
+        content,
+        max_bytes=MAX_RENDERED_FILE_BYTES,
+        seam_prefix="package_",
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory.descriptor,
+        )
+        metadata = os.fstat(descriptor)
+        AnchoredDirectory._require_private_regular(metadata)
+        os.fchmod(descriptor, 0o644)
+        os.fsync(descriptor)
+        os.fsync(directory.descriptor)
+    except OSError as error:
+        raise DurableWriteError("package_leaf_mode") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _remove_open_tree(directory: AnchoredDirectory) -> None:
+    for name in os.listdir(directory.descriptor):
+        AnchoredDirectory.validate_child_name(name)
+        metadata = os.stat(name, dir_fd=directory.descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            child = directory.open_child_directory(name)
+            try:
+                _remove_open_tree(child)
+            finally:
+                child.close()
+            directory.remove_child_directory(name)
+            continue
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) not in {0o600, 0o644}
+        ):
+            raise DurableWriteError("package_cleanup_entry")
+        directory.unlink(name, missing_ok=False, sync=True)
+
+
+def _remove_tree(parent: AnchoredDirectory, name: str) -> None:
+    child = parent.open_child_directory(name)
+    try:
+        _remove_open_tree(child)
+    finally:
+        child.close()
+    parent.remove_child_directory(name)
+
+
+def _best_effort_remove_tree(parent: AnchoredDirectory, name: str) -> None:
+    try:
+        if parent.stat_child(name) is not None:
+            _remove_tree(parent, name)
+    except (DurableWriteError, OSError):
+        pass
+
+
+def _build_staged_tree(
+    parent: AnchoredDirectory,
+    temporary_name: str,
+    package: FrozenSkillPackageV1,
+) -> None:
+    stage = parent.open_child_directory(temporary_name, create=True)
+    directories: dict[str, AnchoredDirectory] = {}
+    try:
+        for rendered in package.files:
+            path = PurePosixPath(rendered.path)
+            if len(path.parts) == 1:
+                directory = stage
+            else:
+                directory_name = path.parts[0]
+                directory = directories.get(directory_name)
+                if directory is None:
+                    directory = stage.open_child_directory(
+                        directory_name,
+                        create=True,
+                    )
+                    directories[directory_name] = directory
+            _write_rendered_leaf(directory, path.name, rendered.content)
+        for directory in directories.values():
+            os.fsync(directory.descriptor)
+        os.fsync(stage.descriptor)
+        os.fsync(parent.descriptor)
+    finally:
+        for directory in directories.values():
+            directory.close()
+        stage.close()
+
+
+def _trip(seam: Callable[[str], None] | None, name: str) -> None:
+    if seam is not None:
+        seam(name)
+
+
+def materialize_skill_package(
+    output_directory: Path,
+    package: FrozenSkillPackageV1,
+    *,
+    filesystem_seam: Callable[[str], None] | None = None,
+) -> Path:
+    """Durably replace one slug tree without following caller-controlled links."""
+
+    if not isinstance(output_directory, Path) or type(package) is not FrozenSkillPackageV1:
+        raise TypeError("materializer requires a Path and frozen package")
+    anchor: AnchoredDirectory | None = None
+    lock_descriptor = -1
+    temporary_name = f".{package.stable_slug}.tmp"
+    backup_name = f".{package.stable_slug}.backup"
+    moved_prior = False
+    moved_stage = False
+    try:
+        anchor = AnchoredDirectory.open(
+            output_directory,
+            create=True,
+            filesystem_seam=filesystem_seam,
+        )
+        root_identity = os.fstat(anchor.descriptor)
+        lock_descriptor = _acquire_package_lock(anchor, package.stable_slug)
+        existing = anchor.stat_child(package.stable_slug)
+        if existing is not None:
+            target = anchor.open_child_directory(package.stable_slug)
+            target.close()
+        if anchor.stat_child(temporary_name) is not None:
+            _remove_tree(anchor, temporary_name)
+        if anchor.stat_child(backup_name) is not None:
+            if existing is None:
+                os.rename(
+                    backup_name,
+                    package.stable_slug,
+                    src_dir_fd=anchor.descriptor,
+                    dst_dir_fd=anchor.descriptor,
+                )
+                os.fsync(anchor.descriptor)
+                existing = anchor.stat_child(package.stable_slug)
+            else:
+                _remove_tree(anchor, backup_name)
+
+        _build_staged_tree(anchor, temporary_name, package)
+        if existing is not None:
+            os.rename(
+                package.stable_slug,
+                backup_name,
+                src_dir_fd=anchor.descriptor,
+                dst_dir_fd=anchor.descriptor,
+            )
+            moved_prior = True
+        _trip(filesystem_seam, "before_package_tree_rename")
+        os.rename(
+            temporary_name,
+            package.stable_slug,
+            src_dir_fd=anchor.descriptor,
+            dst_dir_fd=anchor.descriptor,
+        )
+        moved_stage = True
+        _trip(filesystem_seam, "before_package_root_directory_fsync")
+        os.fsync(anchor.descriptor)
+
+        if moved_prior:
+            try:
+                _remove_tree(anchor, backup_name)
+                _trip(filesystem_seam, "after_package_backup_unlink")
+                os.fsync(anchor.descriptor)
+            except (DurableWriteError, OSError):
+                pass
+
+        current_root = os.stat(output_directory, follow_symlinks=False)
+        if (
+            stat.S_ISLNK(current_root.st_mode)
+            or (current_root.st_dev, current_root.st_ino)
+            != (root_identity.st_dev, root_identity.st_ino)
+        ):
+            raise DurableWriteError("package_parent_identity")
+        return output_directory / package.stable_slug
+    except DurableWriteError:
+        if anchor is not None:
+            if moved_stage:
+                try:
+                    os.rename(
+                        package.stable_slug,
+                        temporary_name,
+                        src_dir_fd=anchor.descriptor,
+                        dst_dir_fd=anchor.descriptor,
+                    )
+                except OSError:
+                    pass
+            if moved_prior:
+                try:
+                    os.rename(
+                        backup_name,
+                        package.stable_slug,
+                        src_dir_fd=anchor.descriptor,
+                        dst_dir_fd=anchor.descriptor,
+                    )
+                    os.fsync(anchor.descriptor)
+                except OSError:
+                    pass
+            _best_effort_remove_tree(anchor, temporary_name)
+        raise
+    except OSError as error:
+        if anchor is not None:
+            if moved_stage:
+                try:
+                    os.rename(
+                        package.stable_slug,
+                        temporary_name,
+                        src_dir_fd=anchor.descriptor,
+                        dst_dir_fd=anchor.descriptor,
+                    )
+                except OSError:
+                    pass
+            if moved_prior:
+                try:
+                    os.rename(
+                        backup_name,
+                        package.stable_slug,
+                        src_dir_fd=anchor.descriptor,
+                        dst_dir_fd=anchor.descriptor,
+                    )
+                    os.fsync(anchor.descriptor)
+                except OSError:
+                    pass
+            _best_effort_remove_tree(anchor, temporary_name)
+        raise DurableWriteError("package_materialization") from error
+    finally:
+        if lock_descriptor >= 0:
+            os.close(lock_descriptor)
+        if anchor is not None:
+            anchor.close()
