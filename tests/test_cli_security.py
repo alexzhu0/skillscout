@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -20,6 +21,14 @@ from skillscout.adapters import fixtures
 from skillscout.adapters.fixtures import load_fixture
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
+
+from test_cli_validate_skill import _argv, _patch_phase3_ports
+from test_phase3_pipeline import (
+    _CompositionSource,
+    _recursive_exact_snapshot,
+    _workflow,
+    _write_composition_descriptor_for_workflow,
+)
 
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
 FROZEN_DATABASE_SHA256 = "49fa8067a2cc7e55b3afb2e2c93aca91f2b3d6cfbaee1bc32242f7b175bc0251"
@@ -129,7 +138,12 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
     )
 
     assert isinstance(parser, cli.SafeArgumentParser)
-    assert set(subparsers.choices) == {"dry-run", "extract-repo", "inspect-run"}
+    assert set(subparsers.choices) == {
+        "build-candidate",
+        "dry-run",
+        "extract-repo",
+        "inspect-run",
+    }
     assert all(isinstance(child, cli.SafeArgumentParser) for child in subparsers.choices.values())
 
 
@@ -519,3 +533,215 @@ def test_cli_rejects_colliding_state_namespace_without_disclosure(
 def test_error_vocabulary_is_closed_ascii_and_bounded() -> None:
     assert set(ERROR_SUMMARIES) == set(ErrorCode)
     assert all(summary.isascii() and len(summary) <= 160 for summary in ERROR_SUMMARIES.values())
+
+
+def _candidate_descriptor(tmp_path: Path) -> tuple[Path, object]:
+    workflow = _workflow()
+    descriptor_root = tmp_path / "descriptor"
+    descriptor_root.mkdir(mode=0o700)
+    return (
+        _write_composition_descriptor_for_workflow(
+            descriptor_root,
+            workflow=workflow,
+        ),
+        workflow,
+    )
+
+
+def test_skillscout_source_uses_argparse_and_never_imports_click() -> None:
+    source_root = Path(cli.__file__).parent
+    importers: dict[str, set[str]] = {}
+    for path in source_root.rglob("*.py"):
+        names: set[str] = set()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module.split(".", 1)[0])
+        importers[path.relative_to(source_root).as_posix()] = names
+
+    assert "argparse" in importers["cli.py"]
+    assert all("click" not in names for names in importers.values())
+
+
+def test_build_candidate_help_has_no_publish_shell_install_or_execution_route(
+    run_cli,
+) -> None:
+    result = run_cli("build-candidate", "--help")
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    help_text = result.stdout.casefold()
+    assert {
+        "--candidate",
+        "--phase2-state",
+        "--state",
+        "--output",
+        "--fail-after",
+    }.issubset(help_text.split())
+    for prohibited in (
+        "click",
+        "publish",
+        "pull-request",
+        "merge",
+        "approve",
+        "shell",
+        "install",
+        "execute",
+        "renderer-version",
+        "eligibility-policy-version",
+        "workflow-fingerprint",
+    ):
+        assert prohibited not in help_text
+
+
+@pytest.mark.parametrize("unsafe_shape", ("nested-state", "nonempty-output"))
+def test_build_candidate_rejects_unsafe_output_before_state_or_semantic_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    unsafe_shape: str,
+) -> None:
+    descriptor, workflow = _candidate_descriptor(tmp_path)
+    calls: list[str] = []
+    _patch_phase3_ports(
+        monkeypatch,
+        workflow=workflow,
+        outcome="generator_refusal",
+        calls=calls,
+    )
+    output = tmp_path / "output"
+    output.mkdir(mode=0o700)
+    state = (
+        output / "phase3.db"
+        if unsafe_shape == "nested-state"
+        else tmp_path / "phase3.db"
+    )
+    if unsafe_shape == "nonempty-output":
+        (output / "operator-file").write_bytes(b"must-not-be-overwritten")
+    before = _recursive_exact_snapshot(tmp_path)
+
+    status = cli.main(
+        _argv(
+            descriptor=descriptor,
+            phase2_state=tmp_path / "phase2.db",
+            state=state,
+            output=output,
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["code"] == "state_operation_failed"
+    assert calls == []
+    assert not state.exists()
+    assert _recursive_exact_snapshot(tmp_path) == before
+
+
+def test_completed_candidate_cli_uses_only_read_opens_and_private_memory_sqlite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    descriptor, workflow = _candidate_descriptor(tmp_path)
+    calls: list[str] = []
+    _patch_phase3_ports(
+        monkeypatch,
+        workflow=workflow,
+        outcome="generator_refusal",
+        calls=calls,
+    )
+    state = tmp_path / "phase3.db"
+    output = tmp_path / "output"
+    argv = _argv(
+        descriptor=descriptor,
+        phase2_state=tmp_path / "phase2.db",
+        state=state,
+        output=output,
+    )
+    assert cli.main(argv) == 0
+    capsys.readouterr()
+    first_calls = tuple(calls)
+    before = _recursive_exact_snapshot(tmp_path)
+
+    from skillscout.adapters import state as state_adapter
+
+    real_open = os.open
+    real_connect = state_adapter.sqlite3.connect
+    sqlite_targets: list[object] = []
+    forbidden_flags = (
+        os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_TRUNC | os.O_APPEND
+    )
+
+    def read_only_open(path, flags, *args, **kwargs):
+        assert flags & forbidden_flags == 0
+        return real_open(path, flags, *args, **kwargs)
+
+    def memory_connect(database, *args, **kwargs):
+        sqlite_targets.append(database)
+        assert database == ":memory:"
+        return real_connect(database, *args, **kwargs)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("completed projection attempted mutation")
+
+    monkeypatch.setattr(state_adapter.os, "open", read_only_open)
+    monkeypatch.setattr(state_adapter.sqlite3, "connect", memory_connect)
+    for name in (
+        "mkdir",
+        "write",
+        "replace",
+        "rename",
+        "unlink",
+        "chmod",
+        "fchmod",
+        "utime",
+        "fsync",
+        "fdatasync",
+    ):
+        if hasattr(state_adapter.os, name):
+            monkeypatch.setattr(state_adapter.os, name, forbidden)
+    monkeypatch.setattr(cli, "SQLiteStateStore", forbidden)
+    monkeypatch.setattr(cli, "LocalCandidateArtifactProjector", forbidden)
+
+    status = cli.main(argv)
+    captured = capsys.readouterr()
+
+    assert status == 0, captured.err
+    assert json.loads(captured.out)["outcome"] == "generator_refusal"
+    assert tuple(calls) == first_calls
+    assert sqlite_targets == [":memory:"]
+    assert _recursive_exact_snapshot(tmp_path) == before
+
+
+def test_build_candidate_environment_secret_is_absent_from_every_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret = "sk-proj-CLI-SECRET-MUST-NOT-APPEAR-0123456789"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    descriptor, workflow = _candidate_descriptor(tmp_path)
+    calls: list[str] = []
+    _patch_phase3_ports(
+        monkeypatch,
+        workflow=workflow,
+        outcome="eligible_local_candidate",
+        calls=calls,
+    )
+
+    status = cli.main(
+        _argv(
+            descriptor=descriptor,
+            phase2_state=tmp_path / "phase2.db",
+            state=tmp_path / "phase3.db",
+            output=tmp_path / "output",
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert status == 0, captured.err
+    surfaces = captured.out.encode() + captured.err.encode() + _all_bytes(tmp_path)
+    assert secret.encode() not in surfaces
