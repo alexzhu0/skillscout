@@ -3417,19 +3417,21 @@ class SQLiteStateStore:
         except (TypeError, ValueError, ValidationError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
-    def persist_reviewer_attempt(
+    def persist_semantic_attempt(
         self,
         chain: VerifiedCandidateRunChain,
     ) -> None:
-        """Durably append or finalize one Reviewer attempt without a result."""
+        """Durably append or finalize one semantic attempt without a result."""
 
         try:
+            attempt = chain.attempts[-1] if chain.attempts else None
             if (
                 type(chain) is not VerifiedCandidateRunChain
-                or len(chain.results) != 3
-                or not chain.attempts
-                or chain.attempts[-1].stage is not PhaseThreeStageV1.REVIEWER
-                or chain.attempts[-1].status == "succeeded"
+                or attempt is None
+                or attempt.stage
+                not in {PhaseThreeStageV1.GENERATOR, PhaseThreeStageV1.REVIEWER}
+                or len(chain.results) != attempt.stage_index
+                or attempt.status == "succeeded"
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             self._snapshot_transaction(

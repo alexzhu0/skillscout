@@ -201,6 +201,7 @@ def _execution_authority(
         reviewer_output_schema_version=REVIEW_OUTPUT_SCHEMA_VERSION,
         reviewer_policy_version=REVIEW_POLICY_VERSION,
         reviewer_retry_policy_version=REVIEW_RETRY_POLICY_VERSION,
+        max_generator_attempts=profile.max_generator_attempts,
         max_reviewer_attempts=profile.max_reviewer_attempts,
         eligibility_policy_version=ELIGIBILITY_POLICY_VERSION,
         phase3_producer_version=profile.producer_version,
@@ -303,7 +304,7 @@ def _append_success(
         attempt_hash=_self_hash(attempt_values, "attempt_hash"),
     )
     if running_attempt is not None and (
-        stage is not PhaseThreeStageV1.REVIEWER
+        stage not in {PhaseThreeStageV1.GENERATOR, PhaseThreeStageV1.REVIEWER}
         or not chain.attempts
         or chain.attempts[-1] != running_attempt
         or running_attempt.status != "running"
@@ -391,32 +392,34 @@ def _append_success(
     )
 
 
-def _record_reviewer_attempt(
+def _record_semantic_attempt(
     chain: VerifiedCandidateRunChain,
     *,
+    stage: PhaseThreeStageV1,
     attempt_no: int,
     status: str,
     outcome_code: str,
     payload: object,
 ) -> VerifiedCandidateRunChain:
-    """Append a pre-call attempt or finalize the retained running attempt."""
+    """Append a semantic pre-call attempt or finalize its retained record."""
 
-    if len(chain.results) != 3 or status not in {
-        "running",
-        "failed",
-        "abandoned",
-    }:
+    if (
+        stage not in {PhaseThreeStageV1.GENERATOR, PhaseThreeStageV1.REVIEWER}
+        or len(chain.results) != tuple(PhaseThreeStageV1).index(stage)
+        or status not in {"running", "failed", "abandoned"}
+    ):
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
     previous_checkpoint_hash = chain.checkpoints[-1].checkpoint_hash
     previous_output_hash = chain.results[-1].output_hash
+    stage_index = tuple(PhaseThreeStageV1).index(stage)
     values: dict[str, object] = {
         "schema_version": PHASE_THREE_SCHEMA_VERSION,
         "run_id": chain.identity.run_id,
         "candidate_execution_authority_digest": (
             chain.identity.candidate_execution_authority_digest
         ),
-        "stage": PhaseThreeStageV1.REVIEWER,
-        "stage_index": 3,
+        "stage": stage,
+        "stage_index": stage_index,
         "attempt_no": attempt_no,
         "previous_checkpoint_hash": previous_checkpoint_hash,
         "previous_output_hash": previous_output_hash,
@@ -438,18 +441,16 @@ def _record_reviewer_attempt(
         attempt_hash=_self_hash(values, "attempt_hash"),
     )
     if status == "running":
-        reviewer_attempts = tuple(
-            item
-            for item in chain.attempts
-            if item.stage is PhaseThreeStageV1.REVIEWER
+        semantic_attempts = tuple(
+            item for item in chain.attempts if item.stage is stage
         )
-        if attempt_no != len(reviewer_attempts) + 1:
+        if attempt_no != len(semantic_attempts) + 1:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         attempts = (*chain.attempts, attempt)
     else:
         if (
             not chain.attempts
-            or chain.attempts[-1].stage is not PhaseThreeStageV1.REVIEWER
+            or chain.attempts[-1].stage is not stage
             or chain.attempts[-1].attempt_no != attempt_no
             or chain.attempts[-1].status != "running"
         ):
@@ -759,40 +760,14 @@ class PhaseThreeRunner:
                 model=self.profile.configured_generator_model_id,
                 max_output_tokens=self.profile.max_generator_output_tokens,
             )
-            generation, generator_attempt = self._retry_generate(generator, request)
-            if (
-                generation.usage is not None
-                and generation.usage.completion_tokens
-                > self.profile.max_generator_output_tokens
-            ):
-                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            generation, evidence, package, chain = self._retry_generate(
+                chain,
+                generator,
+                request,
+                report=report,
+                lineage=lineage,
+            )
             if generation.status != "parsed":
-                evidence = generator_outcome_evidence(
-                    candidate_execution_authority=self.authority,
-                    outcome=generation.status,
-                    actual_generator_model_id=generation.model,
-                    request_id=generation.request_id,
-                    usage=generation.usage,
-                    latency_ms=generation.latency_ms,
-                    generated_artifact_identity=None,
-                )
-                chain = _append_success(
-                    chain,
-                    stage=PhaseThreeStageV1.GENERATOR,
-                    attempt_no=generator_attempt,
-                    outcome_code=generation.status,
-                    payload=evidence,
-                )
-                self.state.persist_candidate_stage(
-                    chain,
-                    stage_payload=canonical_json_bytes(evidence),
-                    recovery_artifacts={
-                        "checkpoint_qualifier_payload": qualification_report_bytes(
-                            report
-                        )
-                    },
-                    status="running",
-                )
                 return self._terminal(
                     chain=chain,
                     outcome=generator_outcomes[generation.status],
@@ -801,50 +776,8 @@ class PhaseThreeRunner:
                     generator_evidence=evidence,
                     artifacts=artifacts,
                 )
-            if (
-                generation.draft is None
-                or generation.model is None
-                or generation.request_id is None
-                or generation.usage is None
-            ):
-                raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
-            generation_authority = self._generation_authority(
-                report=report,
-                lineage=lineage,
-                actual_generator_model_id=generation.model,
-            )
-            package = render_skill_package(
-                draft=generation.draft,
-                authority=generation_authority,
-                request_id=generation.request_id,
-                usage=generation.usage,
-                latency_ms=generation.latency_ms,
-            )
-            evidence = generator_outcome_evidence(
-                candidate_execution_authority=self.authority,
-                outcome="parsed",
-                actual_generator_model_id=generation.model,
-                request_id=generation.request_id,
-                usage=generation.usage,
-                latency_ms=generation.latency_ms,
-                generated_artifact_identity=package.generated_artifact_identity,
-            )
-            chain = _append_success(
-                chain,
-                stage=PhaseThreeStageV1.GENERATOR,
-                attempt_no=generator_attempt,
-                outcome_code="parsed",
-                payload=evidence,
-            )
-            self.state.persist_candidate_stage(
-                chain,
-                stage_payload=canonical_json_bytes(evidence),
-                recovery_artifacts={
-                    "checkpoint_qualifier_payload": qualification_report_bytes(report),
-                    "checkpoint_rendered_package": canonical_json_bytes(package),
-                },
-                status="running",
-            )
+            if package is None:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             checkpoint_payloads = {
                 "checkpoint_qualifier_payload": qualification_report_bytes(report),
                 "checkpoint_generator_payload": canonical_json_bytes(evidence),
@@ -1025,48 +958,11 @@ class PhaseThreeRunner:
             )
             (
                 review_result,
+                disposition,
+                attestation,
                 chain,
-                reviewer_attempt,
-                failed_reviewer_attempts,
-                running_reviewer_attempt,
-            ) = (
-                self._retry_review(
-                    chain, reviewer, package, validation
-                )
-            )
-            if (
-                review_result.usage is not None
-                and review_result.usage.completion_tokens
-                > self.profile.max_reviewer_output_tokens
-            ):
-                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-            disposition = review_disposition(
-                generation_succeeded=True,
-                validation_report=validation,
-                review_result=review_result,
-            )
-            attestation = review_attestation(
-                candidate_execution_authority=self.authority,
-                generated_artifact_identity=package.generated_artifact_identity,
-                package_identity=package.package_identity,
-                validation_report=validation,
-                review_result=review_result,
-                attempt_count=reviewer_attempt,
-                failed_attempts=failed_reviewer_attempts,
-            )
-            chain = _append_success(
-                chain,
-                stage=PhaseThreeStageV1.REVIEWER,
-                attempt_no=reviewer_attempt,
-                outcome_code=disposition.status,
-                payload=attestation,
-                running_attempt=running_reviewer_attempt,
-            )
-            self.state.persist_candidate_stage(
-                chain,
-                stage_payload=review_attestation_bytes(attestation),
-                recovery_artifacts={},
-                status="running",
+            ) = self._retry_review(
+                chain, reviewer, package, validation
             )
         outcome = outcome_by_disposition[disposition.status]
         artifacts["review_attestation"] = review_attestation_bytes(attestation)
@@ -1083,22 +979,180 @@ class PhaseThreeRunner:
             artifacts=artifacts,
         )
 
+    def _resume_semantic_attempt_history(
+        self,
+        chain: VerifiedCandidateRunChain,
+        *,
+        stage: PhaseThreeStageV1,
+        max_attempts: int,
+    ) -> tuple[VerifiedCandidateRunChain, list[CandidateStageAttemptV1]]:
+        durable_attempts = [
+            attempt for attempt in chain.attempts if attempt.stage is stage
+        ]
+        if durable_attempts and durable_attempts[-1].status == "running":
+            interrupted_payload = {
+                "attempt_no": durable_attempts[-1].attempt_no,
+                "error_code": "attempt_interrupted",
+            }
+            chain = _record_semantic_attempt(
+                chain,
+                stage=stage,
+                attempt_no=durable_attempts[-1].attempt_no,
+                status="abandoned",
+                outcome_code="attempt_interrupted",
+                payload=interrupted_payload,
+            )
+            self.state.persist_semantic_attempt(chain)
+            durable_attempts[-1] = chain.attempts[-1]
+
+        for prior_attempt in durable_attempts:
+            if prior_attempt.status not in {"failed", "abandoned"}:
+                continue
+            if prior_attempt.outcome_code in {
+                "stage_transient_failure",
+                "attempt_interrupted",
+            }:
+                continue
+            try:
+                code = ErrorCode(prior_attempt.outcome_code)
+            except ValueError:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+            raise SafeFailure(code)
+        if len(durable_attempts) >= max_attempts:
+            raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
+        return chain, durable_attempts
+
     def _retry_generate(
-        self, generator: object, request: GenerationRequestV1
-    ) -> tuple[GenerationResult, int]:
-        for attempt in range(1, self.profile.max_generator_attempts + 1):
+        self,
+        chain: VerifiedCandidateRunChain,
+        generator: object,
+        request: GenerationRequestV1,
+        *,
+        report: QualificationReportV1,
+        lineage: LineageResolutionV1,
+    ) -> tuple[
+        GenerationResult,
+        GeneratorOutcomeEvidenceV1,
+        FrozenSkillPackageV1 | None,
+        VerifiedCandidateRunChain,
+    ]:
+        chain, durable_attempts = self._resume_semantic_attempt_history(
+            chain,
+            stage=PhaseThreeStageV1.GENERATOR,
+            max_attempts=self.profile.max_generator_attempts,
+        )
+        next_attempt = len(durable_attempts) + 1
+        for attempt in range(
+            next_attempt, self.profile.max_generator_attempts + 1
+        ):
+            running_payload = {
+                "attempt_no": attempt,
+                "event": "generator_call_started",
+            }
+            chain = _record_semantic_attempt(
+                chain,
+                stage=PhaseThreeStageV1.GENERATOR,
+                attempt_no=attempt,
+                status="running",
+                outcome_code="generator_call_started",
+                payload=running_payload,
+            )
+            self.state.persist_semantic_attempt(chain)
+            running_attempt = chain.attempts[-1]
+            failure: SafeFailure | None = None
             try:
                 result = generator.generate(request=request)
                 if type(result) is not GenerationResult:
                     raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
-                return result, attempt
-            except SafeFailure as failure:
                 if (
-                    failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE
+                    result.usage is not None
+                    and result.usage.completion_tokens
+                    > self.profile.max_generator_output_tokens
                 ):
-                    raise
-                if attempt == self.profile.max_generator_attempts:
-                    raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
+                    raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+                package: FrozenSkillPackageV1 | None = None
+                if result.status == "parsed":
+                    if (
+                        result.draft is None
+                        or result.model is None
+                        or result.request_id is None
+                        or result.usage is None
+                    ):
+                        raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+                    generation_authority = self._generation_authority(
+                        report=report,
+                        lineage=lineage,
+                        actual_generator_model_id=result.model,
+                    )
+                    package = render_skill_package(
+                        draft=result.draft,
+                        authority=generation_authority,
+                        request_id=result.request_id,
+                        usage=result.usage,
+                        latency_ms=result.latency_ms,
+                    )
+                evidence = generator_outcome_evidence(
+                    candidate_execution_authority=self.authority,
+                    outcome=result.status,
+                    actual_generator_model_id=result.model,
+                    request_id=result.request_id,
+                    usage=result.usage,
+                    latency_ms=result.latency_ms,
+                    generated_artifact_identity=(
+                        package.generated_artifact_identity
+                        if package is not None
+                        else None
+                    ),
+                )
+                chain = _append_success(
+                    chain,
+                    stage=PhaseThreeStageV1.GENERATOR,
+                    attempt_no=attempt,
+                    outcome_code=result.status,
+                    payload=evidence,
+                    running_attempt=running_attempt,
+                )
+            except SafeFailure as caught:
+                failure = caught
+            except (TypeError, ValueError):
+                failure = SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+            else:
+                recovery_artifacts = {
+                    "checkpoint_qualifier_payload": qualification_report_bytes(
+                        report
+                    )
+                }
+                if package is not None:
+                    recovery_artifacts["checkpoint_rendered_package"] = (
+                        canonical_json_bytes(package)
+                    )
+                self.state.persist_candidate_stage(
+                    chain,
+                    stage_payload=canonical_json_bytes(evidence),
+                    recovery_artifacts=recovery_artifacts,
+                    status="running",
+                )
+                return result, evidence, package, chain
+
+            if failure is None:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            failure_payload = {
+                "attempt_no": attempt,
+                "error_code": failure.code.value,
+            }
+            chain = _record_semantic_attempt(
+                chain,
+                stage=PhaseThreeStageV1.GENERATOR,
+                attempt_no=attempt,
+                status="failed",
+                outcome_code=failure.code.value,
+                payload=failure_payload,
+            )
+            self.state.persist_semantic_attempt(chain)
+            if failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE:
+                raise failure
+            if attempt == self.profile.max_generator_attempts:
+                raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
         raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
 
     def _retry_review(
@@ -1107,57 +1161,23 @@ class PhaseThreeRunner:
         reviewer: object,
         package: object,
         validation: object,
-    ) -> tuple[
-        object,
-        VerifiedCandidateRunChain,
-        int,
-        tuple[ReviewerFailedAttemptV1, ...],
-        CandidateStageAttemptV1,
-    ]:
+    ) -> tuple[object, object, ReviewAttestationV1, VerifiedCandidateRunChain]:
         from skillscout.domain.review import ReviewResult
 
-        durable_attempts = [
-            attempt
-            for attempt in chain.attempts
-            if attempt.stage is PhaseThreeStageV1.REVIEWER
+        chain, durable_attempts = self._resume_semantic_attempt_history(
+            chain,
+            stage=PhaseThreeStageV1.REVIEWER,
+            max_attempts=self.profile.max_reviewer_attempts,
+        )
+        failed_attempts = [
+            ReviewerFailedAttemptV1(
+                attempt_no=prior_attempt.attempt_no,
+                error_code=prior_attempt.outcome_code,
+            )
+            for prior_attempt in durable_attempts
+            if prior_attempt.status in {"failed", "abandoned"}
         ]
-        if durable_attempts and durable_attempts[-1].status == "running":
-            interrupted = ReviewerFailedAttemptV1(
-                attempt_no=durable_attempts[-1].attempt_no,
-                error_code="attempt_interrupted",
-            )
-            chain = _record_reviewer_attempt(
-                chain,
-                attempt_no=interrupted.attempt_no,
-                status="abandoned",
-                outcome_code=interrupted.error_code,
-                payload=interrupted,
-            )
-            self.state.persist_reviewer_attempt(chain)
-            durable_attempts[-1] = chain.attempts[-1]
-
-        failed_attempts: list[ReviewerFailedAttemptV1] = []
-        for prior_attempt in durable_attempts:
-            if prior_attempt.status not in {"failed", "abandoned"}:
-                continue
-            if prior_attempt.outcome_code not in {
-                "stage_transient_failure",
-                "attempt_interrupted",
-            }:
-                try:
-                    raise SafeFailure(ErrorCode(prior_attempt.outcome_code))
-                except ValueError:
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
-            failed_attempts.append(
-                ReviewerFailedAttemptV1(
-                    attempt_no=prior_attempt.attempt_no,
-                    error_code=prior_attempt.outcome_code,
-                )
-            )
         next_attempt = len(durable_attempts) + 1
-        if next_attempt > self.profile.max_reviewer_attempts:
-            raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
-
         for attempt in range(
             next_attempt, self.profile.max_reviewer_attempts + 1
         ):
@@ -1165,15 +1185,17 @@ class PhaseThreeRunner:
                 "attempt_no": attempt,
                 "event": "reviewer_call_started",
             }
-            chain = _record_reviewer_attempt(
+            chain = _record_semantic_attempt(
                 chain,
+                stage=PhaseThreeStageV1.REVIEWER,
                 attempt_no=attempt,
                 status="running",
                 outcome_code="reviewer_call_started",
                 payload=running_payload,
             )
-            self.state.persist_reviewer_attempt(chain)
+            self.state.persist_semantic_attempt(chain)
             running_attempt = chain.attempts[-1]
+            failure: SafeFailure | None = None
             try:
                 result = reviewer.review(
                     workflow_spec=self.authority.workflow_spec_authority.workflow_spec,
@@ -1182,35 +1204,72 @@ class PhaseThreeRunner:
                 )
                 if type(result) is not ReviewResult:
                     raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
-                return (
-                    result,
-                    chain,
-                    attempt,
-                    tuple(failed_attempts),
-                    running_attempt,
+                if (
+                    result.usage is not None
+                    and result.usage.completion_tokens
+                    > self.profile.max_reviewer_output_tokens
+                ):
+                    raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+                disposition = review_disposition(
+                    generation_succeeded=True,
+                    validation_report=validation,
+                    review_result=result,
                 )
-            except SafeFailure as failure:
-                failure_payload = {
-                    "attempt_no": attempt,
-                    "error_code": failure.code.value,
-                }
-                chain = _record_reviewer_attempt(
+                attestation = review_attestation(
+                    candidate_execution_authority=self.authority,
+                    generated_artifact_identity=package.generated_artifact_identity,
+                    package_identity=package.package_identity,
+                    validation_report=validation,
+                    review_result=result,
+                    attempt_count=attempt,
+                    failed_attempts=tuple(failed_attempts),
+                )
+                chain = _append_success(
                     chain,
+                    stage=PhaseThreeStageV1.REVIEWER,
                     attempt_no=attempt,
-                    status="failed",
-                    outcome_code=failure.code.value,
-                    payload=failure_payload,
+                    outcome_code=disposition.status,
+                    payload=attestation,
+                    running_attempt=running_attempt,
                 )
-                self.state.persist_reviewer_attempt(chain)
-                if failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE:
-                    raise
-                failure_fact = ReviewerFailedAttemptV1(
+            except SafeFailure as caught:
+                failure = caught
+            except (TypeError, ValueError):
+                failure = SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+            else:
+                self.state.persist_candidate_stage(
+                    chain,
+                    stage_payload=review_attestation_bytes(attestation),
+                    recovery_artifacts={},
+                    status="running",
+                )
+                return result, disposition, attestation, chain
+
+            if failure is None:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            failure_payload = {
+                "attempt_no": attempt,
+                "error_code": failure.code.value,
+            }
+            chain = _record_semantic_attempt(
+                chain,
+                stage=PhaseThreeStageV1.REVIEWER,
+                attempt_no=attempt,
+                status="failed",
+                outcome_code=failure.code.value,
+                payload=failure_payload,
+            )
+            self.state.persist_semantic_attempt(chain)
+            if failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE:
+                raise failure
+            failed_attempts.append(
+                ReviewerFailedAttemptV1(
                     attempt_no=attempt,
                     error_code="stage_transient_failure",
                 )
-                failed_attempts.append(failure_fact)
-                if attempt == self.profile.max_reviewer_attempts:
-                    raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
+            )
+            if attempt == self.profile.max_reviewer_attempts:
+                raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
         raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
 
     def _terminal(

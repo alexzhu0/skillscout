@@ -603,6 +603,7 @@ def _check_identity_and_evidence_ownership(repository_root: Path) -> tuple[str, 
     _require(
         {
             "reviewer_retry_policy_version",
+            "max_generator_attempts",
             "max_reviewer_attempts",
         }.issubset(execution_fields)
     )
@@ -712,23 +713,26 @@ def _check_identity_and_evidence_ownership(repository_root: Path) -> tuple[str, 
     _require_tokens(
         phase3,
         (
-            "def _record_reviewer_attempt(",
-            "self.state.persist_reviewer_attempt(chain)",
+            "def _record_semantic_attempt(",
+            "self.state.persist_semantic_attempt(chain)",
+            "stage=PhaseThreeStageV1.GENERATOR",
+            "stage=PhaseThreeStageV1.REVIEWER",
             'status="abandoned"',
-            'error_code="attempt_interrupted"',
+            '"error_code": "attempt_interrupted"',
         ),
     )
     _require_tokens(
         models,
         (
-            'attempt.status not in {"failed", "abandoned"}',
+            '("failed", "stage_transient_failure")',
+            '("abandoned", "attempt_interrupted")',
             'terminal_attempt.status != "succeeded"',
         ),
     )
     _require_tokens(
         state,
         (
-            "def persist_reviewer_attempt(",
+            "def persist_semantic_attempt(",
             'prior.attempts[-1].status == "running"',
             'chain.attempts[-1].status in {"failed", "abandoned", "succeeded"}',
         ),

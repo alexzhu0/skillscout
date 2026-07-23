@@ -150,6 +150,7 @@ class CandidateExecutionAuthorityV1(StrictFrozenModel):
     reviewer_output_schema_version: _Version
     reviewer_policy_version: _Version
     reviewer_retry_policy_version: _Version
+    max_generator_attempts: Annotated[int, Field(ge=1, le=3)]
     max_reviewer_attempts: Annotated[int, Field(ge=1, le=3)]
 
     eligibility_policy_version: _Version
@@ -203,6 +204,7 @@ def candidate_execution_authority(
     reviewer_output_schema_version: str,
     reviewer_policy_version: str,
     reviewer_retry_policy_version: str,
+    max_generator_attempts: int,
     max_reviewer_attempts: int,
     eligibility_policy_version: str,
     phase3_producer_version: str,
@@ -239,6 +241,7 @@ def candidate_execution_authority(
         "reviewer_output_schema_version": reviewer_output_schema_version,
         "reviewer_policy_version": reviewer_policy_version,
         "reviewer_retry_policy_version": reviewer_retry_policy_version,
+        "max_generator_attempts": max_generator_attempts,
         "max_reviewer_attempts": max_reviewer_attempts,
         "eligibility_policy_version": eligibility_policy_version,
         "phase3_producer_version": phase3_producer_version,
@@ -271,6 +274,7 @@ def candidate_execution_authority(
         reviewer_output_schema_version=reviewer_output_schema_version,
         reviewer_policy_version=reviewer_policy_version,
         reviewer_retry_policy_version=reviewer_retry_policy_version,
+        max_generator_attempts=max_generator_attempts,
         max_reviewer_attempts=max_reviewer_attempts,
         eligibility_policy_version=eligibility_policy_version,
         phase3_producer_version=phase3_producer_version,

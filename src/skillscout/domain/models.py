@@ -391,8 +391,12 @@ class VerifiedCandidateRunChain(StrictFrozenModel):
             if len(successful) != 1:
                 raise ValueError("candidate successful attempt cardinality disagrees")
             attempt = successful[0]
-            if stage is not PhaseThreeStageV1.REVIEWER and stage_attempts != [attempt]:
-                raise ValueError("candidate non-Reviewer attempt history disagrees")
+            if (
+                stage
+                not in {PhaseThreeStageV1.GENERATOR, PhaseThreeStageV1.REVIEWER}
+                and stage_attempts != [attempt]
+            ):
+                raise ValueError("candidate deterministic attempt history disagrees")
             common_records = (result, checkpoint, event)
             if any(
                 record.run_id != run_id
@@ -435,54 +439,86 @@ class VerifiedCandidateRunChain(StrictFrozenModel):
             previous_result_hash = result.result_hash
             previous_event_hash = event.event_hash
 
-        reviewer_attempts = attempts_by_stage.get(PhaseThreeStageV1.REVIEWER, [])
-        if reviewer_attempts:
-            reviewer_previous_checkpoint_hash = self.checkpoints[2].checkpoint_hash
-            reviewer_previous_output_hash = self.results[2].output_hash
-            expected_numbers = tuple(range(1, len(reviewer_attempts) + 1))
+        semantic_attempt_limits = {
+            PhaseThreeStageV1.GENERATOR: (
+                self.identity.candidate_execution_authority.max_generator_attempts
+            ),
+            PhaseThreeStageV1.REVIEWER: (
+                self.identity.candidate_execution_authority.max_reviewer_attempts
+            ),
+        }
+        for semantic_stage, attempt_limit in semantic_attempt_limits.items():
+            semantic_attempts = attempts_by_stage.get(semantic_stage, [])
+            if not semantic_attempts:
+                continue
+            stage_index = PHASE_THREE_STAGE_SEQUENCE.index(semantic_stage)
+            if stage_index == 0 or len(self.checkpoints) < stage_index:
+                raise ValueError("candidate semantic attempt precedes its stage")
+            semantic_previous_checkpoint_hash = self.checkpoints[
+                stage_index - 1
+            ].checkpoint_hash
+            semantic_previous_output_hash = self.results[
+                stage_index - 1
+            ].output_hash
+            expected_numbers = tuple(range(1, len(semantic_attempts) + 1))
             if (
-                tuple(attempt.attempt_no for attempt in reviewer_attempts)
+                len(semantic_attempts) > attempt_limit
+                or tuple(attempt.attempt_no for attempt in semantic_attempts)
                 != expected_numbers
                 or any(
                     attempt.previous_checkpoint_hash
-                    != reviewer_previous_checkpoint_hash
-                    or attempt.previous_output_hash != reviewer_previous_output_hash
-                    for attempt in reviewer_attempts
+                    != semantic_previous_checkpoint_hash
+                    or attempt.previous_output_hash != semantic_previous_output_hash
+                    for attempt in semantic_attempts
                 )
             ):
-                raise ValueError("candidate Reviewer attempt continuity disagrees")
-            reviewer_result_exists = count == len(PHASE_THREE_STAGE_SEQUENCE)
-            terminal_attempt = reviewer_attempts[-1]
-            if reviewer_result_exists:
+                raise ValueError("candidate semantic attempt continuity disagrees")
+            result_exists = count > stage_index
+            terminal_attempt = semantic_attempts[-1]
+            if result_exists:
                 if (
                     terminal_attempt.status != "succeeded"
                     or any(
-                        attempt.status not in {"failed", "abandoned"}
-                        for attempt in reviewer_attempts[:-1]
-                    )
-                    or any(
-                        attempt.outcome_code
-                        not in {"stage_transient_failure", "attempt_interrupted"}
-                        for attempt in reviewer_attempts[:-1]
+                        (attempt.status, attempt.outcome_code)
+                        not in {
+                            ("failed", "stage_transient_failure"),
+                            ("abandoned", "attempt_interrupted"),
+                        }
+                        for attempt in semantic_attempts[:-1]
                     )
                 ):
-                    raise ValueError("candidate Reviewer result history disagrees")
-            elif count == len(PHASE_THREE_STAGE_SEQUENCE) - 1:
+                    raise ValueError("candidate semantic result history disagrees")
+            elif count == stage_index:
                 if (
                     any(
-                        attempt.status not in {"failed", "abandoned"}
-                        for attempt in reviewer_attempts[:-1]
+                        (attempt.status, attempt.outcome_code)
+                        not in {
+                            ("failed", "stage_transient_failure"),
+                            ("abandoned", "attempt_interrupted"),
+                        }
+                        for attempt in semantic_attempts[:-1]
                     )
                     or terminal_attempt.status
                     not in {"failed", "abandoned", "running"}
+                    or (
+                        terminal_attempt.status == "running"
+                        and terminal_attempt.outcome_code
+                        != f"{semantic_stage.value}_call_started"
+                    )
+                    or (
+                        terminal_attempt.status == "abandoned"
+                        and terminal_attempt.outcome_code != "attempt_interrupted"
+                    )
                 ):
-                    raise ValueError("candidate pending Reviewer history disagrees")
+                    raise ValueError("candidate pending semantic history disagrees")
             else:
-                raise ValueError("candidate Reviewer attempt precedes its stage")
+                raise ValueError("candidate semantic attempt precedes its stage")
         for stage in attempts_by_stage:
             stage_index = PHASE_THREE_STAGE_SEQUENCE.index(stage)
             if stage_index > count or (
-                stage_index == count and stage is not PhaseThreeStageV1.REVIEWER
+                stage_index == count
+                and stage
+                not in {PhaseThreeStageV1.GENERATOR, PhaseThreeStageV1.REVIEWER}
             ):
                 raise ValueError("candidate attempt stage is not reachable")
         return self

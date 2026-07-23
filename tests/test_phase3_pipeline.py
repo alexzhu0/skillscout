@@ -153,6 +153,7 @@ def _execution_authority(
         "reviewer_output_schema_version": "reviewer-output-v1",
         "reviewer_policy_version": "reviewer-policy-v1",
         "reviewer_retry_policy_version": "reviewer-bounded-transient-retry-v1",
+        "max_generator_attempts": 3,
         "max_reviewer_attempts": 3,
         "eligibility_policy_version": "candidate-eligibility-v1",
         "phase3_producer_version": "phase3-v1",
@@ -2216,7 +2217,19 @@ def test_resume_budgets_runner_retries_only_transient_infrastructure(
         state_path
     ).find_completed_candidate(result.authority)
     assert projection is not None
-    assert projection.chain.attempts[1].attempt_no == 3
+    generator_attempts = tuple(
+        attempt
+        for attempt in projection.chain.attempts
+        if attempt.stage is PhaseThreeStageV1.GENERATOR
+    )
+    assert tuple(
+        (attempt.attempt_no, attempt.status, attempt.outcome_code)
+        for attempt in generator_attempts
+    ) == (
+        (1, "failed", "stage_transient_failure"),
+        (2, "failed", "stage_transient_failure"),
+        (3, "succeeded", "refused"),
+    )
 
 
 def test_reviewer_retry_attestation_and_ledger_retain_each_remote_attempt(
@@ -2802,6 +2815,9 @@ def test_resume_budgets_qualifier_checkpoint_resumes_without_repeating_prefix(
                 self.interrupted = True
                 raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
 
+        def persist_semantic_attempt(self, chain):
+            self.chain = chain
+
         def persist_candidate_stage(
             self,
             chain,
@@ -3226,19 +3242,35 @@ def test_resume_budgets_generator_token_ceiling_fails_before_validator(
         artifact_projector_factory=lambda: calls.append("output"),
         run_id_factory=lambda: "token-budget-run",
     )
-    with pytest.raises(SafeFailure) as raised:
-        PhaseThreeApplication(
-            source=_CompositionSource(),
-            profile=PhaseThreeRuntimeProfile(
-                configured_generator_model_id="generator-configured",
-                configured_reviewer_model_id="reviewer-configured",
-                max_generator_output_tokens=5,
-            ),
-            dependencies=dependencies,
-        ).run(_write_composition_descriptor(tmp_path))
-
-    assert raised.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=PhaseThreeRuntimeProfile(
+            configured_generator_model_id="generator-configured",
+            configured_reviewer_model_id="reviewer-configured",
+            max_generator_output_tokens=5,
+        ),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+    for _ in range(2):
+        with pytest.raises(SafeFailure) as raised:
+            application.run(descriptor)
+        assert raised.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
     assert calls == ["generator"]
+    store = SQLiteStateStore(tmp_path / "token-budget-state.db")
+    try:
+        chain = store.verify_candidate_run_chain("token-budget-run")
+    finally:
+        store.close()
+    generator_attempts = tuple(
+        attempt
+        for attempt in chain.attempts
+        if attempt.stage is PhaseThreeStageV1.GENERATOR
+    )
+    assert tuple(
+        (attempt.attempt_no, attempt.status, attempt.outcome_code)
+        for attempt in generator_attempts
+    ) == ((1, "failed", "stage_permanent_failure"),)
 
 
 def test_resume_budgets_authority_mutation_is_a_clean_completed_miss(
@@ -3466,4 +3498,10 @@ def test_resume_budgets_429_500_one_request_per_runner_attempt(
         state_path
     ).find_completed_candidate(result.authority)
     assert projection is not None
-    assert len(raw_requests) == projection.chain.attempts[1].attempt_no == 3
+    generator_attempts = tuple(
+        attempt
+        for attempt in projection.chain.attempts
+        if attempt.stage is PhaseThreeStageV1.GENERATOR
+    )
+    assert len(raw_requests) == len(generator_attempts) == 3
+    assert generator_attempts[-1].attempt_no == 3

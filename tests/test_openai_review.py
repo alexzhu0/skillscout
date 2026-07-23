@@ -642,6 +642,7 @@ def _execution_authority():
         reviewer_output_schema_version=REVIEW_OUTPUT_SCHEMA_VERSION,
         reviewer_policy_version=REVIEW_POLICY_VERSION,
         reviewer_retry_policy_version=REVIEW_RETRY_POLICY_VERSION,
+        max_generator_attempts=3,
         max_reviewer_attempts=3,
         eligibility_policy_version=ELIGIBILITY_POLICY_VERSION,
         phase3_producer_version="phase3-v1",
