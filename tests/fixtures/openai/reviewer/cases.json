@@ -1,0 +1,134 @@
+{
+  "parsed_yes": {
+    "status": 200,
+    "headers": {"content-type": "application/json"},
+    "body": {
+      "id": "resp_review_0001",
+      "object": "response",
+      "created_at": 1783000000,
+      "status": "completed",
+      "model": "gpt-5.6-terra-reviewer-2026-07-22",
+      "output": [{
+        "id": "msg_review_0001",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{
+          "type": "output_text",
+          "text": "{\"schema_version\":\"reviewer-judgment-v1\",\"verdict\":\"YES\",\"confidence\":0.8,\"reasons\":[{\"code\":\"clear_scope\",\"text\":\"The candidate is bounded and reviewable.\"}],\"missing_assumptions\":[],\"minimal_modifications\":[]}",
+          "annotations": []
+        }]
+      }],
+      "parallel_tool_calls": true,
+      "tool_choice": "auto",
+      "tools": [],
+      "usage": {"input_tokens": 820, "output_tokens": 80, "total_tokens": 900}
+    }
+  },
+  "refusal": {
+    "status": 200,
+    "headers": {"content-type": "application/json"},
+    "body": {
+      "id": "resp_review_0002",
+      "object": "response",
+      "created_at": 1783000000,
+      "status": "completed",
+      "model": "gpt-5.6-terra-reviewer-2026-07-22",
+      "output": [{
+        "id": "msg_review_0002",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "refusal", "refusal": "I cannot review this candidate."}]
+      }],
+      "parallel_tool_calls": true,
+      "tool_choice": "auto",
+      "tools": [],
+      "usage": {"input_tokens": 800, "output_tokens": 10, "total_tokens": 810}
+    }
+  },
+  "incomplete": {
+    "status": 200,
+    "headers": {"content-type": "application/json"},
+    "body": {
+      "id": "resp_review_0003",
+      "object": "response",
+      "created_at": 1783000000,
+      "status": "incomplete",
+      "model": "gpt-5.6-terra-reviewer-2026-07-22",
+      "output": [],
+      "parallel_tool_calls": true,
+      "tool_choice": "auto",
+      "tools": [],
+      "usage": {"input_tokens": 800, "output_tokens": 2000, "total_tokens": 2800},
+      "incomplete_details": {"reason": "max_output_tokens"}
+    }
+  },
+  "schema_invalid": {
+    "status": 200,
+    "headers": {"content-type": "application/json"},
+    "body": {
+      "id": "resp_review_0004",
+      "object": "response",
+      "created_at": 1783000000,
+      "status": "completed",
+      "model": "gpt-5.6-terra-reviewer-2026-07-22",
+      "output": [{
+        "id": "msg_review_0004",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{
+          "type": "output_text",
+          "text": "{\"schema_version\":\"reviewer-judgment-v1\",\"verdict\":\"MAYBE\",\"confidence\":0.8,\"reasons\":[],\"missing_assumptions\":[],\"minimal_modifications\":[]}",
+          "annotations": []
+        }]
+      }],
+      "parallel_tool_calls": true,
+      "tool_choice": "auto",
+      "tools": [],
+      "usage": {"input_tokens": 800, "output_tokens": 40, "total_tokens": 840}
+    }
+  },
+  "replacement_content": {
+    "status": 200,
+    "headers": {"content-type": "application/json"},
+    "body": {
+      "id": "resp_review_0005",
+      "object": "response",
+      "created_at": 1783000000,
+      "status": "completed",
+      "model": "gpt-5.6-terra-reviewer-2026-07-22",
+      "output": [{
+        "id": "msg_review_0005",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{
+          "type": "output_text",
+          "text": "{\"schema_version\":\"reviewer-judgment-v1\",\"verdict\":\"YES\",\"confidence\":0.9,\"reasons\":[{\"code\":\"clear_scope\",\"text\":\"Acceptable.\"}],\"missing_assumptions\":[],\"minimal_modifications\":[],\"replacement_skill\":\"# rewritten Skill\"}",
+          "annotations": []
+        }]
+      }],
+      "parallel_tool_calls": true,
+      "tool_choice": "auto",
+      "tools": [],
+      "usage": {"input_tokens": 800, "output_tokens": 60, "total_tokens": 860}
+    }
+  },
+  "openai_429": {
+    "status": 429,
+    "headers": {"content-type": "application/json"},
+    "body": {"error": {"message": "recorded", "type": "rate_limit_error", "code": "recorded"}}
+  },
+  "openai_500": {
+    "status": 500,
+    "headers": {"content-type": "application/json"},
+    "body": {"error": {"message": "recorded", "type": "server_error", "code": "recorded"}}
+  },
+  "openai_400": {
+    "status": 400,
+    "headers": {"content-type": "application/json"},
+    "body": {"error": {"message": "recorded", "type": "invalid_request_error", "code": "recorded"}}
+  }
+}
