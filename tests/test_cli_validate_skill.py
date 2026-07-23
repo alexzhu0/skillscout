@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from skillscout import cli
+from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode
 from skillscout.domain.canonical import canonical_json_bytes
 
@@ -324,3 +325,63 @@ def test_build_candidate_failure_injection_resumes_from_verified_checkpoint(
     assert json.loads(second.out)["outcome"] == "eligible_local_candidate"
     assert tuple(calls) == ("generator", "validator", "reviewer")
     assert output.is_dir()
+
+
+@pytest.mark.parametrize(
+    "failed_evidence",
+    tuple(cli._EVIDENCE_FILENAMES.values()),
+)
+def test_projection_failure_resumes_complete_tree_without_semantic_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    failed_evidence: str,
+) -> None:
+    workflow = _workflow()
+    descriptor_root = tmp_path / "descriptor"
+    descriptor_root.mkdir(mode=0o700)
+    descriptor = _write_composition_descriptor_for_workflow(
+        descriptor_root,
+        workflow=workflow,
+    )
+    state = tmp_path / "phase3.db"
+    output = tmp_path / "output"
+    calls: list[str] = []
+    _patch_phase3_ports(
+        monkeypatch,
+        workflow=workflow,
+        outcome="eligible_local_candidate",
+        calls=calls,
+    )
+    original_atomic_write = AnchoredDirectory.atomic_write
+    failed = False
+
+    def fail_once(self, name, payload, **kwargs):
+        nonlocal failed
+        if name == failed_evidence and not failed:
+            failed = True
+            raise DurableWriteError("projection_test_failure")
+        return original_atomic_write(self, name, payload, **kwargs)
+
+    monkeypatch.setattr(AnchoredDirectory, "atomic_write", fail_once)
+    argv = _argv(
+        descriptor=descriptor,
+        phase2_state=tmp_path / "phase2.db",
+        state=state,
+        output=output,
+    )
+
+    assert cli.main(argv) == 1
+    first = capsys.readouterr()
+    assert json.loads(first.err)["error"]["code"] == "state_operation_failed"
+    semantic_calls = tuple(calls)
+    assert semantic_calls == ("generator", "validator", "reviewer")
+
+    assert cli.main(argv) == 0
+    resumed = capsys.readouterr()
+    assert json.loads(resumed.out)["outcome"] == "eligible_local_candidate"
+    assert tuple(calls) == semantic_calls
+    assert {
+        path.name for path in output.iterdir() if path.is_file()
+    } == set(cli._EVIDENCE_FILENAMES.values())
+    assert any(path.is_dir() for path in output.iterdir())
