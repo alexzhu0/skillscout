@@ -282,7 +282,7 @@ def candidate_execution_authority(
 
 
 class PriorLineageBindingV1(StrictFrozenModel):
-    """Canonical human-approved target from one prior lineage to one new authority."""
+    """Canonical target from one prior lineage to one new authority."""
 
     schema_version: Literal["prior-lineage-binding-v1"]
     binding_id: Digest
@@ -294,22 +294,19 @@ class PriorLineageBindingV1(StrictFrozenModel):
     prior_package_digest: Digest
     prior_terminal_summary_digest: Digest
     new_workflow_spec_authority_digest: Digest
-    approval_record_digest: Digest
 
 
 class PriorLineageApprovalRecordV1(StrictFrozenModel):
-    """Canonical durable record of the exact human-approved lineage update."""
+    """Independent durable human decision over one exact lineage binding."""
 
     schema_version: Literal["lineage-approval-record-v1"]
     binding_schema_version: Literal["prior-lineage-binding-v1"]
     binding_policy_version: _Version
-    repository_id: _RepositoryId
-    lineage_authority_digest: Digest
-    lineage_id: Digest
-    stable_slug: _StableSlug
-    prior_package_digest: Digest
-    prior_terminal_summary_digest: Digest
+    binding_digest: Digest
     new_workflow_spec_authority_digest: Digest
+    decision: Literal["approved"]
+    reviewer_identity: _Identifier
+    audit_identity: _Identifier
     approval_record_digest: Digest
 
     @model_validator(mode="after")
@@ -338,7 +335,14 @@ class VerifiedPriorLineageEvidenceV1(StrictFrozenModel):
     initial_workflow_spec_authority: WorkflowSpecAuthorityV1
     prior_package_digest: Digest
     prior_terminal_summary_digest: Digest
+    approval_record: PriorLineageApprovalRecordV1
     approval_record_digest: Digest
+
+    @model_validator(mode="after")
+    def validate_approval_evidence(self) -> VerifiedPriorLineageEvidenceV1:
+        if self.approval_record_digest != self.approval_record.approval_record_digest:
+            raise ValueError("verified lineage approval evidence disagrees")
+        return self
 
 
 class LineageResolutionV1(StrictFrozenModel):
@@ -384,81 +388,70 @@ class LineageResolutionV1(StrictFrozenModel):
 def _approval_record_preimage(
     *,
     binding_policy_version: str,
-    repository_id: int,
-    lineage_authority_digest: Digest,
-    lineage_id: Digest,
-    stable_slug: str,
-    prior_package_digest: Digest,
-    prior_terminal_summary_digest: Digest,
+    binding_digest: Digest,
     new_workflow_spec_authority_digest: Digest,
+    decision: Literal["approved"],
+    reviewer_identity: str,
+    audit_identity: str,
 ) -> dict[str, object]:
     return {
         "schema_version": LINEAGE_APPROVAL_RECORD_SCHEMA_VERSION,
         "binding_schema_version": PRIOR_LINEAGE_BINDING_SCHEMA_VERSION,
         "binding_policy_version": binding_policy_version,
-        "repository_id": repository_id,
-        "lineage_authority_digest": lineage_authority_digest,
-        "lineage_id": lineage_id,
-        "stable_slug": stable_slug,
-        "prior_package_digest": prior_package_digest,
-        "prior_terminal_summary_digest": prior_terminal_summary_digest,
+        "binding_digest": binding_digest,
         "new_workflow_spec_authority_digest": new_workflow_spec_authority_digest,
+        "decision": decision,
+        "reviewer_identity": reviewer_identity,
+        "audit_identity": audit_identity,
     }
 
 
 def prior_lineage_approval_record_digest(
     *,
     binding_policy_version: str,
-    repository_id: int,
-    lineage_authority_digest: Digest,
-    lineage_id: Digest,
-    stable_slug: str,
-    prior_package_digest: Digest,
-    prior_terminal_summary_digest: Digest,
+    binding_digest: Digest,
     new_workflow_spec_authority_digest: Digest,
+    decision: Literal["approved"],
+    reviewer_identity: str,
+    audit_identity: str,
 ) -> str:
-    """Digest the complete durable human approval target."""
+    """Digest one independent affirmative human decision."""
 
     return sha256_digest(
         _approval_record_preimage(
             binding_policy_version=binding_policy_version,
-            repository_id=repository_id,
-            lineage_authority_digest=lineage_authority_digest,
-            lineage_id=lineage_id,
-            stable_slug=stable_slug,
-            prior_package_digest=prior_package_digest,
-            prior_terminal_summary_digest=prior_terminal_summary_digest,
+            binding_digest=binding_digest,
             new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
+            decision=decision,
+            reviewer_identity=reviewer_identity,
+            audit_identity=audit_identity,
         )
     )
 
 
 def prior_lineage_approval_record(
-    binding: PriorLineageBindingV1,
+    *,
+    binding_policy_version: str,
+    binding_digest: Digest,
+    new_workflow_spec_authority_digest: Digest,
+    decision: Literal["approved"],
+    reviewer_identity: str,
+    audit_identity: str,
 ) -> PriorLineageApprovalRecordV1:
-    """Materialize the typed approval artifact carried by one canonical binding."""
+    """Construct an independently supplied human approval artifact."""
 
-    if type(binding) is not PriorLineageBindingV1:
-        raise TypeError("lineage approval requires a strict binding")
     values = _approval_record_preimage(
-        binding_policy_version=binding.binding_policy_version,
-        repository_id=binding.repository_id,
-        lineage_authority_digest=binding.lineage_authority_digest,
-        lineage_id=binding.lineage_id,
-        stable_slug=binding.stable_slug,
-        prior_package_digest=binding.prior_package_digest,
-        prior_terminal_summary_digest=binding.prior_terminal_summary_digest,
-        new_workflow_spec_authority_digest=(
-            binding.new_workflow_spec_authority_digest
-        ),
+        binding_policy_version=binding_policy_version,
+        binding_digest=binding_digest,
+        new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
+        decision=decision,
+        reviewer_identity=reviewer_identity,
+        audit_identity=audit_identity,
     )
-    record = PriorLineageApprovalRecordV1(
+    return PriorLineageApprovalRecordV1(
         **values,
-        approval_record_digest=binding.approval_record_digest,
+        approval_record_digest=sha256_digest(values),
     )
-    if record.approval_record_digest != binding.approval_record_digest:
-        raise ValueError("binding and approval record disagree")
-    return record
 
 
 def _binding_preimage(
@@ -471,7 +464,6 @@ def _binding_preimage(
     prior_package_digest: Digest,
     prior_terminal_summary_digest: Digest,
     new_workflow_spec_authority_digest: Digest,
-    approval_record_digest: Digest,
 ) -> dict[str, object]:
     return {
         "schema_version": PRIOR_LINEAGE_BINDING_SCHEMA_VERSION,
@@ -483,7 +475,6 @@ def _binding_preimage(
         "prior_package_digest": prior_package_digest,
         "prior_terminal_summary_digest": prior_terminal_summary_digest,
         "new_workflow_spec_authority_digest": new_workflow_spec_authority_digest,
-        "approval_record_digest": approval_record_digest,
     }
 
 
@@ -498,18 +489,8 @@ def prior_lineage_binding(
     prior_terminal_summary_digest: Digest,
     new_workflow_spec_authority_digest: Digest,
 ) -> PriorLineageBindingV1:
-    """Construct a canonical approved prior-lineage binding."""
+    """Construct a canonical prior-lineage target without approval evidence."""
 
-    approval_record_digest = prior_lineage_approval_record_digest(
-        binding_policy_version=binding_policy_version,
-        repository_id=repository_id,
-        lineage_authority_digest=lineage_authority_digest,
-        lineage_id=lineage_id,
-        stable_slug=stable_slug,
-        prior_package_digest=prior_package_digest,
-        prior_terminal_summary_digest=prior_terminal_summary_digest,
-        new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
-    )
     preimage = _binding_preimage(
         binding_policy_version=binding_policy_version,
         repository_id=repository_id,
@@ -519,7 +500,6 @@ def prior_lineage_binding(
         prior_package_digest=prior_package_digest,
         prior_terminal_summary_digest=prior_terminal_summary_digest,
         new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
-        approval_record_digest=approval_record_digest,
     )
     return PriorLineageBindingV1(
         schema_version=PRIOR_LINEAGE_BINDING_SCHEMA_VERSION,
@@ -532,7 +512,6 @@ def prior_lineage_binding(
         prior_package_digest=prior_package_digest,
         prior_terminal_summary_digest=prior_terminal_summary_digest,
         new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
-        approval_record_digest=approval_record_digest,
     )
 
 
@@ -551,7 +530,6 @@ def prior_lineage_binding_digest(binding: PriorLineageBindingV1) -> str:
             new_workflow_spec_authority_digest=(
                 binding.new_workflow_spec_authority_digest
             ),
-            approval_record_digest=binding.approval_record_digest,
         )
     )
 
@@ -566,7 +544,7 @@ def verified_prior_lineage_evidence(
     initial_workflow_spec_authority: WorkflowSpecAuthorityV1,
     prior_package_digest: Digest,
     prior_terminal_summary_digest: Digest,
-    approval_record_digest: Digest,
+    approval_record: PriorLineageApprovalRecordV1,
 ) -> VerifiedPriorLineageEvidenceV1:
     """Construct the narrow projection returned by a future verified state adapter."""
 
@@ -580,7 +558,8 @@ def verified_prior_lineage_evidence(
         initial_workflow_spec_authority=initial_workflow_spec_authority,
         prior_package_digest=prior_package_digest,
         prior_terminal_summary_digest=prior_terminal_summary_digest,
-        approval_record_digest=approval_record_digest,
+        approval_record=approval_record,
+        approval_record_digest=approval_record.approval_record_digest,
     )
 
 
@@ -702,18 +681,7 @@ def resolve_lineage(
 
     binding = prior_bindings[0]
     evidence = verified_prior_evidence[0]
-    expected_approval = prior_lineage_approval_record_digest(
-        binding_policy_version=binding.binding_policy_version,
-        repository_id=binding.repository_id,
-        lineage_authority_digest=binding.lineage_authority_digest,
-        lineage_id=binding.lineage_id,
-        stable_slug=binding.stable_slug,
-        prior_package_digest=binding.prior_package_digest,
-        prior_terminal_summary_digest=binding.prior_terminal_summary_digest,
-        new_workflow_spec_authority_digest=(
-            binding.new_workflow_spec_authority_digest
-        ),
-    )
+    approval = evidence.approval_record
     expected_binding_id = prior_lineage_binding_digest(binding)
     recomputed_initial_lineage = _lineage_digest(
         repository_id=evidence.repository_id,
@@ -745,8 +713,12 @@ def resolve_lineage(
     ):
         note("binding_target_mismatch")
     if (
-        binding.approval_record_digest != expected_approval
-        or evidence.approval_record_digest != expected_approval
+        approval.binding_digest != binding.binding_id
+        or approval.binding_policy_version != binding.binding_policy_version
+        or approval.new_workflow_spec_authority_digest
+        != binding.new_workflow_spec_authority_digest
+        or approval.decision != "approved"
+        or evidence.approval_record_digest != approval.approval_record_digest
     ):
         note("approval_record_mismatch")
     if (

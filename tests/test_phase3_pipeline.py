@@ -28,6 +28,7 @@ from skillscout.domain.candidate_authority import (
     LineageResolutionV1,
     candidate_execution_authority,
     derive_new_lineage,
+    prior_lineage_approval_record,
     prior_lineage_binding,
     workflow_spec_authority,
 )
@@ -2133,9 +2134,24 @@ def test_real_state_adapter_retains_one_exact_approved_prior_lineage(
         prior_terminal_summary_digest=prior_terminal.terminal_summary_digest,
         new_workflow_spec_authority_digest=changed_authority.authority_digest,
     )
+    approval = prior_lineage_approval_record(
+        binding_policy_version=binding.binding_policy_version,
+        binding_digest=binding.binding_id,
+        new_workflow_spec_authority_digest=changed_authority.authority_digest,
+        decision="approved",
+        reviewer_identity="reviewer:alice",
+        audit_identity="audit:lineage-change-001",
+    )
     state = SQLiteStateStore(state_path)
     try:
-        state.persist_prior_lineage_binding(binding)
+        with pytest.raises(TypeError):
+            state.persist_prior_lineage_binding(binding)  # type: ignore[call-arg]
+        mismatched = approval.model_copy(
+            update={"binding_digest": _digest("8")}
+        )
+        with pytest.raises(SafeFailure):
+            state.persist_prior_lineage_binding(binding, mismatched)
+        state.persist_prior_lineage_binding(binding, approval)
     finally:
         state.close()
 

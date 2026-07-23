@@ -68,7 +68,6 @@ from skillscout.domain.candidate_authority import (
     PriorLineageApprovalRecordV1,
     PriorLineageBindingV1,
     VerifiedPriorLineageEvidenceV1,
-    prior_lineage_approval_record,
     prior_lineage_binding_digest,
     verified_prior_lineage_evidence,
 )
@@ -1072,7 +1071,14 @@ class DescriptorAnchoredCompletedCandidateProjector:
                     lineage_artifacts[f"{_LINEAGE_APPROVAL_KIND_PREFIX}{suffix}"],
                     strict=True,
                 )
-                if prior_lineage_approval_record(binding) != approval:
+                if (
+                    approval.binding_digest != binding.binding_id
+                    or approval.binding_policy_version
+                    != binding.binding_policy_version
+                    or approval.new_workflow_spec_authority_digest
+                    != binding.new_workflow_spec_authority_digest
+                    or approval.decision != "approved"
+                ):
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
             terminal_bytes = artifacts.get("terminal_summary")
@@ -3877,7 +3883,11 @@ class SQLiteStateStore:
     ) -> VerifiedPriorLineageEvidenceV1:
         if (
             prior_lineage_binding_digest(binding) != binding.binding_id
-            or prior_lineage_approval_record(binding) != approval
+            or approval.binding_digest != binding.binding_id
+            or approval.binding_policy_version != binding.binding_policy_version
+            or approval.new_workflow_spec_authority_digest
+            != binding.new_workflow_spec_authority_digest
+            or approval.decision != "approved"
         ):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         rows = self._db.execute(
@@ -3970,19 +3980,22 @@ class SQLiteStateStore:
             initial_workflow_spec_authority=initial_candidates[0],
             prior_package_digest=binding.prior_package_digest,
             prior_terminal_summary_digest=binding.prior_terminal_summary_digest,
-            approval_record_digest=binding.approval_record_digest,
+            approval_record=approval,
         )
 
     def persist_prior_lineage_binding(
         self,
         binding: PriorLineageBindingV1,
+        approval: PriorLineageApprovalRecordV1,
     ) -> None:
-        """Persist one exact approved binding only after prior-chain verification."""
+        """Admit independent binding and approval inputs after prior-chain verification."""
 
         try:
-            if type(binding) is not PriorLineageBindingV1:
+            if (
+                type(binding) is not PriorLineageBindingV1
+                or type(approval) is not PriorLineageApprovalRecordV1
+            ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            approval = prior_lineage_approval_record(binding)
             self._verified_prior_lineage_evidence(binding, approval)
             suffix = binding.binding_id.removeprefix("sha256:")
             payloads = {

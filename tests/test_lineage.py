@@ -12,8 +12,10 @@ from skillscout.domain.candidate_authority import (
     PRIOR_LINEAGE_BINDING_SCHEMA_VERSION,
     LineageResolutionV1,
     PriorLineageBindingV1,
+    PriorLineageApprovalRecordV1,
     VerifiedPriorLineageEvidenceV1,
     derive_new_lineage,
+    prior_lineage_approval_record,
     prior_lineage_binding,
     resolve_lineage,
     verified_prior_lineage_evidence,
@@ -105,6 +107,16 @@ def _binding_fixture():
         new_workflow_spec_authority_digest=new_authority.authority_digest,
         binding_policy_version="lineage-binding-policy-v1",
     )
+    approval = prior_lineage_approval_record(
+        binding_policy_version=binding.binding_policy_version,
+        binding_digest=binding.binding_id,
+        new_workflow_spec_authority_digest=(
+            binding.new_workflow_spec_authority_digest
+        ),
+        decision="approved",
+        reviewer_identity="reviewer:alice",
+        audit_identity="audit:lineage-change-001",
+    )
     evidence = verified_prior_lineage_evidence(
         binding_id=binding.binding_id,
         repository_id=repository_id,
@@ -114,7 +126,7 @@ def _binding_fixture():
         initial_workflow_spec_authority=initial_authority,
         prior_package_digest=binding.prior_package_digest,
         prior_terminal_summary_digest=binding.prior_terminal_summary_digest,
-        approval_record_digest=binding.approval_record_digest,
+        approval_record=approval,
     )
     return repository_id, initial_authority, new_authority, binding, evidence
 
@@ -227,7 +239,6 @@ def test_one_exact_binding_retains_lineage_despite_title_path_and_content_change
             "binding_target_mismatch",
         ),
         ("binding_policy_version", "lineage-binding-policy-v2", "binding_id_mismatch"),
-        ("approval_record_digest", _digest("8"), "approval_record_mismatch"),
     ),
 )
 def test_every_binding_field_mutation_rejects_without_new_lineage(
@@ -263,7 +274,6 @@ def test_every_binding_field_mutation_rejects_without_new_lineage(
             _digest("8"),
             "prior_terminal_summary_mismatch",
         ),
-        ("approval_record_digest", _digest("8"), "approval_record_mismatch"),
     ),
 )
 def test_every_verified_prior_evidence_mutation_rejects(
@@ -322,7 +332,6 @@ def test_duplicate_multiple_and_ambiguous_candidates_close(
     second_binding = _replace_binding(
         binding,
         binding_id=_digest("9"),
-        approval_record_digest=_digest("8"),
     )
     bindings = {
         "single": (binding,),
