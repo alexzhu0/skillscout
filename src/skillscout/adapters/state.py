@@ -49,6 +49,7 @@ from skillscout.domain.models import (
     CandidateStageAttemptV1,
     CandidateStageCheckpointV1,
     CandidateStageResultV1,
+    PhaseThreeStageV1,
     PersistedAttemptRecord,
     PersistedCheckpointRecord,
     PersistedRunRecord,
@@ -819,6 +820,7 @@ class DescriptorAnchoredCompletedCandidateProjector:
     @staticmethod
     def _validate_terminal_artifact_matrix(
         *,
+        chain: VerifiedCandidateRunChain,
         terminal: CandidateTerminalSummaryV1,
         artifacts: Mapping[str, bytes],
     ) -> None:
@@ -899,9 +901,15 @@ class DescriptorAnchoredCompletedCandidateProjector:
             attestation = ReviewAttestationV1.model_validate_json(
                 artifacts["review_attestation"], strict=True
             )
+            reviewer_attempts = tuple(
+                attempt
+                for attempt in chain.attempts
+                if attempt.stage is PhaseThreeStageV1.REVIEWER
+            )
             if (
                 attestation.attestation_digest
                 != terminal.review_attestation_digest
+                or len(reviewer_attempts) != 1
                 or attestation.generated_artifact_identity
                 != terminal.generated_artifact_identity
                 or attestation.package_identity != terminal.package_identity
@@ -915,6 +923,15 @@ class DescriptorAnchoredCompletedCandidateProjector:
                 != terminal.candidate_execution_authority.reviewer_output_schema_version
                 or attestation.reviewer_policy_version
                 != terminal.candidate_execution_authority.reviewer_policy_version
+                or attestation.reviewer_retry_policy_version
+                != terminal.candidate_execution_authority.reviewer_retry_policy_version
+                or attestation.max_reviewer_attempts
+                != terminal.candidate_execution_authority.max_reviewer_attempts
+                or (
+                    reviewer_attempts
+                    and attestation.attempt_count
+                    != reviewer_attempts[0].attempt_no
+                )
             ):
                 raise ValueError("review attestation mismatch")
 
@@ -1073,6 +1090,7 @@ class DescriptorAnchoredCompletedCandidateProjector:
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             self._validate_terminal_artifact_matrix(
+                chain=chain,
                 terminal=terminal,
                 artifacts=artifacts,
             )
@@ -3640,6 +3658,7 @@ class SQLiteStateStore:
                 "terminal_summary": candidate_terminal_summary_bytes(terminal_summary),
             }
             DescriptorAnchoredCompletedCandidateProjector._validate_terminal_artifact_matrix(
+                chain=chain,
                 terminal=terminal_summary,
                 artifacts=payloads,
             )
@@ -3767,6 +3786,7 @@ class SQLiteStateStore:
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             DescriptorAnchoredCompletedCandidateProjector._validate_terminal_artifact_matrix(
+                chain=chain,
                 terminal=terminal,
                 artifacts=artifacts,
             )

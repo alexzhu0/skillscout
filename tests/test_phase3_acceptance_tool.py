@@ -253,6 +253,21 @@ def test_dependency_bootstrap_authority_mutations_are_rejected(
             "derived_eligible: bool",
         ),
         (
+            "src/skillscout/domain/review.py",
+            'REVIEW_RETRY_POLICY_VERSION: Final = "reviewer-bounded-transient-retry-v1"',
+            'REVIEW_RETRY_POLICY_VERSION: Final = "reviewer-no-retry-v1"',
+        ),
+        (
+            "src/skillscout/domain/review.py",
+            "failed_attempts: Annotated[",
+            "untracked_failures: Annotated[",
+        ),
+        (
+            "src/skillscout/domain/candidate_authority.py",
+            "reviewer_retry_policy_version: _Version",
+            "unbound_reviewer_retry_policy_version: _Version",
+        ),
+        (
             "src/skillscout/domain/validation.py",
             "generated_artifact_identity: GeneratedArtifactIdentityV1",
             "generated_artifact_identity: object",

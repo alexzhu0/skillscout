@@ -641,6 +641,8 @@ def _execution_authority():
         reviewer_prompt_version=REVIEW_PROMPT_VERSION,
         reviewer_output_schema_version=REVIEW_OUTPUT_SCHEMA_VERSION,
         reviewer_policy_version=REVIEW_POLICY_VERSION,
+        reviewer_retry_policy_version=REVIEW_RETRY_POLICY_VERSION,
+        max_reviewer_attempts=3,
         eligibility_policy_version=ELIGIBILITY_POLICY_VERSION,
         phase3_producer_version="phase3-v1",
         phase3_profile_version="phase3-profile-v1",
@@ -951,6 +953,9 @@ def test_attestation_binds_exact_external_evidence_and_raw_review() -> None:
     assert attestation.reviewer_output_schema_version == REVIEW_OUTPUT_SCHEMA_VERSION
     assert attestation.reviewer_policy_version == REVIEW_POLICY_VERSION
     assert attestation.reviewer_retry_policy_version == REVIEW_RETRY_POLICY_VERSION
+    assert attestation.max_reviewer_attempts == 3
+    assert attestation.attempt_count == 1
+    assert attestation.failed_attempts == ()
     assert attestation.review_result == result
     assert attestation.request_id == result.request_id
     assert attestation.usage == result.usage
@@ -959,6 +964,24 @@ def test_attestation_binds_exact_external_evidence_and_raw_review() -> None:
     assert review_attestation_bytes(attestation) == review_attestation_bytes(
         attestation
     )
+
+
+def test_attestation_rejects_noncontiguous_failed_reviewer_attempts() -> None:
+    package = _package()
+    report = _terminal_report(error_count=0, package=package)
+    attestation = _attestation(
+        result=_review_result(),
+        report=report,
+        package=package,
+    )
+    payload = attestation.model_dump(mode="python", exclude_none=False)
+    payload["attempt_count"] = 2
+    payload["failed_attempts"] = (
+        {"attempt_no": 2, "error_code": "stage_transient_failure"},
+    )
+
+    with pytest.raises(ValidationError, match="attempt history disagrees"):
+        ReviewAttestationV1.model_validate(payload)
 
 
 def test_terminal_summary_rejects_raw_review_that_disagrees_with_disposition() -> None:

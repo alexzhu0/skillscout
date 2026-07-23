@@ -149,6 +149,8 @@ class CandidateExecutionAuthorityV1(StrictFrozenModel):
     reviewer_prompt_version: _Version
     reviewer_output_schema_version: _Version
     reviewer_policy_version: _Version
+    reviewer_retry_policy_version: _Version
+    max_reviewer_attempts: Annotated[int, Field(ge=1, le=3)]
 
     eligibility_policy_version: _Version
     phase3_producer_version: _Version
@@ -200,6 +202,8 @@ def candidate_execution_authority(
     reviewer_prompt_version: str,
     reviewer_output_schema_version: str,
     reviewer_policy_version: str,
+    reviewer_retry_policy_version: str,
+    max_reviewer_attempts: int,
     eligibility_policy_version: str,
     phase3_producer_version: str,
     phase3_profile_version: str,
@@ -234,6 +238,8 @@ def candidate_execution_authority(
         "reviewer_prompt_version": reviewer_prompt_version,
         "reviewer_output_schema_version": reviewer_output_schema_version,
         "reviewer_policy_version": reviewer_policy_version,
+        "reviewer_retry_policy_version": reviewer_retry_policy_version,
+        "max_reviewer_attempts": max_reviewer_attempts,
         "eligibility_policy_version": eligibility_policy_version,
         "phase3_producer_version": phase3_producer_version,
         "phase3_profile_version": phase3_profile_version,
@@ -264,6 +270,8 @@ def candidate_execution_authority(
         reviewer_prompt_version=reviewer_prompt_version,
         reviewer_output_schema_version=reviewer_output_schema_version,
         reviewer_policy_version=reviewer_policy_version,
+        reviewer_retry_policy_version=reviewer_retry_policy_version,
+        max_reviewer_attempts=max_reviewer_attempts,
         eligibility_policy_version=eligibility_policy_version,
         phase3_producer_version=phase3_producer_version,
         phase3_profile_version=phase3_profile_version,

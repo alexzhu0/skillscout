@@ -587,6 +587,22 @@ def _check_identity_and_evidence_ownership(repository_root: Path) -> tuple[str, 
     )
     _require(generated_fields.isdisjoint({"rendered_manifest_digest", "package_digest"}))
 
+    authority_tree = ast.parse(
+        _read_source(
+            repository_root,
+            SOURCE_ROOT / "domain/candidate_authority.py",
+        )
+    )
+    execution_fields = set(
+        _class_fields(authority_tree, "CandidateExecutionAuthorityV1")
+    )
+    _require(
+        {
+            "reviewer_retry_policy_version",
+            "max_reviewer_attempts",
+        }.issubset(execution_fields)
+    )
+
     qualification_relative = SOURCE_ROOT / "domain/qualification.py"
     qualification_raw = _read_source(repository_root, qualification_relative)
     qualification_tree = ast.parse(
@@ -636,11 +652,24 @@ def _check_identity_and_evidence_ownership(repository_root: Path) -> tuple[str, 
     review = review_raw.decode("utf-8")
     review_tree = ast.parse(review_raw, filename=review_relative.as_posix())
     attestation = set(_class_fields(review_tree, "ReviewAttestationV1"))
+    reviewer_failures = set(
+        _class_fields(review_tree, "ReviewerFailedAttemptV1")
+    )
     terminal = set(_class_fields(review_tree, "CandidateTerminalSummaryV1"))
     terminal_annotations = _class_annotations(
         review_tree, "CandidateTerminalSummaryV1"
     )
-    _require("eligible" not in attestation and "eligibility_policy_version" not in attestation)
+    _require(
+        "eligible" not in attestation
+        and "eligibility_policy_version" not in attestation
+        and {
+            "reviewer_retry_policy_version",
+            "max_reviewer_attempts",
+            "attempt_count",
+            "failed_attempts",
+        }.issubset(attestation)
+        and reviewer_failures == {"attempt_no", "error_code"}
+    )
     _require(
         {
             "eligible",
@@ -660,8 +689,10 @@ def _check_identity_and_evidence_ownership(repository_root: Path) -> tuple[str, 
         review,
         (
             'ELIGIBILITY_POLICY_VERSION: Final = "candidate-eligibility-v1"',
+            'REVIEW_RETRY_POLICY_VERSION: Final = "reviewer-bounded-transient-retry-v1"',
             '"not_evaluated_qualification_rejected"',
             '"review_skipped_validation_errors"',
+            "expected_failed_attempts = tuple(range(1, self.attempt_count))",
             'expected_eligible = self.outcome == "eligible_local_candidate"',
         ),
     )

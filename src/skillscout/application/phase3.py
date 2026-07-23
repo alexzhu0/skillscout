@@ -70,8 +70,10 @@ from skillscout.domain.review import (
     REVIEW_OUTPUT_SCHEMA_VERSION,
     REVIEW_POLICY_VERSION,
     REVIEW_PROMPT_VERSION,
+    REVIEW_RETRY_POLICY_VERSION,
     GeneratorOutcomeEvidenceV1,
     ReviewAttestationV1,
+    ReviewerFailedAttemptV1,
     candidate_terminal_summary,
     generator_outcome_evidence,
     review_attestation,
@@ -198,6 +200,8 @@ def _execution_authority(
         reviewer_prompt_version=REVIEW_PROMPT_VERSION,
         reviewer_output_schema_version=REVIEW_OUTPUT_SCHEMA_VERSION,
         reviewer_policy_version=REVIEW_POLICY_VERSION,
+        reviewer_retry_policy_version=REVIEW_RETRY_POLICY_VERSION,
+        max_reviewer_attempts=profile.max_reviewer_attempts,
         eligibility_policy_version=ELIGIBILITY_POLICY_VERSION,
         phase3_producer_version=profile.producer_version,
         phase3_profile_version=profile.profile_version,
@@ -869,8 +873,14 @@ class PhaseThreeRunner:
                 validation_report=validation,
                 review_result=review_result,
             )
+            reviewer_attempts = tuple(
+                attempt
+                for attempt in chain.attempts
+                if attempt.stage is PhaseThreeStageV1.REVIEWER
+            )
             if (
                 review_attestation_bytes(attestation) != review_payload
+                or len(reviewer_attempts) != 1
                 or attestation.generated_artifact_identity
                 != package.generated_artifact_identity
                 or attestation.package_identity != package.package_identity
@@ -883,6 +893,15 @@ class PhaseThreeRunner:
                 != self.authority.reviewer_output_schema_version
                 or attestation.reviewer_policy_version
                 != self.authority.reviewer_policy_version
+                or attestation.reviewer_retry_policy_version
+                != self.authority.reviewer_retry_policy_version
+                or attestation.max_reviewer_attempts
+                != self.authority.max_reviewer_attempts
+                or (
+                    reviewer_attempts
+                    and attestation.attempt_count
+                    != reviewer_attempts[0].attempt_no
+                )
                 or chain.results[3].outcome_code != disposition.status
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
@@ -908,8 +927,10 @@ class PhaseThreeRunner:
                 model=self.profile.configured_reviewer_model_id,
                 max_output_tokens=self.profile.max_reviewer_output_tokens,
             )
-            review_result, reviewer_attempt = self._retry_review(
-                reviewer, package, validation
+            review_result, reviewer_attempt, failed_reviewer_attempts = (
+                self._retry_review(
+                    reviewer, package, validation
+                )
             )
             if (
                 review_result.usage is not None
@@ -928,6 +949,8 @@ class PhaseThreeRunner:
                 package_identity=package.package_identity,
                 validation_report=validation,
                 review_result=review_result,
+                attempt_count=reviewer_attempt,
+                failed_attempts=failed_reviewer_attempts,
             )
             chain = _append_success(
                 chain,
@@ -977,9 +1000,10 @@ class PhaseThreeRunner:
 
     def _retry_review(
         self, reviewer: object, package: object, validation: object
-    ) -> tuple[object, int]:
+    ) -> tuple[object, int, tuple[ReviewerFailedAttemptV1, ...]]:
         from skillscout.domain.review import ReviewResult
 
+        failed_attempts: list[ReviewerFailedAttemptV1] = []
         for attempt in range(1, self.profile.max_reviewer_attempts + 1):
             try:
                 result = reviewer.review(
@@ -989,7 +1013,7 @@ class PhaseThreeRunner:
                 )
                 if type(result) is not ReviewResult:
                     raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
-                return result, attempt
+                return result, attempt, tuple(failed_attempts)
             except SafeFailure as failure:
                 if (
                     failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE
@@ -997,6 +1021,12 @@ class PhaseThreeRunner:
                     raise
                 if attempt == self.profile.max_reviewer_attempts:
                     raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
+                failed_attempts.append(
+                    ReviewerFailedAttemptV1(
+                        attempt_no=attempt,
+                        error_code="stage_transient_failure",
+                    )
+                )
         raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
 
     def _terminal(

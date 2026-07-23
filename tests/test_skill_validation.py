@@ -238,6 +238,8 @@ def _execution_authority(
         "reviewer_prompt_version": "reviewer-prompt-v1",
         "reviewer_output_schema_version": "reviewer-output-v1",
         "reviewer_policy_version": "reviewer-policy-v1",
+        "reviewer_retry_policy_version": "reviewer-bounded-transient-retry-v1",
+        "max_reviewer_attempts": 3,
         "eligibility_policy_version": "candidate-eligibility-v1",
         "phase3_producer_version": "phase3-candidate-v1",
         "phase3_profile_version": provenance.phase3_profile_version,

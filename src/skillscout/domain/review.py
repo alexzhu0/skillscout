@@ -27,7 +27,7 @@ from skillscout.domain.validation import ValidationReportV1
 REVIEW_PROMPT_VERSION: Final = "reviewer-prompt-v1"
 REVIEW_OUTPUT_SCHEMA_VERSION: Final = "reviewer-judgment-v1"
 REVIEW_POLICY_VERSION: Final = "reviewer-policy-v1"
-REVIEW_RETRY_POLICY_VERSION: Final = "reviewer-no-retry-v1"
+REVIEW_RETRY_POLICY_VERSION: Final = "reviewer-bounded-transient-retry-v1"
 ELIGIBILITY_POLICY_VERSION: Final = "candidate-eligibility-v1"
 ELIGIBILITY_CONFIDENCE_THRESHOLD: Final = 0.80
 GENERATOR_OUTCOME_EVIDENCE_SCHEMA_VERSION: Final = "generator-outcome-evidence-v1"
@@ -316,6 +316,13 @@ def _review_disposition_from_evidence(
     )
 
 
+class ReviewerFailedAttemptV1(StrictFrozenModel):
+    """One sanitized transient remote-call failure before the retained result."""
+
+    attempt_no: Annotated[int, Field(ge=1, le=2)]
+    error_code: Literal["stage_transient_failure"]
+
+
 class ReviewAttestationV1(StrictFrozenModel):
     """External Reviewer evidence over immutable artifact, package, and report."""
 
@@ -330,6 +337,12 @@ class ReviewAttestationV1(StrictFrozenModel):
     reviewer_output_schema_version: _Version
     reviewer_policy_version: _Version
     reviewer_retry_policy_version: _Version
+    max_reviewer_attempts: Annotated[int, Field(ge=1, le=3)]
+    attempt_count: Annotated[int, Field(ge=1, le=3)]
+    failed_attempts: Annotated[
+        tuple[ReviewerFailedAttemptV1, ...],
+        Field(max_length=2),
+    ]
     review_result: ReviewResult
     request_id: _Identifier | None
     usage: TokenUsage | None
@@ -347,6 +360,17 @@ class ReviewAttestationV1(StrictFrozenModel):
             or self.latency_ms != self.review_result.latency_ms
         ):
             raise ValueError("attestation Reviewer telemetry disagrees")
+        expected_failed_attempts = tuple(range(1, self.attempt_count))
+        if (
+            self.attempt_count > self.max_reviewer_attempts
+            or tuple(item.attempt_no for item in self.failed_attempts)
+            != expected_failed_attempts
+            or any(
+                item.error_code != "stage_transient_failure"
+                for item in self.failed_attempts
+            )
+        ):
+            raise ValueError("attestation Reviewer attempt history disagrees")
         expected = sha256_digest(
             self.model_dump(
                 mode="json",
@@ -366,6 +390,8 @@ def review_attestation(
     package_identity: PackageIdentityV1,
     validation_report: ValidationReportV1,
     review_result: ReviewResult,
+    attempt_count: int = 1,
+    failed_attempts: tuple[ReviewerFailedAttemptV1, ...] = (),
 ) -> ReviewAttestationV1:
     """Bind an exact raw Reviewer result without deriving eligibility."""
 
@@ -411,7 +437,10 @@ def review_attestation(
         "reviewer_prompt_version": execution.reviewer_prompt_version,
         "reviewer_output_schema_version": execution.reviewer_output_schema_version,
         "reviewer_policy_version": execution.reviewer_policy_version,
-        "reviewer_retry_policy_version": REVIEW_RETRY_POLICY_VERSION,
+        "reviewer_retry_policy_version": execution.reviewer_retry_policy_version,
+        "max_reviewer_attempts": execution.max_reviewer_attempts,
+        "attempt_count": attempt_count,
+        "failed_attempts": failed_attempts,
         "review_result": review_result,
         "request_id": review_result.request_id,
         "usage": review_result.usage,
