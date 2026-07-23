@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Completed 03-05-PLAN.md
-last_updated: "2026-07-23T09:56:54.065Z"
+stopped_at: Completed 03-06-PLAN.md
+last_updated: "2026-07-23T10:21:25.344Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 36
-  completed_plans: 27
+  completed_plans: 28
   percent: 33
 ---
 
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 03 (validated-skill-candidate) — EXECUTING
-**Plan:** 6 of 14
+**Plan:** 7 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-23T09:56:54.060Z
-**Stopped at:** Completed 03-05-PLAN.md
+**Last session:** 2026-07-23T10:21:25.338Z
+**Stopped at:** Completed 03-06-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -152,6 +152,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 03 P03 | 4 min | 1 tasks | 4 files |
 | Phase 03 P04 | 9 min | 1 tasks | 3 files |
 | Phase 03 P05 | 14 min | 2 tasks | 3 files |
+| Phase 03 P06 | 20 min | 2 tasks | 4 files |
 
 ## Decisions
 
@@ -225,3 +226,6 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 03]: Keep configured Generator and Reviewer identities in CandidateExecutionAuthorityV1 and structurally exclude actual response model identities until later terminal evidence. — Only configured identities exist before lookup; actual identities are later evidence.
 - [Phase 03]: Derive new lineage from numeric repository ID plus initial complete WorkflowSpec authority; retain it only when one canonical binding and verified prior evidence agree. — Prevent stale or heuristic remapping from aliasing unrelated Skills.
 - [Phase 03]: Derive a bounded Agent Skills slug from normalized title plus a lineage-digest suffix, but never use title, slug, path, or content similarity as matching authority. — Provide readable stable names without turning presentation text into ownership authority.
+- [Phase 03]: Bind candidate selection to the SHA-256 digest of the complete strict VerifiedRunChain projection, not a partial fingerprint or row identity.
+- [Phase 03]: Use a mutation-free resolve_all seam to verify one completed Phase 2 chain once before deterministic max-three sibling derivation.
+- [Phase 03]: Attach prior lineage only from an explicit exact full-fingerprint mapping; absence authorizes neither search nor inference.
