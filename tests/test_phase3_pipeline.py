@@ -56,6 +56,7 @@ from skillscout.domain.qualification import (
 )
 from skillscout.domain.review import (
     CandidateTerminalSummaryV1,
+    ReviewAttestationV1,
     ReviewReasonV1,
     ReviewResult,
     ReviewerJudgment,
@@ -2198,6 +2199,76 @@ def test_resume_budgets_runner_retries_only_transient_infrastructure(
     ).find_completed_candidate(result.authority)
     assert projection is not None
     assert projection.chain.attempts[1].attempt_no == 3
+
+
+def test_reviewer_retry_attestation_and_ledger_retain_each_remote_attempt(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class TransientThenEligible(_CascadeReviewer):
+        def review(self, **kwargs):
+            self.calls.append("reviewer")
+            reviewer_calls = self.calls.count("reviewer")
+            if reviewer_calls < 3:
+                raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+            self.calls.pop()
+            return super().review(**kwargs)
+
+    state_path = tmp_path / "reviewer-retry-state.db"
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    result = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: SQLiteStateStore(state_path),
+            generator_factory=lambda: _CascadeGenerator("parsed", calls),
+            validator_factory=lambda: _CascadeValidator(False, calls),
+            reviewer_factory=lambda: TransientThenEligible(
+                "eligible_local_candidate", calls
+            ),
+            artifact_projector_factory=lambda: object(),
+            run_id_factory=lambda: "reviewer-retry-run",
+        ),
+    ).run(_write_composition_descriptor(tmp_path))
+
+    assert calls == [
+        "generator",
+        "validator",
+        "reviewer",
+        "reviewer",
+        "reviewer",
+    ]
+    assert result.authority.reviewer_retry_policy_version == (
+        "reviewer-bounded-transient-retry-v1"
+    )
+    assert result.authority.max_reviewer_attempts == 3
+    attestation = ReviewAttestationV1.model_validate_json(
+        result.artifacts["review_attestation"],
+        strict=True,
+    )
+    assert attestation.reviewer_retry_policy_version == (
+        result.authority.reviewer_retry_policy_version
+    )
+    assert attestation.max_reviewer_attempts == 3
+    assert attestation.attempt_count == 3
+    assert tuple(
+        (attempt.attempt_no, attempt.error_code)
+        for attempt in attestation.failed_attempts
+    ) == (
+        (1, "stage_transient_failure"),
+        (2, "stage_transient_failure"),
+    )
+    projection = state_module.DescriptorAnchoredCompletedCandidateProjector(
+        state_path
+    ).find_completed_candidate(result.authority)
+    assert projection is not None
+    assert projection.chain.attempts[-1].attempt_no == attestation.attempt_count
 
 
 def test_resume_budgets_exhaustion_uses_closed_retry_code(tmp_path: Path) -> None:
