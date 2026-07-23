@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-07-23T09:18:25.477Z"
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-07-23T09:39:12.499Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 36
-  completed_plans: 25
+  completed_plans: 26
   percent: 33
 ---
 
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 03 (validated-skill-candidate) — EXECUTING
-**Plan:** 4 of 14
+**Plan:** 5 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-23T09:18:25.473Z
-**Stopped at:** Completed 03-03-PLAN.md
+**Last session:** 2026-07-23T09:39:12.494Z
+**Stopped at:** Completed 03-04-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -150,6 +150,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 03 P01 | 1 min | 1 tasks | 4 files |
 | Phase 03 P02 | 5min | 1 tasks | 6 files |
 | Phase 03 P03 | 4 min | 1 tasks | 4 files |
+| Phase 03 P04 | 9 min | 1 tasks | 3 files |
 
 ## Decisions
 
@@ -216,3 +217,6 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 03]: Approved Gate A3 for exactly skills-ref==0.1.1 and wheel SHA-256 d35db5bb8de71ae301daf5ca9cb71f8a555e8c6f83a6d40e46a5bc09f8f461b5 — Human approval is limited to registry-only dependency declaration and graph resolution for separate Gate B3 review; it does not authorize installation, import, tests, validator execution, or a substitute validator.
 - [Phase 03]: Gate B3 must approve the exact skills-ref registry lock digest and artifact graph before any installation, import, test, or validator invocation. — The A3 approval permits only registry-only resolution; it does not authorize dependency use.
 - [Phase 03]: Approved Gate B3 for exact uv.lock SHA-256 b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004. — Every later dependency-backed command requires a fresh dependency-free equality preflight; B3 does not authorize merge, publishing, source-repository execution, a substitute validator, or unapproved credentials.
+- [Phase 03]: Use fixed OS secure-descriptor primitives inside the Gate B3 shell preflight — O_NOFOLLOW, FD_CLOEXEC, bounded retained-stream hashing, and high-resolution identity stability are exact without importing project or third-party code.
+- [Phase 03]: Keep the Gate B3 authority registry closed to exactly the committed digest and uv.lock — No caller-supplied path, consumer, environment, or recomputed digest can substitute for the human-approved bytes.
+- [Phase 03]: Reject every authority admission or identity failure before dependency execution — Missing, malformed, linked, unsafe, oversized, swapped, mutated, or byte-different inputs cannot reach the downstream command.
