@@ -2,17 +2,33 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 import pytest
+from pydantic import ValidationError
 
+from skillscout.domain.candidate_authority import (
+    CandidateExecutionAuthorityV1,
+    WorkflowSpecAuthorityV1,
+    candidate_execution_authority,
+    workflow_spec_authority,
+)
 from skillscout.domain.extraction import WorkflowEvidence, WorkflowSpec
 from skillscout.domain.qualification import (
+    DEFAULT_QUALIFICATION_THRESHOLD,
     EVIDENCE_CONFIDENCE_FLOOR,
     HARD_FAILURE_REASON_CODES,
     QUALIFICATION_CHECK_WEIGHTS,
     QUALIFICATION_POLICY_VERSION,
+    QUALIFICATION_REPORT_SCHEMA_VERSION,
+    QUALIFICATION_THRESHOLD_VERSION,
+    QualificationCheckResultV1,
+    QualificationReportV1,
     evaluate_qualification_checks,
+    qualification_report,
+    qualification_report_bytes,
+    qualification_report_digest,
 )
 
 
@@ -346,3 +362,326 @@ def test_checks_score_each_dimension_independently() -> None:
     assert checks[2].awarded_points == 20
     assert checks[3].awarded_points == 25
     assert checks[4].awarded_points == 10
+
+
+def _workflow_authority(
+    workflow: WorkflowSpec | None = None,
+    *,
+    extractor_hash: str = _digest("3"),
+    chain_anchor: str = _digest("4"),
+) -> WorkflowSpecAuthorityV1:
+    return workflow_spec_authority(
+        workflow_spec=workflow or _workflow(),
+        phase2_extractor_output_hash=extractor_hash,
+        phase2_verified_chain_anchor=chain_anchor,
+    )
+
+
+def _execution_authority(
+    authority: WorkflowSpecAuthorityV1,
+    **changes: object,
+) -> CandidateExecutionAuthorityV1:
+    values: dict[str, object] = {
+        "workflow_spec_authority": authority,
+        "selected_workflow_fingerprint": authority.workflow_spec.fingerprint,
+        "prior_lineage_binding_digest": None,
+        "qualification_policy_version": QUALIFICATION_POLICY_VERSION,
+        "qualification_report_schema_version": QUALIFICATION_REPORT_SCHEMA_VERSION,
+        "configured_generator_model_id": "gpt-generator-configured",
+        "generator_prompt_version": "generator-prompt-v1",
+        "generator_output_schema_version": "generator-output-v1",
+        "generator_policy_version": "generator-policy-v1",
+        "renderer_version": "skill-renderer-v1",
+        "artifact_schema_version": "generated-artifact-v1",
+        "provenance_schema_version": "skill-provenance-v1",
+        "official_validator_distribution": "skills-ref",
+        "official_validator_version": "0.1.1",
+        "official_validator_distribution_hash": _digest("5"),
+        "approved_lock_digest": (
+            "sha256:b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
+        ),
+        "custom_validation_policy_version": "skill-validation-policy-v1",
+        "validation_report_schema_version": "validation-report-v1",
+        "configured_reviewer_model_id": "gpt-reviewer-configured",
+        "reviewer_prompt_version": "reviewer-prompt-v1",
+        "reviewer_output_schema_version": "reviewer-output-v1",
+        "reviewer_policy_version": "reviewer-policy-v1",
+        "eligibility_policy_version": "candidate-eligibility-v1",
+        "phase3_producer_version": "phase3-v1",
+        "phase3_profile_version": "phase3-profile-v1",
+        "retry_policy_version": "retry-v1",
+    }
+    values.update(changes)
+    return candidate_execution_authority(**values)  # type: ignore[arg-type]
+
+
+def _report(
+    *,
+    workflow: WorkflowSpec | None = None,
+    checks: tuple[QualificationCheckResultV1, ...] | None = None,
+    authority: WorkflowSpecAuthorityV1 | None = None,
+    execution: CandidateExecutionAuthorityV1 | None = None,
+) -> QualificationReportV1:
+    resolved_authority = authority or _workflow_authority(workflow)
+    resolved_execution = execution or _execution_authority(resolved_authority)
+    return qualification_report(
+        checks=checks or evaluate_qualification_checks(
+            resolved_authority.workflow_spec
+        ),
+        selected_workflow_fingerprint=(
+            resolved_authority.workflow_spec.fingerprint
+        ),
+        workflow_spec_authority=resolved_authority,
+        candidate_execution_authority=resolved_execution,
+    )
+
+
+def _checks_with_total(
+    total: int,
+    *,
+    hard_failure: bool = False,
+) -> tuple[QualificationCheckResultV1, ...]:
+    if not 0 <= total <= 100:
+        raise ValueError("test score out of range")
+    remaining = total
+    items: list[QualificationCheckResultV1] = []
+    non_hard_reasons = {
+        "specificity": "specificity_incomplete",
+        "reusability": "reusability_incomplete",
+        "verifiability": "verifiability_incomplete",
+        "evidence_sufficiency": "evidence_insufficient",
+        "unauthorized_execution_safety": "safety_controls_incomplete",
+    }
+    for check_id, weight in QUALIFICATION_CHECK_WEIGHTS.items():
+        points = min(weight, remaining)
+        remaining -= points
+        reasons: tuple[str, ...] = (
+            () if points == weight else (non_hard_reasons[check_id],)
+        )
+        if hard_failure and check_id == "unauthorized_execution_safety":
+            reasons = ("source_code_execution",)
+        items.append(
+            QualificationCheckResultV1(
+                schema_version="qualification-check-v1",
+                policy_version=QUALIFICATION_POLICY_VERSION,
+                check_id=check_id,
+                weight=weight,
+                awarded_points=points,
+                passed=points == weight and not hard_failure,
+                hard_failure=hard_failure
+                and check_id == "unauthorized_execution_safety",
+                reason_codes=reasons,
+            )
+        )
+    assert remaining == 0
+    return tuple(items)
+
+
+def test_report_contains_exact_direct_authority_and_policy_header() -> None:
+    report = _report()
+
+    assert QUALIFICATION_REPORT_SCHEMA_VERSION == "qualification-report-v1"
+    assert QUALIFICATION_THRESHOLD_VERSION == "qualification-threshold-v1"
+    assert DEFAULT_QUALIFICATION_THRESHOLD == 75
+    assert report.header.report_schema_version == QUALIFICATION_REPORT_SCHEMA_VERSION
+    assert report.header.policy_version == QUALIFICATION_POLICY_VERSION
+    assert report.header.threshold_version == QUALIFICATION_THRESHOLD_VERSION
+    assert report.header.threshold == 75
+    assert (
+        report.header.selected_workflow_fingerprint
+        == report.header.workflow_spec_authority.workflow_spec.fingerprint
+    )
+    assert (
+        report.header.workflow_spec_authority
+        == report.header.candidate_execution_authority.workflow_spec_authority
+    )
+    assert report.total_score == 100
+    assert report.passed is True
+    assert report.reason_codes == ()
+    assert len(report.items) == 5
+
+
+@pytest.mark.parametrize(
+    ("score", "hard_failure", "expected_pass"),
+    (
+        (74, False, False),
+        (75, False, True),
+        (100, True, False),
+    ),
+)
+def test_report_enforces_exact_threshold_and_hard_failure_rule(
+    score: int,
+    hard_failure: bool,
+    expected_pass: bool,
+) -> None:
+    report = _report(
+        checks=_checks_with_total(score, hard_failure=hard_failure)
+    )
+
+    assert report.total_score == score
+    assert report.passed is expected_pass
+    assert (
+        "source_code_execution" in report.reason_codes
+    ) is hard_failure
+
+
+def test_report_canonicalizes_item_permutations() -> None:
+    authority = _workflow_authority()
+    execution = _execution_authority(authority)
+    checks = evaluate_qualification_checks(authority.workflow_spec)
+
+    forward = _report(
+        checks=checks,
+        authority=authority,
+        execution=execution,
+    )
+    reverse = _report(
+        checks=tuple(reversed(checks)),
+        authority=authority,
+        execution=execution,
+    )
+
+    assert forward == reverse
+    assert qualification_report_bytes(forward) == qualification_report_bytes(reverse)
+    assert qualification_report_digest(forward) == qualification_report_digest(reverse)
+
+
+def test_report_canonical_bytes_are_complete_and_stable() -> None:
+    report = _report()
+    canonical = qualification_report_bytes(report)
+    payload = json.loads(canonical)
+
+    assert canonical == qualification_report_bytes(
+        QualificationReportV1.model_validate_json(canonical)
+    )
+    assert payload["header"]["report_schema_version"] == "qualification-report-v1"
+    assert payload["header"]["policy_version"] == "qualification-policy-v1"
+    assert payload["header"]["threshold_version"] == "qualification-threshold-v1"
+    assert payload["header"]["threshold"] == 75
+    assert payload["header"]["selected_workflow_fingerprint"] == _digest("2")
+    assert payload["header"]["workflow_spec_authority"]["workflow_spec"]["steps"]
+    assert payload["header"]["candidate_execution_authority"]["approved_lock_digest"]
+    assert len(payload["items"]) == 5
+    assert payload["total_score"] == 100
+    assert payload["passed"] is True
+    assert qualification_report_digest(report).startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda payload: payload.__setitem__("total_score", 99),
+        lambda payload: payload.__setitem__("passed", False),
+        lambda payload: payload.__setitem__("items", payload["items"][:-1]),
+        lambda payload: payload.__setitem__(
+            "items",
+            (*payload["items"][:-1], payload["items"][0]),
+        ),
+        lambda payload: payload.__setitem__("reason_codes", ("empty_inputs",)),
+        lambda payload: payload.__setitem__("unexpected", "forbidden"),
+    ),
+)
+def test_report_rejects_hand_authored_inconsistent_shapes(
+    mutation: Callable[[dict[str, object]], None],
+) -> None:
+    payload = _report().model_dump(mode="python")
+    mutation(payload)
+
+    with pytest.raises(ValidationError):
+        QualificationReportV1.model_validate(payload)
+
+
+def test_report_rejects_stale_policy_authority_versions() -> None:
+    authority = _workflow_authority()
+
+    for changes in (
+        {"qualification_policy_version": "qualification-policy-stale"},
+        {"qualification_report_schema_version": "qualification-report-stale"},
+    ):
+        execution = _execution_authority(authority, **changes)
+        with pytest.raises(ValueError, match="qualification version"):
+            _report(authority=authority, execution=execution)
+
+
+def test_report_rejects_cross_candidate_header_swaps() -> None:
+    first_authority = _workflow_authority()
+    first_execution = _execution_authority(first_authority)
+    second_workflow = _workflow(
+        workflow_id="wf-fedcba0987654321",
+        fingerprint=_digest("9"),
+        goal="Produce a different bounded local report.",
+    )
+    second_authority = _workflow_authority(
+        second_workflow,
+        extractor_hash=_digest("8"),
+        chain_anchor=_digest("7"),
+    )
+    second_execution = _execution_authority(second_authority)
+
+    with pytest.raises(ValueError, match="workflow authority"):
+        _report(authority=first_authority, execution=second_execution)
+    with pytest.raises(ValueError, match="workflow authority"):
+        _report(authority=second_authority, execution=first_execution)
+
+
+def test_report_rejects_selected_fingerprint_swap() -> None:
+    report = _report()
+    payload = report.model_dump(mode="python")
+    payload["header"]["selected_workflow_fingerprint"] = _digest("9")
+
+    with pytest.raises(ValidationError):
+        QualificationReportV1.model_validate(payload)
+
+
+def test_report_digest_changes_for_every_mutable_authority_binding() -> None:
+    baseline = _report()
+    different_workflow = _workflow(
+        workflow_id="wf-fedcba0987654321",
+        fingerprint=_digest("9"),
+    )
+    different_workflow_authority = _workflow_authority(different_workflow)
+    changed_workflow_report = _report(
+        authority=different_workflow_authority,
+        execution=_execution_authority(different_workflow_authority),
+    )
+    different_source_authority = _workflow_authority(
+        extractor_hash=_digest("8"),
+    )
+    changed_source_report = _report(
+        authority=different_source_authority,
+        execution=_execution_authority(different_source_authority),
+    )
+    baseline_authority = baseline.header.workflow_spec_authority
+    changed_execution_report = _report(
+        authority=baseline_authority,
+        execution=_execution_authority(
+            baseline_authority,
+            configured_generator_model_id="gpt-generator-changed",
+        ),
+    )
+
+    digests = {
+        qualification_report_digest(report)
+        for report in (
+            baseline,
+            changed_workflow_report,
+            changed_source_report,
+            changed_execution_report,
+        )
+    }
+    assert len(digests) == 4
+
+
+def test_report_models_are_strict_and_frozen() -> None:
+    report = _report()
+
+    with pytest.raises(ValidationError):
+        QualificationReportV1.model_validate(
+            {**report.model_dump(mode="python"), "extra": "forbidden"}
+        )
+    with pytest.raises(ValidationError):
+        QualificationReportV1.model_validate(
+            {**report.model_dump(mode="python"), "total_score": "100"}
+        )
+    with pytest.raises(ValidationError):
+        report.total_score = 0  # type: ignore[misc]
