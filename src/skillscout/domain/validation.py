@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -20,6 +22,7 @@ from skillscout.domain.skill_artifacts import (
     MAX_RENDERED_FILE_BYTES,
     MAX_RENDERED_PACKAGE_BYTES,
     FrozenSkillPackageV1,
+    PackageProvenanceV1,
     RenderedFileV1,
     RenderedPackageManifestV1,
     package_digest,
@@ -40,6 +43,17 @@ OFFICIAL_VALIDATOR_DISTRIBUTION_HASH: Final = (
 APPROVED_PHASE3_LOCK_DIGEST: Final = (
     "sha256:b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
 )
+LOCAL_STRUCTURE_POLICY_VERSION: Final = "local-structure-v1"
+PROGRESSIVE_DISCLOSURE_POLICY_VERSION: Final = "progressive-disclosure-v1"
+LOCAL_SAFETY_POLICY_VERSION: Final = "local-safety-v1"
+LOCAL_PROVENANCE_POLICY_VERSION: Final = "local-provenance-v1"
+URL_POLICY_VERSION: Final = "local-url-v1"
+OVERCOPY_POLICY_VERSION: Final = "overcopy-policy-v1"
+MAX_SKILL_LINES: Final = 500
+MAX_SKILL_ESTIMATED_TOKENS: Final = 5_000
+MAX_REGISTERED_QUOTE_CHARS: Final = 120
+MAX_TOTAL_REGISTERED_QUOTE_CHARS: Final = 240
+MIN_UNREGISTERED_SOURCE_MATCH_CHARS: Final = 80
 
 _Severity = Literal["error", "warning", "info"]
 _Version = Annotated[str, Field(min_length=1, max_length=128)]
@@ -554,3 +568,640 @@ def normalize_official_problems(
             ),
         )
     )
+
+
+def _finding(
+    *,
+    code: str,
+    location: str,
+    message: str,
+    version: str,
+    severity: _Severity = "error",
+) -> ValidationFindingV1:
+    return ValidationFindingV1(
+        severity=severity,
+        code=code,
+        location=location[:256] or "package",
+        message=message,
+        validator_version=version,
+    )
+
+
+def _sort_findings(
+    findings: list[ValidationFindingV1],
+) -> tuple[ValidationFindingV1, ...]:
+    return tuple(
+        sorted(
+            findings,
+            key=lambda finding: (
+                finding.severity,
+                finding.code,
+                finding.location,
+                finding.message,
+                finding.validator_version,
+            ),
+        )
+    )
+
+
+def _raw_files(package: FrozenSkillPackageV1) -> tuple[object, ...]:
+    try:
+        files = tuple(package.files)
+    except (AttributeError, TypeError):
+        return ()
+    return files
+
+
+def _file_values(rendered: object) -> tuple[str, bytes, int] | None:
+    try:
+        path = rendered.path
+        content = rendered.content
+        mode = rendered.mode
+    except AttributeError:
+        return None
+    if type(path) is not str or type(content) is not bytes or type(mode) is not int:
+        return None
+    return path, content, mode
+
+
+def _decoded_files(package: FrozenSkillPackageV1) -> dict[str, str]:
+    decoded: dict[str, str] = {}
+    for rendered in _raw_files(package):
+        values = _file_values(rendered)
+        if values is None:
+            continue
+        path, content, _ = values
+        try:
+            decoded[path] = content.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    return decoded
+
+
+def _frontmatter_name(skill_text: str) -> str | None:
+    if not skill_text.startswith("---\n"):
+        return None
+    end = skill_text.find("\n---\n", 4)
+    if end < 0:
+        return None
+    block = skill_text[4:end]
+    match = re.search(r"^name:\s*(.+?)\s*$", block, re.MULTILINE)
+    description = re.search(r"^description:\s*(.+?)\s*$", block, re.MULTILINE)
+    if match is None or description is None:
+        return None
+    raw_name = match.group(1)
+    try:
+        parsed = json.loads(raw_name)
+    except json.JSONDecodeError:
+        parsed = raw_name
+    if type(parsed) is not str or not parsed:
+        return None
+    return parsed
+
+
+_MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]\r\n]{1,256}\]\(([^)\r\n]{1,512})\)")
+
+
+def _internal_links(text: str) -> tuple[str, ...]:
+    links: list[str] = []
+    for match in _MARKDOWN_LINK.finditer(text):
+        target = match.group(1).strip()
+        if (
+            not target
+            or target.startswith("#")
+            or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target)
+            or target.startswith("//")
+        ):
+            continue
+        links.append(target.split("#", 1)[0])
+    return tuple(links)
+
+
+def validate_local_structure(
+    package: FrozenSkillPackageV1,
+) -> tuple[ValidationFindingV1, ...]:
+    """Check the structure and disclosure rules that skills-ref does not cover."""
+
+    findings: list[ValidationFindingV1] = []
+    decoded = _decoded_files(package)
+    paths = {
+        values[0]
+        for rendered in _raw_files(package)
+        if (values := _file_values(rendered)) is not None
+    }
+    skill_text = decoded.get("SKILL.md")
+    if skill_text is None:
+        findings.append(
+            _finding(
+                code="structure_missing_skill_md",
+                location="SKILL.md",
+                message="The package lacks a readable SKILL.md.",
+                version=LOCAL_STRUCTURE_POLICY_VERSION,
+            )
+        )
+    else:
+        name = _frontmatter_name(skill_text)
+        if name is None:
+            findings.append(
+                _finding(
+                    code="structure_invalid_frontmatter",
+                    location="SKILL.md",
+                    message="The expected bounded frontmatter is invalid.",
+                    version=LOCAL_STRUCTURE_POLICY_VERSION,
+                )
+            )
+        elif name != getattr(package, "stable_slug", None):
+            findings.append(
+                _finding(
+                    code="structure_name_mismatch",
+                    location="SKILL.md",
+                    message="The Skill name does not match its stable package slug.",
+                    version=LOCAL_STRUCTURE_POLICY_VERSION,
+                )
+            )
+
+        referenced: set[str] = set()
+        for target in _internal_links(skill_text):
+            try:
+                normalized = PurePosixPath(target)
+                if (
+                    normalized.is_absolute()
+                    or target != normalized.as_posix()
+                    or any(part in {"", ".", ".."} for part in normalized.parts)
+                ):
+                    raise ValueError
+                target_path = normalized.as_posix()
+            except (TypeError, ValueError):
+                target_path = target
+            referenced.add(target_path)
+            if target_path not in paths:
+                findings.append(
+                    _finding(
+                        code="structure_broken_reference",
+                        location="SKILL.md",
+                        message="SKILL.md contains a broken internal resource reference.",
+                        version=LOCAL_STRUCTURE_POLICY_VERSION,
+                    )
+                )
+
+        for path in sorted(paths - {"SKILL.md", "references/provenance.json"}):
+            parts = PurePosixPath(path).parts
+            if (
+                len(parts) != 2
+                or parts[0] not in {"references", "assets"}
+                or any(part in {"", ".", ".."} for part in parts)
+            ):
+                findings.append(
+                    _finding(
+                        code="structure_resource_depth",
+                        location=path,
+                        message="A resource is outside the single-layer package grammar.",
+                        version=LOCAL_STRUCTURE_POLICY_VERSION,
+                    )
+                )
+            if path not in referenced:
+                findings.append(
+                    _finding(
+                        code="structure_orphan_resource",
+                        location=path,
+                        message="A package resource is not referenced by SKILL.md.",
+                        version=LOCAL_STRUCTURE_POLICY_VERSION,
+                    )
+                )
+
+        for path, text in sorted(decoded.items()):
+            if path == "SKILL.md":
+                continue
+            if _internal_links(text):
+                findings.append(
+                    _finding(
+                        code="structure_nested_reference",
+                        location=path,
+                        message="A resource links to another resource layer.",
+                        version=LOCAL_STRUCTURE_POLICY_VERSION,
+                    )
+                )
+
+        if len(skill_text.splitlines()) > MAX_SKILL_LINES:
+            findings.append(
+                _finding(
+                    code="progressive_skill_too_long",
+                    location="SKILL.md",
+                    message="SKILL.md exceeds the progressive-disclosure line limit.",
+                    version=PROGRESSIVE_DISCLOSURE_POLICY_VERSION,
+                )
+            )
+        estimated_tokens = (len(skill_text.encode("utf-8")) + 3) // 4
+        if estimated_tokens > MAX_SKILL_ESTIMATED_TOKENS:
+            findings.append(
+                _finding(
+                    code="progressive_skill_token_budget",
+                    location="SKILL.md",
+                    message="SKILL.md exceeds the progressive-disclosure token estimate.",
+                    version=PROGRESSIVE_DISCLOSURE_POLICY_VERSION,
+                )
+            )
+        required_sections = ("# Overview", "## Procedure")
+        if any(section not in skill_text for section in required_sections):
+            findings.append(
+                _finding(
+                    code="progressive_required_section_missing",
+                    location="SKILL.md",
+                    message="SKILL.md lacks a required progressive-disclosure section.",
+                    version=PROGRESSIVE_DISCLOSURE_POLICY_VERSION,
+                )
+            )
+    return _sort_findings(findings)
+
+
+def _normalize_comparison_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return " ".join(normalized.split())
+
+
+def _policy_text_findings(
+    *,
+    path: str,
+    text: str,
+    allowed_urls: set[str],
+) -> list[ValidationFindingV1]:
+    findings: list[ValidationFindingV1] = []
+    normalized = _normalize_comparison_text(text)
+    secret_patterns = (
+        re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b", re.IGNORECASE),
+        re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        re.compile(r"\b(?:password|api[_-]?key)\s*[:=]\s*\S+", re.IGNORECASE),
+    )
+    if any(pattern.search(text) for pattern in secret_patterns):
+        findings.append(
+            _finding(
+                code="policy_secret_shape",
+                location=path,
+                message="A secret-shaped value is present.",
+                version=LOCAL_SAFETY_POLICY_VERSION,
+            )
+        )
+
+    dangerous_patterns = (
+        r"\bsudo\b",
+        r"\brm\s+-rf\b",
+        r"\bchmod\s+\+x\b",
+        r"\b(?:pip|npm|pnpm|yarn)\s+install\b",
+        r"\b(?:eval|exec)\s*\(",
+        r"\b(?:merge|approve|publish)\s+(?:the\s+)?(?:pr|pull request|release)\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in dangerous_patterns):
+        findings.append(
+            _finding(
+                code="policy_dangerous_command",
+                location=path,
+                message="A dangerous command or privileged action is present.",
+                version=LOCAL_SAFETY_POLICY_VERSION,
+            )
+        )
+
+    unauthorized_patterns = (
+        "allowed-tools",
+        "bypass approval",
+        "access credentials",
+        "enable network",
+        "pre-approved tool",
+    )
+    if any(marker in normalized for marker in unauthorized_patterns):
+        findings.append(
+            _finding(
+                code="policy_unauthorized_tool",
+                location=path,
+                message="An unauthorized tool or approval grant is present.",
+                version=LOCAL_SAFETY_POLICY_VERSION,
+            )
+        )
+
+    download_execute = (
+        re.search(r"\b(?:curl|wget)\b[^\r\n]{0,512}\|\s*(?:ba)?sh\b", normalized)
+        or "download and execute" in normalized
+        or re.search(r"\bfetch\b[^\r\n]{0,256}\bthen\s+run\b", normalized)
+    )
+    if download_execute:
+        findings.append(
+            _finding(
+                code="policy_download_execute",
+                location=path,
+                message="A download-and-execute sequence is present.",
+                version=LOCAL_SAFETY_POLICY_VERSION,
+            )
+        )
+
+    injection_markers = (
+        "ignore previous instructions",
+        "ignore prior instructions",
+        "act as system",
+        "<system>",
+        "</system>",
+        "developer message",
+        "reveal the prompt",
+    )
+    injection_controls = ("\u202a", "\u202b", "\u202d", "\u202e", "\u2066", "\u2067")
+    if any(marker in normalized for marker in injection_markers) or any(
+        marker in text for marker in injection_controls
+    ):
+        findings.append(
+            _finding(
+                code="policy_injection_residue",
+                location=path,
+                message="Prompt-injection residue is present.",
+                version=LOCAL_SAFETY_POLICY_VERSION,
+            )
+        )
+
+    urls = re.findall(r"https?://[^\s\"'<>)}\]]+", text)
+    if any(url.rstrip(".,") not in allowed_urls for url in urls):
+        findings.append(
+            _finding(
+                code="policy_unapproved_url",
+                location=path,
+                message="A URL is outside the provenance allowlist.",
+                version=URL_POLICY_VERSION,
+            )
+        )
+
+    if "```" in text or re.search(r"\b(?:eval|exec)\s*\(", normalized):
+        findings.append(
+            _finding(
+                code="policy_executable_content",
+                location=path,
+                message="Executable or code-fenced content is forbidden.",
+                version=LOCAL_SAFETY_POLICY_VERSION,
+            )
+        )
+    return findings
+
+
+def _file_policy_findings(
+    package: FrozenSkillPackageV1,
+) -> list[ValidationFindingV1]:
+    findings: list[ValidationFindingV1] = []
+    for rendered in _raw_files(package):
+        values = _file_values(rendered)
+        if values is None:
+            findings.append(
+                _finding(
+                    code="policy_invalid_file_contract",
+                    location="package",
+                    message="A rendered file contract is malformed.",
+                    version=LOCAL_SAFETY_POLICY_VERSION,
+                )
+            )
+            continue
+        path, content, mode = values
+        parts = PurePosixPath(path).parts
+        if "scripts" in parts:
+            findings.append(
+                _finding(
+                    code="policy_forbidden_scripts",
+                    location=path,
+                    message="The documentation-only package contains scripts.",
+                    version=LOCAL_SAFETY_POLICY_VERSION,
+                )
+            )
+        if mode != 0o644:
+            findings.append(
+                _finding(
+                    code="policy_executable_mode",
+                    location=path,
+                    message="A package leaf does not use the fixed non-executable mode.",
+                    version=LOCAL_SAFETY_POLICY_VERSION,
+                )
+            )
+        try:
+            content.decode("utf-8")
+            if b"\x00" in content:
+                raise UnicodeDecodeError("utf-8", b"", 0, 1, "binary")
+        except UnicodeDecodeError:
+            findings.append(
+                _finding(
+                    code="policy_binary_content",
+                    location=path,
+                    message="Binary package content is forbidden.",
+                    version=LOCAL_SAFETY_POLICY_VERSION,
+                )
+            )
+    return findings
+
+
+def _provenance_findings(
+    package: FrozenSkillPackageV1,
+) -> list[ValidationFindingV1]:
+    findings: list[ValidationFindingV1] = []
+    files = {
+        values[0]: values[1]
+        for rendered in _raw_files(package)
+        if (values := _file_values(rendered)) is not None
+    }
+    provenance_bytes = files.get("references/provenance.json")
+    if provenance_bytes is None:
+        return [
+            _finding(
+                code="provenance_missing",
+                location="references/provenance.json",
+                message="The required machine-readable provenance is missing.",
+                version=LOCAL_PROVENANCE_POLICY_VERSION,
+            )
+        ]
+    try:
+        decoded = json.loads(provenance_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return [
+            _finding(
+                code="provenance_invalid",
+                location="references/provenance.json",
+                message="The machine-readable provenance is invalid.",
+                version=LOCAL_PROVENANCE_POLICY_VERSION,
+            )
+        ]
+    expected = getattr(package, "provenance", None)
+    if (
+        type(decoded) is not dict
+        or expected is None
+        or decoded.get("exact_commit_sha") != getattr(expected, "exact_commit_sha", None)
+        or decoded.get("repository_id") != getattr(expected, "repository_id", None)
+        or decoded.get("repository_url") != getattr(expected, "repository_url", None)
+        or decoded.get("license_spdx") != getattr(expected, "license_spdx", None)
+        or decoded.get("selected_workflow_fingerprint")
+        != getattr(expected, "selected_workflow_fingerprint", None)
+        or decoded.get("source_evidence")
+        != [
+            item.model_dump(mode="json", exclude_none=False)
+            for item in getattr(expected, "source_evidence", ())
+        ]
+    ):
+        findings.append(
+            _finding(
+                code="provenance_authority_mismatch",
+                location="references/provenance.json",
+                message="Provenance disagrees with verified generation authority.",
+                version=LOCAL_PROVENANCE_POLICY_VERSION,
+            )
+        )
+    try:
+        parsed = PackageProvenanceV1.model_validate(decoded)
+        if parsed != expected:
+            raise ValueError
+    except (TypeError, ValueError):
+        if not any(
+            finding.code == "provenance_authority_mismatch" for finding in findings
+        ):
+            findings.append(
+                _finding(
+                    code="provenance_authority_mismatch",
+                    location="references/provenance.json",
+                    message="Provenance disagrees with verified generation authority.",
+                    version=LOCAL_PROVENANCE_POLICY_VERSION,
+                )
+            )
+
+    raw_valid_files: list[RenderedFileV1] = []
+    try:
+        for rendered in _raw_files(package):
+            values = _file_values(rendered)
+            if values is None:
+                raise ValueError
+            raw_valid_files.append(
+                RenderedFileV1.model_validate(
+                    {
+                        "path": values[0],
+                        "content": values[1],
+                        "mode": values[2],
+                        "is_symlink": getattr(rendered, "is_symlink", False),
+                    }
+                )
+            )
+        recomputed_manifest = RenderedPackageManifestV1.from_files(
+            tuple(raw_valid_files)
+        )
+        if (
+            recomputed_manifest != package.rendered_manifest
+            or package_digest(recomputed_manifest) != package.package_identity
+        ):
+            raise ValueError
+    except (AttributeError, TypeError, ValueError):
+        findings.append(
+            _finding(
+                code="provenance_manifest_mismatch",
+                location="package",
+                message="Package path, hash, size, mode, or identity facts disagree.",
+                version=LOCAL_PROVENANCE_POLICY_VERSION,
+            )
+        )
+    return findings
+
+
+def _overcopy_findings(
+    package: FrozenSkillPackageV1,
+    decoded: dict[str, str],
+) -> list[ValidationFindingV1]:
+    findings: list[ValidationFindingV1] = []
+    provenance = getattr(package, "provenance", None)
+    quotes = tuple(getattr(provenance, "quotes", ()))
+    quote_lengths = [len(getattr(quote, "text", "")) for quote in quotes]
+    if any(length > MAX_REGISTERED_QUOTE_CHARS for length in quote_lengths):
+        findings.append(
+            _finding(
+                code="overcopy_quote_too_long",
+                location="SKILL.md",
+                message="A registered quote exceeds the per-item project limit.",
+                version=OVERCOPY_POLICY_VERSION,
+            )
+        )
+    if sum(quote_lengths) > MAX_TOTAL_REGISTERED_QUOTE_CHARS:
+        findings.append(
+            _finding(
+                code="overcopy_total_quote_budget",
+                location="SKILL.md",
+                message="Registered quotes exceed the total project limit.",
+                version=OVERCOPY_POLICY_VERSION,
+            )
+        )
+    exact_commit = getattr(provenance, "exact_commit_sha", None)
+    evidence = tuple(getattr(provenance, "source_evidence", ()))
+    if any(
+        getattr(quote, "commit_sha", None) != exact_commit
+        or not any(
+            getattr(item, "path", None) == getattr(quote, "source_path", None)
+            and getattr(quote, "text", "") in getattr(item, "excerpt", "")
+            for item in evidence
+        )
+        for quote in quotes
+    ):
+        findings.append(
+            _finding(
+                code="overcopy_quote_attribution_mismatch",
+                location="SKILL.md",
+                message="A registered quote lacks exact source and commit attribution.",
+                version=OVERCOPY_POLICY_VERSION,
+            )
+        )
+    registered = {
+        (
+            getattr(quote, "source_path", None),
+            getattr(quote, "commit_sha", None),
+            _normalize_comparison_text(getattr(quote, "text", "")),
+        )
+        for quote in quotes
+    }
+    corpus = _normalize_comparison_text(
+        "\n".join(
+            text
+            for path, text in sorted(decoded.items())
+            if path != "references/provenance.json"
+        )
+    )
+    for item in evidence:
+        source_path = getattr(item, "path", None)
+        excerpt = _normalize_comparison_text(getattr(item, "excerpt", ""))
+        if (
+            (source_path, exact_commit, excerpt) in registered
+            or len(excerpt) < MIN_UNREGISTERED_SOURCE_MATCH_CHARS
+        ):
+            continue
+        if any(
+            excerpt[index : index + MIN_UNREGISTERED_SOURCE_MATCH_CHARS] in corpus
+            for index in range(
+                len(excerpt) - MIN_UNREGISTERED_SOURCE_MATCH_CHARS + 1
+            )
+        ):
+            findings.append(
+                _finding(
+                    code="overcopy_unregistered_source_match",
+                    location="SKILL.md",
+                    message="An unregistered source match reaches the project limit.",
+                    version=OVERCOPY_POLICY_VERSION,
+                )
+            )
+            break
+    return findings
+
+
+def validate_local_policy(
+    package: FrozenSkillPackageV1,
+) -> tuple[ValidationFindingV1, ...]:
+    """Run pure safety, provenance, URL, and over-copy policy checks."""
+
+    findings = _file_policy_findings(package)
+    decoded = _decoded_files(package)
+    provenance = getattr(package, "provenance", None)
+    repository_url = getattr(provenance, "repository_url", None)
+    allowed_urls = {repository_url} if type(repository_url) is str else set()
+    for path, text in sorted(decoded.items()):
+        findings.extend(
+            _policy_text_findings(
+                path=path,
+                text=text,
+                allowed_urls=allowed_urls,
+            )
+        )
+    findings.extend(_provenance_findings(package))
+    findings.extend(_overcopy_findings(package, decoded))
+    return _sort_findings(findings)

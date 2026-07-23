@@ -12,6 +12,7 @@ import pytest
 import skillscout.adapters.skills_ref as skills_ref_adapter
 from skillscout.adapters.skills_ref import validate_with_official_validator
 from skillscout.domain.candidate_authority import workflow_spec_authority
+from skillscout.domain.canonical import canonical_json_bytes
 from skillscout.domain.extraction import WorkflowSpec
 from skillscout.domain.models import TokenUsage
 from skillscout.domain.skill_artifacts import (
@@ -655,6 +656,9 @@ def test_local_policy_rejects_scripts_binaries_and_executable_modes(
         ("missing", "provenance_missing"),
         ("invalid_json", "provenance_invalid"),
         ("commit", "provenance_authority_mismatch"),
+        ("license", "provenance_authority_mismatch"),
+        ("repository", "provenance_authority_mismatch"),
+        ("evidence_path", "provenance_authority_mismatch"),
         ("hash", "provenance_manifest_mismatch"),
     ),
 )
@@ -685,6 +689,42 @@ def test_local_policy_rejects_missing_or_inconsistent_provenance(
             for item in package.files
             if item.path == "references/provenance.json"
         ).replace(b'"exact_commit_sha":"bbbb', b'"exact_commit_sha":"aaaa')
+        package = _replace_rendered(
+            package,
+            "references/provenance.json",
+            content,
+        )
+    elif mutation == "license":
+        content = next(
+            item.content
+            for item in package.files
+            if item.path == "references/provenance.json"
+        ).replace(b'"license_spdx":"MIT"', b'"license_spdx":"BSD-2-Clause"')
+        package = _replace_rendered(
+            package,
+            "references/provenance.json",
+            content,
+        )
+    elif mutation == "repository":
+        content = next(
+            item.content
+            for item in package.files
+            if item.path == "references/provenance.json"
+        ).replace(
+            b'"repository_url":"https://github.com/example/repository"',
+            b'"repository_url":"https://github.com/other/repository"',
+        )
+        package = _replace_rendered(
+            package,
+            "references/provenance.json",
+            content,
+        )
+    elif mutation == "evidence_path":
+        content = next(
+            item.content
+            for item in package.files
+            if item.path == "references/provenance.json"
+        ).replace(b'"path":"README.md"', b'"path":"OTHER.md"')
         package = _replace_rendered(
             package,
             "references/provenance.json",
@@ -735,15 +775,18 @@ def test_local_policy_registered_quote_total_boundary(
     expected_error: bool,
 ) -> None:
     lengths = (120, total - 120)
-    quotes = tuple(
-        AttributedQuoteV1(
+    quotes_list: list[AttributedQuoteV1] = []
+    for character, length in zip(("q", "r"), lengths, strict=True):
+        quote = AttributedQuoteV1(
             schema_version=QUOTE_SCHEMA_VERSION,
-            text=character * length,
+            text=character * min(length, 120),
             source_path="README.md",
             commit_sha="b" * 40,
         )
-        for character, length in zip(("q", "r"), lengths, strict=True)
-    )
+        if length > 120:
+            quote = quote.model_copy(update={"text": character * length})
+        quotes_list.append(quote)
+    quotes = tuple(quotes_list)
     package = _local_package()
     package = package.model_copy(
         update={"provenance": package.provenance.model_copy(update={"quotes": quotes})}
@@ -767,6 +810,22 @@ def test_local_policy_unregistered_normalized_source_match_boundary(
     assert ("overcopy_unregistered_source_match" in codes) is expected_error
 
 
+def test_local_policy_requires_exact_quote_source_and_commit_attribution() -> None:
+    quote = AttributedQuoteV1(
+        schema_version=QUOTE_SCHEMA_VERSION,
+        text="bounded quote",
+        source_path="OTHER.md",
+        commit_sha="b" * 40,
+    )
+    package = _local_package()
+    package = package.model_copy(
+        update={"provenance": package.provenance.model_copy(update={"quotes": (quote,)})}
+    )
+    assert "overcopy_quote_attribution_mismatch" in {
+        finding.code for finding in validate_local_policy(package)
+    }
+
+
 def test_local_policy_findings_are_deterministic_ordered_and_safe() -> None:
     package = _local_package()
     skill = next(item.content for item in package.files if item.path == "SKILL.md")
@@ -778,6 +837,11 @@ def test_local_policy_findings_are_deterministic_ordered_and_safe() -> None:
     first = validate_local_policy(package)
     second = validate_local_policy(package)
     assert first == second
+    assert canonical_json_bytes(
+        [finding.model_dump(mode="json") for finding in first]
+    ) == canonical_json_bytes(
+        [finding.model_dump(mode="json") for finding in second]
+    )
     assert first == tuple(
         sorted(
             first,
