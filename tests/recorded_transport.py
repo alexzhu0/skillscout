@@ -12,6 +12,7 @@ import httpx
 
 FIXTURES = Path(__file__).parent / "fixtures" / "github"
 OPENAI_FIXTURES = Path(__file__).parent / "fixtures" / "openai"
+OPENAI_GENERATOR_FIXTURES = OPENAI_FIXTURES / "generator" / "cases.json"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,20 @@ def recorded_openai_fixture(name: str) -> RecordedResponse:
     """Load one recorded OpenAI response fixture without any network access."""
 
     return _load_fixture(OPENAI_FIXTURES, name)
+
+
+def recorded_openai_generator_fixture(name: str) -> RecordedResponse:
+    """Load one named Generator response from the shared recorded case set."""
+
+    cases = json.loads(OPENAI_GENERATOR_FIXTURES.read_bytes())
+    parsed = cases[name]
+    body = parsed["body"]
+    payload = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
+    return RecordedResponse(
+        status=parsed["status"],
+        headers={str(key): str(value) for key, value in parsed["headers"].items()},
+        body=payload,
+    )
 
 
 def git_blob_id(content: bytes) -> str:
