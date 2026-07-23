@@ -1440,6 +1440,40 @@ def test_exact_reuse_covers_every_terminal_branch_with_exact_full_tree_snapshot(
     finally:
         store.close()
 
+    wal = state_path.with_name(f"{state_path.name}-wal")
+    shm = state_path.with_name(f"{state_path.name}-shm")
+    assert not wal.exists()
+    assert not shm.exists()
+    before = _recursive_exact_snapshot(tmp_path)
+    projection = (
+        state_module.DescriptorAnchoredCompletedCandidateProjector(
+            state_path
+        ).find_completed_candidate(authority)
+    )
+    after = _recursive_exact_snapshot(tmp_path)
+
+    assert projection is not None
+    assert projection.chain == chain
+    assert projection.terminal_summary == terminal
+    assert projection.terminal_summary_bytes == candidate_terminal_summary_bytes(
+        terminal
+    )
+    assert dict(projection.artifacts) == expected_artifacts
+    assert before == after
+    assert not wal.exists()
+    assert not shm.exists()
+
+    verification = SQLiteStateStore(state_path)
+    try:
+        assert {
+            table: verification.connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+            for table in PHASE3_TABLES
+        } == counts
+    finally:
+        verification.close()
+
 
 class _CompositionSource:
     def __init__(self, *, fail: bool = False) -> None:
@@ -1628,37 +1662,3 @@ def test_composition_boundary_integrity_failure_never_falls_back(
 
     assert raised.value.code is ErrorCode.STATE_INTEGRITY_ERROR
     assert calls == []
-
-    wal = state_path.with_name(f"{state_path.name}-wal")
-    shm = state_path.with_name(f"{state_path.name}-shm")
-    assert not wal.exists()
-    assert not shm.exists()
-    before = _recursive_exact_snapshot(tmp_path)
-    projection = (
-        state_module.DescriptorAnchoredCompletedCandidateProjector(
-            state_path
-        ).find_completed_candidate(authority)
-    )
-    after = _recursive_exact_snapshot(tmp_path)
-
-    assert projection is not None
-    assert projection.chain == chain
-    assert projection.terminal_summary == terminal
-    assert projection.terminal_summary_bytes == candidate_terminal_summary_bytes(
-        terminal
-    )
-    assert dict(projection.artifacts) == expected_artifacts
-    assert before == after
-    assert not wal.exists()
-    assert not shm.exists()
-
-    verification = SQLiteStateStore(state_path)
-    try:
-        assert {
-            table: verification.connection.execute(
-                f"SELECT COUNT(*) FROM {table}"
-            ).fetchone()[0]
-            for table in PHASE3_TABLES
-        } == counts
-    finally:
-        verification.close()

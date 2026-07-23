@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Mapping, Protocol, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, runtime_checkable
 
-from skillscout.domain.enums import EffectScope, PipelineStage
 from skillscout.domain.candidate_authority import CandidateSubjectDescriptorV1
+from skillscout.domain.enums import EffectScope, PipelineStage
 from skillscout.domain.models import (
     Checkpoint,
     ResumeEvent,
@@ -19,6 +20,14 @@ from skillscout.domain.models import (
     TokenUsage,
     VerifiedRunChain,
 )
+
+if TYPE_CHECKING:
+    from skillscout.adapters.openai_generate import GenerationRequestV1, GenerationResult
+    from skillscout.adapters.state import CompletedCandidateProjectionV1
+    from skillscout.domain.candidate_authority import CandidateExecutionAuthorityV1
+    from skillscout.domain.review import ReviewResult
+    from skillscout.domain.skill_artifacts import FrozenSkillPackageV1
+    from skillscout.domain.validation import ValidationReportV1
 
 
 class ErrorCode(StrEnum):
@@ -292,3 +301,86 @@ class StateStore(Protocol):
 
 
 LocalStateStore = StateStore
+
+
+@runtime_checkable
+class CandidateGenerator(Protocol):
+    """One bounded semantic generation request per runner-owned attempt."""
+
+    def generate(self, *, request: GenerationRequestV1) -> GenerationResult: ...
+
+
+@runtime_checkable
+class CandidateValidator(Protocol):
+    """Official plus local validation over one already-frozen package."""
+
+    def validate(
+        self,
+        *,
+        package: FrozenSkillPackageV1,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> ValidationReportV1: ...
+
+
+@runtime_checkable
+class CandidateReviewer(Protocol):
+    """One independent judgment request per runner-owned attempt."""
+
+    def review(
+        self,
+        *,
+        workflow_spec: object,
+        package: FrozenSkillPackageV1,
+        validation_report: ValidationReportV1,
+    ) -> ReviewResult: ...
+
+
+@runtime_checkable
+class CompletedCandidateProjector(Protocol):
+    """Read-only exact completed lookup with clean-miss semantics."""
+
+    def find_completed_candidate(
+        self,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> CompletedCandidateProjectionV1 | None: ...
+
+
+@runtime_checkable
+class MutableCandidateState(Protocol):
+    """Write-capable Phase 3 state, constructed only after a verified miss."""
+
+    def find_resumable_candidate(
+        self,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> object | None: ...
+
+    def persist_candidate_chain(self, chain: object, *, status: str) -> None: ...
+
+    def persist_candidate_terminal(
+        self,
+        run_id: str,
+        *,
+        terminal_summary: object,
+        artifacts: Mapping[str, bytes],
+    ) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class MutableCandidateStateFactory(Protocol):
+    """Separate factory for the mutation-capable state boundary."""
+
+    def __call__(self) -> MutableCandidateState: ...
+
+
+@runtime_checkable
+class CandidateArtifactProjector(Protocol):
+    """Local-only optional projection of newly produced immutable artifacts."""
+
+    def project(
+        self,
+        *,
+        output_directory: Path,
+        terminal_summary: object,
+        artifacts: Mapping[str, bytes],
+    ) -> object: ...
