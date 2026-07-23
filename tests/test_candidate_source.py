@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import skillscout.adapters.phase2_state as phase2_state_module
 from skillscout.application import candidate_source
 from skillscout.application.candidate_source import (
     MAX_CANDIDATE_DESCRIPTOR_BYTES,
@@ -250,6 +251,38 @@ def test_phase2_query_is_read_only_and_returns_exact_canonical_workflow(
     assert _all_persisted_bytes(state_path) == before
     assert not tuple(state_path.parent.glob("*-journal"))
     assert not tuple(state_path.parent.glob("*-wal"))
+
+
+def test_phase2_query_admits_descriptor_bytes_under_shared_lock_before_sqlite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path, descriptor, workflow = _create_phase2_state(tmp_path)
+    real_connect = sqlite3.connect
+    real_flock = phase2_state_module.fcntl.flock
+    sqlite_targets: list[object] = []
+    lock_operations: list[int] = []
+
+    def connect(database, *args, **kwargs):
+        sqlite_targets.append(database)
+        if database != ":memory:":
+            raise AssertionError("Phase 2 authority path reached SQLite")
+        return real_connect(database, *args, **kwargs)
+
+    def flock(descriptor_fd: int, operation: int) -> None:
+        lock_operations.append(operation)
+        real_flock(descriptor_fd, operation)
+
+    monkeypatch.setattr(phase2_state_module.sqlite3, "connect", connect)
+    monkeypatch.setattr(phase2_state_module.fcntl, "flock", flock)
+
+    projection = SQLitePhaseTwoCandidateSource(state_path).resolve(descriptor)
+
+    assert projection.workflow_spec_bytes == canonical_json_bytes(workflow)
+    assert sqlite_targets == [":memory:"]
+    assert lock_operations == [
+        phase2_state_module.fcntl.LOCK_SH | phase2_state_module.fcntl.LOCK_NB
+    ]
 
 
 def test_phase2_query_protocol_and_adapter_expose_no_mutation_methods() -> None:
