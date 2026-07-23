@@ -8,10 +8,15 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
+from pydantic import ValidationError
 
 import skillscout.adapters.skills_ref as skills_ref_adapter
 from skillscout.adapters.skills_ref import validate_with_official_validator
-from skillscout.domain.candidate_authority import workflow_spec_authority
+from skillscout.domain.candidate_authority import (
+    CandidateExecutionAuthorityV1,
+    candidate_execution_authority,
+    workflow_spec_authority,
+)
 from skillscout.domain.canonical import canonical_json_bytes
 from skillscout.domain.extraction import WorkflowSpec
 from skillscout.domain.models import TokenUsage
@@ -36,6 +41,7 @@ from skillscout.domain.validation import (
     LOCAL_PROVENANCE_POLICY_VERSION,
     LOCAL_SAFETY_POLICY_VERSION,
     LOCAL_STRUCTURE_POLICY_VERSION,
+    CUSTOM_VALIDATION_POLICY_VERSION,
     OFFICIAL_VALIDATOR_ADAPTER_VERSION,
     OFFICIAL_VALIDATOR_DISTRIBUTION,
     OFFICIAL_VALIDATOR_DISTRIBUTION_HASH,
@@ -43,6 +49,11 @@ from skillscout.domain.validation import (
     OVERCOPY_POLICY_VERSION,
     PROGRESSIVE_DISCLOSURE_POLICY_VERSION,
     URL_POLICY_VERSION,
+    VALIDATION_REPORT_SCHEMA_VERSION,
+    OfficialValidationResultV1,
+    ValidationFindingV1,
+    ValidationReportV1,
+    build_validation_report,
     validate_local_policy,
     validate_local_structure,
 )
@@ -192,6 +203,69 @@ def _local_package(
         request_id="resp-validation-1",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         latency_ms=5,
+    )
+
+
+def _execution_authority(
+    package: FrozenSkillPackageV1,
+    **changes: object,
+) -> CandidateExecutionAuthorityV1:
+    provenance = package.provenance
+    values: dict[str, object] = {
+        "workflow_spec_authority": provenance.workflow_spec_authority,
+        "selected_workflow_fingerprint": provenance.selected_workflow_fingerprint,
+        "prior_lineage_binding_digest": None,
+        "qualification_policy_version": provenance.qualification_policy_version,
+        "qualification_report_schema_version": (
+            provenance.qualification_report_schema_version
+        ),
+        "configured_generator_model_id": provenance.configured_generator_model_id,
+        "generator_prompt_version": provenance.generator_prompt_version,
+        "generator_output_schema_version": provenance.generator_output_schema_version,
+        "generator_policy_version": provenance.generator_policy_version,
+        "renderer_version": RENDERER_VERSION,
+        "artifact_schema_version": GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION,
+        "provenance_schema_version": PROVENANCE_SCHEMA_VERSION,
+        "official_validator_distribution": OFFICIAL_VALIDATOR_DISTRIBUTION,
+        "official_validator_version": OFFICIAL_VALIDATOR_VERSION,
+        "official_validator_distribution_hash": (
+            OFFICIAL_VALIDATOR_DISTRIBUTION_HASH
+        ),
+        "approved_lock_digest": APPROVED_PHASE3_LOCK_DIGEST,
+        "custom_validation_policy_version": CUSTOM_VALIDATION_POLICY_VERSION,
+        "validation_report_schema_version": VALIDATION_REPORT_SCHEMA_VERSION,
+        "configured_reviewer_model_id": "gpt-reviewer-configured",
+        "reviewer_prompt_version": "reviewer-prompt-v1",
+        "reviewer_output_schema_version": "reviewer-output-v1",
+        "reviewer_policy_version": "reviewer-policy-v1",
+        "eligibility_policy_version": "candidate-eligibility-v1",
+        "phase3_producer_version": "phase3-candidate-v1",
+        "phase3_profile_version": provenance.phase3_profile_version,
+        "retry_policy_version": provenance.retry_policy_version,
+    }
+    values.update(changes)
+    return candidate_execution_authority(**values)
+
+
+def _validation_report(
+    *,
+    package: FrozenSkillPackageV1 | None = None,
+    official: OfficialValidationResultV1 | None = None,
+    structure: tuple[ValidationFindingV1, ...] | None = None,
+    policy: tuple[ValidationFindingV1, ...] | None = None,
+) -> ValidationReportV1:
+    candidate = package or _local_package()
+    official_result = official or validate_with_official_validator(candidate)
+    return build_validation_report(
+        package=candidate,
+        candidate_execution_authority=_execution_authority(candidate),
+        official_result=official_result,
+        local_structure_findings=(
+            validate_local_structure(candidate) if structure is None else structure
+        ),
+        local_policy_findings=(
+            validate_local_policy(candidate) if policy is None else policy
+        ),
     )
 
 
@@ -855,3 +929,190 @@ def test_local_policy_findings_are_deterministic_ordered_and_safe() -> None:
         )
     )
     assert all("secretcanary" not in finding.message for finding in first)
+
+
+def test_validation_report_clean_empty_findings_passes_and_binds_direct_header() -> None:
+    package = _local_package()
+    execution = _execution_authority(package)
+    report = _validation_report(package=package)
+
+    assert VALIDATION_REPORT_SCHEMA_VERSION == "validation-report-v1"
+    assert CUSTOM_VALIDATION_POLICY_VERSION == "local-validation-policy-v1"
+    assert report.schema_version == VALIDATION_REPORT_SCHEMA_VERSION
+    assert report.validation_report_schema_version == VALIDATION_REPORT_SCHEMA_VERSION
+    assert report.selected_workflow_fingerprint == package.provenance.selected_workflow_fingerprint
+    assert report.workflow_spec_authority == package.provenance.workflow_spec_authority
+    assert report.candidate_execution_authority == execution
+    assert report.renderer_version == RENDERER_VERSION
+    assert report.generated_artifact_identity == package.generated_artifact_identity
+    assert report.package_identity == package.package_identity
+    assert report.package_digest == package.package_identity.package_digest
+    assert report.workspace_admission is not None
+    assert report.official_validator_authority.distribution_hash == (
+        OFFICIAL_VALIDATOR_DISTRIBUTION_HASH
+    )
+    assert report.official_validator_authority.approved_lock_digest == (
+        APPROVED_PHASE3_LOCK_DIGEST
+    )
+    assert report.local_structure_policy_version == LOCAL_STRUCTURE_POLICY_VERSION
+    assert report.progressive_disclosure_policy_version == (
+        PROGRESSIVE_DISCLOSURE_POLICY_VERSION
+    )
+    assert report.local_safety_policy_version == LOCAL_SAFETY_POLICY_VERSION
+    assert report.local_provenance_policy_version == LOCAL_PROVENANCE_POLICY_VERSION
+    assert report.url_policy_version == URL_POLICY_VERSION
+    assert report.overcopy_policy_version == OVERCOPY_POLICY_VERSION
+    assert report.findings == ()
+    assert (report.error_count, report.warning_count, report.info_count) == (0, 0, 0)
+    assert report.official_infrastructure_succeeded is True
+    assert report.passed is True
+    assert report.report_digest.startswith("sha256:")
+
+
+def _report_finding(
+    severity: str,
+    code: str,
+    version: str = LOCAL_SAFETY_POLICY_VERSION,
+) -> ValidationFindingV1:
+    return ValidationFindingV1.model_validate(
+        {
+            "severity": severity,
+            "code": code,
+            "location": "SKILL.md",
+            "message": "A bounded validation observation.",
+            "validator_version": version,
+        }
+    )
+
+
+def test_validation_report_retains_warning_and_info_without_blocking() -> None:
+    warning = _report_finding("warning", "quality_warning")
+    info = _report_finding("info", "package_info")
+    report = _validation_report(policy=(info, warning))
+    assert tuple(finding.severity for finding in report.findings) == ("info", "warning")
+    assert (report.error_count, report.warning_count, report.info_count) == (0, 1, 1)
+    assert report.passed is True
+
+
+def test_validation_report_any_error_blocks() -> None:
+    error = _report_finding("error", "safety_error")
+    report = _validation_report(policy=(error,))
+    assert report.error_count == 1
+    assert report.passed is False
+
+
+def test_validation_report_official_infrastructure_failure_blocks() -> None:
+    infrastructure = OfficialValidationResultV1(
+        schema_version="official-validation-result-v1",
+        infrastructure_succeeded=False,
+        passed=False,
+        admission=None,
+        authority=skills_ref_adapter.official_validator_authority(),
+        findings=(
+            _report_finding(
+                "error",
+                "official_validator_infrastructure_failure",
+                OFFICIAL_VALIDATOR_ADAPTER_VERSION,
+            ),
+        ),
+    )
+    report = _validation_report(official=infrastructure)
+    assert report.workspace_admission is None
+    assert report.official_infrastructure_succeeded is False
+    assert report.passed is False
+
+
+def test_validation_report_merge_and_digest_are_deterministic() -> None:
+    findings = (
+        _report_finding("warning", "z_warning"),
+        _report_finding("info", "a_info"),
+        _report_finding("error", "m_error"),
+    )
+    first = _validation_report(policy=findings)
+    second = _validation_report(policy=tuple(reversed(findings)))
+    assert first == second
+    assert first.report_digest == second.report_digest
+    assert tuple(finding.severity for finding in first.findings) == (
+        "error",
+        "info",
+        "warning",
+    )
+
+
+def test_validation_report_rejects_duplicate_finding_identities() -> None:
+    finding = _report_finding("warning", "duplicate_warning")
+    with pytest.raises(ValueError):
+        _validation_report(policy=(finding, finding))
+
+
+def test_validation_finding_rejects_unknown_severity() -> None:
+    with pytest.raises(ValidationError):
+        _report_finding("critical", "unknown_severity")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("selected_workflow_fingerprint", _digest("f")),
+        ("renderer_version", "skill-renderer-v2"),
+        ("validation_report_schema_version", "validation-report-v2"),
+        ("package_digest", _digest("e")),
+        ("local_safety_policy_version", "local-safety-v2"),
+        ("passed", False),
+        ("error_count", 1),
+        ("report_digest", _digest("d")),
+    ),
+)
+def test_validation_report_rejects_direct_header_count_pass_and_digest_tamper(
+    field: str,
+    value: object,
+) -> None:
+    report = _validation_report()
+    payload = report.model_dump(mode="python", exclude_none=False)
+    payload[field] = value
+    with pytest.raises(ValidationError):
+        ValidationReportV1.model_validate(payload)
+
+
+def test_validation_report_rejects_cross_candidate_execution_authority_swap() -> None:
+    package = _local_package()
+    swapped = _execution_authority(package).model_copy(
+        update={"selected_workflow_fingerprint": _digest("f")}
+    )
+    with pytest.raises(ValueError):
+        build_validation_report(
+            package=package,
+            candidate_execution_authority=swapped,
+            official_result=validate_with_official_validator(package),
+            local_structure_findings=(),
+            local_policy_findings=(),
+        )
+
+
+def test_validation_report_package_identity_change_changes_digest_not_semantic_identity() -> None:
+    first_package = _local_package()
+    second_package = render_skill_package(
+        draft=_draft(),
+        authority=_authority(excerpt="Collect and validate the bounded inputs."),
+        request_id="resp-validation-2",
+        usage=TokenUsage(prompt_tokens=11, completion_tokens=20, total_tokens=31),
+        latency_ms=5,
+    )
+    first = _validation_report(package=first_package)
+    second = _validation_report(package=second_package)
+    assert (
+        first.generated_artifact_identity
+        == second.generated_artifact_identity
+    )
+    assert first.package_identity != second.package_identity
+    assert first.report_digest != second.report_digest
+
+
+def test_validation_report_identity_layer_swap_is_rejected() -> None:
+    report = _validation_report()
+    payload = report.model_dump(mode="python", exclude_none=False)
+    payload["generated_artifact_identity"] = report.package_identity.model_dump(
+        mode="python"
+    )
+    with pytest.raises(ValidationError):
+        ValidationReportV1.model_validate(payload)
