@@ -1,484 +1,398 @@
-# Phase 03: Validated Skill Candidate - Pattern Map
+# Phase 3: Validated Skill Candidate - Pattern Map
 
-**Mapped:** 2026-07-22
-**Scope source:** `03-RESEARCH.md`, `03-VALIDATION.md`, roadmap, requirements, state, and Phase 2 Plan 04 handoff (no `CONTEXT.md` exists)
-**Files classified:** 25 logical new/modified paths or fixture groups
-**Analogs found:** 23 / 25
+**Mapped:** 2026-07-23
+**Authoritative input:** `03-RESEARCH.md` (architecture reset)
+**Files classified:** 38 new or modified logical paths/groups
+**Analogs found:** 36 / 38
+
+## Authoritative Architecture Lock
+
+Phase 3 is a **separate local pipeline over one verified Phase 2 result**. It is not a Scout-to-Reviewer prefix, does not replay or import Scout/Reader/Extractor rows, and must not extend the global-prefix `PIPELINE_PROFILES` rules in `src/skillscout/application/pipeline.py:168-188`.
+
+The fixed Phase 3-relative sequence is `(QUALIFIER, GENERATOR, VALIDATOR, REVIEWER)`. Its first row is rooted in `CandidateExecutionAuthorityV1`. Keep the existing Phase 1/2 verifier and its global enum-index checks unchanged; implement a dedicated Phase 3-relative ledger/verifier.
+
+Before any Phase 3 lookup or ledger creation:
+
+1. Load a strict, bounded `CandidateSubjectDescriptorV1` using a new loader.
+2. Resolve it through a read-only Phase 2 query seam.
+3. Reverify the referenced completed Phase 2 chain and Extractor output anchor.
+4. Recover exactly one complete `WorkflowSpec`, recompute `WorkflowSpecAuthorityV1`, and compare all descriptor authority.
+5. Construct the complete pre-lookup `CandidateExecutionAuthorityV1`.
+
+Any unavailable/rejected/incomplete/malformed/mismatched Phase 2 source yields sanitized `candidate_source_unavailable` with **zero Phase 3 rows, calls, validator executions, or retry effects**. It is not a Phase 3 terminal branch.
 
 ## File Classification
 
 | New/Modified File | Role | Data Flow | Closest Analog | Match Quality |
 |---|---|---|---|---|
-| `src/skillscout/domain/qualification.py` | model + utility | transform | `src/skillscout/domain/extraction.py` | role/data-flow match |
-| `src/skillscout/domain/skill_artifacts.py` | model + utility | transform + file-I/O manifest | `src/skillscout/domain/extraction.py`; identity core in `domain/canonical.py` | role/data-flow match |
-| `src/skillscout/domain/validation.py` | model + service | batch + file-I/O | `src/skillscout/domain/extraction.py` boundary checks | role-match |
-| `src/skillscout/domain/review.py` | model + utility | transform | `src/skillscout/domain/extraction.py` | role/data-flow match |
-| `src/skillscout/adapters/openai_generate.py` | service adapter | request-response | `src/skillscout/adapters/openai_extract.py` | exact |
-| `src/skillscout/adapters/openai_review.py` | service adapter | request-response | `src/skillscout/adapters/openai_extract.py` | exact |
-| `src/skillscout/adapters/skills_ref.py` | service adapter | file-I/O request-response | no internal official-validator adapter | external API only |
-| `src/skillscout/application/phase3.py` | service/orchestrator | event-driven + transform | `src/skillscout/application/processors.py` | exact role, extended flow |
-| `src/skillscout/application/pipeline.py` | config/orchestrator | batch + event-driven | existing `phase2-v1` profile/root in same file | exact modification |
-| `src/skillscout/domain/models.py` | model | transform + persistence | existing producer registry and terminal summaries in same file | exact modification |
-| `src/skillscout/cli.py` | controller | request-response + file-I/O | existing `extract-repo` command in same file | exact modification |
-| `pyproject.toml` | config | batch | existing exact-pin dependency declarations | exact modification, human-gated |
-| `uv.lock` | config | batch | current Gate-B2 lock | exact modification, human-gated |
-| `tests/recorded_transport.py` | test utility | request-response | `recorded_openai_fixture()` / `RecordedTransport` | exact modification |
-| `tests/fixtures/openai/generator/*.json` | test fixture | request-response | `tests/fixtures/openai/*.json` | exact |
-| `tests/fixtures/openai/reviewer/*.json` | test fixture | request-response | `tests/fixtures/openai/*.json` | exact |
+| `src/skillscout/domain/candidate_authority.py` | model + utility | transform | `domain/models.py`; `domain/canonical.py`; `domain/extraction.py` | composite role/data-flow |
+| `src/skillscout/domain/qualification.py` | model + policy utility | transform | `domain/extraction.py` | role/data-flow |
+| `src/skillscout/domain/skill_artifacts.py` | model + renderer | transform + file-I/O manifest | `domain/canonical.py`; terminal writer in `application/pipeline.py` | composite |
+| `src/skillscout/domain/validation.py` | model + policy service | batch + file-I/O | `domain/extraction.py` boundary validation | role-match |
+| `src/skillscout/domain/review.py` | model + policy utility | transform | `domain/extraction.py`; `domain/models.py` summaries | composite |
+| `src/skillscout/adapters/phase2_state.py` | query adapter | CRUD/read-only | `application/ports.py`; `adapters/state.py` verified-chain query | exact role, narrower flow |
+| `src/skillscout/adapters/openai_generate.py` | service adapter | request-response | `adapters/openai_extract.py` | exact |
+| `src/skillscout/adapters/openai_review.py` | service adapter | request-response | `adapters/openai_extract.py` | exact |
+| `src/skillscout/adapters/skills_ref.py` | service adapter | bounded file-I/O | no internal official-validator adapter | no internal analog |
+| `src/skillscout/application/ports.py` | port/protocol | request-response + persistence | existing closed ports in same file | exact modification |
+| `src/skillscout/application/candidate_source.py` | loader + service | bounded file-I/O + query | `adapters/subjects.py`; `cli.py`; `adapters/state.py` | composite |
+| `src/skillscout/application/phase3.py` | orchestrator | event-driven + transform | `application/pipeline.py`, excluding its global-prefix model | partial composite |
+| `src/skillscout/adapters/state.py` | persistence adapter | CRUD + event-driven | existing ledger/manifest/lock implementation | exact concepts, separate profile required |
+| `src/skillscout/domain/models.py` | persistence model | transform | `RunIdentity`, `StageEnvelope`, `VerifiedRunChain` | exact concepts, separate contracts required |
+| `src/skillscout/cli.py` | controller | request-response + file-I/O | existing `extract-repo` command | exact |
+| `pyproject.toml` | config | batch | existing exact dependency pins | exact modification after Gate A3 |
+| `uv.lock` | config | batch | current exact lock workflow | exact modification after Gate B3 |
+| `config/supply-chain/phase3-gate-b3.lock.sha256` | config/authority | file-I/O | immutable hashes in `tools/verify_phase1_gap_evidence.py` | partial |
+| `tools/verify_phase3_gate_b3.sh` | preflight utility | file-I/O + process gate | `tools/verify_phase1_gap_evidence.py` | partial; new fail-before-exec guarantee |
+| `tools/verify_phase3_acceptance.py` | verification utility | batch + file-I/O | `tools/verify_phase1_gap_evidence.py` | role/data-flow |
+| `tests/recorded_transport.py` | test utility | request-response | existing `RecordedTransport` helpers | exact modification |
+| `tests/fixtures/openai/generator/*.json` | test fixture | request-response | existing recorded OpenAI fixtures | exact |
+| `tests/fixtures/openai/reviewer/*.json` | test fixture | request-response | existing recorded OpenAI fixtures | exact |
 | `tests/fixtures/skills/**` | test fixture | file-I/O | no existing Skill package fixture tree | no analog |
-| `tests/test_qualification.py` | test | transform | contract/boundary matrices in `tests/test_openai_extract.py` | role-match |
-| `tests/test_skill_generation.py` | test | transform + file-I/O | `tests/test_phase2_pipeline.py` terminal-artifact and identity tests | partial composite |
-| `tests/test_skill_validation.py` | test | batch + file-I/O adversarial | `tests/test_phase2_pipeline.py` integrity/authority tests | partial composite |
-| `tests/test_openai_generate.py` | test | request-response | `tests/test_openai_extract.py` | exact |
-| `tests/test_openai_review.py` | test | request-response | `tests/test_openai_extract.py` | exact |
-| `tests/test_phase3_pipeline.py` | test | batch + event-driven | `tests/test_phase2_pipeline.py` | exact |
-| `tests/test_cli_validate_skill.py` | test | request-response + file-I/O | `tests/test_cli_extract_repo.py` | exact |
-| `tests/test_cli_security.py` | test | request-response | existing subparser/non-echo assertions in same file | exact modification |
+| `tests/test_candidate_source.py` | contract/integration test | file-I/O + query | `test_phase2_contracts.py`; `test_state_integrity.py` | composite |
+| `tests/test_candidate_authority.py` | contract test | transform | `test_stage_contracts.py`; `test_extractor_boundary.py` | composite |
+| `tests/test_qualification.py` | policy test | transform | extraction boundary matrices | role-match |
+| `tests/test_skill_generation.py` | unit/integration test | transform + file-I/O | terminal-artifact tests in `test_phase2_pipeline.py` | partial composite |
+| `tests/test_lineage.py` | contract/policy test | transform + query | identity sensitivity tests in `test_stage_contracts.py` | partial |
+| `tests/test_openai_generate.py` | adapter test | request-response | `tests/test_openai_extract.py` | exact |
+| `tests/test_skill_validation.py` | adversarial integration test | batch + file-I/O | extraction boundary and state-integrity matrices | composite |
+| `tests/test_openai_review.py` | adapter test | request-response | `tests/test_openai_extract.py` | exact |
+| `tests/test_phase3_pipeline.py` | integration test | event-driven + persistence | `tests/test_phase2_pipeline.py`; `tests/test_state_integrity.py` | partial composite |
+| `tests/test_cli_validate_skill.py` | CLI integration test | request-response + file-I/O | `tests/test_cli_extract_repo.py` | exact |
+| `tests/test_cli_security.py` | security test | request-response | existing parser/non-echo assertions | exact modification |
+| `tests/test_phase3_lock_preflight.py` | process-gate test | file-I/O + process | `tests/test_phase1_evidence_verifier.py` | partial |
+| `tests/test_phase3_acceptance_tool.py` | verification-tool test | batch + file-I/O | `tests/test_phase1_evidence_verifier.py` | role-match |
+| `tests/test_phase1_gap_closure.py` | source-policy test | static AST scan | existing import-confinement test in same file | exact modification |
 
 ## Pattern Assignments
 
-### `src/skillscout/domain/qualification.py` (model + deterministic policy, transform)
+### Candidate ingress: `candidate_authority.py`, `candidate_source.py`, `phase2_state.py`, and their tests
 
-**Primary analog:** `src/skillscout/domain/extraction.py`
-
-Use strict, frozen, size-bounded Pydantic contracts. Constants identify every policy/schema version; no free-form or mutable contract is persisted.
-
-**Imports and bounded contract pattern** (`domain/extraction.py` lines 5-25, 29-42):
+**Strict model analog:** `src/skillscout/domain/subjects.py:52-65`
 
 ```python
-import re
-import unicodedata
-from typing import Annotated, Literal, Mapping
+class RepositorySubject(StrictFrozenModel):
+    schema_version: Literal["1"]
+    subject_id: SubjectId
+    repository: RepositoryUrl
+    ref: SubjectRef | None = None
 
-from pydantic import Field
-
-from skillscout.domain.canonical import sha256_digest
-from skillscout.domain.models import Digest, StrictFrozenModel
-
-EXTRACT_PROMPT_VERSION = "extract-prompt-v1"
-FINGERPRINT_VERSION = "wf-fingerprint-v1"
-WORKFLOW_SPEC_SCHEMA_VERSION = "workflow-spec-v1"
-
-class EvidenceRef(StrictFrozenModel):
-    path: _EvidencePath
-    blob_sha: _BlobSha
-    excerpt: _Excerpt
-    supports: _TokenText
+    @model_validator(mode="after")
+    def validate_subject_matches_url(self) -> RepositorySubject:
+        path = self.repository.removeprefix(_URL_PREFIX).removesuffix(".git")
+        if self.subject_id != f"repo:{path}":
+            raise ValueError("subject_id and repository URL disagree")
+        return self
 ```
 
-**Deterministic ordered decision pattern:** copy the closed-vocabulary approach of `validate_workflow_boundaries()` (`domain/extraction.py` lines 164-217): accumulate each reason at most once, inspect all inputs, and return a tuple in stable policy order. Qualification should similarly emit every `QualificationCheck` in declared rubric order, run hard failures deterministically, and derive `passed` from `score >= 75 and not hard_failures`; never ask an LLM for points.
+Define a separate frozen, `extra="forbid"` `CandidateSubjectDescriptorV1` containing exactly the descriptor schema, completed Phase 2 run ID, expected Phase 2 profile/producer, authoritative Extractor output/verified-chain anchor, selected full workflow fingerprint, expected complete WorkflowSpec-authority digest, and optional `PriorLineageBindingV1`. Do not add fields to `RepositorySubject` and do not change `load_subject()`.
 
-**Input admission:** re-parse the Extractor payload as `WorkflowSpec` before scoring. Bind repo/license/commit/evidence hashes to prior verified Scout/Filter/Reader/Extractor payloads, as `_build_workflow_spec()` binds trusted hashes at `application/processors.py` lines 692-745.
-
-**Test analog:** use table-driven boundaries like the closed filter-policy tests; Phase 3 fixtures must pin 74/75/76, confidence 0.699/0.700, fewer than three steps, missing/hash-mismatched evidence, source execution, credential access, and unapproved side effects.
-
----
-
-### `src/skillscout/domain/skill_artifacts.py` (models, deterministic rendering, identity)
-
-**Primary analogs:** `src/skillscout/domain/extraction.py` and `src/skillscout/domain/canonical.py`
-
-The generator may return semantic fields only. This module owns slug, frontmatter, headings, declared resource names, provenance bytes, file modes, manifests, and all identities.
-
-**Canonical bytes and digest pattern** (`domain/canonical.py` lines 24-40):
+**Safe loader analog:** `src/skillscout/adapters/subjects.py:34-70`
 
 ```python
-def canonical_json_bytes(value: object) -> bytes:
-    return json.dumps(
-        _json_compatible(value),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+before_path = os.lstat(path)
+if stat.S_ISLNK(before_path.st_mode) or not stat.S_ISREG(before_path.st_mode):
+    raise SafeFailure(ErrorCode.INVALID_SUBJECT)
 
-def sha256_digest(value: object) -> str:
-    payload = value if isinstance(value, bytes) else canonical_json_bytes(value)
-    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+flags = os.O_RDONLY
+for flag_name in ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC"):
+    flags |= getattr(os, flag_name, 0)
+descriptor = os.open(path, flags)
+before_fd = os.fstat(descriptor)
+if before_fd.st_size > MAX_SUBJECT_BYTES:
+    raise SafeFailure(ErrorCode.INVALID_SUBJECT)
+...
+after_fd = os.fstat(descriptor)
+if _identity(before_fd) != _identity(after_fd):
+    raise SafeFailure(ErrorCode.INVALID_SUBJECT)
 ```
 
-**SkillScout-owned identity pattern** (`application/processors.py` lines 692-733):
+Copy the ownership, non-link regular-file, `O_NOFOLLOW`, byte-cap, stable-identity, UTF-8/JSON, strict-Pydantic, and no-echo failure pattern into a separately named candidate-descriptor loader. Tests copy the full matrix from `tests/test_phase2_contracts.py:85-218` and CLI no-state/no-canary assertions from `tests/test_cli_extract_repo.py:292-327`.
+
+**Verified query analog:** `src/skillscout/application/ports.py:171-190` and `src/skillscout/adapters/state.py:1734-2041`
 
 ```python
-fingerprint = workflow_fingerprint(
-    repo_id=repo_id,
-    goal=workflow.goal,
-    steps=tuple(step.instruction for step in workflow.steps),
-)
-spec = WorkflowSpec(
-    schema_version=WORKFLOW_SPEC_SCHEMA_VERSION,
-    workflow_id="wf-" + fingerprint[7:23],
-    fingerprint=fingerprint,
-    fingerprint_version=FINGERPRINT_VERSION,
-    ...
-)
-return spec.model_dump(mode="json", exclude_none=False)
+class StateStore(Protocol):
+    def verify_run_chain(
+        self,
+        run_id: str,
+        expected_identity: RunIdentity | None = None,
+    ) -> VerifiedRunChain: ...
 ```
 
-Create three distinct identities:
+`PhaseTwoCandidateSource.resolve(descriptor)` must call the unchanged Phase 2 chain verifier and then independently require the expected Phase 2 producer/profile, completed status, exact Scout-to-Extractor chain, successful candidate outcome, exact Extractor output anchor, and exactly one selected full fingerprint. Strictly parse the selected complete `WorkflowSpec`, recompute its complete authority, and return only verified repository ID/URL, commit, license, workflow, and Phase 2 anchor facts.
 
-- `lineage_id`: stable update identity from version + repo ID + normalized title + sorted evidence paths; collision or ambiguous mapping rejects.
-- `artifact_id`: lineage + workflow fingerprint + generation prompt/policy/model identity + canonical semantic-draft hash.
-- `package_digest`: canonical ordered `relative path -> sha256/mode/size` map over final bytes.
+Do not trust `ExtractionSummary`: `src/skillscout/domain/models.py:487-507` contains only outcome/count/fingerprints. Recover the complete workflow from the verified Extractor `StageEnvelope` (`domain/models.py:144-169`). The read-only resolver must never create a Phase 3 row, call a Phase 2 processor, call GitHub/OpenAI, or reinterpret an upstream business branch as Phase 3 state.
 
-Do not place `package_digest` inside `references/provenance.json`; that would hash a file containing its own hash. Follow `stage_manifest_hash()` (`domain/canonical.py` lines 86-90): exclude the hash field from its own preimage.
+### Complete authorities and lineage: `candidate_authority.py`, `models.py`, `test_candidate_authority.py`, `test_lineage.py`
 
-**Renderer closed tree:** emit only `<slug>/SKILL.md`, `<slug>/references/provenance.json`, optional one-level `references/*.md`, and only if justified, text-only one-level `assets/*.md|txt|json`. Every file is regular UTF-8 mode `0644`; never emit `scripts/`, binaries, `allowed-tools`, model-selected paths, or copied executable code.
-
-**Filesystem ownership seam:** materialization must use `AnchoredDirectory`, not `Path.write_text()`. Use child-name rejection (`adapters/localfs.py` lines 175-185), descriptor-relative child directory opens with identity checks (`197-235`), and atomic fsync/rename (`288-329`, `360-418`). If artifact package needs nested one-level directories, open each through `open_child_directory()` and validate each leaf independently.
-
----
-
-### `src/skillscout/domain/validation.py` (finding schema + layered validators)
-
-**Closest internal analog:** `src/skillscout/domain/extraction.py` boundary policy.
-
-Copy its closed named-pattern and reason vocabulary, rather than exposing matched bytes:
-
-**Pattern registry and bounded reason output** (`domain/extraction.py` lines 137-161):
+**Canonical digest analog:** `src/skillscout/domain/canonical.py:24-40,86-90`
 
 ```python
-FORBIDDEN_TEXT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("url", re.compile(r"https?://", re.IGNORECASE)),
-    ("shell_curl_pipe", re.compile(r"\bcurl\b[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b")),
-    ...
-)
-
-def find_forbidden_text(text: str) -> tuple[str, ...]:
-    return tuple(name for name, pattern in FORBIDDEN_TEXT_PATTERNS if pattern.search(text))
+def stage_manifest_hash(envelope: StageEnvelope) -> str:
+    preimage = envelope.model_dump(
+        mode="json",
+        exclude_none=False,
+        exclude={"manifest_hash"},
+    )
+    return sha256_digest(preimage)
 ```
 
-Define strict `ValidationFinding` and `ValidationReport` models with closed severity `error|warning|info`, bounded `code`, sanitized relative `path`, bounded message/observed code, validator/policy versions, deterministic counts, and package digest. Sort findings by a fixed tuple such as `(severity rank, check family, path, code)`.
+Use compact, sorted canonical JSON and a full tagged SHA-256. Self-hashed structures exclude only their own digest field.
 
-Run checks in this order:
-
-1. Descriptor/path/type/link/mode/size/UTF-8/manifest admission.
-2. Official `skills_ref.validate()` through the narrow adapter.
-3. SkillScout frontmatter, name-directory, exact resource links, and progressive disclosure checks.
-4. Provenance and upstream hash binding.
-5. Normalized secret, injection, dangerous execution, tool authority, URL, quote registry, and over-copy checks.
-
-Any validator exception maps to one sanitized `error` finding. Any `error` blocks Reviewer. Warnings never erase or downgrade official errors.
-
-**Safe file-read analog** (`adapters/localfs.py` lines 247-286): `read_bytes()` performs no-follow regular-file admission, size bound, descriptor identity checks, bounded reads, and post-read stable-identity verification. Validation must inspect only a SkillScout-owned, locked package already admitted by this pattern; do not point `skills-ref` at arbitrary caller paths.
-
----
-
-### `src/skillscout/domain/review.py` (review contract and pure gate)
-
-**Analog:** `domain/extraction.py` strict structured contracts (`lines 45-71`) and `domain/models.py` strict base (`lines 123-126`).
-
-Use `StrictFrozenModel` with `extra="forbid"`, bounded strings/tuples, `verdict: Literal["YES", "NO"]`, confidence `[0,1]`, reasons, missing assumptions, and minimal modifications. There must be no `files`, `body`, `replacement`, or patch field.
-
-The final gate is a pure function outside the adapter:
+**Complete workflow versus fingerprint analog:** `src/skillscout/domain/extraction.py:91-134`
 
 ```python
-eligible_for_publication = (
-    qualification.passed
-    and validation.error_count == 0
-    and review.status == "reviewed"
-    and review.verdict == "YES"
-    and review.confidence >= 0.80
+return sha256_digest(
+    {
+        "fingerprint_version": FINGERPRINT_VERSION,
+        "repo_id": repo_id,
+        "goal": normalize_for_fingerprint(goal),
+        "steps": [normalize_for_fingerprint(step) for step in steps],
+    }
 )
 ```
 
-Return a typed local-candidate decision only. Phase 3 must not produce `PublicationPlan`, invoke Publisher, or expose a remote-write adapter.
+That existing `wf-fingerprint-v1` intentionally omits title, applicability, inputs/outputs, confidence, evidence, excerpts, and content hashes. Treat it only as the selected workflow-version discriminator.
 
----
+`WorkflowSpecAuthorityV1` must digest the **entire strictly parsed `WorkflowSpec`**, including every schema/fingerprint version, nested workflow/step evidence item, path, excerpt, and content hash, plus the authoritative verified Phase 2 Extractor envelope/output anchor. Test mutation sensitivity for every field and anchor.
 
-### `src/skillscout/adapters/openai_generate.py` and `openai_review.py` (service adapters, request-response)
+`CandidateExecutionAuthorityV1` is created before Phase 3 lookup and is the sole resume/completed lookup key. Its canonical preimage contains:
 
-**Exact analog:** `src/skillscout/adapters/openai_extract.py`
+- `WorkflowSpecAuthorityV1` digest and selected full fingerprint;
+- optional canonical `PriorLineageBindingV1` digest;
+- qualification policy and report schema versions;
+- configured Generator model plus generator prompt/output schema versions;
+- immutable `RENDERER_VERSION`, artifact schema, and provenance schema;
+- exact official-validator distribution/version/hash and approved lock authority, custom validation policy, and report schema;
+- configured Reviewer model plus reviewer prompt/output/policy versions;
+- immutable `ELIGIBILITY_POLICY_VERSION`;
+- Phase 3 producer/profile and retry-policy versions.
 
-Keep two separate concrete clients and two separate versioned developer prompts. Do not share conversation state or client request envelopes between Generator and Reviewer.
+Only configured model IDs belong here. Actual returned model IDs, resolved lineage, generated bytes, validation, review, and eligibility are later facts and must not enter pre-lookup authority.
 
-**Construction and authority** (`openai_extract.py` lines 58-89):
+**Lineage target contract:** a new lineage is the full digest of `lineage-v1`, numeric repository ID, and the **initial** complete WorkflowSpec-authority digest. Never shorten it for authority.
 
 ```python
-resolved_key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY")
-if not resolved_key or not model or max_output_tokens < 1:
-    raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-self._client = openai.OpenAI(
-    api_key=resolved_key,
-    http_client=http_client,
+sha256_digest(
+    {
+        "lineage_version": "lineage-v1",
+        "repository_id": repository_id,
+        "initial_workflow_spec_authority_digest": initial_authority_digest,
+    }
+)
+```
+
+Retain an existing lineage and stable slug only through one exact approved `PriorLineageBindingV1`: repository ID, full lineage ID, stable slug, prior package digest, prior terminal-summary digest, new WorkflowSpec-authority digest, binding schema/policy version, and durable approval-record digest. Reverify that the referenced terminal proves the repository and initial authority, then recompute the lineage. No binding creates a new lineage. Stale, colliding, multiple, mismatched, or ambiguous bindings produce `lineage_rejected`; never fall back heuristically.
+
+Title and evidence paths remain inside the complete WorkflowSpec/version authority, but they are **never** lineage preimage fields or remap/matching heuristics. An exact approved binding may survive changes to either.
+
+### Qualification: `qualification.py` and `test_qualification.py`
+
+**Closed-boundary analog:** `src/skillscout/domain/extraction.py:164-217`
+
+Copy the pattern of immutable typed reports, named/versioned deterministic rules, bounded reasons, and explicit cross-field validation. A low score and any hard fail both map to `qualification_rejected`; the report binds WorkflowSpec authority, execution authority, policy version, and report schema.
+
+Use table-driven boundary tests for score 74/75/76, confidence 0.699/0.700, two-step hard fail, source-execution hard fail, and valid evidence. Do not ask the Generator or Reviewer to make the qualification decision.
+
+### Frozen generation: `skill_artifacts.py`, `test_skill_generation.py`, and Skill fixtures
+
+**Owner module:** `src/skillscout/domain/skill_artifacts.py`
+
+```python
+RENDERER_VERSION: Final = "skill-renderer-v1"
+```
+
+This constant is code-owned producer authority, not a CLI/config flag.
+
+The Generator returns a strict bounded semantic draft. SkillScout validates it and deterministically renders the allowed package. `GeneratedArtifactIdentityV1` is then computed from the canonical draft plus a generation-time authority projection containing WorkflowSpec authority, selected fingerprint, resolved lineage/slug, qualification-report digest/policy/schema, configured and actual Generator IDs, generator prompt/output schema, `RENDERER_VERSION`, artifact/provenance schemas, and Phase 3 producer/retry versions. It excludes validator, Reviewer, eligibility, and all other post-generation facts.
+
+Provenance is generation-time-only. It may contain verified repository URL/ID/commit/license, full workflow/evidence, WorkflowSpec authority, qualification versions, configured/actual Generator, renderer/artifact/provenance versions, and bounded Generator telemetry. It must not contain the package digest, validation facts, Reviewer facts, attestation, eligibility, or any future fact.
+
+After provenance is finalized, freeze package bytes and compute an **external** `package_digest` from a canonical ordered manifest of path to content hash, mode, and size. Never write the digest back into the package.
+
+**Anchored file-I/O analogs:** `src/skillscout/adapters/localfs.py:75-143,175-185,197-346` and `src/skillscout/application/pipeline.py:607-695`
+
+Copy descriptor-anchored directory admission, child-name validation, no-follow stable reads, private regular files, retained `flock`, stale-temp recovery, atomic replacement/restore, and directory fsync. Package paths must be closed, modes must be fixed, and no scripts/binaries are generated.
+
+### Validation and independent review: `validation.py`, `skills_ref.py`, `review.py`, and tests
+
+`skills_ref.validate(Path)` receives only an already-admitted exact package root through a narrow adapter. Catch exceptions and return a closed sanitized validator result. It is one validation family, not the sole validator and not authority to read arbitrary paths.
+
+Run custom deterministic checks for structure, closed paths/depth, links and TOCTOU, hard links, mode, binary content, secrets, prompt injection, URLs/download-execute patterns, provenance bindings, hashes, and bounded-copy policy. `ValidationReport` binds WorkflowSpec/execution/artifact identities, frozen package digest, `RENDERER_VERSION`, exact official-validator distribution/hash, custom policy version, and report schema. Package bytes are immutable before validation starts.
+
+**Owner module:** `src/skillscout/domain/review.py`
+
+```python
+ELIGIBILITY_POLICY_VERSION: Final = "candidate-eligibility-v1"
+```
+
+The Reviewer judges the frozen package and clean validation report; it never edits them. `ReviewAttestationV1` is external and binds package digest, validation-report digest, configured/actual Reviewer IDs, review prompt/output/policy versions, outcome, verdict, confidence, bounded reasons, and bounded telemetry. Never place it in the package.
+
+Eligibility is local deterministic policy: Reviewer `YES` and confidence at least `0.80`, under `ELIGIBILITY_POLICY_VERSION`. A Reviewer claim cannot override validation or mutate the package.
+
+### OpenAI boundaries: `openai_generate.py`, `openai_review.py`, recorded fixtures, and adapter tests
+
+**Exact adapter analog:** `src/skillscout/adapters/openai_extract.py:58-82,97-176`
+
+```python
+self._client = OpenAI(
+    api_key=api_key,
     max_retries=0,
 )
-
-@property
-def effect_scope(self) -> EffectScope:
-    return EffectScope.REMOTE_READ
-```
-
-**One tool-less request** (`openai_extract.py` lines 97-122):
-
-```python
+...
 response = self._client.responses.parse(
     model=self._model,
     input=[
-        {"role": "developer", "content": INSTRUCTIONS_V1},
+        {"role": "developer", "content": EXTRACT_INSTRUCTIONS_V1},
         {"role": "user", "content": user_payload},
     ],
-    text_format=ResponseContract,
+    text_format=ExtractorResponse,
     store=False,
     max_output_tokens=self._max_output_tokens,
 )
 ```
 
-Omit `tools`; never pass credentials in the payload. Set SDK `max_retries=0`; map rate-limit/server/timeout/connection to `STAGE_TRANSIENT_FAILURE`, all other SDK errors to permanent failure (`lines 112-122`). Map refusal, incomplete, missing parsed output, and schema-invalid responses to closed returned business outcomes (`124-176`), not exceptions and not retries.
+Each `generate()` or `review()` attempt makes exactly one Responses request. Use `max_retries=0`, `store=False`, bounded output, no tools, strict Structured Outputs, developer/user separation, and closed refusal/incomplete/schema/transient error mapping. Pipeline retry owns retries. Record bounded request/usage telemetry, configured model, and actual returned model without leaking keys or raw untrusted source.
 
-Generator input is one qualified `WorkflowSpec` plus trusted versions/facts needed by its semantic schema. Reviewer input is exactly four canonical sections: `WorkflowSpec`, rendered artifact files, provenance, and `ValidationReport`, each delimited as inert data. Developer instructions contain zero payload bytes. Reviewer output is judgment only and is never passed to the renderer.
+Tests mirror `tests/test_openai_extract.py:62-109,142-262`: exact request JSON, absent tools, key only in Authorization, parsed success, refusal, incomplete, schema-invalid, 429, and 500. Reviewer fixtures also cover YES, NO, 0.799, and 0.800.
 
----
-
-### `src/skillscout/adapters/skills_ref.py` (official validator adapter)
-
-**Internal analog:** none; this is the only new third-party adapter.
-
-Keep the wrapper narrow and deterministic:
+**Exact source-wide OpenAI import allowlist** relative to `src/skillscout/`:
 
 ```python
-from importlib.metadata import version
-from pathlib import Path
-from skills_ref import validate
-
-def run_official_validator(admitted_skill_dir: Path) -> tuple[str, tuple[str, ...]]:
-    return version("skills-ref"), tuple(validate(admitted_skill_dir))
+{
+    "adapters/openai_extract.py",
+    "adapters/openai_generate.py",
+    "adapters/openai_review.py",
+}
 ```
 
-The caller must pre-admit and retain control of the directory. Catch all adapter-boundary exceptions and return/map one bounded `official_validator_runtime_failure` error without raw exception text or absolute paths. Do not shell out, parse CLI prose, or treat this adapter as the full VAL-01/02 policy.
+Extend the AST confinement pattern at `tests/test_phase1_gap_closure.py:150-170,789-824` and assert equality with the actual importer set. Do not use globs, directory carve-outs, or a test exception. The existing Extractor path remains allowed and unchanged.
 
-Dependency installation is blocked on human Gate A3 (distribution legitimacy) and Gate B3 (exact registry graph, artifact hashes, and `uv.lock` bytes). No `skills-ref` import or execution is authorized before those gates.
+### Phase 3 ledger, orchestration, terminal summaries, and exact reuse
 
----
+**Durable ledger/manifest analogs:**
 
-### `src/skillscout/application/phase3.py` (PhaseThreeProcessor, event-driven stage handlers)
+- `src/skillscout/domain/models.py:197-241` — complete pre-lookup `RunIdentity`.
+- `src/skillscout/adapters/state.py:1597-1685` — creation and exact-identity lookups.
+- `src/skillscout/adapters/state.py:1734-2041` — full chain recomputation.
+- `src/skillscout/adapters/state.py:2252-2426` — manifest-first persistence and verified reads.
+- `src/skillscout/adapters/state.py:571-716,2639-2660` — descriptor-anchored retained state lock.
 
-**Exact analog:** `src/skillscout/application/processors.py`
+Copy the separation of runs, attempts, results, checkpoints, and hash-linked resume events; manifest-first/ledger-second commits; canonical content-addressed manifests; complete identity lookup; retained lock; and fail-closed verification. Do not copy the global stage-index assumption.
 
-Compose an exact `PhaseTwoProcessor` instance for Scout through Extractor; do not subclass it. Dispatch Qualifier/Generator/Validators/Reviewer in the Phase 3 processor and use `StageContext.prior_payloads` as the only persisted cross-stage source.
+Implement a dedicated Phase 3 profile-relative verifier that enforces exactly `(QUALIFIER, GENERATOR, VALIDATOR, REVIEWER)`, relative index 0..3, `CandidateExecutionAuthorityV1` as genesis/input authority, every attempt/event/result/output-hash/checkpoint continuity rule, and the legal terminal branch for the observed prefix. Do not add fake Scout/Reader/Extractor rows, import Phase 2 records, or relax `application/pipeline.py:168-188`, `domain/models.py:300-305,421-425`, or `adapters/state.py:1827-1837,2304-2315`.
 
-**Dispatch and skip shape** (`processors.py` lines 92-109):
+**Phase 3 terminal matrix:**
 
-```python
-def process(self, stage_input: StageInput, context: StageContext) -> StageOutcome:
-    if stage_input.stage is PipelineStage.SCOUT:
-        return self._scout(stage_input, context)
-    if stage_input.stage in (...):
-        skipped = _upstream_skip(context)
-        if skipped is not None:
-            return StageOutcome(payload=skipped, telemetry=None)
-        ...
-    raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+| Outcome | Package | Validation report | Review attestation | Required note |
+|---|---:|---:|---:|---|
+| `qualification_rejected` | no | no | no | lineage status is `not_evaluated_qualification_rejected` |
+| `lineage_rejected` | no | no | no | exact binding failure; human review |
+| `generator_refusal` | no | no | no | closed Generator outcome |
+| `generator_incomplete` | no | no | no | closed Generator outcome |
+| `generator_schema_failure` | no | no | no | closed Generator outcome |
+| `validation_rejected` | frozen | yes, errors | no | companion review status `review_skipped_validation_errors` |
+| `reviewer_refusal` | frozen | yes, clean | yes | attestation records refusal |
+| `reviewer_incomplete` | frozen | yes, clean | yes | attestation records incomplete |
+| `reviewer_schema_failure` | frozen | yes, clean | yes | attestation records schema failure |
+| `review_rejected` | frozen | yes, clean | yes | Reviewer NO |
+| `review_low_confidence` | frozen | yes, clean | yes | Reviewer YES below 0.80 |
+| `eligible_local_candidate` | frozen | yes, clean | yes | Reviewer YES at or above 0.80 |
+
+Every Phase 3-owned branch stores canonical `CandidateTerminalSummaryV1` bytes externally. The summary binds execution/workflow authorities, lineage resolution, optional Generator evidence, optional artifact/package digest, optional validation-report digest, optional review-attestation digest, `ELIGIBILITY_POLICY_VERSION`, and the closed outcome.
+
+**Partial reuse analog:** `src/skillscout/application/pipeline.py:313-339,560-583,716-781`
+
+Phase 2 verifies an exact completed identity and reprojects a deterministic summary with no processor calls. Phase 3 must be stricter: completed lookup re-verifies the Phase 3-relative chain and reprojects the **exact stored terminal-summary bytes** and exact stored optional package/report/attestation bytes. It must not reconstruct semantically equivalent JSON. Reuse creates zero new runs, attempts, results, checkpoints, resume events, terminal rows, or summary rows and makes zero Generator, Reviewer, validator, GitHub, or OpenAI calls. Missing/tampered external bytes fail closed without partial projection.
+
+Tests must snapshot every relevant byte sequence and every ledger table count before and after reuse for every terminal branch. Existing Phase 2 tests (`tests/test_phase2_pipeline.py:198-225`; `tests/test_cli_extract_repo.py:232-289`) prove call suppression but do not prove exact byte equality or zero-row deltas.
+
+### CLI: `cli.py`, `test_cli_validate_skill.py`, and `test_cli_security.py`
+
+**Composition-root analog:** `src/skillscout/cli.py:28-42,45-85`
+
+Keep non-echo parsing and closed `SafeFailure` output. The command order is: parse candidate-descriptor path; safely load descriptor; open only the read-only Phase 2 source state; resolve/reverify the source; on success construct execution authority; then open/lookup the separate Phase 3 state and run/reuse locally. No Phase 3 path receives a `RepositorySubject` or raw Reader bundle.
+
+CLI tests copy the zero-side-effect/call-count pattern at `tests/test_cli_extract_repo.py:139-200,232-346`: source-unavailable before Phase 3 state, every terminal branch, exact OpenAI counts, zero GitHub calls, zero remote writes, optional package materialization, hostile descriptor files, and no untrusted diagnostic echo.
+
+### Gate A3/B3: dependency files, preflight, acceptance tool, and tests
+
+Gate A3 is a human supply-chain decision for exactly `skills-ref==0.1.1`, official provenance, and PyPI wheel SHA-256:
+
+```text
+d35db5bb8de71ae301daf5ca9cb71f8a555e8c6f83a6d40e46a5bc09f8f461b5
 ```
 
-Extend the skip cascade with closed business outcomes:
+Record the source/distribution discrepancy and absence of Trusted Publishing as review signals. If Gate A3 rejects it, stop; do not substitute another package or validator.
 
-- no extracted selected workflow -> qualifier/generator/validators/reviewer skipped;
-- qualification reject -> zero Generator and Reviewer calls;
-- generation refusal/incomplete/schema failure -> validators/reviewer skipped;
-- validation errors -> zero Reviewer calls;
-- review NO/low confidence/refusal/incomplete/schema invalid -> terminal audited rejection.
+Gate B3 approves the exact complete transitive graph, every resolved artifact hash, and exact `uv.lock` bytes. The one-line `config/supply-chain/phase3-gate-b3.lock.sha256` is created only from that approval. Do not copy the current Phase 2/B2 lock digest as Phase 3 authority.
 
-**Business result pattern** (`processors.py` lines 469-572): refusal, incomplete, schema failure, no workflow, all-dropped, and success all return `StageOutcome` and telemetry. Only sanitized infrastructure failures raise `SafeFailure`.
+**Executable authority analog:** `tools/verify_phase1_gap_evidence.py:19-33,198-225,299-307,655-715`
 
-**Telemetry pattern** (`processors.py` lines 450-467): copy prompt/policy/model/request/latency/token data to `StageTelemetry`; the runner persists it. Qualification and validation should set `policy_version`; generation/review should set `prompt_version`, actual model, request ID, latency, and usage.
+Copy lowercase full-hash parsing, bounded regular non-link reads, immutable-input comparison, and verify-before-command ordering. `tools/verify_phase3_gate_b3.sh` must be dependency-free and run before every downstream `uv`, import, test, or official-validator command. Missing, malformed, symlinked, or mismatched authority fails before the following command/sentinel executes.
 
-**Semantic boundary:** Phase 3 may parse only the persisted `WorkflowSpec` and its bounded evidence. Never call `hydrate_read_bundle()` and never re-fetch or reintroduce complete repository text.
-
----
-
-### `src/skillscout/application/pipeline.py` (additive `phase3-v1` profile/root)
-
-**Exact analog:** current `phase2-v1` profile, completed-run reuse, and composition root in this file.
-
-Add `PHASE_THREE_STAGE_SEQUENCE` through `REVIEWER` and a `phase3-v1` `PipelineProfile`. Preserve the prefix invariant (`pipeline.py` lines 168-188):
-
-```python
-"phase2-v1": PipelineProfile(
-    (SCOUT, FILTER, READER, EXTRACTOR),
-    True,
-    RunStatus.COMPLETED,
-),
-
-if any(
-    profile.stages != tuple(PipelineStage)[: len(profile.stages)]
-    for profile in PIPELINE_PROFILES.values()
-):
-    raise RuntimeError("pipeline profile stages must be a spine prefix")
-```
-
-Do not change the `phase2-v1` tuple, terminal, seven registrations, or builder. Add a separate `PhaseThreeRuntime`, local candidate summary/package writer, and `build_phase_three_runtime()`.
-
-**Authority ceiling:** reuse exactly `PHASE_TWO_MAX_SCOPES` (`pipeline.py` lines 68-70) and the same `SideEffectPolicy` validation (`150-156`). The Phase 3 closed root should register exact concrete instances for processor, state, GitHub read, OpenAI extraction, OpenAI generation, official validator, OpenAI review, clock, IDs, and the local candidate writer; reject subclasses/wrong types before invocation, following `build_phase_two_runtime()` lines 832-883. No `REMOTE_WRITE` registration is permitted.
-
-**Ledger/retry seam:** the runner already starts a persisted attempt, invokes the context processor, validates bounded JSON, derives output/result/manifest hashes, records telemetry, and commits the stage (`pipeline.py` lines 365-552). Extend producer/schema/profile support; do not add per-stage retry loops in handlers or adapters.
-
-**Completed reuse seam** (`pipeline.py` lines 313-339): exact same identity must call `find_completed_run()`, verify the full chain, rewrite the local terminal summary/package projection, and return without processor/GitHub/OpenAI calls. Generalize the completed artifact writer selection for Phase 2 and Phase 3 without altering the fixture terminal behavior.
-
-**Durable writer seam** (`pipeline.py` lines 635-695): preserve retained flock, stale-temp recovery, bounded previous read, atomic replacement/restore, fsync, closed errors, and no operator absolute paths in output.
-
----
-
-### `src/skillscout/domain/models.py` (producer registry and terminal artifact contracts)
-
-**Exact analog:** producer registry and `ExtractionSummary`.
-
-Add `("2", "phase3-v1")` to `SUPPORTED_PRODUCER_SCHEMAS` without changing existing members (`models.py` lines 35-37). Define a strict bounded Phase 3 terminal summary analogous to `ExtractionSummary` (`487-507`) but containing only identifiers, stage outcomes, qualification/validation/review decisions, lineage/artifact/package digests, relative artifact locator, and `remote_writes_attempted=0`. Do not persist generated file bodies twice, raw source, secrets, absolute output paths, or reviewer replacement text.
-
-All new persisted contracts inherit:
-
-```python
-class StrictFrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-```
-
-(`models.py` lines 123-126). Stage payloads continue through the JSON type/depth/node/string/collection bounds in `StagePayload` (`lines 27-120`).
-
----
-
-### `src/skillscout/cli.py` (additive local candidate command)
-
-**Exact analog:** `extract-repo` (`cli.py` lines 45-64, 67-112).
-
-Add a sibling command such as `validate-skill`/`build-candidate` with `--subject`, `--state`, `--output`, a deterministic workflow selector if required, and `--fail-after` choices restricted to `PHASE_THREE_STAGE_SEQUENCE`. Construct only through `build_phase_three_runtime()` with environment-injected clients.
-
-Preserve `SafeArgumentParser.error()/exit()` byte-exact non-echo behavior (`cli.py` lines 28-42). Load and validate the subject before opening SQLite, emit canonical compact JSON, catch only `SafeFailure` publicly, collapse unexpected exceptions to a closed code, and always close state (`lines 67-112`). Never print operator paths, payload excerpts, credentials, raw validator prose, or exception representations.
-
-Update `tests/test_cli_security.py` subparser assertion in the same additive style as lines 123-133; do not weaken any existing non-echo or no-durable-state assertion.
-
----
-
-### `pyproject.toml` and `uv.lock` (human-gated configuration)
-
-**Analog:** the Phase 2 two-gate exact-lock ceremony recorded in `STATE.md` and `02-04-SUMMARY.md`.
-
-The plan must put dependency work behind two explicit blocking checkpoints:
-
-1. Gate A3 reviews `skills-ref==0.1.1`, source/publisher/version mismatch, wheel hash, and the intended direct/transitive nodes.
-2. Registry-only, non-building lock discovery produces candidate bytes; Gate B3 approves every new node/artifact/hash and the exact new `uv.lock` SHA-256 before sync, import, tests, or validator execution.
-
-Do not add/import transitive `click` or `strictyaml` directly. Do not silently change the Gate-B2 lock before the new authority is approved.
-
----
-
-### Test and fixture files
-
-#### `tests/test_openai_generate.py`, `tests/test_openai_review.py`, and OpenAI fixtures
-
-**Exact analog:** `tests/test_openai_extract.py`.
-
-Copy the request-shape proof (`lines 62-85`): exactly one POST, `store=false`, no `tools`, bounded tokens, exact strict Pydantic schema, developer-only versioned instructions, and user-only payload. Copy key confinement (`102-109`), result/telemetry mapping (`142-210`), and transient/permanent one-request matrices (`213-262`). Reviewer tests must assert exactly four input sections and prove its schema has no file/replacement fields. Pin 0.799 reject and 0.800 pass in the pure gate tests.
-
-Extend `tests/recorded_transport.py` through its existing loader seam (`lines 26-46`) or add bounded generator/reviewer directory loaders. Retain `RecordedTransport`'s reject-unrecorded behavior (`132-159`).
-
-#### `tests/test_qualification.py`, `test_skill_generation.py`, `test_skill_validation.py`, and `tests/fixtures/skills/**`
-
-Use strict fixture matrices rather than broad snapshots:
-
-- Qualification: stable version/order/reasons, exact score/confidence boundaries, every hard fail, binding mismatch.
-- Generation: deterministic bytes, stable slug/lineage, ambiguous collision fail-closed, exact provenance, package digest outside provenance, quote caps, file tree/modes, no scripts/binaries.
-- Validation: official-valid package, frontmatter/name mismatch, broken/deep/orphan refs, symlink/hard-link/identity swap, mode `0755`, binary, secret, injection, URL, download-execute, provenance omission/hash mismatch, and over-copy.
-
-Reuse the seven `tests/fixtures/injection/*.md` cases, but ensure Phase 3 receives only their bounded WorkflowSpec residue/canaries, never the raw full files. Add generator/reviewer delimiter variants.
-
-#### `tests/test_phase3_pipeline.py`
-
-**Exact analog:** `tests/test_phase2_pipeline.py`.
-
-Copy these proof groups:
-
-- closed prefix/profile/terminal and REMOTE_READ ceiling (`lines 99-120`);
-- full context chain, telemetry, terminal artifact, zero remote writes (`128-195`);
-- completed exact-identity reuse with zero processor calls (`198-225`);
-- interrupted resume hydrating verified prior payloads without prefix replay (`246-279`);
-- exact closed root registrations and adapter identity (`366-404`);
-- remote-write canary rejected before invocation (`407-424`);
-- no caller-supplied policy/registration widening and wrong concrete/subclass rejection (`427-504`).
-
-Also pin business rejection call counts: qualification reject = zero generator/reviewer; generation reject = one generator/zero reviewer; validation error = one generator/zero reviewer; review outcomes = one generator/one reviewer; same completed identity = zero GitHub/generator/reviewer calls.
-
-#### `tests/test_cli_validate_skill.py` and `tests/test_cli_security.py`
-
-**Exact analog:** `tests/test_cli_extract_repo.py`.
-
-Copy the happy-path evidence sweep (`lines 139-200`): parse terminal JSON, validate all stage outcomes/telemetry, assert `remote_writes_attempted == 0`, scan every durable/stdout/stderr byte for credentials and raw-text canaries, and keep the outbound socket sentinel empty except recorded HTTP transports.
-
-Copy rejection/no-call assertions (`202-229`), resume and third-run idempotency call counts (`232-289`), hostile subject non-echo/no-state behavior (`292-327`), and the byte-exact parser rejection proof from `tests/test_cli_security.py` lines 100-133.
+`tests/test_phase3_lock_preflight.py` adds the guarantee absent from Phase 1/2: mutate `uv.lock` and prove the downstream executable was never invoked. The acceptance tool should use a fixed command registry, offline environment where applicable, immutable pre/post checks, exact import allowlist, authority/identity matrices, terminal/reuse matrix, and remote-write/effect-ceiling canaries.
 
 ## Shared Patterns
 
-### Phase 1/2 Authority Is the Ceiling
+### Strict immutable contracts
 
-**Source:** `application/pipeline.py` lines 68-70, 150-156, 832-883
+**Source:** `src/skillscout/domain/models.py:109-126`
 
-Apply to the Phase 3 root and every adapter. Allowed scopes remain `{NONE, LOCAL_STATE, REMOTE_READ}`. Exact concrete adapter admission happens before any invocation. Phase 3 has no Publisher, branch, PR, merge, approval, install-at-runtime, subprocess, or remote-write capability.
+Apply `StrictFrozenModel`, forbidden extras, bounded collections/strings, strict parsing, and cross-field validators to descriptors, authorities, reports, artifacts, attestations, and terminal summaries.
 
-### WorkflowSpec Is the Sole Semantic Boundary
+### Closed errors and no secret/untrusted echo
 
-**Source:** `domain/extraction.py` lines 74-111; `application/processors.py` lines 692-745
+**Source:** `src/skillscout/application/ports.py:23-73`
 
-Qualification, generation, validation, and review consume a revalidated `WorkflowSpec` plus trusted upstream facts. They do not hydrate Reader bundles, fetch source text, or persist full repository bytes. Evidence excerpts remain bounded and hash-bound.
+Extend only the closed `ErrorCode`/`ERROR_SUMMARIES` vocabulary. Public diagnostics are sanitized. Never include raw repository text, descriptor content, model output, credentials, validator output paths, or absolute paths.
 
-### Closed Business Outcomes, Exceptions Only for Infrastructure
+### Manifest-first durability and verified trust entry
 
-**Source:** `application/processors.py` lines 469-572; `adapters/openai_extract.py` lines 112-176
+**Source:** `src/skillscout/adapters/state.py:2252-2426`
 
-Qualification fail, generator refusal/incomplete/schema invalid, validator findings, Reviewer NO/low confidence/refusal/incomplete/schema invalid are succeeded stage attempts with closed outcome payloads. Only mapped transient/permanent infrastructure failures raise; only transient failures consume the runner retry budget.
+Write immutable canonical manifest bytes before committing ledger success. On every trust entry, derive the closed locator and recompute manifest, output, row, checkpoint, and chain hashes; never trust a stored path or digest alone.
 
-### One Request per LLM Attempt
+### Retained serialization authority
 
-**Source:** `adapters/openai_extract.py` lines 58-122
+**Source:** `src/skillscout/adapters/state.py:687-716,2639-2660`; `src/skillscout/application/pipeline.py:607-695`
 
-Generator and Reviewer each have one `responses.parse` call, `max_retries=0`, `store=False`, no tools, strict response schema, bounded tokens, and fresh context. The pipeline, not SDK or handler, owns retry.
+Retain the same lock descriptor through recovery, read, atomic replacement/restore, and fsync. Do not delete/recreate the lock inode. Keep state and external-artifact writers structurally aligned.
 
-### Content-Addressed Durable Identity
+### Capability ceiling
 
-**Source:** `domain/canonical.py` lines 24-40, 49-90, 93-140
+**Source:** `src/skillscout/application/pipeline.py:63-79,832-883`; `tests/test_phase2_pipeline.py:366-424`
 
-Use canonical JSON and full SHA-256 identities; keep semantic IDs separate from run-row ownership and package manifests. Short slug suffixes are presentation only. Exclude self-hash fields from their own preimages.
+Phase 3 permits local state/file operations and the two bounded OpenAI `REMOTE_READ` adapters only. It makes no GitHub call after source resolution, registers no `REMOTE_WRITE`, and never constructs Publisher or merge authority.
 
-### Verified Resume and Exact Completed Reuse
+### Semantic isolation
 
-**Source:** `application/pipeline.py` lines 313-363, 365-552
+The complete verified `WorkflowSpec` is the sole semantic input from Phase 2. Generator and Reviewer never receive a raw Reader bundle. External text stays inert user data; model responses never supply repository, commit, license, content-hash, lineage, validator, or eligibility authority.
 
-Resume only from `verify_run_chain()`-authorized prior payloads. Exact completed identity verifies the full chain and performs zero processor/remote calls. Changed workflow/version/prompt/policy/model identity starts fresh work and retains prior audit evidence.
+## Protected Phase 1/2 Seams
 
-### Descriptor-Anchored File Admission and Durability
+The planner must treat these as invariants, not extension points:
 
-**Source:** `adapters/localfs.py` lines 75-143, 154-185, 197-286, 288-329, 360-418; `application/pipeline.py` lines 607-695
-
-All package reads/writes are no-follow, descriptor-relative, identity-checked, bounded, lock-serialized, atomic, and fsynced. Validation runs only after package admission and while ownership is retained. Failures expose closed codes only.
-
-### Sanitized CLI and Diagnostics
-
-**Source:** `application/ports.py` lines 23-73; `cli.py` lines 28-42, 67-112
-
-Public errors come only from the closed ASCII bounded vocabulary. Discard argparse details, provider exceptions, absolute paths, secret matches, and candidate bytes. Reports identify pattern codes and relative package paths, never matched secret content.
-
-## Extension Seams and Non-Negotiable Pins
-
-| Seam | Extend Here | Preserve Exactly |
-|---|---|---|
-| Producer/profile | `SUPPORTED_PRODUCER_SCHEMAS`, `PIPELINE_PROFILES` | Existing fixture/Phase 2 members, prefix-indexed stages, terminals |
-| Processor | new composition-based `PhaseThreeProcessor` | Exact `PhaseTwoProcessor` behavior; no subclass override |
-| Authority root | additive `build_phase_three_runtime()` | `PHASE_TWO_MAX_SCOPES`; exact concrete types; no caller widening |
-| Stage persistence | existing `PipelineRunner` ledger | attempt lifecycle, bounded `StagePayload`, hashes, telemetry, retry ownership |
-| Completed reuse | existing `find_completed_run` + `verify_run_chain` | zero remote/model calls; same run identity; no new status transition |
-| Artifact writing | `AnchoredDirectory` / durable writer | no-follow, link/owner/mode checks, lock, atomic replace, fsync |
-| Generator/Reviewer | separate clients modeled on Extractor | one call/attempt, `store=false`, no tools, no credentials, fresh contexts |
-| CLI | sibling safe subcommand | parser non-echo, subject-before-state, compact JSON, closed errors |
-| Dependency graph | Gate A3/B3 only | no lock/import/test before human approvals |
+- `src/skillscout/domain/subjects.py` and `src/skillscout/adapters/subjects.py`: keep `RepositorySubject` and `load_subject()` unchanged.
+- `src/skillscout/application/processors.py`: preserve `PhaseTwoProcessor` behavior and its WorkflowSpec evidence verification.
+- `src/skillscout/application/pipeline.py:168-188`: do not append Phase 3 to global prefix profiles.
+- `src/skillscout/adapters/state.py:1734-2041`: keep the Phase 1/2 global verifier unchanged; add a separate Phase 3 verifier.
+- `src/skillscout/domain/extraction.py:124-134`: do not widen or repurpose `wf-fingerprint-v1` as complete authority or lineage.
+- `src/skillscout/adapters/openai_extract.py`: preserve the already verified Extractor adapter while including it in the exact final allowlist.
 
 ## No Analog Found
 
 | File | Role | Data Flow | Reason / Planner Direction |
 |---|---|---|---|
-| `src/skillscout/adapters/skills_ref.py` | service adapter | file-I/O request-response | First third-party validator adapter. Use the research's tiny in-process API wrapper, but put dependency and lock changes behind human Gate A3/B3. |
-| `tests/fixtures/skills/**` | test fixture | file-I/O | No existing Agent Skill package fixture tree. Build minimal explicit valid/invalid trees; never execute or import their contents. |
+| `src/skillscout/adapters/skills_ref.py` | service adapter | bounded file-I/O | First third-party validator adapter. Use the research-locked narrow in-process API only after Gate A3/B3 and exact package admission. |
+| `tests/fixtures/skills/**` | test fixture | file-I/O | No existing Agent Skill fixture tree. Create minimal explicit valid/invalid trees and never execute/import their contents. |
+
+There is also no exact analog for stored exact-byte `CandidateTerminalSummaryV1` reprojection or the dependency-free Gate-B3 fail-before-exec script. Use the cited composite analogs and the stricter research-locked invariants above.
 
 ## Metadata
 
-**Analog search scope:** `src/skillscout/domain`, `src/skillscout/adapters`, `src/skillscout/application`, `src/skillscout/cli.py`, and Phase 2 tests/recorded fixtures
-**Primary analog files read:** 10 source/support files and 5 focused test files
-**Pattern extraction date:** 2026-07-22
-**Source edits:** none; this pattern map is the only file written
+**Analog search scope:** `src/skillscout/**`, `tests/**`, `tools/**`, Phase 1/2 plans, summaries, and verification artifacts
+**Strong analogs read:** 15 source/test files plus Phase 1/2 planning evidence
+**Pattern extraction date:** 2026-07-23
+**Superseded assumption:** any Phase 3 design that replays or models a full Scout-to-Reviewer prefix

@@ -1,6 +1,6 @@
 # Phase 03: Validated Skill Candidate - Research
 
-**Researched:** 2026-07-22
+**Researched:** 2026-07-23
 **Domain:** Deterministic workflow qualification, documentation-only Agent Skill generation, artifact validation, and independent LLM review
 **Confidence:** MEDIUM
 
@@ -11,9 +11,10 @@
 - The output is a local, documentation-only, source-traceable Agent Skill candidate. It may contain `SKILL.md` and, only when necessary, one-level `references/` or text-only `assets/`; it must never contain `scripts/`, binary files, or executable file modes. [VERIFIED: `.planning/ROADMAP.md` Phase 3 success criteria]
 - Qualification is deterministic, versioned, passes at 75/100 by default, and is blocked by any hard failure. [VERIFIED: QUAL-01 and QUAL-02]
 - `WorkflowSpec` is the only semantic boundary from source repository content into qualification, generation, validation, review, and publishing. Complete README, documentation, or source bytes must not re-enter Phase 3. [VERIFIED: EXTR-04 and Phase 2 verification]
+- Phase 3 accepts only a strict `CandidateSubjectDescriptorV1` that points to an already verified, completed Phase 2 run and one selected full workflow fingerprint. Source resolution occurs before any Phase 3 run lookup or ledger creation; an unavailable/mismatched source is a sanitized pre-run result with zero downstream calls. Do not widen `RepositorySubject` or the existing `load_subject`. [VERIFIED: Phase 3 architecture reset]
 - Generator and Reviewer calls are tool-less, `store=false`, bounded, independently prompted, and receive no credentials. The Reviewer receives only the `WorkflowSpec`, generated artifact, provenance, and Validation Report; it judges but cannot return replacement files. [VERIFIED: REV-01, REV-02, SEC-01, and AGENTS.md]
 - Phase 3 preserves the Phase 2 authority ceiling: local state plus remote reads only. It introduces no branch, PR, merge, approval, release, package-install-at-runtime, or other remote-write capability. [VERIFIED: AGENTS.md, Phase 2 verification, and Phase 4 scope]
-- Identical input and version identities must reuse a verified artifact; validator errors, Reviewer `NO`, or Reviewer confidence below `0.80` are auditable business rejections and cannot create a publication plan. [VERIFIED: Phase 3 success criterion 6 and REV-03]
+- An identical completed `CandidateExecutionAuthorityV1` must reproject the exact terminal summary and any optional frozen artifact/report/attestation bytes; rejection branches may have no artifact. Validator errors, Reviewer `NO`, or Reviewer confidence below `0.80` are auditable terminal business outcomes and cannot create a publication plan. [VERIFIED: Phase 3 architecture reset, success criterion 6, and REV-03]
 - Deferred and out of scope: generated executable scripts, candidate-code execution, Draft PR publication, automatic revision loops, public marketplace publication, private repositories, and automatic merge/approval. [VERIFIED: `.planning/REQUIREMENTS.md` Out of Scope and v2 requirements]
 
 <phase_requirements>
@@ -26,8 +27,8 @@
 | GEN-01 | Generate an Agent Skills directory from a qualified `WorkflowSpec` | Structured semantic draft plus deterministic renderer/materializer |
 | GEN-02 | Documentation-only; no scripts, binaries, or executable bits | Closed path/type/mode allowlist and validator checks |
 | GEN-03 | Generalized rewrite; bounded, attributed excerpts only | Quote registry and deterministic over-copy policy |
-| GEN-04 | Machine-readable complete provenance | `references/provenance.json` contract and package manifest |
-| GEN-05 | Stable slug and versioned workflow fingerprint; update rather than duplicate | Separate lineage key, content artifact ID, package digest, and exact-run reuse |
+| GEN-04 | Machine-readable complete provenance | Generation-time-only `references/provenance.json`, complete WorkflowSpec authority, and external frozen package manifest |
+| GEN-05 | Stable slug and versioned workflow fingerprint; update rather than duplicate | Authority-bound lineage, pre-lookup execution identity, immutable artifact/package, external attestation/summary, and exact terminal reuse |
 | VAL-01 | Official Agent Skills validation plus format/reference/progressive-disclosure checks | Pinned `skills-ref` adapter plus SkillScout structural checks |
 | VAL-02 | Secret, dangerous action, tool, download/execute, injection, URL, provenance, scripts, and over-copy checks | Versioned deterministic validation policy and adversarial fixtures |
 | VAL-03 | Structured `error/warning/info`; every error blocks | Closed finding model, fail-closed validator runtime mapping, and gate matrix |
@@ -39,13 +40,13 @@
 
 ## Summary
 
-Phase 3 should be implemented as an additive `phase3-v1` full pipeline profile through `REVIEWER`, using a new `PhaseThreeProcessor` that composes the verified Phase 2 processor for Scout through Extractor and owns four new downstream handlers. Do not change `phase2-v1`, its terminal state, or its seven-registration composition root. This preserves the current prefix-indexed ledger verifier and makes Phase 3 resume/idempotency work through the same content-addressed checkpoint chain. [VERIFIED: codebase inspection of `PIPELINE_PROFILES`, `verify_run_chain`, `PhaseTwoProcessor`, and `build_phase_two_runtime`]
+Phase 3 is a separate local pipeline over a verified Phase 2 result, not a full-prefix replay of Scout through Extractor. A new bounded `CandidateSubjectDescriptorV1` and safe loader identify one completed Phase 2 run, one selected full workflow fingerprint, the expected complete `WorkflowSpec` digest, a verified-chain/output-hash anchor, and an optional strict prior-lineage binding. A read-only Phase 2 state/query seam verifies the completed chain and reconstructs the exact `WorkflowSpec` before Phase 3 opens or looks up any run. This preserves Phase 2 without repeating its GitHub/OpenAI work or weakening its ledger. [VERIFIED: Phase 3 architecture reset]
 
 Qualification and all artifact safety decisions must be deterministic. Use the LLM only to transform one qualified `WorkflowSpec` into a bounded semantic draft and to independently judge the rendered result. SkillScout, not either model, owns the slug, lineage key, filenames, frontmatter, provenance, file modes, package digest, validation findings, and final eligibility gate. [VERIFIED: project deterministic-first constraint; ASSUMED for the proposed ownership split]
 
 Run the official `skills-ref` validator, but do not mistake it for the complete Phase 3 validator. The current official repository marks the reference library as demonstration-only, and its `validate(Path)` implementation checks `SKILL.md` frontmatter and naming conventions; it does not validate links, progressive disclosure, provenance, executable bits, secrets, dangerous commands, or copied-source limits. [CITED: https://github.com/agentskills/agentskills/tree/main/skills-ref] [CITED: https://github.com/agentskills/agentskills/blob/main/skills-ref/src/skills_ref/validator.py]
 
-**Primary recommendation:** add a closed `phase3-v1` local-candidate pipeline with deterministic qualification/rendering/validation, one isolated generator call and one isolated reviewer call per selected workflow, exact artifact reuse, and a final typed gate that is publishable only when qualification passed, validation has zero errors, Reviewer says `YES`, and Reviewer confidence is at least `0.80`. [ASSUMED]
+**Primary recommendation:** resolve a strict candidate descriptor into `WorkflowSpecAuthorityV1` before run creation, compute a pre-lookup `CandidateExecutionAuthorityV1`, and make every Phase 3 terminal branch an immutable `CandidateTerminalSummaryV1`. Generation freezes a package before validation; review produces an external attestation and never mutates package bytes. Same-authority completed reuse reprojects the exact stored terminal bytes with zero new calls, rows, or events. [VERIFIED: Phase 3 architecture reset]
 
 ## Architectural Responsibility Map
 
@@ -56,7 +57,8 @@ Run the official `skills-ref` validator, but do not mistake it for the complete 
 | Frontmatter, provenance, and package rendering | API / Backend domain | Local Storage | Deterministic rendering owns exact bytes; an anchored writer materializes only declared regular files. [ASSUMED] |
 | Official and custom validation | API / Backend domain | Local Storage | Validators inspect a bounded local artifact and return data; they never execute artifact content. [VERIFIED: VAL-01 and VAL-02] |
 | Independent review | API / Backend adapter | OpenAI Responses API | A fresh tool-less call judges the four allowed inputs and returns a closed decision schema. [VERIFIED: REV-01 and REV-02] |
-| Artifact/checkpoint/reuse authority | Database / Storage | API / Backend | Existing SQLite plus canonical manifests verify every prefix before resume or completed-run reuse. [VERIFIED: Phase 2 verification] |
+| Phase 2 source resolution | Database / Storage | API / Backend | A read-only query seam verifies the referenced completed Phase 2 chain and selected complete WorkflowSpec before Phase 3 ledger access. [VERIFIED: Phase 3 architecture reset] |
+| Artifact/checkpoint/reuse authority | Database / Storage | API / Backend | Pre-lookup execution authority gates resume/reuse; immutable external summaries and attestations bind terminal facts without rewriting package bytes. [VERIFIED: Phase 3 architecture reset] |
 | Publication eligibility | API / Backend domain | — | A pure predicate combines qualification, validation, and review; Phase 3 has no publisher capability. [VERIFIED: REV-03 and Phase 4 boundary] |
 
 ## Project Constraints (from AGENTS.md)
@@ -101,13 +103,13 @@ Run the official `skills-ref` validator, but do not mistake it for the complete 
 | In-process `skills_ref.validate(Path)` | `skills-ref validate` subprocess | CLI proves the published executable, but subprocess adds process authority, output parsing, absolute-path leakage risk, and a command-name discrepancy between official repo and PyPI 0.1.1 docs. Use the Python API and add a single smoke test for the installed console entry point only if human supply-chain review requires it. [CITED: https://github.com/agentskills/agentskills/blob/main/skills-ref/src/skills_ref/cli.py] [CITED: https://pypi.org/project/skills-ref/] |
 | Deterministic renderer | Model-generated arbitrary file map | Arbitrary paths/frontmatter/modes turn model output into authority. A structured semantic draft keeps filesystem and identity decisions in trusted code. [ASSUMED] |
 | Closed regex/policy checks over bounded structured text | A new broad secret or Markdown-analysis package | Another package expands the approved dependency graph. The controlled renderer can reject arbitrary links/HTML and compare exact declared references without a general Markdown parser. [ASSUMED] |
-| Full-prefix `phase3-v1` profile | Importing a completed Phase 2 suffix into a new run | Current ledger verification requires stages to start at Scout with their enum index. Cross-producer checkpoint import would require a new trust/migration design; a new full-prefix profile preserves existing authority. [VERIFIED: codebase inspection of `verify_run_chain`] |
+| Separate Phase 3 pipeline over a verified Phase 2 query result | Full-prefix `phase3-v1` replay or checkpoint-prefix import | The safe query seam validates Phase 2 under its own profile and supplies a content-bound authority object; Phase 3 then owns a new ledger without replaying upstream API/model calls or pretending imported rows belong to its chain. [VERIFIED: Phase 3 architecture reset] |
 
 **Installation (do not run before the human dependency gate):**
 
 ```bash
-# Gate A: review exact direct/transitive nodes and official source provenance.
-# Gate B: approve the resulting uv.lock bytes and new SHA-256 authority.
+# Gate A3: review the exact distribution, source provenance, and wheel hash.
+# Gate B3: approve the resulting transitive uv.lock graph and SHA-256 authority.
 ./.tools/uv-0.11.29/bin/uv add 'skills-ref==0.1.1'
 ./.tools/uv-0.11.29/bin/uv lock --check
 ```
@@ -122,7 +124,7 @@ At the dependency checkpoint, verify that the selected PyPI 0.1.1 wheel still ha
 |---------|----------|-----|-----------|-------------|---------|-------------|
 | `skills-ref` | PyPI | ~6 months; 0.1.1 uploaded 2026-01-10 | Registry API does not expose a useful count | `github.com/agentskills/agentskills`; PyPI metadata still names the older `anthropics/agentskills` URL | SUS | Flagged — planner must add `checkpoint:human-verify` before dependency/lock modification. [CITED: https://pypi.org/pypi/skills-ref/json] |
 | `click` | PyPI | Established but not independently age-resolved by the seam | Unknown to seam | Pallets project | SUS | Transitive; approve exact resolved version and hashes at the same checkpoint. [VERIFIED: package-legitimacy seam] |
-| `strictyaml` | PyPI | Established but not independently age-resolved by the seam | Unknown to seam | Resolve from package metadata during Gate A | SUS | Transitive; approve exact resolved version and hashes at the same checkpoint. [VERIFIED: package-legitimacy seam] |
+| `strictyaml` | PyPI | Established but not independently age-resolved by the seam | Unknown to seam | Resolve from package metadata during Gate A3 | SUS | Transitive; approve exact resolved version and hashes at Gate B3. [VERIFIED: package-legitimacy seam] |
 
 **Packages removed due to SLOP verdict:** none. [VERIFIED: package-legitimacy seam]
 
@@ -133,21 +135,40 @@ At the dependency checkpoint, verify that the selected PyPI 0.1.1 wheel still ha
 ### System Architecture Diagram
 
 ```text
-RepositorySubject
+CandidateSubjectDescriptorV1 (bounded local input; one selected fingerprint)
       |
       v
-Existing Phase 2 prefix (Scout -> Filter -> Reader -> Extractor)
-      | accepted, 1-3 validated WorkflowSpecs
+load_candidate_subject() [new safe loader; existing load_subject unchanged]
+      |
       v
+PhaseTwoCandidateSource query + verify completed Phase 2 chain/output anchor
+      | unavailable/mismatch/rejection/no_workflow/refusal/incomplete/schema/missing fingerprint
+      +--------------------------------------------------> candidate_source_unavailable
+      |                                                    no Phase 3 ledger/calls
+      v
+WorkflowSpecAuthorityV1 (complete WorkflowSpec + verified Phase 2 anchor)
+      |
+      v
+CandidateExecutionAuthorityV1 (configured/pre-lookup authority)
+      |                         |
+      | exact completed match   +--> reproject exact CandidateTerminalSummaryV1/package
+      |                              zero calls/rows/events; no mutation
+      v new/resumable Phase 3 run
 Qualifier (pure, versioned 100-point policy)
       |                         |
-      | qualified               +--> rejected_qualification -> audit summary
+      | qualified               +--> rejected_qualification -> terminal summary
+      v
+Lineage resolution (new lineage or exact PriorLineageBinding)
+      |                         |
+      | resolved                +--> ambiguity/rejection -> terminal summary
       v
 Generator adapter (fresh tool-less Responses call, one selected workflow)
       | structured semantic draft / refusal / incomplete / schema failure
       v
 Deterministic renderer + anchored content-addressed materializer
+      | GeneratedArtifactIdentityV1 + frozen package bytes
       | SKILL.md + optional one-level text resources + provenance.json
+      | external package_digest (never written back into package)
       v
 Validators
   preflight regular-file/path/size/mode checks
@@ -162,29 +183,35 @@ Independent Reviewer (fresh tool-less Responses call; four allowed inputs)
 eligible local candidate      review_rejected
       |
       v
-ValidatedCandidateSummary + exact package manifest
+external ReviewAttestationV1
+      |
+      v
+CandidateTerminalSummaryV1 + exact optional package/validation/review bindings
 
 No Phase 3 edge reaches a Publisher or REMOTE_WRITE adapter.
 ```
 
-This keeps entry, branching, processing, external service boundaries, and terminal rejection states explicit. [ASSUMED]
+The descriptor producer may derive at most three descriptors from a Phase 2 result by sorting full workflow fingerprints, but each descriptor crosses the Phase 3 boundary and runs independently. Generator/Reviewer requests, ledgers, retries, artifacts, attestations, and outcomes are never batched across workflows. [VERIFIED: Phase 3 architecture reset]
 
 ### Recommended Project Structure
 
 ```text
 src/skillscout/
 ├── domain/
+│   ├── candidate_authority.py  # descriptor, WorkflowSpec/execution/lineage authority
 │   ├── qualification.py       # policy, rule decisions, scoring report
 │   ├── skill_artifacts.py     # draft, provenance, manifest, identity, renderer
 │   ├── validation.py          # finding schema and deterministic checks
-│   └── review.py              # Reviewer response/decision contracts and gate
+│   └── review.py              # attestation, terminal summary, eligibility gate
 ├── adapters/
+│   ├── phase2_state.py        # read-only verified-chain/query seam
 │   ├── openai_generate.py     # one bounded structured generation call
 │   ├── openai_review.py       # separate one-call independent reviewer
 │   └── skills_ref.py          # narrow wrapper over skills_ref.validate(Path)
 ├── application/
 │   ├── processors.py          # preserve PhaseTwoProcessor behavior
-│   └── phase3.py              # PhaseThreeProcessor/composition helpers if size warrants
+│   ├── candidate_source.py    # separate bounded loader + pre-run resolution
+│   └── phase3.py              # Phase 3-only run/reuse/terminal orchestration
 └── cli.py                     # additive local candidate command
 
 tests/
@@ -196,13 +223,25 @@ tests/
 ├── test_skill_validation.py
 ├── test_openai_generate.py
 ├── test_openai_review.py
+├── test_candidate_source.py
+├── test_candidate_authority.py
 ├── test_phase3_pipeline.py
 └── test_cli_validate_skill.py
 ```
 
-Keep the existing Phase 2 modules and public behavior unchanged. Compose rather than subclass `PhaseTwoProcessor`, because production roots already use exact concrete-type admission. [VERIFIED: codebase inspection of `build_phase_two_runtime`]
+Keep the existing Phase 2 modules, `RepositorySubject`, `load_subject`, profile, and public behavior unchanged. Phase 3 receives only the verified query result; it neither composes `PhaseTwoProcessor` nor imports Phase 2 rows into its ledger. [VERIFIED: Phase 3 architecture reset]
 
-### Pattern 1: Closed Qualification Policy
+### Pattern 1: Strict Pre-Run Candidate Source Boundary
+
+`CandidateSubjectDescriptorV1` is a separate bounded, strict JSON contract containing: descriptor schema version, completed Phase 2 run ID, expected Phase 2 profile/producer version, authoritative Extractor envelope output hash or verified-chain anchor, selected full workflow fingerprint, expected complete WorkflowSpec digest, and optional `PriorLineageBindingV1`. The new loader applies the existing local-file ownership/link/size/canonical-JSON discipline but does not widen `RepositorySubject` or `load_subject`. [VERIFIED: Phase 3 architecture reset]
+
+The required state seam is a read-only `PhaseTwoCandidateSource.resolve(descriptor)` query. It must verify the referenced run is completed under the expected Phase 2 profile, re-verify the persisted Phase 2 chain under Phase 2 rules, verify the Extractor terminal envelope/output hash, locate exactly one selected fingerprint, strictly parse the complete `WorkflowSpec`, recompute its complete canonical digest, and return it with its verified-chain anchor. It must not execute Phase 2 handlers, create Phase 3 rows, or make GitHub/OpenAI calls. [VERIFIED: Phase 3 architecture reset]
+
+Phase 2 rejection, `no_workflow`, refusal, incomplete/schema failure, chain/output mismatch, missing fingerprint, duplicate selected fingerprint, or descriptor mismatch maps to one sanitized pre-run `candidate_source_unavailable`. This result has no Phase 3 run/ledger, validator invocation, Generator/Reviewer call, or retry side effect. Upstream business branches therefore do not appear in the Phase 3 terminal matrix. [VERIFIED: Phase 3 architecture reset]
+
+Because the existing verified ledger treats profiles as global prefixes beginning at Scout, the separate Phase 3 run needs an explicit profile-relative ordered-stage verifier for `(QUALIFIER, GENERATOR, VALIDATOR, REVIEWER)` rather than fake Scout/Extractor rows. Keep the Phase 2 prefix verifier unchanged; the new verifier applies the same attempt/event/output-hash continuity rules against the declared Phase 3 sequence and binds its first row to `CandidateExecutionAuthorityV1`. Do not relax stage-index checks globally or copy Phase 2 records into the Phase 3 chain. [VERIFIED: Phase 3 architecture reset and codebase inspection of `verify_run_chain`]
+
+### Pattern 2: Closed Qualification Policy
 
 **What:** Re-parse every workflow payload as `WorkflowSpec`, recompute/bind upstream facts, run hard failures first, then emit one ordered list of itemized score decisions. Never let the LLM assign or revise a score. [VERIFIED: QUAL-01 and deterministic-first constraint]
 
@@ -220,9 +259,13 @@ Keep the existing Phase 2 modules and public behavior unchanged. Compose rather 
 
 **Pass predicate:** `score >= 75 and hard_failures == ()`. Keep score, pass boolean, policy version, every check's observed value/result/points/rationale, and ordered rejection codes. [VERIFIED: QUAL-02]
 
-### Pattern 2: Structured Draft, Deterministic Package
+Within the Phase 3 `QUALIFIER` stage, qualification runs first. A rejection records `LineageResolutionV1(status="not_evaluated_qualification_rejected")`; a pass invokes deterministic lineage resolution before the stage output is committed. Thus lineage ambiguity is a Phase 3 terminal outcome without inventing a fifth pipeline stage. [VERIFIED: Phase 3 architecture reset]
+
+### Pattern 3: Structured Draft, Deterministic Package
 
 **What:** The generator returns semantic fields, not a filesystem. A trusted renderer supplies the stable slug, fixed frontmatter keys, headings, relative links, provenance location, filenames, modes, and canonical bytes. [ASSUMED]
+
+Define immutable code constants `RENDERER_VERSION = "skill-renderer-v1"` and `ELIGIBILITY_POLICY_VERSION = "candidate-eligibility-v1"`. They are producer authority, not mutable per-run flags; both enter `CandidateExecutionAuthorityV1` and every applicable report/summary. Any change requires a new value and invalidates completed reuse. [VERIFIED: Phase 3 architecture reset]
 
 **Recommended generator response fields:** `description`, `overview`, `when_to_use`, `inputs`, ordered `steps`, `outputs`, `failure_handling`, `approvals`, `limitations`, and up to four named Markdown reference topics. Each collection and string needs explicit Pydantic size bounds. No schema field may represent a path outside the closed reference-name pattern, executable content, frontmatter, `allowed-tools`, a script, or a binary. [ASSUMED]
 
@@ -240,47 +283,55 @@ Do not generate `allowed-tools`: the specification labels it experimental and it
 
 `assets/` may be added later in the phase only for bounded UTF-8 text templates (`.md`, `.txt`, `.json`) with the same path and mode checks. There is no requirement to emit it when a workflow does not need it. [VERIFIED: GEN-01 and GEN-02; ASSUMED for the text-only extension set]
 
-### Pattern 3: Separate Lineage, Artifact, and Package Identities
+### Pattern 4: Layered Authority, Artifact, Review, and Terminal Identity
 
-Use three different identities; combining them causes duplicates or circular hashes. [ASSUMED]
+Never use the workflow fingerprint alone as Phase 3 input or reuse authority. It is only the selected-version discriminator inside a complete verified source authority. [VERIFIED: Phase 3 architecture reset]
 
-| Identity | Recommended preimage | Stability purpose |
-|----------|----------------------|-------------------|
-| `lineage_id` | version + repo ID + normalized workflow title + sorted evidence paths | Stable update key across commits when the source workflow remains recognizably in the same location. Collision or ambiguous remap fails closed for human resolution. [ASSUMED] |
-| `artifact_id` | version + lineage ID + workflow fingerprint + generation prompt/policy + configured/actual model + canonical semantic draft hash | Identifies one generated semantic candidate. [ASSUMED] |
-| `package_digest` | canonical ordered map of relative path -> SHA-256 + mode + size | Binds the exact bytes that Validators reviewed and Phase 4 may publish. [ASSUMED] |
+| Contract / identity | Creation time and canonical authority | Purpose |
+|---------------------|---------------------------------------|---------|
+| `WorkflowSpecAuthorityV1` | Before Phase 3 lookup: digest the complete strictly parsed `WorkflowSpec`—every field, all workflow/step evidence bindings and bounded excerpts, schema and fingerprint versions—plus the authoritative Phase 2 Extractor envelope/output hash or verified-chain anchor. | Proves exactly which complete verified semantic payload crossed from Phase 2; fingerprint alone is insufficient. [VERIFIED: Phase 3 architecture reset] |
+| `CandidateExecutionAuthorityV1` | Before Phase 3 lookup: WorkflowSpecAuthority digest, selected full fingerprint, optional PriorLineageBinding digest, qualification policy/report schema versions, configured Generator model and prompt/output schema, `RENDERER_VERSION` plus artifact/provenance schema versions, pinned official-validator distribution/hash and custom validation policy/report schema, configured Reviewer model and prompt/output/policy versions, `ELIGIBILITY_POLICY_VERSION`, Phase 3 producer/profile, and retry-policy versions. | Sole resume/completed-lookup key. All members are knowable before lookup. A configured model/version change invalidates reuse. [VERIFIED: Phase 3 architecture reset] |
+| `GeneratedArtifactIdentityV1` | After generation: canonical structured draft plus a canonical generation-time authority projection containing WorkflowSpec authority, selected fingerprint, resolved lineage/slug, qualification-report digest and policy/schema, configured/actual Generator model, Generator prompt/output schema, `RENDERER_VERSION`, artifact/provenance schemas, and Phase 3 producer/retry versions. It excludes validator, Reviewer, eligibility, and other post-generation facts. | Identifies the generated meaning and complete authority that could affect its bytes without coupling package identity to later stages. [VERIFIED: Phase 3 architecture reset] |
+| `package_digest` | After deterministic rendering/provenance: digest the canonical ordered path -> content hash/mode/size manifest outside the package bytes. | Freezes exactly the package Validators and Reviewer inspect; never write the digest back into its own package. [VERIFIED: Phase 3 architecture reset] |
+| `ReviewAttestationV1` | Only after validation: bind immutable package digest, ValidationReport digest, configured/actual Reviewer model, review prompt/output/policy versions, outcome/verdict/confidence/reasons, and bounded telemetry. Store externally. | Proves the independent judgment over exact immutable bytes; it is never written into the reviewed package. [VERIFIED: Phase 3 architecture reset] |
+| `CandidateTerminalSummaryV1` | On every Phase 3 terminal branch: bind execution authority, WorkflowSpec authority, lineage-resolution result (including `not_evaluated_qualification_rejected`), optional bounded Generator outcome/actual-model evidence, optional artifact/package, optional ValidationReport digest, optional ReviewAttestation digest, eligibility, and closed outcome code. Store canonical bytes externally. | Phase 4 consumes this summary/attestation, not mutable stage state. Same-authority completed reuse reprojects these exact bytes and any present package without mutation. [VERIFIED: Phase 3 architecture reset] |
 
-The current `workflow_id` is derived from `wf-fingerprint-v1`, so it changes when normalized goal or ordered steps change and cannot alone be the cross-commit update key. [VERIFIED: `src/skillscout/domain/extraction.py` and `_build_workflow_spec`]
+Configured Generator/Reviewer model IDs and all version constants are pre-lookup authority. Actual model IDs cannot be required before a call; they are generation or review terminal evidence. A stable unchanged configured ID authorizes lookup of the already completed result, while changing that configured ID invalidates reuse. [VERIFIED: Phase 3 architecture reset]
 
-Use slug `slugify(normalized title)` plus a short repo-ID-derived suffix, not a fingerprint suffix. Store the full lineage ID and full package digest in machine-readable records; never trust the short suffix as collision authority. [ASSUMED]
+The current `workflow_id` is derived from `wf-fingerprint-v1`, so it changes when normalized goal or ordered steps change and cannot be lineage authority. A new lineage is the full digest of `lineage-v1`, numeric repository ID, and the initial complete `WorkflowSpecAuthorityV1` digest. [VERIFIED: `src/skillscout/domain/extraction.py`, `_build_workflow_spec`, and Phase 3 architecture reset]
 
-### Pattern 4: Provenance Without a Self-Hash Cycle
+An update retains that lineage and its stable slug only through an exact approved `PriorLineageBindingV1` from the prior lineage/package to the new WorkflowSpec authority. Its canonical fields include repo ID, full lineage ID, stable slug, prior package digest and terminal-summary digest, new WorkflowSpecAuthority digest, binding schema/policy version, and the durable approval-record digest. No binding creates a new lineage. A stale binding, collision, multiple mappings, mismatched package/source, or ambiguous mapping stops for human review. Title and evidence path may change under an approved binding but are never lineage preimage or matching authority. [VERIFIED: Phase 3 architecture reset]
+
+### Pattern 5: Package Provenance Without Future Facts or a Self-Hash Cycle
 
 Write canonical `references/provenance.json` with at least: [VERIFIED: GEN-04; ASSUMED for layout]
 
-- `schema_version`, `artifact_id`, `lineage_id`, stable slug;
+- `schema_version`, `GeneratedArtifactIdentityV1` digest, its generation-time authority digest, `WorkflowSpecAuthorityV1` digest, lineage ID, and stable slug;
 - repository URL, numeric repo ID, exact commit SHA, SPDX license;
 - workflow ID, full fingerprint, fingerprint version;
 - every evidence path, blob SHA, content hash, and bounded excerpt/quote registration;
-- WorkflowSpec schema, extraction prompt, qualification policy, generation prompt, artifact schema, and validation policy versions;
-- configured and actual generation model plus bounded request ID/usage telemetry where policy permits.
+- WorkflowSpec schema/fingerprint and verified Phase 2 anchor; qualification policy/report schema; configured and actual Generator model; Generator prompt/output schema; immutable `RENDERER_VERSION`; artifact/provenance schemas; Phase 3 producer/profile/retry-policy versions; and bounded Generator request ID/usage telemetry where policy permits.
 
-Do not put `package_digest` inside the file whose bytes it hashes. Compute the package digest after provenance is finalized and store it in the Generator envelope, Validation Report, terminal summary, and later publication manifest. [ASSUMED]
+Package provenance must never include the Reviewer model, review prompt/schema/policy, verdict, confidence, reasons, validation result, attestation, eligibility, or any other fact created after generation. Finalize provenance, render once, compute `package_digest` outside the package bytes, and freeze the admitted path/hash/mode/size manifest before validation or review. Later records may point to the digest; no later stage rewrites package bytes. [VERIFIED: Phase 3 architecture reset]
 
-### Pattern 5: Layered Validation and Fail-Closed Review
+### Pattern 6: Layered Validation and Fail-Closed Review
 
 Run Validators in this order: [ASSUMED]
 
 1. Admit only a trusted, content-addressed workspace: regular files, no symlinks/hard-link surprises, exact manifest path set, per-file and package size caps, UTF-8 text, modes exactly `0644`, no `scripts/`, no binary signatures.
 2. Call `skills_ref.validate(Path)` through a narrow adapter and map every returned item to a bounded `error` finding. Any exception becomes `official_validator_runtime_failure` (`error`) without raw exception/path leakage.
 3. Verify SkillScout structure: exact `SKILL.md`, name-directory equality, fixed frontmatter keys, declared one-level resources, no broken/orphan/nested links, main file line/token cap, and all files present in the package manifest.
-4. Verify provenance/source bindings against Scout/Filter/Reader/Extractor payloads and recompute artifact/package hashes.
+4. Verify provenance against `WorkflowSpecAuthorityV1` and the frozen manifest, reject future validation/review fields inside the package, and recompute the external artifact/package hashes.
 5. Scan normalized structured fields and rendered bytes for secrets, injection markers, dangerous commands, download/execute chains, forbidden tools/preapproval, URLs/HTML/Markdown images, and quote/over-copy violations.
 6. Emit one sorted `ValidationReport`; do not call Reviewer when `error_count > 0`.
 
 Use `error` for gate violations, `warning` only for human-quality risks that are safe to review, and `info` for version/size/count facts. Never downgrade an official validator error. [VERIFIED: VAL-03; ASSUMED for severity policy]
 
-### Pattern 6: Independent Reviewer as Judge Only
+Report headers must close the authority chain: `QualificationReport` binds WorkflowSpec and execution authority plus qualification versions; `ValidationReport` binds WorkflowSpec/execution/artifact identities, frozen package digest, `RENDERER_VERSION`, official-validator distribution/hash, and custom validation/report versions; `CandidateTerminalSummaryV1` additionally binds `ELIGIBILITY_POLICY_VERSION` and any ReviewAttestation. Validate these bindings before trusting report counts or eligibility. [VERIFIED: Phase 3 architecture reset]
+
+The final source-wide OpenAI import scan has one exact allowlist relative to `src/skillscout/`: `adapters/openai_extract.py`, `adapters/openai_generate.py`, and `adapters/openai_review.py`. Any `openai` import outside those three files fails the gate. The first is the already verified Phase 2 adapter; the latter two are the only new Phase 3 model boundaries. [VERIFIED: Phase 3 architecture reset]
+
+### Pattern 7: Independent Reviewer as Judge Only
 
 Create `OpenAIReviewClient` separately from both extraction and generation clients. One `review()` invocation is exactly one Responses request (`max_retries=0`); pipeline retry policy owns transient retry. Set `store=False`, bounded output tokens, and omit `tools`. [VERIFIED: Phase 2 adapter pattern and OpenAI SDK retry documentation at https://pypi.org/pypi/openai/2.46.0/json]
 
@@ -300,17 +351,20 @@ eligible_for_publication = (
 )
 ```
 
-This predicate is deterministic and belongs outside the Reviewer adapter. [VERIFIED: REV-03]
+This predicate is deterministic, versioned by immutable `ELIGIBILITY_POLICY_VERSION`, and belongs outside the Reviewer adapter. The resulting decision is recorded in `CandidateTerminalSummaryV1`; the package remains untouched. [VERIFIED: REV-03 and Phase 3 architecture reset]
 
 ### Anti-Patterns to Avoid
 
-- **Extending or mutating `phase2-v1`:** changes Phase 2's verified terminal behavior and exact composition root. Add `phase3-v1`. [VERIFIED: Phase 2 verification]
-- **Treating `RunStatus.COMPLETED` as approved:** completed means the pipeline reached its terminal, including clean business rejection. Phase 4 must require the exact eligible candidate report and package digest. [ASSUMED]
+- **Replaying/importing Phase 2 as a Phase 3 prefix:** blurs producer authority and repeats upstream side effects. Verify Phase 2 through the read-only query seam before creating a separate Phase 3 run. [VERIFIED: Phase 3 architecture reset]
+- **Relaxing the global ledger verifier so Phase 3 can start mid-enum:** weakens Phase 1/2 guarantees. Add an explicit profile-relative Phase 3 stage sequence and retain all hash/attempt/event checks. [VERIFIED: Phase 3 architecture reset]
+- **Widening `RepositorySubject` or `load_subject`:** mixes public-repository discovery authority with a local verified-candidate descriptor. Add `CandidateSubjectDescriptorV1` and its own safe loader. [VERIFIED: Phase 3 architecture reset]
+- **Treating any completed run as approved:** completed means one closed terminal outcome. Phase 4 must require an eligible `CandidateTerminalSummaryV1`, matching package digest, and matching `ReviewAttestationV1`. [VERIFIED: Phase 3 architecture reset]
 - **Letting the generator output filenames/frontmatter/modes:** converts model text into filesystem authority. Render from trusted structured fields. [ASSUMED]
 - **Calling Reviewer after a validation error:** spends cost and risks a model appearing to override deterministic safety. Emit `review_skipped_validation_errors`. [VERIFIED: VAL-03]
 - **Using `skills-ref` alone:** it does not cover most VAL-01/02 requirements and is labeled demonstration-only. [CITED: https://github.com/agentskills/agentskills/tree/main/skills-ref]
 - **Parsing validator CLI prose as a contract:** use the Python list-returning API and record the installed distribution version. [CITED: https://github.com/agentskills/agentskills/blob/main/skills-ref/src/skills_ref/validator.py]
-- **Hashing provenance with its own package digest:** creates a self-reference cycle. Keep semantic artifact ID and external package digest separate. [ASSUMED]
+- **Hashing provenance with its own package digest or future review facts:** creates a self-reference cycle or mutates reviewed bytes. Keep package provenance generation-time-only and store package digest, validation, review, and terminal facts externally. [VERIFIED: Phase 3 architecture reset]
+- **Putting actual model IDs in the pre-lookup key:** those values do not exist before a call. Configured IDs gate lookup; actual Generator/Reviewer IDs are artifact/attestation terminal evidence. [VERIFIED: Phase 3 architecture reset]
 - **Regenerating to seek a YES:** decided refusal/schema/NO/low-confidence outcomes are auditable business results; only transient infrastructure failures consume retry authority. [VERIFIED: Phase 2 retry pattern; ASSUMED for Phase 3 outcome mapping]
 - **Persisting complete upstream repository text:** Phase 3 must operate only on bounded WorkflowSpec fields and evidence excerpts. [VERIFIED: EXTR-04]
 
@@ -318,6 +372,7 @@ This predicate is deterministic and belongs outside the Reviewer adapter. [VERIF
 
 | Problem | Don't Build | Use Instead | Why |
 |---------|-------------|-------------|-----|
+| Phase 2 candidate trust | A raw WorkflowSpec/fingerprint loader or copied Phase 2 verifier | `CandidateSubjectDescriptorV1` + read-only `PhaseTwoCandidateSource.resolve()` under Phase 2 chain rules | Prevents fingerprint-only admission and keeps upstream failures outside the Phase 3 ledger. [VERIFIED: Phase 3 architecture reset] |
 | Agent Skills frontmatter conformance | A second independent YAML/spec parser | Pinned `skills_ref.validate(Path)` plus deterministic renderer | Official signal prevents drift, while trusted rendering removes ambiguous model-produced YAML. [CITED: https://agentskills.io/specification] |
 | LLM output parsing | Free-text JSON extraction or regex | Pydantic strict Structured Outputs through `responses.parse` | Refusal, incomplete, and schema-invalid outcomes stay explicit and typed. [CITED: https://developers.openai.com/api/docs/guides/structured-outputs] |
 | Retry/backoff | SDK internal retries or a new retry library | Existing `RetryPolicy` with SDK `max_retries=0` | Preserves one HTTP request per attempt and ledger-owned retry authority. [VERIFIED: Phase 2 verification] |
@@ -355,9 +410,9 @@ This predicate is deterministic and belongs outside the Reviewer adapter. [VERIF
 
 **Why it happens:** Model sampling is not a stable artifact cache key. [ASSUMED]
 
-**How to avoid:** Verify and reuse the completed `phase3-v1` chain before any GitHub/OpenAI call. Bind the artifact to the first successful canonical draft and its versions. [VERIFIED: existing completed-run reuse pattern; ASSUMED for Phase 3]
+**How to avoid:** First resolve the candidate against verified Phase 2 state without creating a Phase 3 ledger. Then compute `CandidateExecutionAuthorityV1`; an exact completed match reprojects the stored terminal summary and optional frozen package with zero calls, rows, or events. [VERIFIED: Phase 3 architecture reset]
 
-**Warning signs:** A same-identity test records any generator/reviewer request or creates a new artifact directory. [ASSUMED]
+**Warning signs:** An exact-authority completed test records any call, validator invocation, run/attempt/event/summary row, creates a new artifact directory, or serializes different terminal bytes. [VERIFIED: Phase 3 architecture reset]
 
 ### Pitfall 4: Cross-Commit Update Identity Uses the Fingerprint
 
@@ -365,11 +420,21 @@ This predicate is deterministic and belongs outside the Reviewer adapter. [VERIF
 
 **Why it happens:** Content identity and lineage identity serve different purposes. [ASSUMED]
 
-**How to avoid:** Add an explicit lineage key independent of commit/fingerprint, keep the stable slug attached to it, and fail closed on lineage collisions. [ASSUMED]
+**How to avoid:** Create lineage from repository ID plus the initial complete WorkflowSpec authority. Retain it only through an exact approved binding from the prior lineage/package to the new WorkflowSpec authority; fail stale/colliding/multiple/ambiguous mappings to human review. [VERIFIED: Phase 3 architecture reset]
 
 **Warning signs:** Slug contains the workflow fingerprint prefix or update lookup keys only on `workflow_id`. [ASSUMED]
 
-### Pitfall 5: Over-Copy Detection Pretends to Be a Legal Rule
+### Pitfall 5: Fingerprint-Only Candidate Admission
+
+**What goes wrong:** Two distinct complete `WorkflowSpec` payloads with the same selected fingerprint metadata, omitted evidence, or a mismatched Phase 2 envelope can reach the same reuse key. [VERIFIED: Phase 3 architecture reset threat model]
+
+**Why it happens:** The fingerprint does not bind every WorkflowSpec field, evidence excerpt, schema version, or authoritative Phase 2 output. [VERIFIED: Phase 3 architecture reset]
+
+**How to avoid:** Recompute `WorkflowSpecAuthorityV1` from the complete strict payload plus verified Phase 2 chain/output anchor before Phase 3 lookup; descriptor mismatch is pre-run `candidate_source_unavailable`. [VERIFIED: Phase 3 architecture reset]
+
+**Warning signs:** A reuse query accepts only run ID and workflow fingerprint, or a source-resolution failure leaves Phase 3 ledger rows. [VERIFIED: Phase 3 architecture reset]
+
+### Pitfall 6: Over-Copy Detection Pretends to Be a Legal Rule
 
 **What goes wrong:** A numeric match threshold is described as a copyright safe harbor. No universal character count establishes that. [ASSUMED]
 
@@ -379,7 +444,7 @@ This predicate is deterministic and belongs outside the Reviewer adapter. [VERIF
 
 **Warning signs:** Validator compares only exact raw strings, ignores Unicode/whitespace normalization, or permits unattributed quotes. [ASSUMED]
 
-### Pitfall 6: Reviewer Can Smuggle an Edit
+### Pitfall 7: Reviewer Can Smuggle an Edit
 
 **What goes wrong:** A reviewer returns a replacement `SKILL.md` inside a rationale or extra JSON field, collapsing judge and generator roles. [ASSUMED]
 
@@ -389,7 +454,7 @@ This predicate is deterministic and belongs outside the Reviewer adapter. [VERIF
 
 **Warning signs:** Reviewer output is passed to the renderer or a `suggested_skill` field appears. [ASSUMED]
 
-### Pitfall 7: Rejection Is Recorded as Infrastructure Failure
+### Pitfall 8: Rejection Is Recorded as Infrastructure Failure
 
 **What goes wrong:** Low qualification, official validation errors, Reviewer `NO`, refusal, or low confidence consume retry budget and repeatedly call the LLM. [ASSUMED]
 
@@ -402,6 +467,18 @@ This predicate is deterministic and belongs outside the Reviewer adapter. [VERIF
 ## Code Examples
 
 Verified and recommended patterns:
+
+### Immutable Producer Authority Versions
+
+```python
+# Source: Phase 3 architecture reset; values change only with a new producer contract.
+from typing import Final
+
+RENDERER_VERSION: Final = "skill-renderer-v1"
+ELIGIBILITY_POLICY_VERSION: Final = "candidate-eligibility-v1"
+```
+
+Include both values in `CandidateExecutionAuthorityV1` and applicable reports/summaries. Do not permit runtime configuration to mutate their meaning under the same string. [VERIFIED: Phase 3 architecture reset]
 
 ### Typed Qualification Decision
 
@@ -421,6 +498,8 @@ class QualificationCheck(StrictFrozenModel):
 class QualificationReport(StrictFrozenModel):
     schema_version: Literal["qualification-report-v1"]
     policy_version: Literal["qualification-policy-v1"]
+    workflow_spec_authority: Digest
+    candidate_execution_authority: Digest
     workflow_fingerprint: Digest
     threshold: Literal[75]
     score: Annotated[int, Field(ge=0, le=100)]
@@ -486,23 +565,31 @@ Construct the SDK client with `max_retries=0`, omit `tools`, and map refusal/inc
 | Tool authority | any `allowed-tools`; instructions to bypass approval, access credentials, enable network, or use tools absent from WorkflowSpec preconditions/approvals | Models never grant authority. [VERIFIED: project execution boundary; ASSUMED for matching] |
 | Injection residue | role override, ignore-prior, fake system/developer/tool markup, source delimiters, exfiltration markup, encoded control payloads, bidi/zero-width controls | Reuse all Phase 2 injection fixtures and add generator/reviewer-specific variants. OWASP recommends role/data separation, structured outputs, output validation, and least privilege. [CITED: https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html] |
 | URLs/markup | any non-provenance external URL, Markdown image, raw HTML network element, `data:` or protocol-relative URL | Permit only the exact source repository/commit attribution fields in canonical provenance; instructions must not create network authority. [ASSUMED] |
-| Provenance | missing/mismatched repo ID/URL/commit/license/fingerprint/version/evidence path/blob/content hash; unknown quote registration | Recompute from prior verified payloads, never from generator claims. [VERIFIED: GEN-04] |
+| Provenance/authority | missing/mismatched `WorkflowSpecAuthorityV1`, Phase 2 anchor, repo/commit/license/fingerprint/schema/evidence binding, configured/actual Generator ID, `RENDERER_VERSION`, or unknown quote registration; any Reviewer/validation/eligibility fact inside package | Recompute against the pre-run verified authority and generation record, never generator claims; future facts are external. [VERIFIED: GEN-04 and Phase 3 architecture reset] |
 | Over-copy | registered quote >120 chars; total quotes >240; unattributed normalized evidence match >=80 chars; quote not verbatim in WorkflowSpec evidence | Conservative v1 policy; thresholds are assumptions requiring confirmation. [ASSUMED] |
+| OpenAI import capability | any `openai` import outside `adapters/openai_extract.py`, `adapters/openai_generate.py`, `adapters/openai_review.py` | Exact final-scan allowlist relative to `src/skillscout/`; no glob, directory-wide, or test exception. [VERIFIED: Phase 3 architecture reset] |
 
-### Rejection Flow Matrix
+### Phase 3 Terminal and Reuse Matrix
 
-| Condition | Qualifier | Generator | Validators | Reviewer | Final outcome |
-|-----------|-----------|-----------|------------|----------|---------------|
-| Extractor did not yield selected workflow | skipped/rejected | zero calls | skipped | zero calls | `no_qualified_workflow` [ASSUMED] |
-| Score <75 or hard fail | rejected | zero calls | skipped | zero calls | `qualification_rejected` [VERIFIED: QUAL-02] |
-| Generator refusal/incomplete/schema-invalid | passed | one decided business outcome | skipped | zero calls | `generation_rejected` [ASSUMED] |
-| Any validation error | passed | generated | error report | zero calls | `validation_rejected` [VERIFIED: VAL-03] |
-| Reviewer `NO` | passed | generated | clean | one call | `review_rejected` [VERIFIED: REV-03] |
-| Reviewer `YES`, confidence <0.80 | passed | generated | clean | one call | `review_low_confidence` [VERIFIED: REV-03] |
-| Reviewer refusal/incomplete/schema-invalid | passed | generated | clean | one decided business outcome | `review_unavailable` [ASSUMED] |
-| Reviewer `YES`, confidence ≥0.80 | passed | generated | clean | one call | `eligible_local_candidate` [VERIFIED: REV-03] |
+`candidate_source_unavailable` is deliberately absent: it is a sanitized pre-run source-resolution result with no Phase 3 ledger. The table contains only terminal branches Phase 3 owns. [VERIFIED: Phase 3 architecture reset]
 
-All rows are succeeded pipeline attempts unless an infrastructure adapter raises a sanitized transient/permanent failure. [VERIFIED: established Phase 2 pattern; ASSUMED for Phase 3]
+| Owned terminal branch | Package fields | Validation report | Review attestation | `CandidateTerminalSummaryV1` outcome |
+|-----------------------|----------------|-------------------|--------------------|--------------------------------------|
+| Qualification rejection (`score <75` or hard fail) | absent | absent | absent | `qualification_rejected` with lineage status `not_evaluated_qualification_rejected`. [VERIFIED: QUAL-02 and Phase 3 architecture reset] |
+| Lineage ambiguity/rejection | absent | absent | absent | `lineage_rejected` with bound `LineageResolutionV1`; human review required. [VERIFIED: Phase 3 architecture reset] |
+| Generator refusal | absent | absent | absent | `generator_refusal` [VERIFIED: Phase 3 architecture reset] |
+| Generator incomplete | absent | absent | absent | `generator_incomplete` [VERIFIED: Phase 3 architecture reset] |
+| Generator schema failure | absent | absent | absent | `generator_schema_failure` [VERIFIED: Phase 3 architecture reset] |
+| Validation error | present and frozen | present/error | absent | `validation_rejected` [VERIFIED: VAL-03 and Phase 3 architecture reset] |
+| Reviewer skipped (`review_skipped_validation_errors`) | present and frozen | present/error | absent | Required companion review-status branch inside the same `validation_rejected` terminal summary; v1 defines no clean-validation skip. [VERIFIED: Phase 3 architecture reset] |
+| Reviewer refusal | present and frozen | present/clean | present with refusal outcome and response telemetry; verdict/confidence absent | `reviewer_refusal` [VERIFIED: Phase 3 architecture reset] |
+| Reviewer incomplete | present and frozen | present/clean | present with incomplete outcome and response telemetry; verdict/confidence absent | `reviewer_incomplete` [VERIFIED: Phase 3 architecture reset] |
+| Reviewer schema failure | present and frozen | present/clean | present with schema-failure outcome and sanitized telemetry; verdict/confidence absent | `reviewer_schema_failure` [VERIFIED: Phase 3 architecture reset] |
+| Reviewer `NO` | present and frozen | present/clean | present with `NO`, confidence, reasons, and telemetry | `review_rejected` [VERIFIED: REV-03] |
+| Reviewer `YES`, confidence `<0.80` | present and frozen | present/clean | present with `YES`, confidence, reasons, and telemetry | `review_low_confidence` [VERIFIED: REV-03] |
+| Reviewer `YES`, confidence `>=0.80` | present and frozen | present/clean | present with `YES`, confidence, reasons, and telemetry | `eligible_local_candidate` [VERIFIED: REV-03] |
+
+Every completed branch stores canonical terminal-summary bytes. An exact `CandidateExecutionAuthorityV1` completed lookup returns/reprojects those exact bytes and, only when present, the exact frozen package/validation/attestation bytes. Reuse performs zero Generator/Reviewer/validator calls and appends zero runs, attempts, events, or summary rows. Package, ValidationReport, and ReviewAttestation fields are optional by schema and materialized only for branches where the table marks them present. [VERIFIED: Phase 3 architecture reset]
 
 ## State of the Art
 
@@ -512,6 +599,7 @@ All rows are succeeded pipeline attempts unless an infrastructure adapter raises
 | Free-text model output then parsing | Strict JSON Schema / Pydantic Structured Outputs | Current OpenAI guidance inspected 2026-07-22 | Generator and Reviewer failures are typed, not parser heuristics. [CITED: https://developers.openai.com/api/docs/guides/structured-outputs] |
 | Assuming an official validator is production-complete | Use official reference as one versioned signal plus project checks | Official repository currently labels `skills-ref` demonstration-only | VAL-01/02 need a layered validator. [CITED: https://github.com/agentskills/agentskills/tree/main/skills-ref] |
 | CLI-only validator integration | Python `validate(Path) -> list[str]` API | Present in official main and PyPI docs | Avoid subprocess authority and brittle prose parsing. [CITED: https://github.com/agentskills/agentskills/blob/main/skills-ref/src/skills_ref/validator.py] |
+| Replaying an upstream pipeline as a downstream prefix | Strict descriptor + verified read-only upstream state/query seam | Phase 3 architecture reset, 2026-07-23 | Preserves producer boundaries, avoids repeat API/model work, and makes pre-run source failure distinct from Phase 3 terminal outcomes. [VERIFIED: Phase 3 architecture reset] |
 
 **Deprecated/outdated:**
 
@@ -524,33 +612,38 @@ All rows are succeeded pipeline attempts unless an infrastructure adapter raises
 |---|-------|---------|---------------|
 | A1 | Exact qualification weights, confidence hard floor `0.70`, and hard-fail vocabulary | Qualification | False positives/negatives or product-policy disagreement; lock in a versioned fixture evaluation before implementation |
 | A2 | Quote caps of 120 characters each / 240 total and unregistered-match threshold of 80 | Validation | Too strict for useful attribution or too permissive for copying; these are policy, not legal safe harbors |
-| A3 | `lineage_id` derived from repo ID, normalized title, and evidence paths is sufficiently stable for MVP | Identity | Title/path changes can require human remapping; collisions must fail closed |
-| A4 | Use a full-prefix `phase3-v1` run rather than importing a completed Phase 2 suffix | Architecture | Repeats Phase 2 remote reads/Extractor once under a new producer version; avoids weakening ledger authority but increases cost during the phase transition |
-| A5 | One selected workflow per generator/reviewer request is the correct isolation/cost unit | Architecture | CLI selection UX and multi-workflow orchestration may need an explicit subject contract |
 | A6 | `references/provenance.json` is the best machine-readable location | Generation | Catalog conventions may prefer a root manifest; no catalog layout decision exists yet |
 | A7 | `allowed-tools` must be omitted rather than left empty | Generation | A future client/catalog may require it, but current spec marks it experimental and omission is safer |
 
-## Open Questions
+**Resolved former assumptions:** A3 (title/path-derived lineage heuristic) is replaced by authority-bound lineage; A4 (full-prefix Phase 3 replay) is superseded by a separate descriptor/query boundary over verified Phase 2 state; and A5 (per-workflow request unit) is replaced by mandatory isolated descriptors with no cross-workflow batch authority. These are authoritative planning constraints, not remaining assumptions. [VERIFIED: Phase 3 architecture reset]
 
-1. **How is one workflow selected when a repository yields 2-3 `WorkflowSpec`s?**
-   - What we know: Phase 2 emits up to three workflows in one Extractor payload and fingerprints each. [VERIFIED: Phase 2 contracts]
-   - What's unclear: The current `RepositorySubject` does not carry a pre-extraction workflow selector, and Phase 3 should isolate generation/review per Skill. [VERIFIED: codebase inspection]
-   - Recommendation: add a deterministic local selection contract after Extractor (iterate sorted full fingerprints, one candidate sub-record each) while keeping at most three generation and three review calls per repository; if the stage runner cannot checkpoint sub-items safely, plan one batch Structured Output call with independent per-workflow results and explicitly test cross-workflow isolation. [ASSUMED]
+## Resolved Questions
 
-2. **What is the cross-commit lineage rule?**
-   - What we know: current workflow ID changes with fingerprint, and GEN-05 needs update rather than duplicate behavior. [VERIFIED: codebase inspection and GEN-05]
-   - What's unclear: no immutable source workflow identifier exists upstream. [VERIFIED: WorkflowSpec schema]
-   - Recommendation: introduce `lineage_id` now, test title/path-stable updates, and fail ambiguous mappings to human review. Do not silently claim semantic identity across unrelated changed workflows. [ASSUMED]
+1. **Multi-workflow selection and isolation**
+   - Resolution: outside Phase 3 run creation, derive strict `CandidateSubjectDescriptorV1` values from an already completed Phase 2 run by sorting full workflow fingerprints and capping at three. Each descriptor selects one complete WorkflowSpec and creates an independent Phase 3 authority, ledger, Generator call, Reviewer call, retry history, terminal summary, and optional package. No cross-workflow batch authority exists. [VERIFIED: Phase 3 architecture reset]
+   - Planning consequence: implement descriptor derivation/loading separately from Phase 3 orchestration and test ordering/cap, one-workflow boundaries, sibling isolation, and exact per-candidate calls/outcomes. [VERIFIED: Phase 3 architecture reset]
 
-3. **Which generator and reviewer model snapshot becomes production authority?**
-   - What we know: model is configuration-driven; the current project default is `gpt-5.6-terra`, while actual production snapshot choice remains open. [VERIFIED: AGENTS.md and STATE]
-   - What's unclear: fixture quality/cost results for generation and review do not yet exist. [VERIFIED: test fixture inventory]
-   - Recommendation: implement configurable model IDs and record configured/actual IDs; lock the production snapshot only after valid/reject/injection fixture evaluation. [VERIFIED: project decision; ASSUMED for gate timing]
+2. **Phase 3 input and Phase 2 state boundary**
+   - Resolution: a separate bounded safe loader reads `CandidateSubjectDescriptorV1`; existing `RepositorySubject` and `load_subject` remain unchanged. Before Phase 3 lookup, a read-only state seam verifies the referenced completed Phase 2 chain/output anchor, finds exactly one selected fingerprint, parses the complete WorkflowSpec, and recomputes `WorkflowSpecAuthorityV1`. Any upstream rejection/no-workflow/refusal/incomplete/schema failure or any descriptor/chain/fingerprint/digest mismatch yields sanitized pre-run `candidate_source_unavailable`, with no Phase 3 ledger and zero Generator/Reviewer/validator calls. [VERIFIED: Phase 3 architecture reset]
+   - Planning consequence: implement `PhaseTwoCandidateSource.resolve()` and pre-run error mapping before Phase 3 storage/orchestration tasks; test every unavailable source case and assert zero rows/events/calls. [VERIFIED: Phase 3 architecture reset]
 
-4. **Will the `skills-ref` dependency pass human supply-chain review?**
-   - What we know: PyPI 0.1.1 exists, but the legitimacy seam says `SUS`, the repo declares 0.1.0, the PyPI CLI name differs, and the official repo calls it demonstration-only. [VERIFIED: package checks and cited official sources]
-   - What's unclear: accepted exact wheel/source/maintainer provenance and transitive lock graph. [VERIFIED: no current lock entry]
-   - Recommendation: make this an early blocking checkpoint. If rejected, Phase 3 cannot truthfully satisfy VAL-01 until an approved official distribution/commit is selected. [VERIFIED: VAL-01]
+3. **Cross-commit lineage and update binding**
+   - Resolution: fingerprint is version identity, never lineage. New lineage is repository ID plus the initial complete WorkflowSpec authority. Retention requires one exact approved `PriorLineageBindingV1` from the prior lineage/package/terminal summary to the new WorkflowSpec authority; no binding creates a new lineage. Stale, colliding, multiple, mismatched, or ambiguous mappings stop for human review. Approved mappings retain lineage/slug despite title/evidence-path changes; title/path are never matching authority. [VERIFIED: Phase 3 architecture reset]
+   - Planning consequence: persist the binding and approval digest, model `LineageResolutionV1` as terminal evidence, and test new/exact/stale/tampered/colliding/multiple/ambiguous cases without implementing Phase 4 publication. [VERIFIED: Phase 3 architecture reset]
+
+4. **Layered execution, package, review, and reuse authority**
+   - Resolution: `CandidateExecutionAuthorityV1` contains only knowable pre-lookup authority, including configured model IDs and immutable `RENDERER_VERSION`/`ELIGIBILITY_POLICY_VERSION`; actual model IDs are later terminal evidence. `GeneratedArtifactIdentityV1` and the external package digest are finalized after generation, package bytes freeze before validation, `ReviewAttestationV1` remains external, and `CandidateTerminalSummaryV1` binds every owned terminal branch. Exact completed reuse returns the exact terminal and optional artifact/report/attestation bytes with zero new calls/rows/events. [VERIFIED: Phase 3 architecture reset]
+   - Planning consequence: define all five authority/identity contracts with canonical digest functions and optional fields by branch; test each configured/version invalidation, actual-model evidence placement, package immutability, forbidden future provenance fields, and exact byte-for-byte terminal reuse. [VERIFIED: Phase 3 architecture reset]
+
+5. **Official `skills-ref` dependency authority**
+   - Resolution: dependency Gate A3 (exact distribution/source provenance and wheel hash) and Gate B3 (exact transitive lock graph/hash approval) are blocking prerequisites. If either gate rejects `skills-ref`, its provenance, or its resolved lock graph, Phase 3 stops. No local parser, copied validator logic, CLI emulation, or custom checker may be presented as satisfying official-validator requirement VAL-01. [VERIFIED: Phase 3 planning resolution and VAL-01]
+   - Planning consequence: put A3/B3 before implementation tasks that import or lock `skills-ref`; record the approved distribution and lock authority; test missing/unapproved/version-mismatched validator as a blocking error. SkillScout custom validators remain additional VAL-01/02 controls, never a substitute. [VERIFIED: Phase 3 planning resolution]
+
+### Resolution Impact on Planning
+
+Required contracts: `CandidateSubjectDescriptorV1`, `WorkflowSpecAuthorityV1`, `PriorLineageBindingV1`, `LineageResolutionV1`, pre-lookup `CandidateExecutionAuthorityV1`, `GeneratedArtifactIdentityV1`, frozen package manifest/digest, `ValidationReport`, external `ReviewAttestationV1`, and external `CandidateTerminalSummaryV1`. Required immutable constants: `RENDERER_VERSION` and `ELIGIBILITY_POLICY_VERSION`. Required seams: separate safe descriptor loader, read-only `PhaseTwoCandidateSource` verified-chain query, profile-relative Phase 3 ledger verification rooted in execution authority, Phase 3 authority lookup, exact terminal-byte projector, and exact OpenAI import allowlist of `adapters/openai_extract.py`, `adapters/openai_generate.py`, `adapters/openai_review.py`. [VERIFIED: Phase 3 architecture reset]
+
+Required tests: descriptor limits and existing-loader non-regression; all `candidate_source_unavailable` cases with no ledger/calls; complete WorkflowSpec digest sensitivity for every field/evidence/anchor; deterministic descriptor ordering/cap and sibling isolation; lineage binding cases; pre-lookup authority invalidation for every configured/version field; actual model evidence placement; frozen-package and no-future-provenance invariants; every Phase 3 terminal branch; exact completed reprojection with zero calls/rows/events; package optionality; A3/B3 blocking; and exact OpenAI import allowlist enforcement. [VERIFIED: Phase 3 architecture reset]
 
 ## Environment Availability
 
@@ -563,11 +656,11 @@ All rows are succeeded pipeline attempts unless an infrastructure adapter raises
 | pytest | Validation architecture | ✓ | 9.1.1 | — [VERIFIED: local probe] |
 | `skills-ref` | VAL-01 | ✗ | — | No truthful fallback for the official-validator requirement; dependency approval is blocking. [VERIFIED: local probe] |
 | `OPENAI_API_KEY` | Live generation/review | ✗ | — | Recorded fixtures cover implementation; live model verification remains a later authenticated gate. [VERIFIED: presence-only environment probe] |
-| `SKILLSCOUT_GITHUB_TOKEN` | Full Phase 3 live repo path | ✗ | — | Recorded GitHub fixtures cover planning/implementation tests. [VERIFIED: presence-only environment probe] |
+| `SKILLSCOUT_GITHUB_TOKEN` | Phase 2 descriptor production only; not Phase 3 execution | ✗ | — | Phase 3 resolves already persisted verified Phase 2 state and must make zero GitHub calls. [VERIFIED: Phase 3 architecture reset and presence-only environment probe] |
 
 **Missing dependencies with no fallback:** approved/pinned `skills-ref` for VAL-01. [VERIFIED: local probe and VAL-01]
 
-**Missing dependencies with fallback:** OpenAI and GitHub credentials are absent, but recorded transports are the required default for Phase 3 automated tests. [VERIFIED: existing test architecture]
+**Missing dependencies with fallback:** OpenAI credentials are absent, but recorded transports are the required default for Generator/Reviewer tests. GitHub credentials are not a Phase 3 dependency because candidate-source resolution is local and read-only. [VERIFIED: existing test architecture and Phase 3 architecture reset]
 
 ## Validation Architecture
 
@@ -577,7 +670,7 @@ All rows are succeeded pipeline attempts unless an infrastructure adapter raises
 |----------|-------|
 | Framework | pytest 9.1.1 [VERIFIED: local environment] |
 | Config file | `pyproject.toml` (`testpaths = ["tests"]`, strict config/markers) [VERIFIED: codebase inspection] |
-| Quick run command | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_qualification.py tests/test_skill_generation.py tests/test_skill_validation.py tests/test_openai_review.py` [ASSUMED] |
+| Quick run command | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_candidate_source.py tests/test_candidate_authority.py tests/test_qualification.py tests/test_skill_generation.py tests/test_skill_validation.py tests/test_openai_review.py` [ASSUMED] |
 | Full suite command | `.tools/uv-0.11.29/bin/uv run --locked pytest -q` [VERIFIED: established project gate] |
 
 ### Phase Requirements -> Test Map
@@ -587,12 +680,13 @@ All rows are succeeded pipeline attempts unless an infrastructure adapter raises
 | QUAL-01/02 | 100-point rules, hard failures, stable ordering/version, 75 boundary | unit/property matrix | `... pytest -q tests/test_qualification.py` | ❌ Wave 0 |
 | GEN-01/02 | deterministic standard package; closed paths/types/modes; no scripts/binaries | unit + filesystem adversarial | `... pytest -q tests/test_skill_generation.py` | ❌ Wave 0 |
 | GEN-03/04 | paraphrase/quote limits and exact provenance bindings | unit + fixture | `... pytest -q tests/test_skill_generation.py tests/test_skill_validation.py` | ❌ Wave 0 |
-| GEN-05 | slug/lineage/artifact/package identity and exact reuse | unit + integration | `... pytest -q tests/test_skill_generation.py tests/test_phase3_pipeline.py` | ❌ Wave 0 |
+| GEN-05 | complete WorkflowSpec authority, pre-lookup execution authority, durable lineage, frozen package identity, external attestation/summary, and exact reuse | unit + integration | `... pytest -q tests/test_candidate_authority.py tests/test_skill_generation.py tests/test_phase3_pipeline.py` | ❌ Wave 0 |
 | VAL-01 | pinned official validator plus custom structure/progressive disclosure | integration | `... pytest -q tests/test_skill_validation.py -k 'official or structure'` | ❌ Wave 0 |
 | VAL-02/03 | all security/source/over-copy checks; severity/count/gate coherence | adversarial parameter matrix | `... pytest -q tests/test_skill_validation.py` | ❌ Wave 0 |
 | REV-01/02 | isolated request shape, four inputs only, no files in output schema | adapter contract | `... pytest -q tests/test_openai_review.py` | ❌ Wave 0 |
 | REV-03 | clean+YES+0.80 boundary; NO/0.799/error skips | unit + integration | `... pytest -q tests/test_openai_review.py tests/test_phase3_pipeline.py` | ❌ Wave 0 |
-| All | CLI happy path, every rejection, resume, zero-call same-identity reuse | E2E recorded transports | `... pytest -q tests/test_cli_validate_skill.py` | ❌ Wave 0 |
+| Input boundary | strict descriptor loader, verified Phase 2 query, every sanitized pre-run unavailable case, no ledger/calls | contract + integration | `... pytest -q tests/test_candidate_source.py` | ❌ Wave 0 |
+| All | every owned terminal branch, resume, byte-exact zero-side-effect completed reuse, optional package/report/attestation fields | E2E recorded transports | `... pytest -q tests/test_cli_validate_skill.py tests/test_phase3_pipeline.py` | ❌ Wave 0 |
 
 ### Sampling Rate
 
@@ -602,14 +696,18 @@ All rows are succeeded pipeline attempts unless an infrastructure adapter raises
 
 ### Wave 0 Gaps
 
-- [ ] Human dependency checkpoint for `skills-ref==0.1.1` plus exact transitive lock approval. [VERIFIED: package audit]
+- [ ] Blocking Gate A3 for exact `skills-ref==0.1.1` distribution/source/wheel provenance and Gate B3 for the exact transitive lock graph/hashes. [VERIFIED: Phase 3 planning resolution and package audit]
+- [ ] `tests/test_candidate_source.py` for strict bounded descriptor loading, unchanged `RepositorySubject`/`load_subject`, completed Phase 2 chain/output verification, complete selected WorkflowSpec recovery, and every `candidate_source_unavailable` path with zero Phase 3 rows/calls. [VERIFIED: Phase 3 architecture reset]
+- [ ] `tests/test_candidate_authority.py` for complete WorkflowSpec field/evidence/anchor digest sensitivity; all pre-lookup authority fields; immutable renderer/eligibility versions; configured-model invalidation; actual-model terminal placement; and canonical digest stability. [VERIFIED: Phase 3 architecture reset]
 - [ ] `tests/test_qualification.py` and score/hard-fail fixtures for 74/75/76, confidence 0.699/0.700, two-step hard fail, source-execution hard fail, and valid evidence. [ASSUMED]
-- [ ] `tests/test_skill_generation.py` with deterministic render, slug collision, provenance, permissions, no scripts/binaries, and quote limits. [ASSUMED]
+- [ ] `tests/test_skill_generation.py` with deterministic render, authority-bound provenance containing Generator but no future Reviewer/validation facts, byte freeze, external package digest, slug collision, permissions, no scripts/binaries, and quote limits. [VERIFIED: Phase 3 architecture reset; ASSUMED for quote thresholds]
 - [ ] `tests/test_skill_validation.py` with valid official fixture plus missing frontmatter, name mismatch, broken/deep/orphan reference, symlink, hard link/TOCTOU seam, mode `0755`, binary, secret, injection, URL, download-execute, missing provenance, hash mismatch, and over-copy cases. [ASSUMED]
 - [ ] `tests/test_openai_generate.py` and recorded parsed/refusal/incomplete/schema-invalid/429/500 responses. [ASSUMED]
 - [ ] `tests/test_openai_review.py` and recorded YES, NO, 0.799, 0.800, refusal, incomplete, schema-invalid, 429, and 500 responses. [ASSUMED]
-- [ ] `tests/test_phase3_pipeline.py` for closed profile/root, REMOTE_READ ceiling, skip cascade, retry, resume, and completed-run reuse. [ASSUMED]
-- [ ] `tests/test_cli_validate_skill.py` for happy path and every business rejection with exact GitHub/OpenAI call counts and zero remote writes. [ASSUMED]
+- [ ] `tests/test_phase3_pipeline.py` for a profile-relative `(QUALIFIER, GENERATOR, VALIDATOR, REVIEWER)` chain rooted in execution authority; unchanged Phase 2 prefix verification; no fake/imported upstream rows; isolated descriptors; lineage results; all terminal branches; retry; exact completed-summary/package/report/attestation reprojection; zero new calls/validators/rows/events; and reuse invalidation across every configured model and authority version. [VERIFIED: Phase 3 architecture reset]
+- [ ] `tests/test_lineage.py` for new lineage, exact durable binding, title/evidence-path changes with approved binding, no-binding new lineage, stale/tampered binding, repository mismatch, collision, multiple matches, and ambiguous remap. [VERIFIED: Phase 3 planning resolution]
+- [ ] `tests/test_cli_validate_skill.py` for pre-run source-unavailable diagnostics, every Phase 3 terminal branch, exact OpenAI call counts, zero GitHub calls, zero remote writes, and optional package materialization. [VERIFIED: Phase 3 architecture reset]
+- [ ] Final capability-scan test accepting OpenAI imports only in `adapters/openai_extract.py`, `adapters/openai_generate.py`, and `adapters/openai_review.py`. [VERIFIED: Phase 3 architecture reset]
 - [ ] Reuse the seven Phase 2 injection fixtures and canaries; add generated-artifact/reviewer delimiter variants. [VERIFIED: existing fixtures; ASSUMED for additions]
 
 ## Security Domain
@@ -633,14 +731,15 @@ Security enforcement is enabled at ASVS Level 1. [VERIFIED: `.planning/config.js
 
 | Pattern | STRIDE | Standard Mitigation |
 |---------|--------|---------------------|
+| Descriptor selects unverified/tampered Phase 2 output | Spoofing / Tampering | Separate bounded loader plus read-only completed-chain/output-anchor verification and complete WorkflowSpec authority digest before any Phase 3 ledger lookup. [VERIFIED: Phase 3 architecture reset] |
 | Generated prompt injection manipulates Reviewer | Spoofing / Tampering | Four-section inert-data envelope, separate developer instructions, no tools, strict response schema, deterministic final gate, injection corpus. [CITED: https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html] |
 | Path traversal, symlink swap, executable mode | Tampering / Elevation of Privilege | Closed relative paths, descriptor-anchored materialization, identity recheck, retained lock, exact `0644`, no scripts/binaries. [VERIFIED: existing localfs patterns; ASSUMED for artifact writer] |
 | Secret-like model output reaches artifact/report | Information Disclosure | Pre-render and post-render scans; canaries; report pattern IDs only; credentials header-only. [CITED: https://docs.github.com/en/code-security/reference/secret-security/supported-secret-scanning-patterns] |
 | Validator failure is treated as pass | Tampering | Exception -> structured `error`; every error blocks Reviewer/Publisher. [VERIFIED: VAL-03] |
-| Artifact changes after validation | Tampering | Package digest over exact path/hash/mode/size manifest; Phase 4 must publish only those bytes. [ASSUMED] |
-| Slug collision aliases another workflow | Spoofing | Full lineage identity comparison and collision fail-closed; short suffix never authorizes. [ASSUMED] |
+| Artifact changes after validation/review | Tampering | Freeze generation-time package bytes, keep package digest external, bind validation and ReviewAttestation to that digest, and let Phase 4 consume only the matching terminal summary. [VERIFIED: Phase 3 architecture reset] |
+| Slug collision or stale binding aliases another workflow | Spoofing | Lineage from repo ID + initial complete WorkflowSpec authority; exact approved prior package-to-new-authority binding; collision/multiple/stale/ambiguous mapping fails closed. [VERIFIED: Phase 3 architecture reset] |
 | Oversized model/package output exhausts resources | Denial of Service | Pydantic collection/string caps, bounded output tokens, package/file/line/token caps, manifest ceiling. [VERIFIED: existing bounded contract pattern; ASSUMED for Phase 3 cap values] |
-| Repeated calls seek a favorable review | Repudiation / Business Logic | Decided outcomes are recorded once; exact completed-run reuse; only infrastructure failures retry. [VERIFIED: established retry pattern] |
+| Repeated calls seek a favorable review | Repudiation / Business Logic | Every branch has immutable terminal bytes; exact execution-authority reuse reprojects them with zero new calls/rows/events; only infrastructure failures retry. [VERIFIED: established retry pattern and Phase 3 architecture reset] |
 
 ## Sources
 
@@ -665,19 +764,19 @@ Security enforcement is enabled at ASVS Level 1. [VERIFIED: `.planning/config.js
 
 ### Tertiary (LOW confidence)
 
-- None used as factual authority. Project-specific thresholds and lineage heuristics are explicitly tagged `[ASSUMED]` and listed in the Assumptions Log.
+- None used as factual authority. Remaining project-specific thresholds and layout choices are explicitly tagged `[ASSUMED]` and listed in the Assumptions Log.
 
 ## Metadata
 
 **Confidence breakdown:**
 
 - Standard stack: MEDIUM — existing pins are verified; new `skills-ref` is official-spec-linked but the legitimacy seam returned `SUS`, source/PyPI versions differ, and human lock approval is required.
-- Architecture: HIGH — recommendations follow verified Phase 1/2 profiles, exact prefix ledger, typed contracts, retry model, and capability roots.
+- Architecture: HIGH — the authoritative reset preserves verified Phase 2 state behind a strict descriptor/read-only query seam and defines pre-run, pre-lookup, generation, review, terminal, and reuse authorities without replaying the upstream pipeline.
 - Qualification policy: LOW — requirement dimensions and threshold are locked, but weights, confidence floor, and hard-fail vocabulary are project choices needing fixture evaluation.
 - Validation patterns: MEDIUM — control families come from requirements and official security guidance; exact quote and size thresholds are policy assumptions.
 - Reviewer integration: HIGH — it directly reuses the verified Extractor adapter shape and current official Structured Outputs behavior.
-- Identity/lineage: LOW — exact-input artifact reuse is well supported, but cross-commit workflow lineage is not present in the Phase 2 schema and needs a deliberate contract.
+- Identity/lineage: HIGH — the planning authority now explicitly separates fingerprint version identity from durable lineage binding and defines every fail-closed mapping outcome; implementation and adversarial tests remain Wave 0 work.
 
-**Research date:** 2026-07-22
+**Research date:** 2026-07-23
 
-**Valid until:** 2026-07-29 for `skills-ref`/OpenAI package details; 2026-08-21 for stable internal architecture and Agent Skills format findings.
+**Valid until:** 2026-07-30 for `skills-ref`/OpenAI package details; 2026-08-22 for stable internal architecture and Agent Skills format findings.

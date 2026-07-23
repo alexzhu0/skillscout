@@ -156,19 +156,57 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 **Plans:** 14 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 03-01-PLAN.md — Decide Gate A3 before resolving the anomalous official-validator candidate.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 03-02-PLAN.md — Resolve the exact skills-ref graph without installing or executing package code.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 03-03-PLAN.md — Decide Gate B3 for exact lock bytes and all transitive artifacts.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 03-04-PLAN.md — Enforce the approved lock identity before every dependency-backed command.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 03-05-PLAN.md — Define complete execution authority and exact lineage/binding rules.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
 - [ ] 03-06-PLAN.md — Reverify one completed Phase 2 workflow through a read-only pre-run source barrier.
 - [ ] 03-07-PLAN.md — Implement deterministic 100-point workflow qualification and hard failures.
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
 - [ ] 03-08-PLAN.md — Generate and freeze provenance-complete documentation-only Skill packages.
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
 - [ ] 03-09-PLAN.md — Run the approved official validator plus deterministic safety/source checks.
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
 - [ ] 03-10-PLAN.md — Add independent judge-only review, exact eligibility, and external attestations.
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
 - [ ] 03-11-PLAN.md — Persist an isolated Phase 3 ledger with byte-stable zero-side-effect reuse.
+
+**Wave 11** *(blocked on Wave 10 completion)*
+
 - [ ] 03-12-PLAN.md — Orchestrate the exact Phase 3 stage, terminal, resume, and budget cascade.
+
+**Wave 12** *(blocked on Wave 11 completion)*
+
 - [ ] 03-13-PLAN.md — Deliver the strict local build-candidate CLI and public security tests.
+
+**Wave 13** *(blocked on Wave 12 completion)*
+
 - [ ] 03-14-PLAN.md — Enforce final import, package, provenance, seam, and Nyquist acceptance gates.
 
 **Success Criteria:**
