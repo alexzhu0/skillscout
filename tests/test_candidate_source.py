@@ -14,7 +14,9 @@ from skillscout.adapters.subjects import load_subject
 from skillscout.application.pipeline import PipelineRunner
 from skillscout.application.ports import (
     CandidateSourceUnavailable,
+    ErrorCode,
     PhaseTwoCandidateSource,
+    SafeFailure,
     StageContext,
     StageOutcome,
 )
@@ -144,15 +146,26 @@ def _create_phase2_state(
     state_path = tmp_path / "phase2.db"
     store = SQLiteStateStore(state_path)
     try:
-        summary = PipelineRunner(store, _PhaseTwoResultProcessor(
-            outcome=outcome,
-            workflows=projected,
-        )).run(
-            load_subject(APPROVED_SUBJECT),
-            tmp_path / "phase2-output",
-            fail_after=fail_after,
-        )
-        chain = store.verify_run_chain(summary.run_id)
+        try:
+            summary = PipelineRunner(
+                store,
+                _PhaseTwoResultProcessor(
+                    outcome=outcome,
+                    workflows=projected,
+                ),
+            ).run(
+                load_subject(APPROVED_SUBJECT),
+                tmp_path / "phase2-output",
+                fail_after=fail_after,
+            )
+            run_id = summary.run_id
+        except SafeFailure as failure:
+            if fail_after is None or failure.code is not ErrorCode.PIPELINE_INTERRUPTED:
+                raise
+            row = store.connection.execute("SELECT run_id FROM runs").fetchone()
+            assert row is not None
+            run_id = str(row["run_id"])
+        chain = store.verify_run_chain(run_id)
         extractor = chain.results[-1]
         chain_anchor = sha256_digest(
             chain.model_dump(mode="json", exclude_none=False)
@@ -164,7 +177,7 @@ def _create_phase2_state(
         )
         descriptor = CandidateSubjectDescriptorV1(
             schema_version=CANDIDATE_DESCRIPTOR_SCHEMA_VERSION,
-            phase2_run_id=summary.run_id,
+            phase2_run_id=run_id,
             phase2_profile_version=PHASE_TWO_PROFILE_VERSION,
             phase2_producer_version=PHASE_TWO_PROFILE_VERSION,
             extractor_output_hash=extractor.output_hash,

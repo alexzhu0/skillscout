@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from skillscout.domain.enums import EffectScope, PipelineStage
+from skillscout.domain.candidate_authority import CandidateSubjectDescriptorV1
 from skillscout.domain.models import (
     Checkpoint,
     ResumeEvent,
@@ -38,6 +39,7 @@ class ErrorCode(StrEnum):
     STAGE_OUTPUT_INVALID = "stage_output_invalid"
     FORBIDDEN_EFFECT_SCOPE = "forbidden_effect_scope"
     INVALID_SUBJECT = "invalid_subject"
+    CANDIDATE_SOURCE_UNAVAILABLE = "candidate_source_unavailable"
 
 
 ERROR_SUMMARIES: dict[ErrorCode, str] = {
@@ -56,6 +58,7 @@ ERROR_SUMMARIES: dict[ErrorCode, str] = {
     ErrorCode.STAGE_OUTPUT_INVALID: "Stage output violated its closed contract.",
     ErrorCode.FORBIDDEN_EFFECT_SCOPE: "Dry-run adapter authority was rejected.",
     ErrorCode.INVALID_SUBJECT: "Subject input was rejected.",
+    ErrorCode.CANDIDATE_SOURCE_UNAVAILABLE: "Candidate source is unavailable.",
 }
 
 if not all(summary.isascii() and len(summary) <= 160 for summary in ERROR_SUMMARIES.values()):
@@ -71,6 +74,37 @@ class SafeFailure(Exception):
 
     def as_dict(self) -> dict[str, str]:
         return {"code": self.code.value, "summary": ERROR_SUMMARIES[self.code]}
+
+
+class CandidateSourceUnavailable(SafeFailure):
+    """One fixed no-echo boundary for every unavailable Phase 2 source."""
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.CANDIDATE_SOURCE_UNAVAILABLE)
+
+
+@dataclass(frozen=True)
+class PhaseTwoCandidateProjection:
+    """Minimal verified Phase 2 facts permitted to cross into Phase 3."""
+
+    phase2_run_id: str
+    workflow_spec_bytes: bytes
+    extractor_output_hash: str
+    verified_chain_anchor: str
+    repository_id: int
+    repository_url: str
+    pinned_commit_sha: str
+    license_spdx: str
+
+
+@runtime_checkable
+class PhaseTwoCandidateSource(Protocol):
+    """Read-only resolution of one strict completed-Phase-2 descriptor."""
+
+    def resolve(
+        self,
+        descriptor: CandidateSubjectDescriptorV1,
+    ) -> PhaseTwoCandidateProjection: ...
 
 
 @runtime_checkable
