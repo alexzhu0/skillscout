@@ -304,7 +304,9 @@ def test_checks_reject_every_closed_hard_failure_with_safe_nearby_case(
 
     assert expected_reason not in _hard_failures(safe)
     assert expected_reason in _hard_failures(unsafe)
-    assert any(check.hard_failure for check in evaluate_qualification_checks(unsafe))
+    unsafe_checks = evaluate_qualification_checks(unsafe)
+    assert sum(check.awarded_points for check in unsafe_checks) >= 75
+    assert any(check.hard_failure for check in unsafe_checks)
 
 
 def test_checks_cover_the_complete_closed_hard_failure_vocabulary() -> None:
@@ -344,4 +346,3 @@ def test_checks_score_each_dimension_independently() -> None:
     assert checks[2].awarded_points == 20
     assert checks[3].awarded_points == 25
     assert checks[4].awarded_points == 10
-
