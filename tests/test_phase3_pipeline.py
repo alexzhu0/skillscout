@@ -2289,16 +2289,18 @@ def test_reviewer_retry_attestation_and_ledger_retain_each_remote_attempt(
     assert projection.chain.attempts[-1].attempt_no == attestation.attempt_count
 
 
-class _InterruptReviewerAttemptPersistence:
+class _InterruptSemanticAttemptPersistence:
     def __init__(
         self,
         path: Path,
         *,
+        interrupt_stage: PhaseThreeStageV1,
         interrupt_running: set[int],
         interrupt_finalized: set[int],
-        tripped: set[tuple[str, int]],
+        tripped: set[tuple[str, str, int]],
     ) -> None:
         self._store = SQLiteStateStore(path)
+        self._interrupt_stage = interrupt_stage
         self._interrupt_running = interrupt_running
         self._interrupt_finalized = interrupt_finalized
         self._tripped = tripped
@@ -2306,16 +2308,20 @@ class _InterruptReviewerAttemptPersistence:
     def __getattr__(self, name: str):
         return getattr(self._store, name)
 
-    def persist_reviewer_attempt(self, chain) -> None:
-        self._store.persist_reviewer_attempt(chain)
+    def persist_semantic_attempt(self, chain) -> None:
+        self._store.persist_semantic_attempt(chain)
         attempt = chain.attempts[-1]
-        key = (attempt.status, attempt.attempt_no)
+        key = (attempt.stage.value, attempt.status, attempt.attempt_no)
         targets = (
             self._interrupt_running
             if attempt.status == "running"
             else self._interrupt_finalized
         )
-        if attempt.attempt_no in targets and key not in self._tripped:
+        if (
+            attempt.stage is self._interrupt_stage
+            and attempt.attempt_no in targets
+            and key not in self._tripped
+        ):
             self._tripped.add(key)
             raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
 
@@ -2330,7 +2336,7 @@ def test_reviewer_retry_resume_preserves_durable_failure_history(
 ) -> None:
     state_path = tmp_path / f"reviewer-resume-{interrupt_after_attempt}.db"
     calls: list[str] = []
-    tripped: set[tuple[str, int]] = set()
+    tripped: set[tuple[str, str, int]] = set()
 
     class TransientThenEligible(_CascadeReviewer):
         def review(self, **kwargs):
@@ -2346,8 +2352,9 @@ def test_reviewer_retry_resume_preserves_durable_failure_history(
 
     dependencies = PhaseThreeDependencies(
         completed_projector_factory=lambda: Miss(),
-        mutable_state_factory=lambda: _InterruptReviewerAttemptPersistence(
+        mutable_state_factory=lambda: _InterruptSemanticAttemptPersistence(
             state_path,
+            interrupt_stage=PhaseThreeStageV1.REVIEWER,
             interrupt_running=set(),
             interrupt_finalized={interrupt_after_attempt},
             tripped=tripped,
@@ -2392,7 +2399,7 @@ def test_reviewer_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
 ) -> None:
     state_path = tmp_path / "reviewer-inflight.db"
     calls: list[str] = []
-    tripped: set[tuple[str, int]] = set()
+    tripped: set[tuple[str, str, int]] = set()
 
     class Miss:
         def find_completed_candidate(self, _authority):
@@ -2400,8 +2407,9 @@ def test_reviewer_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
 
     dependencies = PhaseThreeDependencies(
         completed_projector_factory=lambda: Miss(),
-        mutable_state_factory=lambda: _InterruptReviewerAttemptPersistence(
+        mutable_state_factory=lambda: _InterruptSemanticAttemptPersistence(
             state_path,
+            interrupt_stage=PhaseThreeStageV1.REVIEWER,
             interrupt_running={1},
             interrupt_finalized=set(),
             tripped=tripped,
@@ -2444,7 +2452,7 @@ def test_reviewer_retry_exhaustion_is_durable_across_restarts(
 ) -> None:
     state_path = tmp_path / "reviewer-exhausted-resume.db"
     calls: list[str] = []
-    tripped: set[tuple[str, int]] = set()
+    tripped: set[tuple[str, str, int]] = set()
 
     class AlwaysTransient(_CascadeReviewer):
         def review(self, **_kwargs):
@@ -2457,8 +2465,9 @@ def test_reviewer_retry_exhaustion_is_durable_across_restarts(
 
     dependencies = PhaseThreeDependencies(
         completed_projector_factory=lambda: Miss(),
-        mutable_state_factory=lambda: _InterruptReviewerAttemptPersistence(
+        mutable_state_factory=lambda: _InterruptSemanticAttemptPersistence(
             state_path,
+            interrupt_stage=PhaseThreeStageV1.REVIEWER,
             interrupt_running=set(),
             interrupt_finalized={1, 2},
             tripped=tripped,
@@ -2490,6 +2499,251 @@ def test_reviewer_retry_exhaustion_is_durable_across_restarts(
         application.run(descriptor)
     assert still_exhausted.value.code is ErrorCode.RETRY_EXHAUSTED
     assert calls.count("reviewer") == 3
+
+
+@pytest.mark.parametrize("interrupt_after_attempt", (1, 2))
+def test_generator_retry_resume_preserves_durable_failure_history(
+    tmp_path: Path,
+    interrupt_after_attempt: int,
+) -> None:
+    state_path = tmp_path / f"generator-resume-{interrupt_after_attempt}.db"
+    calls: list[str] = []
+    tripped: set[tuple[str, str, int]] = set()
+
+    class TransientThenRefusal(_CascadeGenerator):
+        def generate(self, *, request):
+            self.calls.append("generator")
+            if self.calls.count("generator") < 3:
+                raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+            self.calls.pop()
+            return super().generate(request=request)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: _InterruptSemanticAttemptPersistence(
+            state_path,
+            interrupt_stage=PhaseThreeStageV1.GENERATOR,
+            interrupt_running=set(),
+            interrupt_finalized={interrupt_after_attempt},
+            tripped=tripped,
+        ),
+        generator_factory=lambda: TransientThenRefusal("refused", calls),
+        validator_factory=lambda: pytest.fail("validator must not run"),
+        reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+        artifact_projector_factory=lambda: pytest.fail("output must not run"),
+        run_id_factory=lambda: f"generator-resume-{interrupt_after_attempt}",
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    with pytest.raises(SafeFailure) as interrupted:
+        application.run(descriptor)
+    assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+
+    result = application.run(descriptor)
+
+    assert result.outcome == "generator_refusal"
+    assert calls.count("generator") == 3
+    store = SQLiteStateStore(state_path)
+    try:
+        chain = store.verify_candidate_run_chain(
+            f"generator-resume-{interrupt_after_attempt}"
+        )
+    finally:
+        store.close()
+    generator_attempts = tuple(
+        attempt
+        for attempt in chain.attempts
+        if attempt.stage is PhaseThreeStageV1.GENERATOR
+    )
+    assert tuple(
+        (attempt.attempt_no, attempt.status, attempt.outcome_code)
+        for attempt in generator_attempts
+    ) == (
+        (1, "failed", "stage_transient_failure"),
+        (2, "failed", "stage_transient_failure"),
+        (3, "succeeded", "refused"),
+    )
+
+
+def test_generator_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "generator-inflight.db"
+    calls: list[str] = []
+    tripped: set[tuple[str, str, int]] = set()
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: _InterruptSemanticAttemptPersistence(
+            state_path,
+            interrupt_stage=PhaseThreeStageV1.GENERATOR,
+            interrupt_running={1},
+            interrupt_finalized=set(),
+            tripped=tripped,
+        ),
+        generator_factory=lambda: _CascadeGenerator("refused", calls),
+        validator_factory=lambda: pytest.fail("validator must not run"),
+        reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+        artifact_projector_factory=lambda: pytest.fail("output must not run"),
+        run_id_factory=lambda: "generator-inflight",
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    with pytest.raises(SafeFailure) as interrupted:
+        application.run(descriptor)
+    assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+    assert calls.count("generator") == 0
+
+    result = application.run(descriptor)
+
+    assert result.outcome == "generator_refusal"
+    assert calls.count("generator") == 1
+    store = SQLiteStateStore(state_path)
+    try:
+        chain = store.verify_candidate_run_chain("generator-inflight")
+    finally:
+        store.close()
+    generator_attempts = tuple(
+        attempt
+        for attempt in chain.attempts
+        if attempt.stage is PhaseThreeStageV1.GENERATOR
+    )
+    assert tuple(
+        (attempt.status, attempt.outcome_code) for attempt in generator_attempts
+    ) == (("abandoned", "attempt_interrupted"), ("succeeded", "refused"))
+
+
+def test_generator_retry_exhaustion_is_durable_across_restarts(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "generator-exhausted-restart.db"
+    calls = 0
+
+    class AlwaysTransient:
+        model = "generator-configured"
+        max_output_tokens = 6_000
+
+        def generate(self, *, request):
+            nonlocal calls
+            calls += 1
+            raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: SQLiteStateStore(state_path),
+            generator_factory=lambda: AlwaysTransient(),
+            validator_factory=lambda: pytest.fail("validator must not run"),
+            reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+            artifact_projector_factory=lambda: pytest.fail("output must not run"),
+            run_id_factory=lambda: "generator-exhausted-restart",
+        ),
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    for _ in range(2):
+        with pytest.raises(SafeFailure) as exhausted:
+            application.run(descriptor)
+        assert exhausted.value.code is ErrorCode.RETRY_EXHAUSTED
+        assert calls == 3
+
+    store = SQLiteStateStore(state_path)
+    try:
+        chain = store.verify_candidate_run_chain("generator-exhausted-restart")
+    finally:
+        store.close()
+    generator_attempts = tuple(
+        attempt
+        for attempt in chain.attempts
+        if attempt.stage is PhaseThreeStageV1.GENERATOR
+    )
+    assert tuple(
+        (attempt.attempt_no, attempt.status, attempt.outcome_code)
+        for attempt in generator_attempts
+    ) == (
+        (1, "failed", "stage_transient_failure"),
+        (2, "failed", "stage_transient_failure"),
+        (3, "failed", "stage_transient_failure"),
+    )
+
+
+def test_reviewer_post_call_budget_failure_is_durable_and_not_retried(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "reviewer-post-call-budget.db"
+    calls: list[str] = []
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=PhaseThreeRuntimeProfile(
+            configured_generator_model_id="generator-configured",
+            configured_reviewer_model_id="reviewer-configured",
+            max_reviewer_output_tokens=2,
+        ),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: SQLiteStateStore(state_path),
+            generator_factory=lambda: _CascadeGenerator("parsed", calls),
+            validator_factory=lambda: _CascadeValidator(False, calls),
+            reviewer_factory=lambda: _CascadeReviewer(
+                "eligible_local_candidate",
+                calls,
+                max_output_tokens=2,
+            ),
+            artifact_projector_factory=lambda: pytest.fail("output must not run"),
+            run_id_factory=lambda: "reviewer-post-call-budget",
+        ),
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    for _ in range(2):
+        with pytest.raises(SafeFailure) as rejected:
+            application.run(descriptor)
+        assert rejected.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+        assert calls.count("reviewer") == 1
+
+    store = SQLiteStateStore(state_path)
+    try:
+        chain = store.verify_candidate_run_chain("reviewer-post-call-budget")
+    finally:
+        store.close()
+    reviewer_attempts = tuple(
+        attempt
+        for attempt in chain.attempts
+        if attempt.stage is PhaseThreeStageV1.REVIEWER
+    )
+    assert tuple(
+        (attempt.attempt_no, attempt.status, attempt.outcome_code)
+        for attempt in reviewer_attempts
+    ) == ((1, "failed", "stage_permanent_failure"),)
 
 
 def test_resume_budgets_exhaustion_uses_closed_retry_code(tmp_path: Path) -> None:
