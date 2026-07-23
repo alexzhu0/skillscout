@@ -75,6 +75,7 @@ from skillscout.domain.skill_artifacts import (
     FrozenSkillPackageV1,
     GeneratedArtifactIdentityV1,
     PackageIdentityV1,
+    RenderedPackageManifestV1,
 )
 from skillscout.domain.qualification import (
     QualificationReportV1,
@@ -789,6 +790,18 @@ class DescriptorAnchoredCompletedCandidateProjector:
             if review_attestation_bytes(attestation) != payload:
                 raise ValueError("noncanonical review attestation")
             return attestation.attestation_digest
+        if kind == "rendered_package":
+            package = FrozenSkillPackageV1.model_validate_json(payload, strict=True)
+            if canonical_json_bytes(package) != payload:
+                raise ValueError("noncanonical rendered package")
+            return sha256_digest(payload)
+        if kind == "package_manifest":
+            manifest = RenderedPackageManifestV1.model_validate_json(
+                payload, strict=True
+            )
+            if canonical_json_bytes(manifest) != payload:
+                raise ValueError("noncanonical package manifest")
+            return sha256_digest(payload)
         if kind.startswith(_LINEAGE_BINDING_KIND_PREFIX):
             binding = PriorLineageBindingV1.model_validate_json(payload, strict=True)
             if canonical_json_bytes(binding) != payload:
@@ -821,8 +834,10 @@ class DescriptorAnchoredCompletedCandidateProjector:
                 required.add(kind)
             elif kind in artifacts:
                 raise ValueError("uncited terminal artifact")
-        if not required.issubset(artifacts):
-            raise ValueError("incomplete terminal artifacts")
+        if terminal.package_identity is not None:
+            required.update({"rendered_package", "package_manifest"})
+        if set(artifacts) != required:
+            raise ValueError("terminal artifact set is not exact")
 
         qualification = QualificationReportV1.model_validate_json(
             artifacts["qualification_report"], strict=True
@@ -842,10 +857,29 @@ class DescriptorAnchoredCompletedCandidateProjector:
             if generated != terminal.generated_artifact_identity:
                 raise ValueError("generated artifact identity mismatch")
         if terminal.package_identity is not None:
-            package = PackageIdentityV1.model_validate_json(
+            package_identity = PackageIdentityV1.model_validate_json(
                 artifacts["package_identity"], strict=True
             )
-            if package != terminal.package_identity:
+            rendered_package = FrozenSkillPackageV1.model_validate_json(
+                artifacts["rendered_package"], strict=True
+            )
+            rendered_manifest = RenderedPackageManifestV1.model_validate_json(
+                artifacts["package_manifest"], strict=True
+            )
+            resolution = terminal.lineage_resolution
+            if (
+                package_identity != terminal.package_identity
+                or rendered_package.package_identity != package_identity
+                or rendered_package.rendered_manifest != rendered_manifest
+                or rendered_package.generated_artifact_identity
+                != terminal.generated_artifact_identity
+                or rendered_package.provenance.workflow_spec_authority
+                != terminal.workflow_spec_authority
+                or rendered_package.provenance.selected_workflow_fingerprint
+                != terminal.candidate_execution_authority.selected_workflow_fingerprint
+                or rendered_package.provenance.lineage_id != resolution.lineage_id
+                or rendered_package.provenance.stable_slug != resolution.stable_slug
+            ):
                 raise ValueError("package identity mismatch")
         if terminal.validation_report_digest is not None:
             validation = ValidationReportV1.model_validate_json(
@@ -855,6 +889,10 @@ class DescriptorAnchoredCompletedCandidateProjector:
                 validation.report_digest != terminal.validation_report_digest
                 or validation.candidate_execution_authority
                 != terminal.candidate_execution_authority
+                or validation.generated_artifact_identity
+                != terminal.generated_artifact_identity
+                or validation.package_identity != terminal.package_identity
+                or validation.package_digest != terminal.package_digest
             ):
                 raise ValueError("validation report mismatch")
         if terminal.review_attestation_digest is not None:

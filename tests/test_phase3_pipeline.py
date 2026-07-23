@@ -67,8 +67,7 @@ from skillscout.domain.review import (
     review_disposition,
 )
 from skillscout.domain.skill_artifacts import (
-    GeneratedArtifactIdentityV1,
-    PackageIdentityV1,
+    render_skill_package,
 )
 from skillscout.domain.validation import (
     OfficialValidatorAuthorityV1,
@@ -617,6 +616,7 @@ def _terminal_matrix_fixture(
         )
     authority = _execution_authority(
         workflow,
+        generator_output_schema_version="generation-draft-v1",
         artifact_schema_version="generated-artifact-identity-v1",
         custom_validation_policy_version="local-validation-policy-v1",
         reviewer_output_schema_version="reviewer-judgment-v1",
@@ -657,23 +657,53 @@ def _terminal_matrix_fixture(
             initial_workflow_spec_authority=authority.workflow_spec_authority,
         )
 
-    generated_preimage = {
-        "schema_version": "generated-artifact-identity-v1",
-        "draft_digest": _digest("6"),
-        "generation_authority_digest": _digest("7"),
+    post_generation = outcome not in {
+        "qualification_rejected",
+        "lineage_rejected",
+        "generator_refusal",
+        "generator_incomplete",
+        "generator_schema_failure",
     }
-    generated = GeneratedArtifactIdentityV1(
-        **generated_preimage,
-        artifact_digest=sha256_digest(generated_preimage),
+    frozen_package = None
+    generated = None
+    package = None
+    generation_usage = TokenUsage(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
     )
-    package_preimage = {
-        "schema_version": "package-identity-v1",
-        "rendered_manifest_digest": _digest("8"),
-    }
-    package = PackageIdentityV1(
-        **package_preimage,
-        package_digest=sha256_digest(package_preimage),
-    )
+    if post_generation:
+        runner = phase3_module.PhaseThreeRunner(
+            state=object(),
+            source=SimpleNamespace(
+                descriptor=SimpleNamespace(
+                    phase2_run_id="phase2-run",
+                    extractor_output_hash=_digest("3"),
+                    verified_chain_anchor=_digest("4"),
+                ),
+                repository_url="https://github.com/example/repository",
+                repository_id=123,
+                pinned_commit_sha="a" * 40,
+                license_spdx="MIT",
+            ),
+            authority=authority,
+            profile=_composition_profile(),
+            dependencies=object(),  # type: ignore[arg-type]
+        )
+        generation_authority = runner._generation_authority(
+            report=qualification,
+            lineage=lineage,
+            actual_generator_model_id="gpt-generator-actual",
+        )
+        frozen_package = render_skill_package(
+            draft=_generated_draft(),
+            authority=generation_authority,
+            request_id=f"req-{outcome}",
+            usage=generation_usage,
+            latency_ms=4,
+        )
+        generated = frozen_package.generated_artifact_identity
+        package = frozen_package.package_identity
     generated_outcome = {
         "generator_refusal": "refused",
         "generator_incomplete": "incomplete",
@@ -687,11 +717,7 @@ def _terminal_matrix_fixture(
             outcome=generated_outcome,
             actual_generator_model_id="gpt-generator-actual",
             request_id=f"req-{outcome}",
-            usage=TokenUsage(
-                prompt_tokens=10,
-                completion_tokens=5,
-                total_tokens=15,
-            ),
+            usage=generation_usage,
             latency_ms=4,
             generated_artifact_identity=generated
             if generated_outcome == "parsed"
@@ -699,15 +725,10 @@ def _terminal_matrix_fixture(
         )
     )
 
-    post_generation = outcome not in {
-        "qualification_rejected",
-        "lineage_rejected",
-        "generator_refusal",
-        "generator_incomplete",
-        "generator_schema_failure",
-    }
     report = None
     if post_generation:
+        assert generated is not None
+        assert package is not None
         findings = (
             (
                 ValidationFindingV1(
@@ -778,6 +799,8 @@ def _terminal_matrix_fixture(
     result = None
     attestation = None
     if outcome in reviewer_outcomes:
+        assert generated is not None
+        assert package is not None
         status = {
             "reviewer_refusal": "refused",
             "reviewer_incomplete": "incomplete",
@@ -848,13 +871,18 @@ def _terminal_matrix_fixture(
     }
     if post_generation:
         assert report is not None
+        assert frozen_package is not None
+        assert generated is not None
+        assert package is not None
         artifacts.update(
             {
                 "generated_artifact_identity": canonical_json_bytes(generated),
                 "package_identity": canonical_json_bytes(package),
                 "validation_report": canonical_json_bytes(report),
-                "rendered_package": b"exact-rendered-package-bytes",
-                "package_manifest": b"exact-rendered-manifest-bytes",
+                "rendered_package": canonical_json_bytes(frozen_package),
+                "package_manifest": canonical_json_bytes(
+                    frozen_package.rendered_manifest
+                ),
             }
         )
     if attestation is not None:
