@@ -31,6 +31,22 @@ All commands run from the repository root. The approved Phase 3 lock is checked 
 
 ---
 
+## Command Admission and Closed Grammar
+
+`tools/verify_phase3_validation_map.py` is a read-only, standard-library-only release gate. Before parsing, it must admit `03-01-PLAN.md` through `03-14-PLAN.md` and this file with bounded strict UTF-8 no-follow regular-file reads: `lstat`, `O_RDONLY | O_NOFOLLOW | O_CLOEXEC`, path/descriptor identity comparison, cap-plus-one descriptor read, and post-read path/descriptor stability. Symlinked, non-regular, oversized, swapped, malformed, or duplicate-table planning inputs fail closed.
+
+The checker owns a finite `EXPECTED_TASK_COMMANDS` mapping and an `EXPECTED_RELEASE_COMMAND`; agreement between mutable PLAN and map text is insufficient. Every decoded command is a single physical line made only of its approved literal segments joined by the exact ` && ` delimiter. It rejects `||`, `;`, `|`, `|&`, any `&` outside that delimiter, CR/LF and other controls, backticks, `$(`, parameter substitution, redirection, process substitution, heredoc forms, comments, escape sequences, and unapproved quoting or expansion. The only non-B3 task-command exceptions are fixed and exact:
+
+| Task ID | Exact allowed command |
+|---------|-----------------------|
+| 03-01-01 | `N/A — this is a non-auto-approvable human supply-chain decision.` |
+| 03-02-01 | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --no-build --no-sources --no-cache --managed-python --no-python-downloads --python 3.13.14 && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" tree --locked --package skills-ref` |
+| 03-03-01 | `git diff --check -- pyproject.toml uv.lock` |
+
+The dependency-free map self-check is allowed only as the initial segment of the canonical 03-14-02/Full suite release command. Every dependency-backed segment immediately follows the exact Gate B3 preflight, and full pytest is immediately followed by the terminal Gate B3 postflight.
+
+---
+
 ## Sampling Rate
 
 - **After every task commit:** Run that task's literal command from the table.
@@ -102,6 +118,8 @@ No live GitHub/OpenAI run is required for automated acceptance; networked smoke 
 
 ## Requirement Coverage
 
+The following inverse is regenerated from the Requirement cells in the Per-Task Verification Map; each of the 13 rows must match that map exactly.
+
 | Requirement | Validation evidence |
 |-------------|---------------------|
 | QUAL-01 | 03-07-01, 03-12-01, 03-12-02, 03-12-03, 03-13-01, 03-14-01, 03-14-02 |
@@ -131,6 +149,8 @@ No live GitHub/OpenAI run is required for automated acceptance; networked smoke 
 - [ ] No watch-mode flags or live-network dependency.
 - [ ] Dependency-free validation-map checker and its temporary-copy mutation suite pass before release credit.
 - [ ] The validation-map rows and Requirement Coverage inverse exactly match all source PLAN verification contracts.
+- [ ] The checker safely admits all 14 PLAN files and this map, rejects malformed or duplicate tables, and allows only its hard-coded canonical command sequences.
+- [ ] Parity-preserving logical-OR, separator, pipe, newline/control, substitution, redirection, process-substitution, heredoc, comment, and escape mutations fail before any mapped command could run.
 - [ ] Full suite command passes without changing `uv.lock`, as proven by the terminal Gate B3 postflight after pytest.
 - [ ] The full suite includes a fresh Gate B3 preflight immediately before repository-local `uv build --no-sources`.
 - [ ] `nyquist_compliant: true` is set only after `/gsd-validate-phase` confirms execution.
