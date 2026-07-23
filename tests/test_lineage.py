@@ -12,7 +12,6 @@ from skillscout.domain.candidate_authority import (
     PRIOR_LINEAGE_BINDING_SCHEMA_VERSION,
     LineageResolutionV1,
     PriorLineageBindingV1,
-    PriorLineageApprovalRecordV1,
     VerifiedPriorLineageEvidenceV1,
     derive_new_lineage,
     prior_lineage_approval_record,
