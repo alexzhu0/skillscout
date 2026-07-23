@@ -85,6 +85,7 @@ from skillscout.domain.qualification import (
 from skillscout.domain.review import (
     CandidateTerminalSummaryV1,
     ReviewAttestationV1,
+    ReviewerFailedAttemptV1,
     candidate_terminal_summary_bytes,
     review_attestation_bytes,
 )
@@ -917,10 +918,28 @@ class DescriptorAnchoredCompletedCandidateProjector:
                 for attempt in chain.attempts
                 if attempt.stage is PhaseThreeStageV1.REVIEWER
             )
+            durable_failures = (
+                tuple(
+                    ReviewerFailedAttemptV1(
+                        attempt_no=attempt.attempt_no,
+                        error_code=attempt.outcome_code,
+                    )
+                    for attempt in reviewer_attempts[:-1]
+                )
+                if reviewer_attempts
+                else ()
+            )
             if (
                 attestation.attestation_digest
                 != terminal.review_attestation_digest
-                or len(reviewer_attempts) != 1
+                or len(reviewer_attempts) != attestation.attempt_count
+                or not reviewer_attempts
+                or reviewer_attempts[-1].status != "succeeded"
+                or any(
+                    attempt.status not in {"failed", "abandoned"}
+                    for attempt in reviewer_attempts[:-1]
+                )
+                or durable_failures != attestation.failed_attempts
                 or attestation.generated_artifact_identity
                 != terminal.generated_artifact_identity
                 or attestation.package_identity != terminal.package_identity
@@ -938,11 +957,7 @@ class DescriptorAnchoredCompletedCandidateProjector:
                 != terminal.candidate_execution_authority.reviewer_retry_policy_version
                 or attestation.max_reviewer_attempts
                 != terminal.candidate_execution_authority.max_reviewer_attempts
-                or (
-                    reviewer_attempts
-                    and attestation.attempt_count
-                    != reviewer_attempts[0].attempt_no
-                )
+                or attestation.attempt_count != reviewer_attempts[-1].attempt_no
             ):
                 raise ValueError("review attestation mismatch")
 
@@ -3241,21 +3256,42 @@ class SQLiteStateStore:
             "SELECT status FROM phase3_runs WHERE run_id = ?",
             (chain.identity.run_id,),
         ).fetchone()
-        prior_count = 0
+        prior_result_count = 0
+        prior_attempt_count = 0
+        replaced_attempt: tuple[
+            CandidateStageAttemptV1, CandidateStageAttemptV1
+        ] | None = None
         if existing_row is not None:
             prior = self.verify_candidate_run_chain(
                 chain.identity.run_id,
                 expected_authority=chain.identity.candidate_execution_authority,
             )
-            prior_count = len(prior.results)
+            prior_result_count = len(prior.results)
+            prior_attempt_count = len(prior.attempts)
+            attempts_extend = (
+                len(chain.attempts) > prior_attempt_count
+                and chain.attempts[:prior_attempt_count] == prior.attempts
+            )
+            attempt_finalizes = (
+                len(chain.attempts) == prior_attempt_count
+                and prior_attempt_count > 0
+                and chain.attempts[:-1] == prior.attempts[:-1]
+                and prior.attempts[-1].status == "running"
+                and chain.attempts[-1].stage == prior.attempts[-1].stage
+                and chain.attempts[-1].attempt_no == prior.attempts[-1].attempt_no
+                and chain.attempts[-1].status in {"failed", "abandoned", "succeeded"}
+            )
+            if attempt_finalizes:
+                replaced_attempt = (prior.attempts[-1], chain.attempts[-1])
             if (
                 existing_row["status"] not in {"running", "interrupted"}
-                or len(chain.results) <= prior_count
+                or len(chain.results) < prior_result_count
                 or chain.identity != prior.identity
-                or chain.attempts[:prior_count] != prior.attempts
-                or chain.results[:prior_count] != prior.results
-                or chain.checkpoints[:prior_count] != prior.checkpoints
-                or chain.resume_events[: prior_count + 1] != prior.resume_events
+                or chain.results[:prior_result_count] != prior.results
+                or chain.checkpoints[:prior_result_count] != prior.checkpoints
+                or chain.resume_events[: prior_result_count + 1]
+                != prior.resume_events
+                or not (attempts_extend or attempt_finalizes)
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
@@ -3279,7 +3315,22 @@ class SQLiteStateStore:
                     "UPDATE phase3_runs SET status = ? WHERE run_id = ?",
                     (status, identity.run_id),
                 )
-            for attempt in chain.attempts[prior_count:]:
+            if replaced_attempt is not None:
+                prior_attempt, finalized_attempt = replaced_attempt
+                updated = database.execute(
+                    """UPDATE phase3_attempts
+                       SET attempt_hash = ?, attempt_json = ?
+                       WHERE attempt_hash = ? AND run_id = ?""",
+                    (
+                        finalized_attempt.attempt_hash,
+                        canonical_json_bytes(finalized_attempt).decode(),
+                        prior_attempt.attempt_hash,
+                        chain.identity.run_id,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            for attempt in chain.attempts[prior_attempt_count:]:
                 database.execute(
                     """INSERT INTO phase3_attempts
                        (attempt_hash, run_id, stage, stage_index, attempt_no, attempt_json)
@@ -3293,7 +3344,7 @@ class SQLiteStateStore:
                         canonical_json_bytes(attempt).decode(),
                     ),
                 )
-            for result in chain.results[prior_count:]:
+            for result in chain.results[prior_result_count:]:
                 database.execute(
                     """INSERT INTO phase3_results
                        (result_hash, attempt_hash, run_id, stage, stage_index,
@@ -3309,7 +3360,7 @@ class SQLiteStateStore:
                         canonical_json_bytes(result).decode(),
                     ),
                 )
-            for checkpoint in chain.checkpoints[prior_count:]:
+            for checkpoint in chain.checkpoints[prior_result_count:]:
                 database.execute(
                     """INSERT INTO phase3_checkpoints
                        (checkpoint_hash, run_id, stage, stage_index, result_hash,
@@ -3331,7 +3382,7 @@ class SQLiteStateStore:
                         canonical_json_bytes(checkpoint).decode(),
                     ),
                 )
-            event_offset = 0 if existing_row is None else prior_count + 1
+            event_offset = 0 if existing_row is None else prior_result_count + 1
             for event in chain.resume_events[event_offset:]:
                 database.execute(
                     """INSERT INTO phase3_resume_events
@@ -3364,6 +3415,29 @@ class SQLiteStateStore:
                 self._candidate_chain_mutation(chain, status=status)
             )
         except (TypeError, ValueError, ValidationError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def persist_reviewer_attempt(
+        self,
+        chain: VerifiedCandidateRunChain,
+    ) -> None:
+        """Durably append or finalize one Reviewer attempt without a result."""
+
+        try:
+            if (
+                type(chain) is not VerifiedCandidateRunChain
+                or len(chain.results) != 3
+                or not chain.attempts
+                or chain.attempts[-1].stage is not PhaseThreeStageV1.REVIEWER
+                or chain.attempts[-1].status == "succeeded"
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            self._snapshot_transaction(
+                self._candidate_chain_mutation(chain, status="running")
+            )
+        except SafeFailure:
+            raise
+        except (TypeError, ValueError, ValidationError, sqlite3.Error):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
     def persist_candidate_stage(

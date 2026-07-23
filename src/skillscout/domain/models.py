@@ -348,7 +348,6 @@ class VerifiedCandidateRunChain(StrictFrozenModel):
         count = len(self.results)
         if (
             count > len(PHASE_THREE_STAGE_SEQUENCE)
-            or len(self.attempts) != count
             or len(self.checkpoints) != count
             or len(self.resume_events) != count + 1
         ):
@@ -368,17 +367,33 @@ class VerifiedCandidateRunChain(StrictFrozenModel):
         previous_output_hash: str | None = None
         previous_result_hash: str | None = None
         previous_event_hash = genesis.event_hash
-        for index, (attempt, result, checkpoint, event) in enumerate(
-            zip(
-                self.attempts,
-                self.results,
-                self.checkpoints,
-                self.resume_events[1:],
-                strict=True,
-            )
+        attempts_by_stage: dict[PhaseThreeStageV1, list[CandidateStageAttemptV1]] = {}
+        prior_attempt_key: tuple[int, int] | None = None
+        for attempt in self.attempts:
+            attempt_key = (attempt.stage_index, attempt.attempt_no)
+            if (
+                attempt.run_id != run_id
+                or attempt.candidate_execution_authority_digest != authority_digest
+                or (prior_attempt_key is not None and attempt_key <= prior_attempt_key)
+            ):
+                raise ValueError("candidate attempt authority disagrees")
+            prior_attempt_key = attempt_key
+            attempts_by_stage.setdefault(attempt.stage, []).append(attempt)
+
+        for index, (result, checkpoint, event) in enumerate(
+            zip(self.results, self.checkpoints, self.resume_events[1:], strict=True)
         ):
             stage = PHASE_THREE_STAGE_SEQUENCE[index]
-            common_records = (attempt, result, checkpoint, event)
+            stage_attempts = attempts_by_stage.get(stage, [])
+            successful = [
+                attempt for attempt in stage_attempts if attempt.status == "succeeded"
+            ]
+            if len(successful) != 1:
+                raise ValueError("candidate successful attempt cardinality disagrees")
+            attempt = successful[0]
+            if stage is not PhaseThreeStageV1.REVIEWER and stage_attempts != [attempt]:
+                raise ValueError("candidate non-Reviewer attempt history disagrees")
+            common_records = (result, checkpoint, event)
             if any(
                 record.run_id != run_id
                 or record.candidate_execution_authority_digest != authority_digest
@@ -419,6 +434,57 @@ class VerifiedCandidateRunChain(StrictFrozenModel):
             previous_output_hash = result.output_hash
             previous_result_hash = result.result_hash
             previous_event_hash = event.event_hash
+
+        reviewer_attempts = attempts_by_stage.get(PhaseThreeStageV1.REVIEWER, [])
+        if reviewer_attempts:
+            reviewer_previous_checkpoint_hash = self.checkpoints[2].checkpoint_hash
+            reviewer_previous_output_hash = self.results[2].output_hash
+            expected_numbers = tuple(range(1, len(reviewer_attempts) + 1))
+            if (
+                tuple(attempt.attempt_no for attempt in reviewer_attempts)
+                != expected_numbers
+                or any(
+                    attempt.previous_checkpoint_hash
+                    != reviewer_previous_checkpoint_hash
+                    or attempt.previous_output_hash != reviewer_previous_output_hash
+                    for attempt in reviewer_attempts
+                )
+            ):
+                raise ValueError("candidate Reviewer attempt continuity disagrees")
+            reviewer_result_exists = count == len(PHASE_THREE_STAGE_SEQUENCE)
+            terminal_attempt = reviewer_attempts[-1]
+            if reviewer_result_exists:
+                if (
+                    terminal_attempt.status != "succeeded"
+                    or any(
+                        attempt.status not in {"failed", "abandoned"}
+                        for attempt in reviewer_attempts[:-1]
+                    )
+                    or any(
+                        attempt.outcome_code
+                        not in {"stage_transient_failure", "attempt_interrupted"}
+                        for attempt in reviewer_attempts[:-1]
+                    )
+                ):
+                    raise ValueError("candidate Reviewer result history disagrees")
+            elif count == len(PHASE_THREE_STAGE_SEQUENCE) - 1:
+                if (
+                    any(
+                        attempt.status not in {"failed", "abandoned"}
+                        for attempt in reviewer_attempts[:-1]
+                    )
+                    or terminal_attempt.status
+                    not in {"failed", "abandoned", "running"}
+                ):
+                    raise ValueError("candidate pending Reviewer history disagrees")
+            else:
+                raise ValueError("candidate Reviewer attempt precedes its stage")
+        for stage in attempts_by_stage:
+            stage_index = PHASE_THREE_STAGE_SEQUENCE.index(stage)
+            if stage_index > count or (
+                stage_index == count and stage is not PhaseThreeStageV1.REVIEWER
+            ):
+                raise ValueError("candidate attempt stage is not reachable")
         return self
 
 

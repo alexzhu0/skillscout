@@ -317,10 +317,10 @@ def _review_disposition_from_evidence(
 
 
 class ReviewerFailedAttemptV1(StrictFrozenModel):
-    """One sanitized transient remote-call failure before the retained result."""
+    """One durable sanitized failed or abandoned call before the retained result."""
 
-    attempt_no: Annotated[int, Field(ge=1, le=2)]
-    error_code: Literal["stage_transient_failure"]
+    attempt_no: Annotated[int, Field(ge=1, le=3)]
+    error_code: Literal["stage_transient_failure", "attempt_interrupted"]
 
 
 class ReviewAttestationV1(StrictFrozenModel):
@@ -365,10 +365,6 @@ class ReviewAttestationV1(StrictFrozenModel):
             self.attempt_count > self.max_reviewer_attempts
             or tuple(item.attempt_no for item in self.failed_attempts)
             != expected_failed_attempts
-            or any(
-                item.error_code != "stage_transient_failure"
-                for item in self.failed_attempts
-            )
         ):
             raise ValueError("attestation Reviewer attempt history disagrees")
         expected = sha256_digest(

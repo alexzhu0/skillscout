@@ -2289,6 +2289,209 @@ def test_reviewer_retry_attestation_and_ledger_retain_each_remote_attempt(
     assert projection.chain.attempts[-1].attempt_no == attestation.attempt_count
 
 
+class _InterruptReviewerAttemptPersistence:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        interrupt_running: set[int],
+        interrupt_finalized: set[int],
+        tripped: set[tuple[str, int]],
+    ) -> None:
+        self._store = SQLiteStateStore(path)
+        self._interrupt_running = interrupt_running
+        self._interrupt_finalized = interrupt_finalized
+        self._tripped = tripped
+
+    def __getattr__(self, name: str):
+        return getattr(self._store, name)
+
+    def persist_reviewer_attempt(self, chain) -> None:
+        self._store.persist_reviewer_attempt(chain)
+        attempt = chain.attempts[-1]
+        key = (attempt.status, attempt.attempt_no)
+        targets = (
+            self._interrupt_running
+            if attempt.status == "running"
+            else self._interrupt_finalized
+        )
+        if attempt.attempt_no in targets and key not in self._tripped:
+            self._tripped.add(key)
+            raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+
+    def close(self) -> None:
+        self._store.close()
+
+
+@pytest.mark.parametrize("interrupt_after_attempt", (1, 2))
+def test_reviewer_retry_resume_preserves_durable_failure_history(
+    tmp_path: Path,
+    interrupt_after_attempt: int,
+) -> None:
+    state_path = tmp_path / f"reviewer-resume-{interrupt_after_attempt}.db"
+    calls: list[str] = []
+    tripped: set[tuple[str, int]] = set()
+
+    class TransientThenEligible(_CascadeReviewer):
+        def review(self, **kwargs):
+            self.calls.append("reviewer")
+            if self.calls.count("reviewer") < 3:
+                raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+            self.calls.pop()
+            return super().review(**kwargs)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: _InterruptReviewerAttemptPersistence(
+            state_path,
+            interrupt_running=set(),
+            interrupt_finalized={interrupt_after_attempt},
+            tripped=tripped,
+        ),
+        generator_factory=lambda: _CascadeGenerator("parsed", calls),
+        validator_factory=lambda: _CascadeValidator(False, calls),
+        reviewer_factory=lambda: TransientThenEligible(
+            "eligible_local_candidate", calls
+        ),
+        artifact_projector_factory=lambda: object(),
+        run_id_factory=lambda: f"reviewer-resume-{interrupt_after_attempt}",
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    with pytest.raises(SafeFailure) as interrupted:
+        application.run(descriptor)
+    assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+
+    result = application.run(descriptor)
+
+    attestation = ReviewAttestationV1.model_validate_json(
+        result.artifacts["review_attestation"], strict=True
+    )
+    assert calls.count("reviewer") == 3
+    assert attestation.attempt_count == 3
+    assert tuple(
+        (attempt.attempt_no, attempt.error_code)
+        for attempt in attestation.failed_attempts
+    ) == (
+        (1, "stage_transient_failure"),
+        (2, "stage_transient_failure"),
+    )
+
+
+def test_reviewer_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "reviewer-inflight.db"
+    calls: list[str] = []
+    tripped: set[tuple[str, int]] = set()
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: _InterruptReviewerAttemptPersistence(
+            state_path,
+            interrupt_running={1},
+            interrupt_finalized=set(),
+            tripped=tripped,
+        ),
+        generator_factory=lambda: _CascadeGenerator("parsed", calls),
+        validator_factory=lambda: _CascadeValidator(False, calls),
+        reviewer_factory=lambda: _CascadeReviewer(
+            "eligible_local_candidate", calls
+        ),
+        artifact_projector_factory=lambda: object(),
+        run_id_factory=lambda: "reviewer-inflight",
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    with pytest.raises(SafeFailure) as interrupted:
+        application.run(descriptor)
+    assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+    assert calls.count("reviewer") == 0
+
+    result = application.run(descriptor)
+
+    attestation = ReviewAttestationV1.model_validate_json(
+        result.artifacts["review_attestation"], strict=True
+    )
+    assert calls.count("reviewer") == 1
+    assert attestation.attempt_count == 2
+    assert tuple(
+        (attempt.attempt_no, attempt.error_code)
+        for attempt in attestation.failed_attempts
+    ) == ((1, "attempt_interrupted"),)
+
+
+def test_reviewer_retry_exhaustion_is_durable_across_restarts(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "reviewer-exhausted-resume.db"
+    calls: list[str] = []
+    tripped: set[tuple[str, int]] = set()
+
+    class AlwaysTransient(_CascadeReviewer):
+        def review(self, **_kwargs):
+            self.calls.append("reviewer")
+            raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: _InterruptReviewerAttemptPersistence(
+            state_path,
+            interrupt_running=set(),
+            interrupt_finalized={1, 2},
+            tripped=tripped,
+        ),
+        generator_factory=lambda: _CascadeGenerator("parsed", calls),
+        validator_factory=lambda: _CascadeValidator(False, calls),
+        reviewer_factory=lambda: AlwaysTransient("unused", calls),
+        artifact_projector_factory=lambda: object(),
+        run_id_factory=lambda: "reviewer-exhausted-resume",
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    for expected_calls in (1, 2):
+        with pytest.raises(SafeFailure) as interrupted:
+            application.run(descriptor)
+        assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+        assert calls.count("reviewer") == expected_calls
+    with pytest.raises(SafeFailure) as exhausted:
+        application.run(descriptor)
+    assert exhausted.value.code is ErrorCode.RETRY_EXHAUSTED
+    assert calls.count("reviewer") == 3
+
+    with pytest.raises(SafeFailure) as still_exhausted:
+        application.run(descriptor)
+    assert still_exhausted.value.code is ErrorCode.RETRY_EXHAUSTED
+    assert calls.count("reviewer") == 3
+
+
 def test_resume_budgets_exhaustion_uses_closed_retry_code(tmp_path: Path) -> None:
     calls = 0
 

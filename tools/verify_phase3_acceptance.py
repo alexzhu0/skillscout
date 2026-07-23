@@ -700,6 +700,39 @@ def _check_identity_and_evidence_ownership(repository_root: Path) -> tuple[str, 
             'expected_eligible = self.outcome == "eligible_local_candidate"',
         ),
     )
+    phase3 = _read_source(
+        repository_root, SOURCE_ROOT / "application/phase3.py"
+    ).decode("utf-8")
+    models = _read_source(
+        repository_root, SOURCE_ROOT / "domain/models.py"
+    ).decode("utf-8")
+    state = _read_source(
+        repository_root, SOURCE_ROOT / "adapters/state.py"
+    ).decode("utf-8")
+    _require_tokens(
+        phase3,
+        (
+            "def _record_reviewer_attempt(",
+            "self.state.persist_reviewer_attempt(chain)",
+            'status="abandoned"',
+            'error_code="attempt_interrupted"',
+        ),
+    )
+    _require_tokens(
+        models,
+        (
+            'attempt.status not in {"failed", "abandoned"}',
+            'terminal_attempt.status != "succeeded"',
+        ),
+    )
+    _require_tokens(
+        state,
+        (
+            "def persist_reviewer_attempt(",
+            'prior.attempts[-1].status == "running"',
+            'chain.attempts[-1].status in {"failed", "abandoned", "succeeded"}',
+        ),
+    )
     return (
         "distinct canonical semantic and rendered identities",
         "direct qualification/validation authority headers",
@@ -828,6 +861,9 @@ _REQUIRED_TEST_FUNCTIONS: dict[Path, frozenset[str]] = {
             "test_exact_reuse_covers_every_terminal_branch_with_exact_full_tree_snapshot",
             "test_resume_budgets_completed_application_reuse_bypasses_every_mutable_factory",
             "test_resume_budgets_authority_mutation_is_a_clean_completed_miss",
+            "test_reviewer_retry_resume_preserves_durable_failure_history",
+            "test_reviewer_inflight_attempt_is_abandoned_and_consumes_budget_on_resume",
+            "test_reviewer_retry_exhaustion_is_durable_across_restarts",
         }
     ),
     Path("tests/test_phase1_gap_closure.py"): frozenset(

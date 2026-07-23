@@ -269,6 +269,7 @@ def _append_success(
     attempt_no: int,
     outcome_code: str,
     payload: object,
+    running_attempt: CandidateStageAttemptV1 | None = None,
 ) -> VerifiedCandidateRunChain:
     authority = chain.identity.candidate_execution_authority
     stage_index = tuple(PhaseThreeStageV1).index(stage)
@@ -301,6 +302,14 @@ def _append_success(
         **attempt_values,
         attempt_hash=_self_hash(attempt_values, "attempt_hash"),
     )
+    if running_attempt is not None and (
+        stage is not PhaseThreeStageV1.REVIEWER
+        or not chain.attempts
+        or chain.attempts[-1] != running_attempt
+        or running_attempt.status != "running"
+        or running_attempt.attempt_no != attempt_no
+    ):
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
     output_hash = sha256_digest(
         {
             "schema_version": PHASE_THREE_SCHEMA_VERSION,
@@ -371,10 +380,87 @@ def _append_success(
     )
     return VerifiedCandidateRunChain(
         identity=chain.identity,
-        attempts=(*chain.attempts, attempt),
+        attempts=(
+            (*chain.attempts[:-1], attempt)
+            if running_attempt is not None
+            else (*chain.attempts, attempt)
+        ),
         results=(*chain.results, result),
         checkpoints=(*chain.checkpoints, checkpoint),
         resume_events=(*chain.resume_events, event),
+    )
+
+
+def _record_reviewer_attempt(
+    chain: VerifiedCandidateRunChain,
+    *,
+    attempt_no: int,
+    status: str,
+    outcome_code: str,
+    payload: object,
+) -> VerifiedCandidateRunChain:
+    """Append a pre-call attempt or finalize the retained running attempt."""
+
+    if len(chain.results) != 3 or status not in {
+        "running",
+        "failed",
+        "abandoned",
+    }:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+    previous_checkpoint_hash = chain.checkpoints[-1].checkpoint_hash
+    previous_output_hash = chain.results[-1].output_hash
+    values: dict[str, object] = {
+        "schema_version": PHASE_THREE_SCHEMA_VERSION,
+        "run_id": chain.identity.run_id,
+        "candidate_execution_authority_digest": (
+            chain.identity.candidate_execution_authority_digest
+        ),
+        "stage": PhaseThreeStageV1.REVIEWER,
+        "stage_index": 3,
+        "attempt_no": attempt_no,
+        "previous_checkpoint_hash": previous_checkpoint_hash,
+        "previous_output_hash": previous_output_hash,
+        "producer_version": (
+            chain.identity.candidate_execution_authority.phase3_producer_version
+        ),
+        "profile_version": (
+            chain.identity.candidate_execution_authority.phase3_profile_version
+        ),
+        "retry_policy_version": (
+            chain.identity.candidate_execution_authority.retry_policy_version
+        ),
+        "status": status,
+        "outcome_code": outcome_code,
+        "payload_digest": sha256_digest(canonical_json_bytes(payload)),
+    }
+    attempt = CandidateStageAttemptV1(
+        **values,
+        attempt_hash=_self_hash(values, "attempt_hash"),
+    )
+    if status == "running":
+        reviewer_attempts = tuple(
+            item
+            for item in chain.attempts
+            if item.stage is PhaseThreeStageV1.REVIEWER
+        )
+        if attempt_no != len(reviewer_attempts) + 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        attempts = (*chain.attempts, attempt)
+    else:
+        if (
+            not chain.attempts
+            or chain.attempts[-1].stage is not PhaseThreeStageV1.REVIEWER
+            or chain.attempts[-1].attempt_no != attempt_no
+            or chain.attempts[-1].status != "running"
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        attempts = (*chain.attempts[:-1], attempt)
+    return VerifiedCandidateRunChain(
+        identity=chain.identity,
+        attempts=attempts,
+        results=chain.results,
+        checkpoints=chain.checkpoints,
+        resume_events=chain.resume_events,
     )
 
 
@@ -878,9 +964,23 @@ class PhaseThreeRunner:
                 for attempt in chain.attempts
                 if attempt.stage is PhaseThreeStageV1.REVIEWER
             )
+            durable_failures = tuple(
+                ReviewerFailedAttemptV1(
+                    attempt_no=attempt.attempt_no,
+                    error_code=attempt.outcome_code,
+                )
+                for attempt in reviewer_attempts[:-1]
+            ) if reviewer_attempts else ()
             if (
                 review_attestation_bytes(attestation) != review_payload
-                or len(reviewer_attempts) != 1
+                or len(reviewer_attempts) != attestation.attempt_count
+                or not reviewer_attempts
+                or reviewer_attempts[-1].status != "succeeded"
+                or any(
+                    attempt.status not in {"failed", "abandoned"}
+                    for attempt in reviewer_attempts[:-1]
+                )
+                or durable_failures != attestation.failed_attempts
                 or attestation.generated_artifact_identity
                 != package.generated_artifact_identity
                 or attestation.package_identity != package.package_identity
@@ -897,11 +997,7 @@ class PhaseThreeRunner:
                 != self.authority.reviewer_retry_policy_version
                 or attestation.max_reviewer_attempts
                 != self.authority.max_reviewer_attempts
-                or (
-                    reviewer_attempts
-                    and attestation.attempt_count
-                    != reviewer_attempts[0].attempt_no
-                )
+                or attestation.attempt_count != reviewer_attempts[-1].attempt_no
                 or chain.results[3].outcome_code != disposition.status
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
@@ -927,9 +1023,15 @@ class PhaseThreeRunner:
                 model=self.profile.configured_reviewer_model_id,
                 max_output_tokens=self.profile.max_reviewer_output_tokens,
             )
-            review_result, reviewer_attempt, failed_reviewer_attempts = (
+            (
+                review_result,
+                chain,
+                reviewer_attempt,
+                failed_reviewer_attempts,
+                running_reviewer_attempt,
+            ) = (
                 self._retry_review(
-                    reviewer, package, validation
+                    chain, reviewer, package, validation
                 )
             )
             if (
@@ -958,6 +1060,7 @@ class PhaseThreeRunner:
                 attempt_no=reviewer_attempt,
                 outcome_code=disposition.status,
                 payload=attestation,
+                running_attempt=running_reviewer_attempt,
             )
             self.state.persist_candidate_stage(
                 chain,
@@ -999,12 +1102,78 @@ class PhaseThreeRunner:
         raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
 
     def _retry_review(
-        self, reviewer: object, package: object, validation: object
-    ) -> tuple[object, int, tuple[ReviewerFailedAttemptV1, ...]]:
+        self,
+        chain: VerifiedCandidateRunChain,
+        reviewer: object,
+        package: object,
+        validation: object,
+    ) -> tuple[
+        object,
+        VerifiedCandidateRunChain,
+        int,
+        tuple[ReviewerFailedAttemptV1, ...],
+        CandidateStageAttemptV1,
+    ]:
         from skillscout.domain.review import ReviewResult
 
+        durable_attempts = [
+            attempt
+            for attempt in chain.attempts
+            if attempt.stage is PhaseThreeStageV1.REVIEWER
+        ]
+        if durable_attempts and durable_attempts[-1].status == "running":
+            interrupted = ReviewerFailedAttemptV1(
+                attempt_no=durable_attempts[-1].attempt_no,
+                error_code="attempt_interrupted",
+            )
+            chain = _record_reviewer_attempt(
+                chain,
+                attempt_no=interrupted.attempt_no,
+                status="abandoned",
+                outcome_code=interrupted.error_code,
+                payload=interrupted,
+            )
+            self.state.persist_reviewer_attempt(chain)
+            durable_attempts[-1] = chain.attempts[-1]
+
         failed_attempts: list[ReviewerFailedAttemptV1] = []
-        for attempt in range(1, self.profile.max_reviewer_attempts + 1):
+        for prior_attempt in durable_attempts:
+            if prior_attempt.status not in {"failed", "abandoned"}:
+                continue
+            if prior_attempt.outcome_code not in {
+                "stage_transient_failure",
+                "attempt_interrupted",
+            }:
+                try:
+                    raise SafeFailure(ErrorCode(prior_attempt.outcome_code))
+                except ValueError:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+            failed_attempts.append(
+                ReviewerFailedAttemptV1(
+                    attempt_no=prior_attempt.attempt_no,
+                    error_code=prior_attempt.outcome_code,
+                )
+            )
+        next_attempt = len(durable_attempts) + 1
+        if next_attempt > self.profile.max_reviewer_attempts:
+            raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
+
+        for attempt in range(
+            next_attempt, self.profile.max_reviewer_attempts + 1
+        ):
+            running_payload = {
+                "attempt_no": attempt,
+                "event": "reviewer_call_started",
+            }
+            chain = _record_reviewer_attempt(
+                chain,
+                attempt_no=attempt,
+                status="running",
+                outcome_code="reviewer_call_started",
+                payload=running_payload,
+            )
+            self.state.persist_reviewer_attempt(chain)
+            running_attempt = chain.attempts[-1]
             try:
                 result = reviewer.review(
                     workflow_spec=self.authority.workflow_spec_authority.workflow_spec,
@@ -1013,20 +1182,35 @@ class PhaseThreeRunner:
                 )
                 if type(result) is not ReviewResult:
                     raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
-                return result, attempt, tuple(failed_attempts)
+                return (
+                    result,
+                    chain,
+                    attempt,
+                    tuple(failed_attempts),
+                    running_attempt,
+                )
             except SafeFailure as failure:
-                if (
-                    failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE
-                ):
+                failure_payload = {
+                    "attempt_no": attempt,
+                    "error_code": failure.code.value,
+                }
+                chain = _record_reviewer_attempt(
+                    chain,
+                    attempt_no=attempt,
+                    status="failed",
+                    outcome_code=failure.code.value,
+                    payload=failure_payload,
+                )
+                self.state.persist_reviewer_attempt(chain)
+                if failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE:
                     raise
+                failure_fact = ReviewerFailedAttemptV1(
+                    attempt_no=attempt,
+                    error_code="stage_transient_failure",
+                )
+                failed_attempts.append(failure_fact)
                 if attempt == self.profile.max_reviewer_attempts:
                     raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
-                failed_attempts.append(
-                    ReviewerFailedAttemptV1(
-                        attempt_no=attempt,
-                        error_code="stage_transient_failure",
-                    )
-                )
         raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
 
     def _terminal(

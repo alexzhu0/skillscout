@@ -361,6 +361,8 @@ class MutableCandidateState(Protocol):
 
     def persist_candidate_chain(self, chain: object, *, status: str) -> None: ...
 
+    def persist_reviewer_attempt(self, chain: object) -> None: ...
+
     def persist_candidate_stage(
         self,
         chain: object,
