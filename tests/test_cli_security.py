@@ -24,7 +24,6 @@ from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure
 
 from test_cli_validate_skill import _argv, _patch_phase3_ports
 from test_phase3_pipeline import (
-    _CompositionSource,
     _recursive_exact_snapshot,
     _workflow,
     _write_composition_descriptor_for_workflow,
@@ -671,11 +670,14 @@ def test_completed_candidate_cli_uses_only_read_opens_and_private_memory_sqlite(
     real_open = os.open
     real_connect = state_adapter.sqlite3.connect
     sqlite_targets: list[object] = []
+    mutation_calls: list[str] = []
+    open_calls: list[int] = []
     forbidden_flags = (
         os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_TRUNC | os.O_APPEND
     )
 
     def read_only_open(path, flags, *args, **kwargs):
+        open_calls.append(flags)
         assert flags & forbidden_flags == 0
         return real_open(path, flags, *args, **kwargs)
 
@@ -684,11 +686,17 @@ def test_completed_candidate_cli_uses_only_read_opens_and_private_memory_sqlite(
         assert database == ":memory:"
         return real_connect(database, *args, **kwargs)
 
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("completed projection attempted mutation")
+    def forbidden(name: str):
+        def reject(*_args, **_kwargs):
+            mutation_calls.append(name)
+            raise AssertionError("completed projection attempted mutation")
+
+        return reject
 
     monkeypatch.setattr(state_adapter.os, "open", read_only_open)
     monkeypatch.setattr(state_adapter.sqlite3, "connect", memory_connect)
+    supported_dir_fd = set(os.supports_dir_fd)
+    supported_dir_fd.add(read_only_open)
     for name in (
         "mkdir",
         "write",
@@ -702,14 +710,24 @@ def test_completed_candidate_cli_uses_only_read_opens_and_private_memory_sqlite(
         "fdatasync",
     ):
         if hasattr(state_adapter.os, name):
-            monkeypatch.setattr(state_adapter.os, name, forbidden)
-    monkeypatch.setattr(cli, "SQLiteStateStore", forbidden)
-    monkeypatch.setattr(cli, "LocalCandidateArtifactProjector", forbidden)
+            original = getattr(state_adapter.os, name)
+            replacement = forbidden(name)
+            monkeypatch.setattr(state_adapter.os, name, replacement)
+            if original in os.supports_dir_fd:
+                supported_dir_fd.add(replacement)
+    monkeypatch.setattr(state_adapter.os, "supports_dir_fd", supported_dir_fd)
+    monkeypatch.setattr(cli, "SQLiteStateStore", forbidden("mutable-state"))
+    monkeypatch.setattr(
+        cli,
+        "LocalCandidateArtifactProjector",
+        forbidden("artifact-projector"),
+    )
 
     status = cli.main(argv)
     captured = capsys.readouterr()
 
-    assert status == 0, captured.err
+    assert mutation_calls == []
+    assert status == 0, (captured.err, sqlite_targets, open_calls)
     assert json.loads(captured.out)["outcome"] == "generator_refusal"
     assert tuple(calls) == first_calls
     assert sqlite_targets == [":memory:"]

@@ -302,6 +302,8 @@ def _validate_candidate_paths(arguments: argparse.Namespace) -> None:
     output = Path(os.path.abspath(os.fspath(arguments.output)))
     if len({candidate, phase2, state, output}) != 4:
         raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+    if output in state.parents:
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
     existing = [
         identity
         for identity in (
@@ -325,6 +327,28 @@ def _validate_candidate_paths(arguments: argparse.Namespace) -> None:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
 
 
+def _require_mutable_output_ready(path: Path) -> None:
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_mode & 0o022
+    ):
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+    try:
+        with os.scandir(path) as entries:
+            if next(entries, None) is not None:
+                raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+    except SafeFailure:
+        raise
+    except OSError:
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+
 def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     _validate_candidate_paths(arguments)
     clients: list[object] = []
@@ -340,6 +364,7 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
         return client
 
     def mutable_state_factory() -> object:
+        _require_mutable_output_ready(arguments.output)
         state = SQLiteStateStore(arguments.state)
         if arguments.fail_after is not None:
             return _InterruptingCandidateState(state, arguments.fail_after)
