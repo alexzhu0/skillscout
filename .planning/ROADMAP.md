@@ -153,16 +153,23 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Phase 2  
 **Requirements:** QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03  
-**Plans:** 7 plans
+**Plans:** 14 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Approve and lock the official validator dependency through Gates A3/B3.
-- [ ] 03-02-PLAN.md — Implement deterministic 100-point workflow qualification and hard failures.
-- [ ] 03-03-PLAN.md — Generate and safely materialize provenance-complete documentation-only Skill packages.
-- [ ] 03-04-PLAN.md — Run layered official, structural, source, and security validation.
-- [ ] 03-05-PLAN.md — Add the independent judge-only Reviewer and exact eligibility gate.
-- [ ] 03-06-PLAN.md — Integrate the additive phase3-v1 pipeline with resume and zero-call reuse.
-- [ ] 03-07-PLAN.md — Deliver the build-candidate CLI, E2E rejection matrix, and phase gate.
+- [ ] 03-01-PLAN.md — Decide Gate A3 before resolving the anomalous official-validator candidate.
+- [ ] 03-02-PLAN.md — Resolve the exact skills-ref graph without installing or executing package code.
+- [ ] 03-03-PLAN.md — Decide Gate B3 for exact lock bytes and all transitive artifacts.
+- [ ] 03-04-PLAN.md — Enforce the approved lock identity before every dependency-backed command.
+- [ ] 03-05-PLAN.md — Define complete execution authority and exact lineage/binding rules.
+- [ ] 03-06-PLAN.md — Reverify one completed Phase 2 workflow through a read-only pre-run source barrier.
+- [ ] 03-07-PLAN.md — Implement deterministic 100-point workflow qualification and hard failures.
+- [ ] 03-08-PLAN.md — Generate and freeze provenance-complete documentation-only Skill packages.
+- [ ] 03-09-PLAN.md — Run the approved official validator plus deterministic safety/source checks.
+- [ ] 03-10-PLAN.md — Add independent judge-only review, exact eligibility, and external attestations.
+- [ ] 03-11-PLAN.md — Persist an isolated Phase 3 ledger with byte-stable zero-side-effect reuse.
+- [ ] 03-12-PLAN.md — Orchestrate the exact Phase 3 stage, terminal, resume, and budget cascade.
+- [ ] 03-13-PLAN.md — Deliver the strict local build-candidate CLI and public security tests.
+- [ ] 03-14-PLAN.md — Enforce final import, package, provenance, seam, and Nyquist acceptance gates.
 
 **Success Criteria:**
 

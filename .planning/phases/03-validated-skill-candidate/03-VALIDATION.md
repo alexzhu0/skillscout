@@ -1,88 +1,135 @@
 ---
 phase: 3
 slug: validated-skill-candidate
+# status lifecycle: draft (seeded by plan-phase) → validated (set by validate-phase)
 status: draft
 nyquist_compliant: false
 wave_0_complete: false
-created: 2026-07-22
+created: 2026-07-23
 ---
 
 # Phase 3 — Validation Strategy
 
-Every post-Gate-B3 dependency command starts with `sh tools/verify_phase3_gate_b3.sh`. The preflight reads the committed `config/supply-chain/phase3-gate-b3.lock.sha256`, compares it with exact `uv.lock` bytes, and exits before uv or package code can run on any mismatch.
+> Per-task validation contract for the validated local Skill candidate phase.
+> Gate A3 and Gate B3 are non-auto-approvable. After Gate B3, every command that can import or execute project/dependency code starts with the dependency-free exact-lock preflight.
+
+---
 
 ## Test Infrastructure
 
-All uv commands use the repository-local binary and managed Python with downloads disabled:
-
-```text
-UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv"
-```
+All commands run from the repository root. The approved Phase 3 lock is checked before every post-B3 dependency-backed command. The canonical uv invocation is repeated literally; `PATH`, an activated environment, and previously exported variables are not evidence.
 
 | Property | Value |
-|---|---|
-| Framework | pytest 9.1.1 |
-| Config | `pyproject.toml` strict pytest configuration |
-| Lock preflight | `sh tools/verify_phase3_gate_b3.sh` |
-| Quick run | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q <test-path>` |
-| Full phase gate | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check . && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked python tools/verify_phase3_acceptance.py --package-root tests/fixtures/skills/valid-skill --discover-runtime-packages .tmp/phase3-acceptance` |
-| Network policy | Recorded transports only; every unrecorded socket fails |
+|----------|-------|
+| **Framework** | pytest 9.1.x |
+| **Config file** | `pyproject.toml` |
+| **Gate B3 preflight** | `sh tools/verify_phase3_gate_b3.sh` |
+| **Quick run command** | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_candidate_source.py tests/test_candidate_authority.py tests/test_qualification.py tests/test_skill_generation.py tests/test_skill_validation.py tests/test_openai_review.py tests/test_phase3_pipeline.py` |
+| **Full suite command** | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check && sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked python tools/verify_phase3_acceptance.py && sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check . && sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q` |
+| **Network policy** | Tests use deterministic injected transports and local fixtures; no live GitHub/OpenAI/PyPI calls |
+| **Estimated runtime** | Focused task checks under 60 seconds; final suite measured during execution |
+
+---
 
 ## Sampling Rate
 
-- After each implementation task, run its exact focused command below.
-- After each wave, run the full phase gate.
-- Never use PATH uv, a floating lock, downloadable Python, watch mode, live GitHub, or live OpenAI.
-- Mark a row green only from fresh command output after Gate B3.
+- **After every task commit:** Run that task's literal command from the table.
+- **After every plan wave:** Run the Quick run command when the referenced files exist.
+- **Before `/gsd:verify-work`:** Run the Full suite command exactly.
+- **Supply-chain invariant:** Gate A3 precedes lock resolution. Gate B3 precedes every dependency-backed test/import/validator command. Any `uv.lock` byte change invalidates B3.
+- **Max feedback latency:** Focused task checks target under 60 seconds; no watch-mode flags.
+
+---
 
 ## Per-Task Verification Map
 
-| Task ID | Plan | Wave | Requirement IDs | Threat Ref | Automated Command | File Exists | Status |
-|---|---|---:|---|---|---|---|---|
-| 03-01-01 | 03-01 | 1 | VAL-01 | T-03-SC | `N/A — blocking human Gate A3 package legitimacy decision` | N/A | ⬜ pending |
-| 03-01-02 | 03-01 | 1 | VAL-01 | T-03-SC | `UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check && grep -q '"skills-ref==0.1.1"' pyproject.toml && grep -q 'name = "skills-ref"' uv.lock` | ✅ existing config | ⬜ pending |
-| 03-01-03 | 03-01 | 1 | VAL-01 | T-03-SC, T-03-01-DG | `N/A — blocking human Gate B3 exact graph and lock-byte decision` | N/A | ⬜ pending |
-| 03-01-04 | 03-01 | 1 | VAL-01 | T-03-01-DG | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_lock_preflight.py && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check tests/test_phase3_lock_preflight.py` | ❌ Wave 0 | ⬜ pending |
-| 03-02-01 | 03-02 | 2 | QUAL-01, QUAL-02 | T-03-QUAL | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_qualification.py -k 'rubric or threshold or order or contract'` | ❌ Wave 0 | ⬜ pending |
-| 03-02-02 | 03-02 | 2 | QUAL-01, QUAL-02 | T-03-QUAL | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_qualification.py && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout/domain/qualification.py tests/test_qualification.py` | ❌ Wave 0 | ⬜ pending |
-| 03-03-01 | 03-03 | 2 | GEN-04, GEN-05 | T-03-LINEAGE | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_generation.py tests/test_lineage.py -k 'contract or lineage or artifact_id or package_digest or provenance'` | ❌ Wave 0 | ⬜ pending |
-| 03-03-02 | 03-03 | 2 | GEN-01, GEN-02, GEN-03, GEN-04, GEN-05 | T-03-GEN | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_generation.py tests/test_lineage.py` | ❌ Wave 0 | ⬜ pending |
-| 03-03-03 | 03-03 | 2 | GEN-01, GEN-03 | T-03-GEN | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_openai_generate.py && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout/domain/skill_artifacts.py src/skillscout/adapters/skill_packages.py src/skillscout/adapters/openai_generate.py tests/test_skill_generation.py tests/test_lineage.py tests/test_openai_generate.py` | ❌ Wave 0 | ⬜ pending |
-| 03-04-01 | 03-04 | 3 | GEN-02, VAL-01, VAL-03 | T-03-VAL, T-03-TOCTOU | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_validation.py -k 'admission or official or runtime_failure'` | ❌ Wave 0 | ⬜ pending |
-| 03-04-02 | 03-04 | 3 | GEN-04, VAL-01, VAL-02 | T-03-VAL | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_validation.py -k 'structure or reference or progressive or provenance or binding'` | ❌ Wave 0 | ⬜ pending |
-| 03-04-03 | 03-04 | 3 | GEN-02, GEN-03, VAL-02, VAL-03 | T-03-VAL | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_validation.py && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout/domain/validation.py src/skillscout/adapters/skills_ref.py tests/test_skill_validation.py` | ❌ Wave 0 | ⬜ pending |
-| 03-05-01 | 03-05 | 4 | REV-02, REV-03 | T-03-REVIEW | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_openai_review.py -k 'schema or gate or confidence or decision'` | ❌ Wave 0 | ⬜ pending |
-| 03-05-02 | 03-05 | 4 | REV-01, REV-02, REV-03 | T-03-PI, T-03-REVIEW | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_openai_review.py && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout/domain/review.py src/skillscout/adapters/openai_review.py tests/test_openai_review.py` | ❌ Wave 0 | ⬜ pending |
-| 03-06-01 | 03-06 | 5 | GEN-05 | T-03-06-SEL, T-03-06-LEDGER | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py -k 'subject or profile or summary or producer or execution_authority' tests/test_phase2_pipeline.py` | ❌ Wave 0 | ⬜ pending |
-| 03-06-02 | 03-06 | 5 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-06-AUTH | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py -k 'processor or selector or cascade or call_count or telemetry'` | ❌ Wave 0 | ⬜ pending |
-| 03-06-03 | 03-06 | 5 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-06-AUTH, T-03-06-LEDGER | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py tests/test_phase2_pipeline.py tests/test_pipeline_resume.py && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check src/skillscout/domain/subjects.py src/skillscout/domain/models.py src/skillscout/application/phase3.py src/skillscout/application/pipeline.py src/skillscout/adapters/state.py tests/test_phase3_pipeline.py` | ❌ Wave 0 | ⬜ pending |
-| 03-07-01 | 03-07 | 6 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-E2E | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_cli_validate_skill.py -k 'parser or subject or lineage or execution_authority or non_echo or summary' tests/test_cli_security.py` | ❌ Wave 0 | ⬜ pending |
-| 03-07-02 | 03-07 | 6 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-E2E, T-03-07-R | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_cli_validate_skill.py` | ❌ Wave 0 | ⬜ pending |
-| 03-07-03 | 03-07 | 6 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-E2E, T-03-07-ID, T-03-07-NET | `sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check . && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check && sh tools/verify_phase3_gate_b3.sh && UV_CACHE_DIR="$PWD/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked python tools/verify_phase3_acceptance.py --package-root tests/fixtures/skills/valid-skill --discover-runtime-packages .tmp/phase3-acceptance` | ❌ Wave 0 | ⬜ pending |
+| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
+|---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
+| 03-01-01 | 03-01 | 1 | VAL-01 | T-03-SC, T-03-01, T-03-02 | Gate A3 reviews exact `skills-ref==0.1.1` identity, audited wheel hash, and anomalies before resolution | human checkpoint | N/A — non-auto-approvable Gate A3 decision | N/A | ⬜ pending |
+| 03-02-01 | 03-02 | 2 | VAL-01 | T-03-SC, T-03-03, T-03-04 | Registry-only lock resolution; exact audited wheel; no install/import/test/entrypoint | lock metadata | `UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" tree --locked --package skills-ref` | `pyproject.toml`, `uv.lock` | ⬜ pending |
+| 03-03-01 | 03-03 | 3 | VAL-01 | T-03-SC, T-03-05, T-03-06 | Gate B3 reviews every transitive artifact and binds one exact `uv.lock` digest | human checkpoint | N/A — non-auto-approvable Gate B3 decision | N/A | ⬜ pending |
+| 03-04-01 | 03-04 | 4 | VAL-01 | T-03-SC, T-03-07, T-03-08 | Dependency-free preflight blocks missing, malformed, or byte-different lock before execution | preflight unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_lock_preflight.py` | `tests/test_phase3_lock_preflight.py` | ⬜ pending |
+| 03-05-01 | 03-05 | 5 | GEN-04, GEN-05 | T-03-09, T-03-11 | Complete source/execution authority; every reuse-sensitive field changes identity | authority unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_candidate_authority.py` | `tests/test_candidate_authority.py` | ⬜ pending |
+| 03-05-02 | 03-05 | 5 | GEN-05 | T-03-10 | Only one exact approved prior binding retains lineage; all ambiguity closes | lineage unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_lineage.py` | `tests/test_lineage.py` | ⬜ pending |
+| 03-06-01 | 03-06 | 6 | GEN-04, GEN-05 | T-03-13, T-03-15 | Read-only Phase 2 query reverifies canonical chain and never mutates upstream state | adapter integration | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_candidate_source.py -k phase2_query` | `tests/test_candidate_source.py` | ⬜ pending |
+| 03-06-02 | 03-06 | 6 | GEN-04, GEN-05 | T-03-12, T-03-14 | Strict bounded source, full-fingerprint sort/cap-three derivation, sibling isolation, and zero-effect source failure | boundary security | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_candidate_source.py` | `tests/test_candidate_source.py` | ⬜ pending |
+| 03-07-01 | 03-07 | 6 | QUAL-01 | T-03-17 | Five deterministic checks plus the closed steps/I-O/evidence/credential/destructive/bypass/injection/approval/execution hard-failure matrix | policy unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_qualification.py -k checks` | `tests/test_qualification.py` | ⬜ pending |
+| 03-07-02 | 03-07 | 6 | QUAL-02 | T-03-16, T-03-18 | Exact 75/no-hard-failure rule and report directly bound to fingerprint, WorkflowSpec authority, execution authority, and schema/policy | report unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_qualification.py` | `tests/test_qualification.py` | ⬜ pending |
+| 03-08-01 | 03-08 | 7 | GEN-01, GEN-02, GEN-04, GEN-05 | T-03-20, T-03-21 | Distinct canonical draft/generation-authority identity and post-provenance rendered path/hash/mode/size package identity | contract unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_generation.py -k contracts` | `tests/test_skill_generation.py` | ⬜ pending |
+| 03-08-02 | 03-08 | 7 | GEN-01, GEN-03, GEN-04 | T-03-19, T-03-22 | Tool-free store=false strict Generator with bounded context and semantic failures | adapter transport | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_openai_generate.py` | `tests/test_openai_generate.py` | ⬜ pending |
+| 03-08-03 | 03-08 | 7 | GEN-01, GEN-02, GEN-03, GEN-04, GEN-05 | T-03-20, T-03-21 | Deterministic generalized docs-only renderer, bounded attributed quotes, complete provenance | renderer unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_generation.py` | `tests/test_skill_generation.py` | ⬜ pending |
+| 03-09-01 | 03-09 | 8 | VAL-01 | T-03-23, T-03-26 | Exact regular-file workspace admission and sole approved official-validator adapter without candidate execution | admission + adapter integration | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_validation.py -k "official or admission"` | `tests/test_skill_validation.py` | ⬜ pending |
+| 03-09-02 | 03-09 | 8 | GEN-02, GEN-03, GEN-04, VAL-01, VAL-02 | T-03-23, T-03-24 | Local broken/orphan/deep/progressive structure plus secrets, execution, tools, injection, URLs, provenance, modes, and over-copying checks | structural + security matrix | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_validation.py -k "local_structure or local_policy"` | `tests/test_skill_validation.py` | ⬜ pending |
+| 03-09-03 | 03-09 | 8 | VAL-03 | T-03-25 | Immutable report directly binds fingerprint, WorkflowSpec/execution authority, renderer/report schema, both identity layers, admission, validator, and policies | report integration | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_skill_validation.py` | `tests/test_skill_validation.py` | ⬜ pending |
+| 03-10-01 | 03-10 | 9 | REV-02, REV-03 | T-03-28, T-03-29 | Judge-only schema and exact zero-errors plus YES plus confidence-at-least-0.80 rule | domain unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_openai_review.py -k domain` | `tests/test_openai_review.py` | ⬜ pending |
+| 03-10-02 | 03-10 | 9 | REV-01, REV-02 | T-03-27, T-03-28 | Fresh Reviewer context allowlist; no raw source, Generator transcript, tools, storage, or rewrite | adapter transport | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_openai_review.py -k adapter` | `tests/test_openai_review.py` | ⬜ pending |
+| 03-10-03 | 03-10 | 9 | GEN-04, GEN-05, VAL-03, REV-03 | T-03-29, T-03-30 | Attestation owns raw review evidence; terminal owns eligibility policy, lineage/review statuses, Generator evidence, and exact branch matrix | attestation unit | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_openai_review.py` | `tests/test_openai_review.py` | ⬜ pending |
+| 03-11-01 | 03-11 | 10 | GEN-05, VAL-03, REV-03 | T-03-31, T-03-34 | Closed Phase 3 stage/event chain rooted in complete authority and isolated from global profiles | domain chain | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py -k domain_chain` | `tests/test_phase3_pipeline.py` | ⬜ pending |
+| 03-11-02 | 03-11 | 10 | GEN-05, VAL-03, REV-03 | T-03-31, T-03-32, T-03-34 | Additive isolated ledger verifies order/hashes and atomically binds external evidence | state integration | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py -k state_ledger` | `tests/test_phase3_pipeline.py` | ⬜ pending |
+| 03-11-03 | 03-11 | 10 | GEN-05, VAL-03, REV-03 | T-03-32, T-03-33 | Exact completed projection returns identical bytes with unchanged every-table counts and zero calls/events | reuse integration | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py -k exact_reuse` | `tests/test_phase3_pipeline.py` | ⬜ pending |
+| 03-12-01 | 03-12 | 11 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-35, T-03-37 | Source and complete execution authority precede lazy state/services; hard budgets are versioned | composition integration | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py -k composition_boundary` | `tests/test_phase3_pipeline.py` | ⬜ pending |
+| 03-12-02 | 03-12 | 11 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-36 | Exact cascade, 12 terminal branches, not-evaluated-lineage/review-skipped companions, and terminal-owned eligibility/evidence | pipeline matrix | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py -k terminal_cascade` | `tests/test_phase3_pipeline.py` | ⬜ pending |
+| 03-12-03 | 03-12 | 11 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-35, T-03-37, T-03-38 | Resume skips successful stages; limits fail closed; exact reuse has zero effects | pipeline integration | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_pipeline.py` | `tests/test_phase3_pipeline.py` | ⬜ pending |
+| 03-13-01 | 03-13 | 12 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-39, T-03-42 | Strict local CLI covers source-unavailable, all terminals, resume, and exact reuse | CLI end-to-end | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_cli_validate_skill.py` | `tests/test_cli_validate_skill.py` | ⬜ pending |
+| 03-13-02 | 03-13 | 12 | GEN-02, GEN-04, VAL-02, REV-01 | T-03-39, T-03-40, T-03-41 | Unsafe paths, secrets, injection, remote writes, shell/install, and candidate execution are unreachable | CLI security | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_cli_security.py` | `tests/test_cli_security.py` | ⬜ pending |
+| 03-14-01 | 03-14 | 13 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-43, T-03-44, T-03-46 | Exact import allowlists, no prohibited capabilities, package/provenance/secrets, protected Phase 1/2 seams | acceptance + mutation | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q tests/test_phase3_acceptance_tool.py tests/test_phase1_gap_closure.py && sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked python tools/verify_phase3_acceptance.py` | `tools/verify_phase3_acceptance.py`, `tests/test_phase3_acceptance_tool.py`, `tests/test_phase1_gap_closure.py` | ⬜ pending |
+| 03-14-02 | 03-14 | 13 | QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03 | T-03-45 | Literal complete task map and final lock, acceptance, Ruff, full-test release gates | final phase gate | `sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" lock --check && sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked python tools/verify_phase3_acceptance.py && sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked ruff check . && sh tools/verify_phase3_gate_b3.sh && UV_PYTHON_INSTALL_DIR="$PWD/.tools/python" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never "$PWD/.tools/uv-0.11.29/bin/uv" run --locked pytest -q` | `.planning/phases/03-validated-skill-candidate/03-VALIDATION.md` | ⬜ pending |
+
+*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+---
 
 ## Wave 0 Requirements
 
-- [ ] Gate A3 approval of exact `skills-ref==0.1.1` provenance and non-additions.
-- [ ] Gate B3 approval of every transitive artifact and exact lock bytes.
-- [ ] Committed Gate-B3 digest, dependency-free preflight, and its mismatch-before-execution tests.
-- [ ] Qualification, lineage, generation, validation, Reviewer, pipeline, CLI, and acceptance-tool test modules named in the map.
-- [ ] Same-identity rerun fixtures for every qualification, generation, validation, review, and success terminal branch.
-- [ ] Independent mutation fixtures for every configured execution-authority dimension and actual-model/finalized-branch mismatch.
-- [ ] Approved title/evidence-path lineage remap plus stale, tampered, collision, multiple-match, repository-mismatch, and ambiguous mapping fixtures.
+- [ ] Gate A3 explicitly approves `skills-ref==0.1.1` and audited wheel SHA-256 `d35db5bb8de71ae301daf5ca9cb71f8a555e8c6f83a6d40e46a5bc09f8f461b5` before Plan 03-02 changes dependency metadata.
+- [ ] Plan 03-02 resolves the complete registry-only graph into `uv.lock` without installing/importing/executing it.
+- [ ] Gate B3 explicitly approves every exact transitive artifact and one exact `uv.lock` SHA-256 before Plan 03-04 or any dependency-backed command.
+- [ ] Plan 03-04 commits the approved digest and dependency-free preflight; every later task uses it first.
+- [ ] Generator and Reviewer fixtures use injected recorded transports in `tests/fixtures/openai/generator/cases.json` and `tests/fixtures/openai/reviewer/cases.json`; no live network is validation evidence.
+
+---
 
 ## Manual-Only Verifications
 
-| Behavior | Requirement | Why Manual | Exact evidence |
-|---|---|---|---|
-| Gate A3 package legitimacy | VAL-01 | Distribution/source/version/publisher trust is a human supply-chain decision | Task 03-01-01 approval record |
-| Gate B3 executable graph | VAL-01 | Every transitive artifact and exact lock bytes require human disposition | Task 03-01-03 approval plus committed digest used by Task 03-01-04 |
+| Behavior | Requirement | Why Manual | Test Instructions |
+|----------|-------------|------------|-------------------|
+| Gate A3 package identity decision | VAL-01 | `[SUS]` package legitimacy cannot be auto-approved | Review exact PyPI/source evidence and respond `approved A3` or `rejected A3: reason`. |
+| Gate B3 exact graph/lock decision | VAL-01 | Every executable transitive artifact and exact lock bytes require human approval | Review all resolved artifacts, compute the exact 64-character lock SHA-256, and respond with `approved B3` followed by that digest, or `rejected B3: reason`. |
+
+No live GitHub/OpenAI run is required for automated acceptance; networked smoke tests are optional operational checks and cannot replace the fixture-backed suite.
+
+---
+
+## Requirement Coverage
+
+| Requirement | Validation evidence |
+|-------------|---------------------|
+| QUAL-01 | 03-07-01, 03-12-02, 03-13-01, 03-14-01, 03-14-02 |
+| QUAL-02 | 03-07-02, 03-12-02, 03-13-01, 03-14-01, 03-14-02 |
+| GEN-01 | 03-08-01, 03-08-02, 03-08-03, 03-12-02, 03-13-01, 03-14-01, 03-14-02 |
+| GEN-02 | 03-08-01, 03-08-03, 03-09-02, 03-12-02, 03-13-02, 03-14-01, 03-14-02 |
+| GEN-03 | 03-08-02, 03-08-03, 03-09-02, 03-12-02, 03-14-01, 03-14-02 |
+| GEN-04 | 03-05-01, 03-06-01, 03-06-02, 03-08-01, 03-08-02, 03-08-03, 03-09-02, 03-10-03, 03-12-02, 03-13-02, 03-14-01, 03-14-02 |
+| GEN-05 | 03-05-01, 03-05-02, 03-06-01, 03-06-02, 03-08-01, 03-08-03, 03-10-03, 03-11-01, 03-11-02, 03-11-03, 03-12-02, 03-14-01, 03-14-02 |
+| VAL-01 | 03-01-01, 03-02-01, 03-03-01, 03-04-01, 03-09-01, 03-09-02, 03-12-02, 03-14-01, 03-14-02 |
+| VAL-02 | 03-09-02, 03-12-02, 03-13-02, 03-14-01, 03-14-02 |
+| VAL-03 | 03-09-03, 03-10-03, 03-11-01, 03-11-02, 03-11-03, 03-12-02, 03-14-01, 03-14-02 |
+| REV-01 | 03-10-02, 03-12-02, 03-13-02, 03-14-01, 03-14-02 |
+| REV-02 | 03-10-01, 03-10-02, 03-12-02, 03-14-01, 03-14-02 |
+| REV-03 | 03-10-01, 03-10-03, 03-11-01, 03-11-02, 03-11-03, 03-12-02, 03-14-01, 03-14-02 |
+
+---
 
 ## Validation Sign-Off
 
-- [ ] Every post-Gate-B3 uv/import/test/validator command is immediately preceded by the committed lock preflight.
-- [ ] All 20 final task IDs have exact automated commands or explicit human-only rationale.
-- [ ] Requirement cells use only explicit IDs and cover all 13 Phase 3 requirements.
-- [ ] Full phase gate includes approved-lock equality, full pytest, Ruff, lock check, capability scan, package tree/mode scan, secret scan, and provenance/self-hash checks.
-- [ ] `wave_0_complete: true`, `nyquist_compliant: true`, and `status: validated` are set only after fresh evidence.
+- [ ] All 29 tasks have an automated verification command or non-auto-approvable checkpoint.
+- [ ] All 13 Phase 3 requirement IDs appear explicitly in plan frontmatter and this map.
+- [ ] No unresolved symbolic path tokens, ellipses, requirement ranges, or shorthand commands remain.
+- [ ] Every post-B3 uv/import/test/Ruff/validator command starts with `sh tools/verify_phase3_gate_b3.sh &&`.
+- [ ] Gate A3 and Gate B3 are recorded as blocking-human and cannot auto-advance.
+- [ ] Sampling continuity has no unvalidated implementation task.
+- [ ] No watch-mode flags or live-network dependency.
+- [ ] Full suite command passes without changing `uv.lock`.
+- [ ] `nyquist_compliant: true` is set only after `/gsd-validate-phase` confirms execution.
 
 **Approval:** pending
