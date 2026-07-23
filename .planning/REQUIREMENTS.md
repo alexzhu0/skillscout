@@ -55,9 +55,9 @@
 
 ### Independent Review
 
-- [ ] **REV-01**: Reviewer 使用与 Extractor、Generator 分离的新 LLM 请求和上下文，只接收 `WorkflowSpec`、生成的 Skill、provenance 和 Validation Report，不接收完整原始仓库内容。
-- [ ] **REV-02**: Reviewer 输出严格结构化的 `YES/NO`、置信度、理由、缺失假设和最小修改建议；Reviewer 只判断，不得编辑或返回替换后的 Skill 文件。
-- [ ] **REV-03**: 只有 Validation Report 无 error、Reviewer verdict 为 `YES` 且默认置信度不低于 0.80 的 Skill 才能进入 Publisher。
+- [x] **REV-01**: Reviewer 使用与 Extractor、Generator 分离的新 LLM 请求和上下文，只接收 `WorkflowSpec`、生成的 Skill、provenance 和 Validation Report，不接收完整原始仓库内容。
+- [x] **REV-02**: Reviewer 输出严格结构化的 `YES/NO`、置信度、理由、缺失假设和最小修改建议；Reviewer 只判断，不得编辑或返回替换后的 Skill 文件。
+- [x] **REV-03**: 只有 Validation Report 无 error、Reviewer verdict 为 `YES` 且默认置信度不低于 0.80 的 Skill 才能进入 Publisher。
 
 ### Draft PR Publication
 
@@ -163,9 +163,9 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | VAL-01 | Phase 3 | Complete |
 | VAL-02 | Phase 3 | Complete |
 | VAL-03 | Phase 3 | Complete |
-| REV-01 | Phase 3 | Pending |
-| REV-02 | Phase 3 | Pending |
-| REV-03 | Phase 3 | Pending |
+| REV-01 | Phase 3 | Complete |
+| REV-02 | Phase 3 | Complete |
+| REV-03 | Phase 3 | Complete |
 | PUB-01 | Phase 4 | Pending |
 | PUB-02 | Phase 4 | Pending |
 | PUB-03 | Phase 4 | Pending |
