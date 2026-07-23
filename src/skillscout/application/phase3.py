@@ -375,11 +375,6 @@ class PhaseThreeRunner:
 
     def run(self) -> tuple[object, dict[str, bytes]]:
         resumable = self.state.find_resumable_candidate(self.authority)
-        if resumable is not None:
-            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-        chain = _new_chain(self.dependencies.run_id_factory(), self.authority)
-        self.state.persist_candidate_chain(chain, status="running")
-
         report = qualification_report(
             checks=evaluate_qualification_checks(
                 self.authority.workflow_spec_authority.workflow_spec
@@ -388,14 +383,32 @@ class PhaseThreeRunner:
             workflow_spec_authority=self.authority.workflow_spec_authority,
             candidate_execution_authority=self.authority,
         )
-        chain = _append_success(
-            chain,
-            stage=PhaseThreeStageV1.QUALIFIER,
-            attempt_no=1,
-            outcome_code="accepted" if report.passed else "qualification_rejected",
-            payload=report,
-        )
-        self.state.persist_candidate_chain(chain, status="running")
+        if resumable is None:
+            chain = _new_chain(self.dependencies.run_id_factory(), self.authority)
+            self.state.persist_candidate_chain(chain, status="running")
+            chain = _append_success(
+                chain,
+                stage=PhaseThreeStageV1.QUALIFIER,
+                attempt_no=1,
+                outcome_code=(
+                    "accepted" if report.passed else "qualification_rejected"
+                ),
+                payload=report,
+            )
+            self.state.persist_candidate_chain(chain, status="running")
+        else:
+            chain = resumable
+            if (
+                type(chain) is not VerifiedCandidateRunChain
+                or chain.identity.candidate_execution_authority != self.authority
+                or len(chain.results) != 1
+                or chain.results[0].stage is not PhaseThreeStageV1.QUALIFIER
+                or chain.results[0].payload_digest
+                != sha256_digest(canonical_json_bytes(report))
+                or chain.results[0].outcome_code
+                != ("accepted" if report.passed else "qualification_rejected")
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         artifacts = {"qualification_report": qualification_report_bytes(report)}
         if not report.passed:
             lineage = LineageResolutionV1(
@@ -453,8 +466,16 @@ class PhaseThreeRunner:
             qualification_passed=True,
             generation_policy_version=GENERATOR_POLICY_VERSION,
         )
+        if len(canonical_json_bytes(request)) > self.profile.max_generator_input_bytes:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         generator = self.dependencies.generator_factory()
         generation, generator_attempt = self._retry_generate(generator, request)
+        if (
+            generation.usage is not None
+            and generation.usage.completion_tokens
+            > self.profile.max_generator_output_tokens
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         generator_outcomes = {
             "refused": "generator_refusal",
             "incomplete": "generator_incomplete",
@@ -586,9 +607,22 @@ class PhaseThreeRunner:
             )
 
         reviewer = self.dependencies.reviewer_factory()
+        reviewer_input_bytes = (
+            len(canonical_json_bytes(self.authority.workflow_spec_authority.workflow_spec))
+            + sum(len(item.content) for item in package.files)
+            + len(canonical_json_bytes(validation))
+        )
+        if reviewer_input_bytes > self.profile.max_reviewer_input_bytes:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         review_result, reviewer_attempt = self._retry_review(
             reviewer, package, validation
         )
+        if (
+            review_result.usage is not None
+            and review_result.usage.completion_tokens
+            > self.profile.max_reviewer_output_tokens
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         disposition = review_disposition(
             generation_succeeded=True,
             validation_report=validation,
@@ -643,9 +677,10 @@ class PhaseThreeRunner:
             except SafeFailure as failure:
                 if (
                     failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE
-                    or attempt == self.profile.max_generator_attempts
                 ):
                     raise
+                if attempt == self.profile.max_generator_attempts:
+                    raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
         raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
 
     def _retry_review(
@@ -666,9 +701,10 @@ class PhaseThreeRunner:
             except SafeFailure as failure:
                 if (
                     failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE
-                    or attempt == self.profile.max_reviewer_attempts
                 ):
                     raise
+                if attempt == self.profile.max_reviewer_attempts:
+                    raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
         raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
 
     def _terminal(
@@ -768,13 +804,18 @@ class PhaseThreeApplication:
 
         mutable = self._dependencies.mutable_state_factory()
         try:
-            terminal, artifacts = PhaseThreeRunner(
-                state=mutable,
-                source=resolved,
-                authority=authority,
-                profile=self._profile,
-                dependencies=self._dependencies,
-            ).run()
+            try:
+                terminal, artifacts = PhaseThreeRunner(
+                    state=mutable,
+                    source=resolved,
+                    authority=authority,
+                    profile=self._profile,
+                    dependencies=self._dependencies,
+                ).run()
+            except SafeFailure:
+                raise
+            except (AttributeError, TypeError, ValueError):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
             if output_directory is not None:
                 output = self._dependencies.artifact_projector_factory()
                 project = getattr(output, "project")
