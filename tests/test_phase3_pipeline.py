@@ -12,6 +12,12 @@ from pydantic import BaseModel, ValidationError
 
 import skillscout.adapters.state as state_module
 from skillscout.adapters.state import SQLiteStateStore
+from skillscout.application.phase3 import (
+    PHASE_THREE_STAGE_SEQUENCE as APPLICATION_PHASE_THREE_STAGE_SEQUENCE,
+    PhaseThreeApplication,
+    PhaseThreeDependencies,
+    PhaseThreeRuntimeProfile,
+)
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import (
     CandidateExecutionAuthorityV1,
@@ -1433,6 +1439,195 @@ def test_exact_reuse_covers_every_terminal_branch_with_exact_full_tree_snapshot(
         }
     finally:
         store.close()
+
+
+class _CompositionSource:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def resolve(self, descriptor):
+        from skillscout.application.ports import (
+            CandidateSourceUnavailable,
+            PhaseTwoCandidateProjection,
+        )
+
+        self.calls.append("source")
+        if self.fail:
+            raise CandidateSourceUnavailable()
+        workflow = _workflow()
+        return PhaseTwoCandidateProjection(
+            phase2_run_id=descriptor.phase2_run_id,
+            workflow_spec_bytes=canonical_json_bytes(workflow),
+            extractor_output_hash=descriptor.extractor_output_hash,
+            verified_chain_anchor=descriptor.verified_chain_anchor,
+            repository_id=123,
+            repository_url="https://github.com/example/repository",
+            pinned_commit_sha="a" * 40,
+            license_spdx="MIT",
+        )
+
+    def resolve_all(self, **_kwargs):
+        raise AssertionError("composition resolves exactly one descriptor")
+
+
+def _write_composition_descriptor(tmp_path: Path) -> Path:
+    authority = workflow_spec_authority(
+        workflow_spec=_workflow(),
+        phase2_extractor_output_hash=_digest("3"),
+        phase2_verified_chain_anchor=_digest("4"),
+    )
+    descriptor = {
+        "schema_version": "candidate-subject-descriptor-v1",
+        "phase2_run_id": "phase2-run",
+        "phase2_profile_version": "phase2-v1",
+        "phase2_producer_version": "phase2-v1",
+        "extractor_output_hash": _digest("3"),
+        "verified_chain_anchor": _digest("4"),
+        "selected_workflow_fingerprint": _workflow().fingerprint,
+        "expected_workflow_spec_authority_digest": authority.authority_digest,
+        "prior_lineage_binding_digest": None,
+    }
+    path = tmp_path / "candidate.json"
+    path.write_bytes(canonical_json_bytes(descriptor))
+    path.chmod(0o600)
+    return path
+
+
+def _composition_profile() -> PhaseThreeRuntimeProfile:
+    return PhaseThreeRuntimeProfile(
+        configured_generator_model_id="generator-configured",
+        configured_reviewer_model_id="reviewer-configured",
+    )
+
+
+def test_composition_boundary_source_failure_has_zero_phase3_effects(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: calls.append("projector"),
+        mutable_state_factory=lambda: calls.append("mutable"),
+        generator_factory=lambda: calls.append("generator"),
+        validator_factory=lambda: calls.append("validator"),
+        reviewer_factory=lambda: calls.append("reviewer"),
+        artifact_projector_factory=lambda: calls.append("output"),
+    )
+    result = PhaseThreeApplication(
+        source=_CompositionSource(fail=True),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    ).run(_write_composition_descriptor(tmp_path))
+
+    assert result.outcome == "candidate_source_unavailable"
+    assert calls == []
+
+
+def test_composition_boundary_builds_complete_owner_authority_before_lookup(
+    tmp_path: Path,
+) -> None:
+    from skillscout.domain.review import ELIGIBILITY_POLICY_VERSION
+    from skillscout.domain.skill_artifacts import RENDERER_VERSION
+
+    calls: list[object] = []
+    projection = object()
+
+    class Projector:
+        def find_completed_candidate(self, authority):
+            calls.append(("lookup", authority))
+            return projection
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Projector(),
+        mutable_state_factory=lambda: calls.append("mutable"),
+        generator_factory=lambda: calls.append("generator"),
+        validator_factory=lambda: calls.append("validator"),
+        reviewer_factory=lambda: calls.append("reviewer"),
+        artifact_projector_factory=lambda: calls.append("output"),
+    )
+    result = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    ).run(_write_composition_descriptor(tmp_path))
+
+    authority = calls[0][1]
+    assert result.completed_projection is projection
+    assert authority.renderer_version == RENDERER_VERSION
+    assert authority.eligibility_policy_version == ELIGIBILITY_POLICY_VERSION
+    assert calls == [("lookup", authority)]
+    assert APPLICATION_PHASE_THREE_STAGE_SEQUENCE == (
+        "qualifier",
+        "generator",
+        "validator",
+        "reviewer",
+    )
+    assert "renderer_version" not in PhaseThreeRuntimeProfile.model_fields
+    assert "eligibility_policy_version" not in PhaseThreeRuntimeProfile.model_fields
+
+
+def test_composition_boundary_clean_miss_closes_before_mutable_factory(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class Projector:
+        def find_completed_candidate(self, _authority):
+            calls.append("lookup")
+            return None
+
+        def close(self):
+            calls.append("projector_closed")
+
+    class Mutable:
+        def close(self):
+            calls.append("mutable_closed")
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Projector(),
+        mutable_state_factory=lambda: (calls.append("mutable") or Mutable()),
+        generator_factory=lambda: (calls.append("generator") or object()),
+        validator_factory=lambda: (calls.append("validator") or object()),
+        reviewer_factory=lambda: (calls.append("reviewer") or object()),
+        artifact_projector_factory=lambda: (calls.append("output") or object()),
+    )
+    with pytest.raises(SafeFailure):
+        PhaseThreeApplication(
+            source=_CompositionSource(),
+            profile=_composition_profile(),
+            dependencies=dependencies,
+        ).run(_write_composition_descriptor(tmp_path))
+
+    assert calls[:3] == ["lookup", "projector_closed", "mutable"]
+    assert calls.index("projector_closed") < calls.index("mutable")
+
+
+def test_composition_boundary_integrity_failure_never_falls_back(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class Projector:
+        def find_completed_candidate(self, _authority):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Projector(),
+        mutable_state_factory=lambda: calls.append("mutable"),
+        generator_factory=lambda: calls.append("generator"),
+        validator_factory=lambda: calls.append("validator"),
+        reviewer_factory=lambda: calls.append("reviewer"),
+        artifact_projector_factory=lambda: calls.append("output"),
+    )
+    with pytest.raises(SafeFailure) as raised:
+        PhaseThreeApplication(
+            source=_CompositionSource(),
+            profile=_composition_profile(),
+            dependencies=dependencies,
+        ).run(_write_composition_descriptor(tmp_path))
+
+    assert raised.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    assert calls == []
 
     wal = state_path.with_name(f"{state_path.name}-wal")
     shm = state_path.with_name(f"{state_path.name}-shm")
