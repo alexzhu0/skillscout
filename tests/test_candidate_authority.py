@@ -121,7 +121,7 @@ def _revalidate_workflow(
     workflow: WorkflowSpec,
     mutate: Callable[[dict[str, object]], None],
 ) -> WorkflowSpec:
-    values = workflow.model_dump(mode="json")
+    values = workflow.model_dump(mode="python")
     mutate(values)
     return WorkflowSpec.model_validate(values)
 
@@ -133,13 +133,13 @@ WORKFLOW_MUTATIONS: tuple[
     ("fingerprint", lambda value: value.__setitem__("fingerprint", _digest("9"))),
     ("title", lambda value: value.__setitem__("title", "A different workflow title")),
     ("goal", lambda value: value.__setitem__("goal", "A different workflow goal.")),
-    ("applicability", lambda value: value.__setitem__("applicability", ["A new use case."])),
-    ("non_goals", lambda value: value.__setitem__("non_goals", ["A new excluded goal."])),
+    ("applicability", lambda value: value.__setitem__("applicability", ("A new use case.",))),
+    ("non_goals", lambda value: value.__setitem__("non_goals", ("A new excluded goal.",))),
     (
         "preconditions",
-        lambda value: value.__setitem__("preconditions", ["A new precondition."]),
+        lambda value: value.__setitem__("preconditions", ("A new precondition.",)),
     ),
-    ("inputs", lambda value: value.__setitem__("inputs", ["A different input."])),
+    ("inputs", lambda value: value.__setitem__("inputs", ("A different input.",))),
     (
         "step_instruction",
         lambda value: value["steps"][0].__setitem__(  # type: ignore[index,union-attr]
@@ -176,22 +176,26 @@ WORKFLOW_MUTATIONS: tuple[
             "supports", "A different support statement."
         ),
     ),
-    ("outputs", lambda value: value.__setitem__("outputs", ["A different output."])),
+    ("outputs", lambda value: value.__setitem__("outputs", ("A different output.",))),
     (
         "failure_modes",
-        lambda value: value.__setitem__("failure_modes", ["A different failure."]),
+        lambda value: value.__setitem__("failure_modes", ("A different failure.",)),
     ),
     (
         "prohibited_actions",
-        lambda value: value.__setitem__("prohibited_actions", ["A different prohibition."]),
+        lambda value: value.__setitem__(
+            "prohibited_actions", ("A different prohibition.",)
+        ),
     ),
     (
         "required_approvals",
-        lambda value: value.__setitem__("required_approvals", ["A different approval."]),
+        lambda value: value.__setitem__(
+            "required_approvals", ("A different approval.",)
+        ),
     ),
     (
         "assumptions",
-        lambda value: value.__setitem__("assumptions", ["A different assumption."]),
+        lambda value: value.__setitem__("assumptions", ("A different assumption.",)),
     ),
     (
         "workflow_evidence_path",
