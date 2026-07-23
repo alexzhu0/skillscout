@@ -26,6 +26,7 @@ from skillscout.domain.candidate_authority import (
     LineageResolutionV1,
     candidate_execution_authority,
     derive_new_lineage,
+    prior_lineage_binding,
     workflow_spec_authority,
 )
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
@@ -1898,6 +1899,91 @@ def test_terminal_cascade_reaches_only_the_exact_twelve_outcomes(
     ).find_completed_candidate(result.authority)
     assert projected is not None
     assert projected.terminal_summary.outcome == outcome
+
+
+def test_real_state_adapter_retains_one_exact_approved_prior_lineage(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "candidate-state.db"
+    profile = _composition_profile()
+
+    def dependencies(
+        *,
+        calls: list[str],
+        run_id: str,
+    ) -> PhaseThreeDependencies:
+        return PhaseThreeDependencies(
+            completed_projector_factory=lambda: (
+                state_module.DescriptorAnchoredCompletedCandidateProjector(state_path)
+            ),
+            mutable_state_factory=lambda: SQLiteStateStore(state_path),
+            generator_factory=lambda: _CascadeGenerator("parsed", calls),
+            validator_factory=lambda: _CascadeValidator(False, calls),
+            reviewer_factory=lambda: _CascadeReviewer(
+                "eligible_local_candidate", calls
+            ),
+            artifact_projector_factory=lambda: object(),
+            run_id_factory=lambda: run_id,
+        )
+
+    prior_calls: list[str] = []
+    prior = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=profile,
+        dependencies=dependencies(calls=prior_calls, run_id="run-prior"),
+    ).run(_write_composition_descriptor(tmp_path))
+    assert prior.outcome == "eligible_local_candidate"
+    assert prior.terminal_summary is not None
+    prior_terminal = prior.terminal_summary
+
+    changed_workflow = _workflow().model_copy(
+        update={
+            "title": "Review a renamed automation workflow",
+            "goal": "Turn a changed bounded workflow into a reviewable result.",
+        }
+    )
+    changed_authority = workflow_spec_authority(
+        workflow_spec=changed_workflow,
+        phase2_extractor_output_hash=_digest("3"),
+        phase2_verified_chain_anchor=_digest("4"),
+    )
+    binding = prior_lineage_binding(
+        binding_policy_version="lineage-binding-policy-v1",
+        repository_id=123,
+        lineage_authority_digest=(
+            prior_terminal.lineage_resolution.lineage_authority_digest
+        ),
+        lineage_id=prior_terminal.lineage_resolution.lineage_id,
+        stable_slug=prior_terminal.lineage_resolution.stable_slug,
+        prior_package_digest=prior_terminal.package_identity.package_digest,
+        prior_terminal_summary_digest=prior_terminal.terminal_summary_digest,
+        new_workflow_spec_authority_digest=changed_authority.authority_digest,
+    )
+    state = SQLiteStateStore(state_path)
+    try:
+        state.persist_prior_lineage_binding(binding)
+    finally:
+        state.close()
+
+    current_calls: list[str] = []
+    current = PhaseThreeApplication(
+        source=_CompositionSource(workflow=changed_workflow),
+        profile=profile,
+        dependencies=dependencies(calls=current_calls, run_id="run-current"),
+    ).run(
+        _write_composition_descriptor_for_workflow(
+            tmp_path,
+            workflow=changed_workflow,
+            prior_lineage_binding_digest=binding.binding_id,
+        )
+    )
+
+    assert current.outcome == "eligible_local_candidate"
+    assert current.terminal_summary is not None
+    assert current.terminal_summary.lineage_resolution.status == "retained_lineage"
+    assert current.terminal_summary.lineage_resolution.lineage_id == binding.lineage_id
+    assert current.terminal_summary.lineage_resolution.stable_slug == binding.stable_slug
+    assert current_calls == ["generator", "validator", "reviewer"]
     assert projected.terminal_summary.eligible is (
         outcome == "eligible_local_candidate"
     )
