@@ -3251,7 +3251,9 @@ class SQLiteStateStore:
                 type(chain) is not VerifiedCandidateRunChain
                 or not chain.results
                 or type(stage_payload) is not bytes
-                or sha256_digest(stage_payload) != chain.results[-1].output_hash
+                or sha256_digest(stage_payload) != chain.results[-1].payload_digest
+                or chain.results[-1].output_hash
+                != chain.checkpoints[-1].output_hash
                 or not isinstance(recovery_artifacts, Mapping)
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
@@ -3335,7 +3337,7 @@ class SQLiteStateStore:
                 for row in rows
             }
             required_payloads = {
-                f"checkpoint_{result.stage.value}_payload": result.output_hash
+                f"checkpoint_{result.stage.value}_payload": result.payload_digest
                 for result in chain.results
             }
             if set(required_payloads) - set(payloads):

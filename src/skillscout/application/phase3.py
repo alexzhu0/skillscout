@@ -57,6 +57,7 @@ from skillscout.domain.qualification import (
     QUALIFICATION_POLICY_VERSION,
     QUALIFICATION_REPORT_SCHEMA_VERSION,
     QUALIFICATION_THRESHOLD_VERSION,
+    QualificationReportV1,
     evaluate_qualification_checks,
     qualification_report,
     qualification_report_bytes,
@@ -67,6 +68,8 @@ from skillscout.domain.review import (
     REVIEW_OUTPUT_SCHEMA_VERSION,
     REVIEW_POLICY_VERSION,
     REVIEW_PROMPT_VERSION,
+    GeneratorOutcomeEvidenceV1,
+    ReviewAttestationV1,
     candidate_terminal_summary,
     generator_outcome_evidence,
     review_attestation,
@@ -78,6 +81,7 @@ from skillscout.domain.skill_artifacts import (
     GENERATION_DRAFT_SCHEMA_VERSION,
     PROVENANCE_SCHEMA_VERSION,
     RENDERER_VERSION,
+    FrozenSkillPackageV1,
     GenerationAuthorityProjectionV1,
     render_skill_package,
 )
@@ -88,6 +92,7 @@ from skillscout.domain.validation import (
     OFFICIAL_VALIDATOR_DISTRIBUTION_HASH,
     OFFICIAL_VALIDATOR_VERSION,
     VALIDATION_REPORT_SCHEMA_VERSION,
+    ValidationReportV1,
 )
 
 PHASE_THREE_STAGE_SEQUENCE: Final[tuple[str, ...]] = (
@@ -373,6 +378,43 @@ class PhaseThreeRunner:
         self.profile = profile
         self.dependencies = dependencies
 
+    def _generation_authority(
+        self,
+        *,
+        report: QualificationReportV1,
+        lineage: LineageResolutionV1,
+        actual_generator_model_id: str,
+    ) -> GenerationAuthorityProjectionV1:
+        return GenerationAuthorityProjectionV1(
+            schema_version="generation-authority-v1",
+            phase2_run_id=self.source.descriptor.phase2_run_id,
+            phase2_terminal_summary_digest=self.source.descriptor.extractor_output_hash,
+            phase2_verified_chain_anchor=self.source.descriptor.verified_chain_anchor,
+            workflow_spec_authority=self.authority.workflow_spec_authority,
+            selected_workflow_fingerprint=self.authority.selected_workflow_fingerprint,
+            repository_url=self.source.repository_url,
+            repository_id=self.source.repository_id,
+            exact_commit_sha=self.source.pinned_commit_sha,
+            license_spdx=self.source.license_spdx,
+            lineage_id=lineage.lineage_id,
+            stable_slug=lineage.stable_slug,
+            qualification_report_digest=qualification_report_digest(report),
+            qualification_report_schema_version=QUALIFICATION_REPORT_SCHEMA_VERSION,
+            qualification_policy_version=QUALIFICATION_POLICY_VERSION,
+            qualification_threshold_version=QUALIFICATION_THRESHOLD_VERSION,
+            configured_generator_model_id=self.authority.configured_generator_model_id,
+            actual_generator_model_id=actual_generator_model_id,
+            generator_prompt_version=self.authority.generator_prompt_version,
+            generator_output_schema_version=self.authority.generator_output_schema_version,
+            generator_policy_version=self.authority.generator_policy_version,
+            renderer_version=RENDERER_VERSION,
+            artifact_schema_version=GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION,
+            provenance_schema_version=PROVENANCE_SCHEMA_VERSION,
+            generator_producer_version=self.authority.phase3_producer_version,
+            phase3_profile_version=self.authority.phase3_profile_version,
+            retry_policy_version=self.authority.retry_policy_version,
+        )
+
     def run(self) -> tuple[object, dict[str, bytes]]:
         resumable = self.state.find_resumable_candidate(self.authority)
         report = qualification_report(
@@ -398,11 +440,16 @@ class PhaseThreeRunner:
             self.state.persist_candidate_chain(chain, status="running")
         else:
             chain = resumable
+            expected_stages = tuple(
+                PhaseThreeStageV1(stage)
+                for stage in PHASE_THREE_STAGE_SEQUENCE
+            )
             if (
                 type(chain) is not VerifiedCandidateRunChain
                 or chain.identity.candidate_execution_authority != self.authority
-                or len(chain.results) != 1
-                or chain.results[0].stage is not PhaseThreeStageV1.QUALIFIER
+                or not 1 <= len(chain.results) <= len(expected_stages)
+                or tuple(result.stage for result in chain.results)
+                != expected_stages[: len(chain.results)]
                 or chain.results[0].payload_digest
                 != sha256_digest(canonical_json_bytes(report))
                 or chain.results[0].outcome_code
@@ -411,6 +458,8 @@ class PhaseThreeRunner:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         artifacts = {"qualification_report": qualification_report_bytes(report)}
         if not report.passed:
+            if len(chain.results) != 1:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             lineage = LineageResolutionV1(
                 schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
                 status="not_evaluated_qualification_rejected",
@@ -429,6 +478,8 @@ class PhaseThreeRunner:
             )
 
         if self.authority.prior_lineage_binding_digest is not None:
+            if len(chain.results) != 1:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             lineage = LineageResolutionV1(
                 schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
                 status="lineage_rejected",
@@ -449,124 +500,211 @@ class PhaseThreeRunner:
             repository_id=self.source.repository_id,
             initial_workflow_spec_authority=self.authority.workflow_spec_authority,
         )
-        request = GenerationRequestV1(
-            schema_version="generation-request-v1",
-            workflow_spec_authority=self.authority.workflow_spec_authority,
-            repository_url=self.source.repository_url,
-            repository_id=self.source.repository_id,
-            exact_commit_sha=self.source.pinned_commit_sha,
-            license_spdx=self.source.license_spdx,
-            lineage_id=lineage.lineage_id,
-            stable_slug=lineage.stable_slug,
-            qualification_report_digest=qualification_report_digest(report),
-            qualification_report_schema_version=QUALIFICATION_REPORT_SCHEMA_VERSION,
-            qualification_policy_version=QUALIFICATION_POLICY_VERSION,
-            qualification_threshold_version=QUALIFICATION_THRESHOLD_VERSION,
-            qualification_score=report.total_score,
-            qualification_passed=True,
-            generation_policy_version=GENERATOR_POLICY_VERSION,
-        )
-        if len(canonical_json_bytes(request)) > self.profile.max_generator_input_bytes:
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-        generator = self.dependencies.generator_factory()
-        generation, generator_attempt = self._retry_generate(generator, request)
-        if (
-            generation.usage is not None
-            and generation.usage.completion_tokens
-            > self.profile.max_generator_output_tokens
-        ):
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         generator_outcomes = {
             "refused": "generator_refusal",
             "incomplete": "generator_incomplete",
             "schema_invalid": "generator_schema_failure",
         }
-        if generation.status != "parsed":
+        checkpoint_payloads: Mapping[str, bytes] = {}
+        if len(chain.results) >= 2:
+            checkpoint_payloads = self.state.read_candidate_checkpoint_payloads(
+                chain.identity.run_id
+            )
+            if (
+                checkpoint_payloads.get("checkpoint_qualifier_payload")
+                != qualification_report_bytes(report)
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            generator_payload = checkpoint_payloads.get(
+                "checkpoint_generator_payload"
+            )
+            if type(generator_payload) is not bytes:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            try:
+                evidence = GeneratorOutcomeEvidenceV1.model_validate_json(
+                    generator_payload, strict=True
+                )
+            except ValueError:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+            if (
+                canonical_json_bytes(evidence) != generator_payload
+                or evidence.configured_generator_model_id
+                != self.authority.configured_generator_model_id
+                or evidence.generator_prompt_version
+                != self.authority.generator_prompt_version
+                or evidence.generator_output_schema_version
+                != self.authority.generator_output_schema_version
+                or evidence.generator_policy_version
+                != self.authority.generator_policy_version
+                or evidence.phase3_producer_version
+                != self.authority.phase3_producer_version
+                or evidence.phase3_profile_version
+                != self.authority.phase3_profile_version
+                or evidence.retry_policy_version
+                != self.authority.retry_policy_version
+                or chain.results[1].outcome_code != evidence.outcome
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            if evidence.outcome != "parsed":
+                if (
+                    len(chain.results) != 2
+                    or set(checkpoint_payloads)
+                    != {
+                        "checkpoint_qualifier_payload",
+                        "checkpoint_generator_payload",
+                    }
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                return self._terminal(
+                    chain=chain,
+                    outcome=generator_outcomes[evidence.outcome],
+                    report=report,
+                    lineage=lineage,
+                    generator_evidence=evidence,
+                    artifacts=artifacts,
+                )
+            package_payload = checkpoint_payloads.get(
+                "checkpoint_rendered_package"
+            )
+            if type(package_payload) is not bytes:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            try:
+                package = FrozenSkillPackageV1.model_validate_json(
+                    package_payload, strict=True
+                )
+            except ValueError:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+            expected_generation_authority = self._generation_authority(
+                report=report,
+                lineage=lineage,
+                actual_generator_model_id=evidence.actual_generator_model_id or "",
+            )
+            if (
+                canonical_json_bytes(package) != package_payload
+                or package.provenance.generation_authority
+                != expected_generation_authority
+                or package.generated_artifact_identity
+                != evidence.generated_artifact_identity
+                or package.provenance.request_id != evidence.request_id
+                or package.provenance.usage != evidence.usage
+                or package.provenance.latency_ms != evidence.latency_ms
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        else:
+            request = GenerationRequestV1(
+                schema_version="generation-request-v1",
+                workflow_spec_authority=self.authority.workflow_spec_authority,
+                repository_url=self.source.repository_url,
+                repository_id=self.source.repository_id,
+                exact_commit_sha=self.source.pinned_commit_sha,
+                license_spdx=self.source.license_spdx,
+                lineage_id=lineage.lineage_id,
+                stable_slug=lineage.stable_slug,
+                qualification_report_digest=qualification_report_digest(report),
+                qualification_report_schema_version=QUALIFICATION_REPORT_SCHEMA_VERSION,
+                qualification_policy_version=QUALIFICATION_POLICY_VERSION,
+                qualification_threshold_version=QUALIFICATION_THRESHOLD_VERSION,
+                qualification_score=report.total_score,
+                qualification_passed=True,
+                generation_policy_version=GENERATOR_POLICY_VERSION,
+            )
+            if (
+                len(canonical_json_bytes(request))
+                > self.profile.max_generator_input_bytes
+            ):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            generator = self.dependencies.generator_factory()
+            generation, generator_attempt = self._retry_generate(generator, request)
+            if (
+                generation.usage is not None
+                and generation.usage.completion_tokens
+                > self.profile.max_generator_output_tokens
+            ):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            if generation.status != "parsed":
+                evidence = generator_outcome_evidence(
+                    candidate_execution_authority=self.authority,
+                    outcome=generation.status,
+                    actual_generator_model_id=generation.model,
+                    request_id=generation.request_id,
+                    usage=generation.usage,
+                    latency_ms=generation.latency_ms,
+                    generated_artifact_identity=None,
+                )
+                chain = _append_success(
+                    chain,
+                    stage=PhaseThreeStageV1.GENERATOR,
+                    attempt_no=generator_attempt,
+                    outcome_code=generation.status,
+                    payload=evidence,
+                )
+                self.state.persist_candidate_stage(
+                    chain,
+                    stage_payload=canonical_json_bytes(evidence),
+                    recovery_artifacts={
+                        "checkpoint_qualifier_payload": qualification_report_bytes(
+                            report
+                        )
+                    },
+                    status="running",
+                )
+                return self._terminal(
+                    chain=chain,
+                    outcome=generator_outcomes[generation.status],
+                    report=report,
+                    lineage=lineage,
+                    generator_evidence=evidence,
+                    artifacts=artifacts,
+                )
+            if (
+                generation.draft is None
+                or generation.model is None
+                or generation.request_id is None
+                or generation.usage is None
+            ):
+                raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+            generation_authority = self._generation_authority(
+                report=report,
+                lineage=lineage,
+                actual_generator_model_id=generation.model,
+            )
+            package = render_skill_package(
+                draft=generation.draft,
+                authority=generation_authority,
+                request_id=generation.request_id,
+                usage=generation.usage,
+                latency_ms=generation.latency_ms,
+            )
             evidence = generator_outcome_evidence(
                 candidate_execution_authority=self.authority,
-                outcome=generation.status,
+                outcome="parsed",
                 actual_generator_model_id=generation.model,
                 request_id=generation.request_id,
                 usage=generation.usage,
                 latency_ms=generation.latency_ms,
-                generated_artifact_identity=None,
+                generated_artifact_identity=package.generated_artifact_identity,
             )
             chain = _append_success(
                 chain,
                 stage=PhaseThreeStageV1.GENERATOR,
                 attempt_no=generator_attempt,
-                outcome_code=generation.status,
+                outcome_code="parsed",
                 payload=evidence,
             )
-            self.state.persist_candidate_chain(chain, status="running")
-            return self._terminal(
-                chain=chain,
-                outcome=generator_outcomes[generation.status],
-                report=report,
-                lineage=lineage,
-                generator_evidence=evidence,
-                artifacts=artifacts,
+            self.state.persist_candidate_stage(
+                chain,
+                stage_payload=canonical_json_bytes(evidence),
+                recovery_artifacts={
+                    "checkpoint_qualifier_payload": qualification_report_bytes(report),
+                    "checkpoint_rendered_package": canonical_json_bytes(package),
+                },
+                status="running",
             )
-        if (
-            generation.draft is None
-            or generation.model is None
-            or generation.request_id is None
-            or generation.usage is None
-        ):
-            raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
-        generation_authority = GenerationAuthorityProjectionV1(
-            schema_version="generation-authority-v1",
-            phase2_run_id=self.source.descriptor.phase2_run_id,
-            phase2_terminal_summary_digest=self.source.descriptor.extractor_output_hash,
-            phase2_verified_chain_anchor=self.source.descriptor.verified_chain_anchor,
-            workflow_spec_authority=self.authority.workflow_spec_authority,
-            selected_workflow_fingerprint=self.authority.selected_workflow_fingerprint,
-            repository_url=self.source.repository_url,
-            repository_id=self.source.repository_id,
-            exact_commit_sha=self.source.pinned_commit_sha,
-            license_spdx=self.source.license_spdx,
-            lineage_id=lineage.lineage_id,
-            stable_slug=lineage.stable_slug,
-            qualification_report_digest=qualification_report_digest(report),
-            qualification_report_schema_version=QUALIFICATION_REPORT_SCHEMA_VERSION,
-            qualification_policy_version=QUALIFICATION_POLICY_VERSION,
-            qualification_threshold_version=QUALIFICATION_THRESHOLD_VERSION,
-            configured_generator_model_id=self.authority.configured_generator_model_id,
-            actual_generator_model_id=generation.model,
-            generator_prompt_version=self.authority.generator_prompt_version,
-            generator_output_schema_version=self.authority.generator_output_schema_version,
-            generator_policy_version=self.authority.generator_policy_version,
-            renderer_version=RENDERER_VERSION,
-            artifact_schema_version=GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION,
-            provenance_schema_version=PROVENANCE_SCHEMA_VERSION,
-            generator_producer_version=self.authority.phase3_producer_version,
-            phase3_profile_version=self.authority.phase3_profile_version,
-            retry_policy_version=self.authority.retry_policy_version,
-        )
-        package = render_skill_package(
-            draft=generation.draft,
-            authority=generation_authority,
-            request_id=generation.request_id,
-            usage=generation.usage,
-            latency_ms=generation.latency_ms,
-        )
-        evidence = generator_outcome_evidence(
-            candidate_execution_authority=self.authority,
-            outcome="parsed",
-            actual_generator_model_id=generation.model,
-            request_id=generation.request_id,
-            usage=generation.usage,
-            latency_ms=generation.latency_ms,
-            generated_artifact_identity=package.generated_artifact_identity,
-        )
-        chain = _append_success(
-            chain,
-            stage=PhaseThreeStageV1.GENERATOR,
-            attempt_no=generator_attempt,
-            outcome_code="parsed",
-            payload=evidence,
-        )
-        self.state.persist_candidate_chain(chain, status="running")
+            checkpoint_payloads = {
+                "checkpoint_qualifier_payload": qualification_report_bytes(report),
+                "checkpoint_generator_payload": canonical_json_bytes(evidence),
+                "checkpoint_rendered_package": canonical_json_bytes(package),
+            }
         artifacts.update(
             {
                 "generated_artifact_identity": canonical_json_bytes(
@@ -578,23 +716,59 @@ class PhaseThreeRunner:
             }
         )
 
-        validator = self.dependencies.validator_factory()
-        validation = validator.validate(package=package, authority=self.authority)
-        if (
-            validation.renderer_version != RENDERER_VERSION
-            or validation.renderer_version != self.authority.renderer_version
-        ):
-            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-        chain = _append_success(
-            chain,
-            stage=PhaseThreeStageV1.VALIDATOR,
-            attempt_no=1,
-            outcome_code="accepted" if validation.error_count == 0 else "rejected",
-            payload=validation,
-        )
-        self.state.persist_candidate_chain(chain, status="running")
+        if len(chain.results) >= 3:
+            validation_payload = checkpoint_payloads.get(
+                "checkpoint_validator_payload"
+            )
+            if type(validation_payload) is not bytes:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            try:
+                validation = ValidationReportV1.model_validate_json(
+                    validation_payload, strict=True
+                )
+            except ValueError:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+            if (
+                canonical_json_bytes(validation) != validation_payload
+                or validation.candidate_execution_authority != self.authority
+                or validation.generated_artifact_identity
+                != package.generated_artifact_identity
+                or validation.package_identity != package.package_identity
+                or chain.results[2].outcome_code
+                != ("accepted" if validation.error_count == 0 else "rejected")
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        else:
+            validator = self.dependencies.validator_factory()
+            validation = validator.validate(package=package, authority=self.authority)
+            if (
+                validation.renderer_version != RENDERER_VERSION
+                or validation.renderer_version != self.authority.renderer_version
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            chain = _append_success(
+                chain,
+                stage=PhaseThreeStageV1.VALIDATOR,
+                attempt_no=1,
+                outcome_code=(
+                    "accepted" if validation.error_count == 0 else "rejected"
+                ),
+                payload=validation,
+            )
+            self.state.persist_candidate_stage(
+                chain,
+                stage_payload=canonical_json_bytes(validation),
+                recovery_artifacts={},
+                status="running",
+            )
+            checkpoint_payloads = {
+                **checkpoint_payloads,
+                "checkpoint_validator_payload": canonical_json_bytes(validation),
+            }
         artifacts["validation_report"] = canonical_json_bytes(validation)
         if validation.error_count:
+            if len(chain.results) != 3:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             return self._terminal(
                 chain=chain,
                 outcome="validation_rejected",
@@ -606,51 +780,113 @@ class PhaseThreeRunner:
                 artifacts=artifacts,
             )
 
-        reviewer = self.dependencies.reviewer_factory()
-        reviewer_input_bytes = (
-            len(canonical_json_bytes(self.authority.workflow_spec_authority.workflow_spec))
-            + sum(len(item.content) for item in package.files)
-            + len(canonical_json_bytes(validation))
-        )
-        if reviewer_input_bytes > self.profile.max_reviewer_input_bytes:
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-        review_result, reviewer_attempt = self._retry_review(
-            reviewer, package, validation
-        )
-        if (
-            review_result.usage is not None
-            and review_result.usage.completion_tokens
-            > self.profile.max_reviewer_output_tokens
-        ):
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-        disposition = review_disposition(
-            generation_succeeded=True,
-            validation_report=validation,
-            review_result=review_result,
-        )
-        outcome = {
+        outcome_by_disposition = {
             "reviewer_refusal": "reviewer_refusal",
             "reviewer_incomplete": "reviewer_incomplete",
             "reviewer_schema_failure": "reviewer_schema_failure",
             "review_completed_no": "review_rejected",
             "review_completed_low_confidence": "review_low_confidence",
             "review_completed_eligible": "eligible_local_candidate",
-        }[disposition.status]
-        attestation = review_attestation(
-            candidate_execution_authority=self.authority,
-            generated_artifact_identity=package.generated_artifact_identity,
-            package_identity=package.package_identity,
-            validation_report=validation,
-            review_result=review_result,
-        )
-        chain = _append_success(
-            chain,
-            stage=PhaseThreeStageV1.REVIEWER,
-            attempt_no=reviewer_attempt,
-            outcome_code=disposition.status,
-            payload=attestation,
-        )
-        self.state.persist_candidate_chain(chain, status="running")
+        }
+        if len(chain.results) == 4:
+            review_payload = checkpoint_payloads.get("checkpoint_reviewer_payload")
+            expected_payload_keys = {
+                "checkpoint_qualifier_payload",
+                "checkpoint_generator_payload",
+                "checkpoint_rendered_package",
+                "checkpoint_validator_payload",
+                "checkpoint_reviewer_payload",
+            }
+            if (
+                type(review_payload) is not bytes
+                or set(checkpoint_payloads) != expected_payload_keys
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            try:
+                attestation = ReviewAttestationV1.model_validate_json(
+                    review_payload, strict=True
+                )
+            except ValueError:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+            review_result = attestation.review_result
+            disposition = review_disposition(
+                generation_succeeded=True,
+                validation_report=validation,
+                review_result=review_result,
+            )
+            if (
+                review_attestation_bytes(attestation) != review_payload
+                or attestation.generated_artifact_identity
+                != package.generated_artifact_identity
+                or attestation.package_identity != package.package_identity
+                or attestation.validation_report_digest != validation.report_digest
+                or attestation.configured_reviewer_model_id
+                != self.authority.configured_reviewer_model_id
+                or attestation.reviewer_prompt_version
+                != self.authority.reviewer_prompt_version
+                or attestation.reviewer_output_schema_version
+                != self.authority.reviewer_output_schema_version
+                or attestation.reviewer_policy_version
+                != self.authority.reviewer_policy_version
+                or chain.results[3].outcome_code != disposition.status
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        else:
+            expected_payload_keys = {
+                "checkpoint_qualifier_payload",
+                "checkpoint_generator_payload",
+                "checkpoint_rendered_package",
+                "checkpoint_validator_payload",
+            }
+            if len(chain.results) == 3 and set(checkpoint_payloads) != expected_payload_keys:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            reviewer = self.dependencies.reviewer_factory()
+            reviewer_input_bytes = (
+                len(
+                    canonical_json_bytes(
+                        self.authority.workflow_spec_authority.workflow_spec
+                    )
+                )
+                + sum(len(item.content) for item in package.files)
+                + len(canonical_json_bytes(validation))
+            )
+            if reviewer_input_bytes > self.profile.max_reviewer_input_bytes:
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            review_result, reviewer_attempt = self._retry_review(
+                reviewer, package, validation
+            )
+            if (
+                review_result.usage is not None
+                and review_result.usage.completion_tokens
+                > self.profile.max_reviewer_output_tokens
+            ):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            disposition = review_disposition(
+                generation_succeeded=True,
+                validation_report=validation,
+                review_result=review_result,
+            )
+            attestation = review_attestation(
+                candidate_execution_authority=self.authority,
+                generated_artifact_identity=package.generated_artifact_identity,
+                package_identity=package.package_identity,
+                validation_report=validation,
+                review_result=review_result,
+            )
+            chain = _append_success(
+                chain,
+                stage=PhaseThreeStageV1.REVIEWER,
+                attempt_no=reviewer_attempt,
+                outcome_code=disposition.status,
+                payload=attestation,
+            )
+            self.state.persist_candidate_stage(
+                chain,
+                stage_payload=review_attestation_bytes(attestation),
+                recovery_artifacts={},
+                status="running",
+            )
+        outcome = outcome_by_disposition[disposition.status]
         artifacts["review_attestation"] = review_attestation_bytes(attestation)
         return self._terminal(
             chain=chain,

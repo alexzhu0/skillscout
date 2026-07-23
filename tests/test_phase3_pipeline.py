@@ -1999,6 +1999,16 @@ def test_resume_budgets_qualifier_checkpoint_resumes_without_repeating_prefix(
                 self.interrupted = True
                 raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
 
+        def persist_candidate_stage(
+            self,
+            chain,
+            *,
+            stage_payload,
+            recovery_artifacts,
+            status,
+        ):
+            self.chain = chain
+
         def persist_candidate_terminal(self, _run_id, *, terminal_summary, artifacts):
             self.terminal = terminal_summary
 
@@ -2136,6 +2146,7 @@ def _run_interrupted_phase3_prefix(
     (
         (2, ["generator"]),
         (3, ["generator", "validator"]),
+        (4, ["generator", "validator", "reviewer"]),
     ),
 )
 def test_resume_budgets_durable_generator_and_validator_prefix_resume_once(
