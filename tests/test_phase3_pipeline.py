@@ -2041,6 +2041,293 @@ def test_resume_budgets_qualifier_checkpoint_resumes_without_repeating_prefix(
     assert canonical_json_bytes(state.chain.checkpoints[0]) == checkpoint_bytes
 
 
+class _InterruptAfterDurableStage:
+    def __init__(self, path: Path, *, stage_count: int) -> None:
+        self._store = SQLiteStateStore(path)
+        self._stage_count = stage_count
+        self._interrupted = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._store, name)
+
+    def persist_candidate_chain(self, chain, *, status):
+        self._store.persist_candidate_chain(chain, status=status)
+        if len(chain.results) == self._stage_count and not self._interrupted:
+            self._interrupted = True
+            raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+
+    def persist_candidate_stage(
+        self,
+        chain,
+        *,
+        stage_payload,
+        recovery_artifacts,
+        status,
+    ):
+        self._store.persist_candidate_stage(
+            chain,
+            stage_payload=stage_payload,
+            recovery_artifacts=recovery_artifacts,
+            status=status,
+        )
+        if len(chain.results) == self._stage_count and not self._interrupted:
+            self._interrupted = True
+            raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+
+    def close(self):
+        self._store.close()
+
+
+def _run_interrupted_phase3_prefix(
+    *,
+    state_path: Path,
+    descriptor: Path,
+    workflow: WorkflowSpec,
+    run_id: str,
+    stage_count: int,
+    calls: list[str],
+) -> tuple[tuple[bytes, ...], tuple[bytes, ...]]:
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    application = PhaseThreeApplication(
+        source=_CompositionSource(workflow=workflow),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: _InterruptAfterDurableStage(
+                state_path,
+                stage_count=stage_count,
+            ),
+            generator_factory=lambda: _CascadeGenerator("parsed", calls),
+            validator_factory=lambda: _CascadeValidator(False, calls),
+            reviewer_factory=lambda: _CascadeReviewer(
+                "eligible_local_candidate", calls
+            ),
+            artifact_projector_factory=lambda: object(),
+            run_id_factory=lambda: run_id,
+        ),
+    )
+    with pytest.raises(SafeFailure) as interrupted:
+        application.run(descriptor)
+    assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+    store = SQLiteStateStore(state_path)
+    try:
+        chain = store.verify_candidate_run_chain(run_id)
+        assert len(chain.results) == stage_count
+        payload_rows = store.connection.execute(
+            """SELECT artifact_kind FROM phase3_artifacts
+               WHERE run_id = ? AND artifact_kind LIKE 'checkpoint_%'
+               ORDER BY artifact_kind""",
+            (run_id,),
+        ).fetchall()
+        assert payload_rows
+        return (
+            tuple(canonical_json_bytes(result) for result in chain.results),
+            tuple(canonical_json_bytes(checkpoint) for checkpoint in chain.checkpoints),
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("stage_count", "expected_before_resume"),
+    (
+        (2, ["generator"]),
+        (3, ["generator", "validator"]),
+    ),
+)
+def test_resume_budgets_durable_generator_and_validator_prefix_resume_once(
+    tmp_path: Path,
+    stage_count: int,
+    expected_before_resume: list[str],
+) -> None:
+    state_path = tmp_path / f"resume-{stage_count}.db"
+    descriptor = _write_composition_descriptor(tmp_path)
+    calls: list[str] = []
+    before_results, before_checkpoints = _run_interrupted_phase3_prefix(
+        state_path=state_path,
+        descriptor=descriptor,
+        workflow=_workflow(),
+        run_id=f"resume-{stage_count}",
+        stage_count=stage_count,
+        calls=calls,
+    )
+    assert calls == expected_before_resume
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    result = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: SQLiteStateStore(state_path),
+            generator_factory=lambda: _CascadeGenerator("parsed", calls),
+            validator_factory=lambda: _CascadeValidator(False, calls),
+            reviewer_factory=lambda: _CascadeReviewer(
+                "eligible_local_candidate", calls
+            ),
+            artifact_projector_factory=lambda: object(),
+            run_id_factory=lambda: "must-not-create-new-run",
+        ),
+    ).run(descriptor)
+
+    assert result.outcome == "eligible_local_candidate"
+    assert calls == ["generator", "validator", "reviewer"]
+    projected = state_module.DescriptorAnchoredCompletedCandidateProjector(
+        state_path
+    ).find_completed_candidate(result.authority)
+    assert projected is not None
+    assert tuple(
+        canonical_json_bytes(item)
+        for item in projected.chain.results[:stage_count]
+    ) == before_results
+    assert tuple(
+        canonical_json_bytes(item)
+        for item in projected.chain.checkpoints[:stage_count]
+    ) == before_checkpoints
+
+
+@pytest.mark.parametrize("mutation", ("missing", "tampered"))
+def test_resume_budgets_checkpoint_payload_missing_or_tampered_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    state_path = tmp_path / f"payload-{mutation}.db"
+    descriptor = _write_composition_descriptor(tmp_path)
+    calls: list[str] = []
+    _run_interrupted_phase3_prefix(
+        state_path=state_path,
+        descriptor=descriptor,
+        workflow=_workflow(),
+        run_id=f"payload-{mutation}",
+        stage_count=2,
+        calls=calls,
+    )
+    connection = sqlite3.connect(state_path)
+    try:
+        if mutation == "missing":
+            connection.execute(
+                """DELETE FROM phase3_artifacts
+                   WHERE run_id = ? AND artifact_kind = 'checkpoint_generator_payload'""",
+                (f"payload-{mutation}",),
+            )
+        else:
+            connection.execute(
+                """UPDATE phase3_artifacts SET artifact_digest = ?
+                   WHERE run_id = ? AND artifact_kind = 'checkpoint_generator_payload'""",
+                (_digest("f"), f"payload-{mutation}"),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+    forbidden = list(calls)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    with pytest.raises(SafeFailure) as failure:
+        PhaseThreeApplication(
+            source=_CompositionSource(),
+            profile=_composition_profile(),
+            dependencies=PhaseThreeDependencies(
+                completed_projector_factory=lambda: Miss(),
+                mutable_state_factory=lambda: SQLiteStateStore(state_path),
+                generator_factory=lambda: _CascadeGenerator("parsed", calls),
+                validator_factory=lambda: _CascadeValidator(False, calls),
+                reviewer_factory=lambda: _CascadeReviewer(
+                    "eligible_local_candidate", calls
+                ),
+                artifact_projector_factory=lambda: object(),
+            ),
+        ).run(descriptor)
+    assert failure.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    assert calls == forbidden
+
+
+def test_resume_budgets_cross_run_checkpoint_payload_fails_closed(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "cross-run.db"
+    calls: list[str] = []
+    workflow_a = _workflow()
+    workflow_b = _workflow().model_copy(
+        update={"goal": "Produce a separately authorized reviewable result."}
+    )
+    descriptor_a_dir = tmp_path / "a"
+    descriptor_b_dir = tmp_path / "b"
+    descriptor_a_dir.mkdir()
+    descriptor_b_dir.mkdir()
+    descriptor_a = _write_composition_descriptor_for_workflow(
+        descriptor_a_dir, workflow=workflow_a
+    )
+    descriptor_b = _write_composition_descriptor_for_workflow(
+        descriptor_b_dir, workflow=workflow_b
+    )
+    for run_id, descriptor, workflow in (
+        ("cross-a", descriptor_a, workflow_a),
+        ("cross-b", descriptor_b, workflow_b),
+    ):
+        _run_interrupted_phase3_prefix(
+            state_path=state_path,
+            descriptor=descriptor,
+            workflow=workflow,
+            run_id=run_id,
+            stage_count=2,
+            calls=calls,
+        )
+
+    connection = sqlite3.connect(state_path)
+    try:
+        source_row = connection.execute(
+            """SELECT artifact_digest, locator, byte_count
+               FROM phase3_artifacts
+               WHERE run_id = 'cross-a'
+                 AND artifact_kind = 'checkpoint_generator_payload'"""
+        ).fetchone()
+        assert source_row is not None
+        connection.execute(
+            """UPDATE phase3_artifacts
+               SET artifact_digest = ?, locator = ?, byte_count = ?
+               WHERE run_id = 'cross-b'
+                 AND artifact_kind = 'checkpoint_generator_payload'""",
+            source_row,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    before = list(calls)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    with pytest.raises(SafeFailure) as failure:
+        PhaseThreeApplication(
+            source=_CompositionSource(workflow=workflow_b),
+            profile=_composition_profile(),
+            dependencies=PhaseThreeDependencies(
+                completed_projector_factory=lambda: Miss(),
+                mutable_state_factory=lambda: SQLiteStateStore(state_path),
+                generator_factory=lambda: _CascadeGenerator("parsed", calls),
+                validator_factory=lambda: _CascadeValidator(False, calls),
+                reviewer_factory=lambda: _CascadeReviewer(
+                    "eligible_local_candidate", calls
+                ),
+                artifact_projector_factory=lambda: object(),
+            ),
+        ).run(descriptor_b)
+    assert failure.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    assert calls == before
+
+
 def test_resume_budgets_completed_application_reuse_bypasses_every_mutable_factory(
     tmp_path: Path,
 ) -> None:
