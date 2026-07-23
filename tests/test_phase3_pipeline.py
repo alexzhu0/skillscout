@@ -6,11 +6,13 @@ import os
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
 import skillscout.adapters.state as state_module
+import skillscout.application.phase3 as phase3_module
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.phase3 import (
     PHASE_THREE_STAGE_SEQUENCE as APPLICATION_PHASE_THREE_STAGE_SEQUENCE,
@@ -2576,6 +2578,51 @@ def test_resume_budgets_authority_mutation_is_a_clean_completed_miss(
     assert mutable_calls == 1
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("profile_version", "phase3-profile-v2"),
+        ("producer_version", "phase3-v2"),
+        ("retry_policy_version", "phase3-runner-retry-v2"),
+        ("budget_policy_version", "phase3-budget-v2"),
+        ("configured_generator_model_id", "generator-v2"),
+        ("configured_reviewer_model_id", "reviewer-v2"),
+        ("max_candidates", 2),
+        ("max_generator_attempts", 2),
+        ("max_reviewer_attempts", 2),
+        ("max_generator_input_bytes", 32_768),
+        ("max_reviewer_input_bytes", 131_072),
+        ("max_generator_output_tokens", 3_000),
+        ("max_reviewer_output_tokens", 1_000),
+    ),
+)
+def test_runtime_profile_self_digest_and_execution_authority_bind_every_field(
+    field: str,
+    value: object,
+) -> None:
+    baseline = PhaseThreeRuntimeProfile()
+    changed = baseline.model_copy(update={field: value})
+    source = SimpleNamespace(
+        descriptor=SimpleNamespace(
+            selected_workflow_fingerprint=_workflow().fingerprint,
+            prior_lineage_binding_digest=None,
+        ),
+        workflow_spec_authority=workflow_spec_authority(
+            workflow_spec=_workflow(),
+            phase2_extractor_output_hash=_digest("3"),
+            phase2_verified_chain_anchor=_digest("4"),
+        ),
+    )
+
+    assert baseline.profile_digest != changed.profile_digest
+    assert (
+        phase3_module._execution_authority(source=source, profile=baseline).authority_digest
+        != phase3_module._execution_authority(
+            source=source, profile=changed
+        ).authority_digest
+    )
+
+
 def test_resume_budgets_three_sibling_application_cap_and_isolation(
     tmp_path: Path,
 ) -> None:
@@ -2648,6 +2695,13 @@ def test_resume_budgets_three_sibling_application_cap_and_isolation(
     with pytest.raises(SafeFailure) as over_cap:
         run_phase_three_batch(tuple((*applications, applications[0])))
     assert over_cap.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+    applications[0][0]._profile = applications[0][0]._profile.model_copy(  # type: ignore[misc]
+        update={"max_candidates": 2}
+    )
+    with pytest.raises(SafeFailure) as configured_cap:
+        run_phase_three_batch(tuple(applications))
+    assert configured_cap.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
 
 
 @pytest.mark.parametrize("failure_label", ["429", "500"])
