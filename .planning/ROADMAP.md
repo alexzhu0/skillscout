@@ -153,7 +153,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 
 **Depends on:** Phase 2  
 **Requirements:** QUAL-01, QUAL-02, GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, VAL-01, VAL-02, VAL-03, REV-01, REV-02, REV-03  
-**Plans:** 1/14 plans executed
+**Plans:** 2/14 plans executed
 
 Plans:
 **Wave 1**
@@ -162,7 +162,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03-02-PLAN.md — Resolve the exact skills-ref graph without installing or executing package code.
+- [x] 03-02-PLAN.md — Resolve the exact skills-ref graph without installing or executing package code.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -287,7 +287,7 @@ Plans:
 |---|---|---:|---:|
 | 1. Auditable Dry-Run Spine | Complete    | 2 | 2026-07-21 |
 | 2. Safe Single-Repository Extraction | Complete | 14 | 2026-07-22 |
-| 3. Validated Skill Candidate | 1/14 | In Progress|  |
+| 3. Validated Skill Candidate | 2/14 | In Progress|  |
 | 4. Controlled Draft PR | Not started | 6 | 0/6 |
 | 5. Automated Discovery Operations | Not started | 5 | 0/5 |
 | 6. Adversarial MVP Acceptance | Not started | 4 | 0/4 |
