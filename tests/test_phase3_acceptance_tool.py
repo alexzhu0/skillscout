@@ -197,8 +197,8 @@ def test_exact_openai_and_skills_ref_importer_sets_are_required(
         ),
         (
             "src/skillscout/adapters/state.py",
-            "flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC",
-            "flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC",
+            "            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC",
+            "            flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC",
         ),
         (
             "src/skillscout/domain/review.py",
@@ -234,20 +234,28 @@ def test_identity_report_and_completed_projection_mutations_fail(
 
 
 @pytest.mark.parametrize(
-    ("old", "new"),
+    ("relative", "old", "new"),
     [
-        ("os.O_WRONLY | os.O_CREAT | os.O_EXCL", "os.O_WRONLY | os.O_CREAT"),
-        ("os.fsync(anchor.descriptor)", "pass  # removed directory durability"),
-        ("0o600", "0o666"),
-        ("os.rename(", "os.replace("),
+        (
+            "src/skillscout/adapters/localfs.py",
+            "os.O_WRONLY | os.O_CREAT | os.O_EXCL",
+            "os.O_WRONLY | os.O_CREAT",
+        ),
+        (
+            "src/skillscout/domain/skill_artifacts.py",
+            "os.fsync(anchor.descriptor)",
+            "pass  # removed directory durability",
+        ),
+        ("src/skillscout/domain/skill_artifacts.py", "0o600", "0o666"),
+        ("src/skillscout/domain/skill_artifacts.py", "os.rename(", "os.replace("),
     ],
 )
 def test_materializer_durability_mutations_fail(
-    acceptance_repository: Path, old: str, new: str
+    acceptance_repository: Path, relative: str, old: str, new: str
 ) -> None:
     _replace_once(
         acceptance_repository,
-        "src/skillscout/domain/skill_artifacts.py",
+        relative,
         old,
         new,
     )
