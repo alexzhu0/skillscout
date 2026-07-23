@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Completed 03-12-PLAN.md
-last_updated: "2026-07-23T13:18:05.114Z"
+stopped_at: Completed 03-13-PLAN.md
+last_updated: "2026-07-23T13:39:42.221Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 36
-  completed_plans: 34
+  completed_plans: 35
   percent: 33
 ---
 
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 03 (validated-skill-candidate) — EXECUTING
-**Plan:** 13 of 14
+**Plan:** 14 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-23T13:18:05.109Z
-**Stopped at:** Completed 03-12-PLAN.md
+**Last session:** 2026-07-23T13:39:42.216Z
+**Stopped at:** Completed 03-13-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -159,6 +159,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 03 P10 | 23min | 3 tasks | 5 files |
 | Phase 03 P11 | 35min | 3 tasks | 3 files |
 | Phase 03 P12 | 29min | 3 tasks | 4 files |
+| Phase 03 P13 | 16min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -253,3 +254,5 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 03]: Completed projection precedes mutable state; only a verified clean miss may open mutable state. — Preserves zero-side-effect exact reuse and fail-closed projector integrity.
 - [Phase 03]: Durable stage recovery payloads reuse phase3_artifacts and leave the seven-table schema unchanged. — Adds restart payloads without weakening Plan 11 completed projection.
 - [Phase 03]: Recovery validates payload digest, result/checkpoint continuity, authority, and typed evidence before downstream calls. — Prevents missing, tampered, or cross-run payloads from triggering semantic work.
+- [Phase 03]: Completed CLI reuse returns exact stored projections and never constructs mutable state or output writers.
+- [Phase 03]: After a verified completed miss, mutable execution requires an absent or empty private output directory.
