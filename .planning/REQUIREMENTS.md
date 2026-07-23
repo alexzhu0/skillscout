@@ -50,8 +50,8 @@
 ### Validation
 
 - [x] **VAL-01**: 系统运行官方 Agent Skills 验证器，并检查 frontmatter、目录名、资源引用和 progressive-disclosure 结构。
-- [ ] **VAL-02**: 系统执行确定性安全和来源检查，覆盖秘密形态、危险命令、越权工具、自动下载或执行、Prompt Injection 残留、外部 URL、来源缺失、禁止的 `scripts/` 和过度复制。
-- [ ] **VAL-03**: Validation Report 使用结构化 `error/warning/info` 结果并记录 validator/policy 版本；任何 error 都阻止审核通过和发布。
+- [x] **VAL-02**: 系统执行确定性安全和来源检查，覆盖秘密形态、危险命令、越权工具、自动下载或执行、Prompt Injection 残留、外部 URL、来源缺失、禁止的 `scripts/` 和过度复制。
+- [x] **VAL-03**: Validation Report 使用结构化 `error/warning/info` 结果并记录 validator/policy 版本；任何 error 都阻止审核通过和发布。
 
 ### Independent Review
 
@@ -161,8 +161,8 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | GEN-04 | Phase 3 | Complete |
 | GEN-05 | Phase 3 | Complete |
 | VAL-01 | Phase 3 | Complete |
-| VAL-02 | Phase 3 | Pending |
-| VAL-03 | Phase 3 | Pending |
+| VAL-02 | Phase 3 | Complete |
+| VAL-03 | Phase 3 | Complete |
 | REV-01 | Phase 3 | Pending |
 | REV-02 | Phase 3 | Pending |
 | REV-03 | Phase 3 | Pending |

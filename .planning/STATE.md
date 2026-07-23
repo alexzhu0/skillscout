@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Completed 03-08-PLAN.md
-last_updated: "2026-07-23T11:07:18.573Z"
+stopped_at: Completed 03-09-PLAN.md
+last_updated: "2026-07-23T11:35:46.390Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 36
-  completed_plans: 30
-  percent: 83
+  completed_plans: 31
+  percent: 86
 ---
 
 # Project State: SkillScout
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 03 (validated-skill-candidate) — EXECUTING
-**Plan:** 9 of 14
+**Plan:** 10 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-23T11:07:18.568Z
-**Stopped at:** Completed 03-08-PLAN.md
+**Last session:** 2026-07-23T11:35:31.262Z
+**Stopped at:** Completed 03-09-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -155,6 +155,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 03 P06 | 20 min | 2 tasks | 4 files |
 | Phase 03 P07 | 13 min | 2 tasks | 2 files |
 | Phase 03 P08 | 24 min | 3 tasks | 7 files |
+| Phase 03 P09 | 24 min | 3 tasks | 6 files |
 
 ## Decisions
 
@@ -237,3 +238,6 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 03]: Separate semantic artifact identity from rendered package identity — Request telemetry and exact rendered layout can change package evidence without rewriting semantic generation authority.
 - [Phase 03]: Admit only one strict bounded Generator request — Generation uses one no-tools store-false Responses parse with SDK retries disabled and only verified structured authority.
 - [Phase 03]: Promote complete Skill trees under one retained lock — Descriptor-relative private staging and whole-tree rename preserve the exact prior package on every pre-commit failure.
+- [Phase 03]: Re-admit exact frozen package bytes with descriptor identity checks before and after official validation. — An official result is trustworthy only for the unchanged frozen package identity.
+- [Phase 03]: Keep official skills-ref findings separate from SkillScout-owned deterministic local policies. — Capability isolation and policy versioning must remain independently auditable.
+- [Phase 03]: Bind complete upstream and validator authorities directly into a canonically digested ValidationReportV1. — Later stages must detect omitted, swapped, reordered, or tampered validation evidence.
