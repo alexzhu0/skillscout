@@ -1900,3 +1900,190 @@ def test_terminal_cascade_reaches_only_the_exact_twelve_outcomes(
     assert projected.terminal_summary.eligible is (
         outcome == "eligible_local_candidate"
     )
+
+
+def test_resume_budgets_runner_retries_only_transient_infrastructure(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class TransientThenRefusal(_CascadeGenerator):
+        def generate(self, *, request):
+            self.calls.append("generator")
+            if len(self.calls) < 3:
+                raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+            self.calls.pop()
+            return super().generate(request=request)
+
+    state_path = tmp_path / "retry-state.db"
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: SQLiteStateStore(state_path),
+        generator_factory=lambda: TransientThenRefusal("refused", calls),
+        validator_factory=lambda: pytest.fail("validator must not run"),
+        reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+        artifact_projector_factory=lambda: pytest.fail("output must not run"),
+        run_id_factory=lambda: "retry-run",
+    )
+    result = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    ).run(_write_composition_descriptor(tmp_path))
+
+    assert result.outcome == "generator_refusal"
+    assert calls == ["generator", "generator", "generator"]
+    projection = state_module.DescriptorAnchoredCompletedCandidateProjector(
+        state_path
+    ).find_completed_candidate(result.authority)
+    assert projection is not None
+    assert projection.chain.attempts[1].attempt_no == 3
+
+
+def test_resume_budgets_exhaustion_uses_closed_retry_code(tmp_path: Path) -> None:
+    calls = 0
+
+    class AlwaysTransient:
+        def generate(self, *, request):
+            nonlocal calls
+            calls += 1
+            raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: SQLiteStateStore(
+            tmp_path / "exhausted-state.db"
+        ),
+        generator_factory=lambda: AlwaysTransient(),
+        validator_factory=lambda: pytest.fail("validator must not run"),
+        reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+        artifact_projector_factory=lambda: pytest.fail("output must not run"),
+        run_id_factory=lambda: "exhausted-run",
+    )
+    with pytest.raises(SafeFailure) as raised:
+        PhaseThreeApplication(
+            source=_CompositionSource(),
+            profile=_composition_profile(),
+            dependencies=dependencies,
+        ).run(_write_composition_descriptor(tmp_path))
+
+    assert calls == 3
+    assert raised.value.code is ErrorCode.RETRY_EXHAUSTED
+
+
+def test_resume_budgets_qualifier_checkpoint_resumes_without_repeating_prefix(
+    tmp_path: Path,
+) -> None:
+    class InterruptedState:
+        def __init__(self) -> None:
+            self.chain = None
+            self.interrupted = False
+            self.terminal = None
+
+        def find_resumable_candidate(self, _authority):
+            return self.chain if self.interrupted else None
+
+        def persist_candidate_chain(self, chain, *, status):
+            self.chain = chain
+            if len(chain.results) == 1 and not self.interrupted:
+                self.interrupted = True
+                raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+
+        def persist_candidate_terminal(self, _run_id, *, terminal_summary, artifacts):
+            self.terminal = terminal_summary
+
+        def close(self):
+            return None
+
+    state = InterruptedState()
+    calls: list[str] = []
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: state,
+        generator_factory=lambda: _CascadeGenerator("refused", calls),
+        validator_factory=lambda: pytest.fail("validator must not run"),
+        reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+        artifact_projector_factory=lambda: pytest.fail("output must not run"),
+        run_id_factory=lambda: "resume-run",
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+    with pytest.raises(SafeFailure) as interrupted:
+        application.run(descriptor)
+    assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
+    qualifier_bytes = canonical_json_bytes(state.chain.results[0])
+    checkpoint_bytes = canonical_json_bytes(state.chain.checkpoints[0])
+
+    resumed = application.run(descriptor)
+
+    assert resumed.outcome == "generator_refusal"
+    assert calls == ["generator"]
+    assert canonical_json_bytes(state.chain.results[0]) == qualifier_bytes
+    assert canonical_json_bytes(state.chain.checkpoints[0]) == checkpoint_bytes
+
+
+def test_resume_budgets_completed_application_reuse_bypasses_every_mutable_factory(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "reuse-state.db"
+    descriptor = _write_composition_descriptor(tmp_path)
+    calls: list[str] = []
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    first = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: SQLiteStateStore(state_path),
+            generator_factory=lambda: _CascadeGenerator("refused", calls),
+            validator_factory=lambda: pytest.fail("validator must not run"),
+            reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+            artifact_projector_factory=lambda: pytest.fail("output must not run"),
+            run_id_factory=lambda: "reuse-run",
+        ),
+    ).run(descriptor)
+    before = _recursive_exact_snapshot(tmp_path)
+    forbidden: list[str] = []
+    second = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: (
+                state_module.DescriptorAnchoredCompletedCandidateProjector(state_path)
+            ),
+            mutable_state_factory=lambda: forbidden.append("mutable"),
+            generator_factory=lambda: forbidden.append("generator"),
+            validator_factory=lambda: forbidden.append("validator"),
+            reviewer_factory=lambda: forbidden.append("reviewer"),
+            artifact_projector_factory=lambda: forbidden.append("output"),
+            run_id_factory=lambda: "must-not-run",
+        ),
+    ).run(descriptor, output_directory=tmp_path / "different-absent-output")
+    after = _recursive_exact_snapshot(tmp_path)
+
+    assert first.outcome == second.outcome == "generator_refusal"
+    assert second.completed_projection is not None
+    assert forbidden == []
+    assert before == after
