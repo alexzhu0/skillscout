@@ -11,7 +11,6 @@ from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import (
     CandidateExecutionAuthorityV1,
-    LineageResolutionV1,
     candidate_execution_authority,
     derive_new_lineage,
     workflow_spec_authority,

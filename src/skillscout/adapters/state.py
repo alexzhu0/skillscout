@@ -27,6 +27,7 @@ from skillscout.domain.canonical import (
     make_result_row_id,
     resume_event_hash,
     reusable_key_digest,
+    sha256_digest,
     stage_input_hash,
     stage_manifest_hash,
     stage_output_hash,
@@ -43,6 +44,11 @@ from skillscout.domain.models import (
     MAX_MANIFEST_BYTES,
     SUPPORTED_PRODUCER_SCHEMAS,
     Checkpoint,
+    CandidateResumeEventV1,
+    CandidateRunIdentityV1,
+    CandidateStageAttemptV1,
+    CandidateStageCheckpointV1,
+    CandidateStageResultV1,
     PersistedAttemptRecord,
     PersistedCheckpointRecord,
     PersistedRunRecord,
@@ -53,7 +59,18 @@ from skillscout.domain.models import (
     StageEnvelope,
     StageInput,
     VerifiedRunChain,
+    VerifiedCandidateRunChain,
     validate_manifest_bytes,
+)
+from skillscout.domain.candidate_authority import CandidateExecutionAuthorityV1
+from skillscout.domain.qualification import (
+    QualificationReportV1,
+    qualification_report_bytes,
+    qualification_report_digest,
+)
+from skillscout.domain.review import (
+    CandidateTerminalSummaryV1,
+    candidate_terminal_summary_bytes,
 )
 
 SCHEMA_VERSION = 3
@@ -62,6 +79,76 @@ MAX_LEGACY_BIND_CANDIDATES = 32
 _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
 _DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-f]{64})$")
 _T = TypeVar("_T")
+_PHASE3_ARTIFACT_MAX_BYTES = 8_388_608
+
+
+def _phase3_schema_statements() -> tuple[str, ...]:
+    """Return the isolated Phase 3 schema without changing legacy schema-v3."""
+
+    return (
+        """CREATE TABLE phase3_runs (
+            run_id TEXT PRIMARY KEY,
+            authority_digest TEXT NOT NULL UNIQUE,
+            identity_digest TEXT NOT NULL,
+            identity_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('running', 'interrupted', 'completed'))
+        )""",
+        """CREATE TABLE phase3_attempts (
+            attempt_hash TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES phase3_runs(run_id),
+            stage TEXT NOT NULL,
+            stage_index INTEGER NOT NULL,
+            attempt_no INTEGER NOT NULL,
+            attempt_json TEXT NOT NULL,
+            UNIQUE (run_id, stage, attempt_no)
+        )""",
+        """CREATE TABLE phase3_results (
+            result_hash TEXT PRIMARY KEY,
+            attempt_hash TEXT NOT NULL UNIQUE REFERENCES phase3_attempts(attempt_hash),
+            run_id TEXT NOT NULL REFERENCES phase3_runs(run_id),
+            stage TEXT NOT NULL,
+            stage_index INTEGER NOT NULL,
+            output_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            UNIQUE (run_id, stage)
+        )""",
+        """CREATE TABLE phase3_checkpoints (
+            checkpoint_hash TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES phase3_runs(run_id),
+            stage TEXT NOT NULL,
+            stage_index INTEGER NOT NULL,
+            result_hash TEXT NOT NULL REFERENCES phase3_results(result_hash),
+            output_hash TEXT NOT NULL,
+            previous_checkpoint_hash TEXT NOT NULL,
+            next_stage TEXT,
+            terminal INTEGER NOT NULL,
+            checkpoint_json TEXT NOT NULL,
+            UNIQUE (run_id, stage)
+        )""",
+        """CREATE TABLE phase3_resume_events (
+            event_hash TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES phase3_runs(run_id),
+            event_index INTEGER NOT NULL,
+            prior_event_hash TEXT,
+            checkpoint_hash TEXT,
+            checkpoint_output_hash TEXT,
+            event_json TEXT NOT NULL,
+            UNIQUE (run_id, event_index)
+        )""",
+        """CREATE TABLE phase3_artifacts (
+            run_id TEXT NOT NULL REFERENCES phase3_runs(run_id),
+            artifact_kind TEXT NOT NULL,
+            artifact_digest TEXT NOT NULL,
+            locator TEXT NOT NULL,
+            byte_count INTEGER NOT NULL,
+            PRIMARY KEY (run_id, artifact_kind)
+        )""",
+        """CREATE TABLE phase3_terminals (
+            run_id TEXT PRIMARY KEY REFERENCES phase3_runs(run_id),
+            terminal_summary_digest TEXT NOT NULL,
+            outcome TEXT NOT NULL
+        )""",
+    )
 
 
 @dataclass(frozen=True)
@@ -241,6 +328,7 @@ def _expected_schema_sql(
 
 _EXPECTED_SCHEMA_SQL = _expected_schema_sql()
 _EXPECTED_V2_SCHEMA_SQL = _expected_schema_sql(_schema_v2_statements())
+_PHASE3_SCHEMA_SQL = _expected_schema_sql(_phase3_schema_statements())
 _EXPECTED_V2_NAMED_SCHEMA_OBJECTS = (
     ("index", "idx_attempts_reusable", "stage_attempts"),
     ("index", "idx_results_semantic", "stage_results"),
@@ -579,14 +667,19 @@ class SQLiteStateStore:
             raise ValueError("unknown migration failure seam")
         self.path = Path(os.path.abspath(os.fspath(path)))
         self.manifest_root = self.path.with_suffix(".manifests")
-        if self.manifest_root == self.path:
+        self.phase3_artifact_root = self.path.with_suffix(".phase3-artifacts")
+        if self.manifest_root == self.path or self.phase3_artifact_root == self.path:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         self._state_name = AnchoredDirectory.validate_child_name(self.path.name)
         self._manifest_name = AnchoredDirectory.validate_child_name(self.manifest_root.name)
+        self._phase3_artifact_name = AnchoredDirectory.validate_child_name(
+            self.phase3_artifact_root.name
+        )
         self._filesystem_seam = filesystem_seam
         self._state_parent: AnchoredDirectory | None = None
         self._manifest_anchor: AnchoredDirectory | None = None
         self._manifest_stage_anchors: dict[PipelineStage, AnchoredDirectory] = {}
+        self._phase3_artifact_anchor: AnchoredDirectory | None = None
         self._lock_descriptor = -1
         self._durable_bytes: bytes | None = None
         self._poisoned = False
@@ -624,11 +717,15 @@ class SQLiteStateStore:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE) from None
                 if version == SCHEMA_VERSION:
                     self._validate_current_schema()
+                    if self._ensure_phase3_schema():
+                        self._persist_startup_snapshot(previous=raw)
                 elif version == 1:
                     self._migrate_v1(migration_fail_at)
+                    self._ensure_phase3_schema()
                     self._persist_startup_snapshot(previous=raw)
                 elif version == 2:
                     self._migrate_v2()
+                    self._ensure_phase3_schema()
                     self._persist_startup_snapshot(previous=raw)
                 else:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
@@ -754,8 +851,11 @@ class SQLiteStateStore:
             self._db.execute("BEGIN IMMEDIATE")
             for statement in _schema_statements():
                 self._db.execute(statement)
+            for statement in _phase3_schema_statements():
+                self._db.execute(statement)
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._validate_current_schema()
+            self._validate_phase3_schema()
             self._db.commit()
         except SafeFailure:
             self._db.rollback()
@@ -773,6 +873,42 @@ class SQLiteStateStore:
             expected_foreign_keys_by_table=_EXPECTED_FOREIGN_KEYS,
             expected_indexes_by_table=_EXPECTED_INDEXES,
         )
+
+    def _ensure_phase3_schema(self) -> bool:
+        rows = self._db.execute(
+            """SELECT name FROM sqlite_master
+               WHERE name LIKE 'phase3_%' ORDER BY name"""
+        ).fetchall()
+        if not rows:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                for statement in _phase3_schema_statements():
+                    self._db.execute(statement)
+                self._validate_phase3_schema()
+                self._db.commit()
+            except (SafeFailure, sqlite3.Error):
+                self._db.rollback()
+                raise
+            return True
+        self._validate_phase3_schema()
+        return False
+
+    def _validate_phase3_schema(self) -> None:
+        try:
+            rows = self._db.execute(
+                """SELECT name, sql FROM sqlite_master
+                   WHERE name LIKE 'phase3_%' ORDER BY name"""
+            ).fetchall()
+            actual = {
+                str(row["name"]): _normalize_schema_sql(str(row["sql"]))
+                for row in rows
+            }
+            if actual != dict(_PHASE3_SCHEMA_SQL):
+                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+        except SafeFailure:
+            raise
+        except (TypeError, ValueError, sqlite3.Error):
+            raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE) from None
 
     def _validate_v2_schema(self) -> None:
         self._validate_schema(
@@ -809,6 +945,7 @@ class SQLiteStateStore:
                 for row in self._db.execute(
                     """SELECT type, name, tbl_name FROM sqlite_master
                        WHERE name NOT LIKE 'sqlite_%'
+                         AND name NOT LIKE 'phase3_%'
                        ORDER BY type, name"""
                 )
             )
@@ -1588,6 +1725,9 @@ class SQLiteStateStore:
         if self._manifest_anchor is not None:
             self._manifest_anchor.close()
             self._manifest_anchor = None
+        if self._phase3_artifact_anchor is not None:
+            self._phase3_artifact_anchor.close()
+            self._phase3_artifact_anchor = None
         try:
             if self._state_parent is not None:
                 self._state_parent.remove_child_directory(self._manifest_name, missing_ok=True)
@@ -2570,6 +2710,416 @@ class SQLiteStateStore:
             database.execute(statement, parameters)
 
         self._snapshot_transaction(mutate)
+
+    @staticmethod
+    def _candidate_identity_from_json(payload: str) -> CandidateRunIdentityV1:
+        values = json.loads(payload)
+        if type(values) is not dict:
+            raise ValueError("candidate identity must be an object")
+        authority_values = values.get("candidate_execution_authority")
+        authority = CandidateExecutionAuthorityV1.model_validate_json(
+            canonical_json_bytes(authority_values),
+            strict=True,
+        )
+        values["candidate_execution_authority"] = authority
+        return CandidateRunIdentityV1.model_validate(values, strict=True)
+
+    def persist_candidate_chain(
+        self,
+        chain: VerifiedCandidateRunChain,
+        *,
+        status: str,
+    ) -> None:
+        """Atomically persist one already-verified Phase 3 successful prefix."""
+
+        if type(chain) is not VerifiedCandidateRunChain or status not in {
+            "running",
+            "interrupted",
+        }:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+        def mutate(database: sqlite3.Connection) -> None:
+            identity = chain.identity
+            database.execute(
+                """INSERT INTO phase3_runs
+                   (run_id, authority_digest, identity_digest, identity_json, status)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    identity.run_id,
+                    identity.candidate_execution_authority_digest,
+                    identity.identity_digest,
+                    canonical_json_bytes(identity).decode(),
+                    status,
+                ),
+            )
+            for attempt in chain.attempts:
+                database.execute(
+                    """INSERT INTO phase3_attempts
+                       (attempt_hash, run_id, stage, stage_index, attempt_no, attempt_json)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        attempt.attempt_hash,
+                        attempt.run_id,
+                        attempt.stage.value,
+                        attempt.stage_index,
+                        attempt.attempt_no,
+                        canonical_json_bytes(attempt).decode(),
+                    ),
+                )
+            for result in chain.results:
+                database.execute(
+                    """INSERT INTO phase3_results
+                       (result_hash, attempt_hash, run_id, stage, stage_index,
+                        output_hash, result_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        result.result_hash,
+                        result.attempt_hash,
+                        result.run_id,
+                        result.stage.value,
+                        result.stage_index,
+                        result.output_hash,
+                        canonical_json_bytes(result).decode(),
+                    ),
+                )
+            for checkpoint in chain.checkpoints:
+                database.execute(
+                    """INSERT INTO phase3_checkpoints
+                       (checkpoint_hash, run_id, stage, stage_index, result_hash,
+                        output_hash, previous_checkpoint_hash, next_stage, terminal,
+                        checkpoint_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        checkpoint.checkpoint_hash,
+                        checkpoint.run_id,
+                        checkpoint.stage.value,
+                        checkpoint.stage_index,
+                        checkpoint.result_hash,
+                        checkpoint.output_hash,
+                        checkpoint.previous_checkpoint_hash,
+                        checkpoint.next_stage.value
+                        if checkpoint.next_stage is not None
+                        else None,
+                        int(checkpoint.terminal),
+                        canonical_json_bytes(checkpoint).decode(),
+                    ),
+                )
+            for event in chain.resume_events:
+                database.execute(
+                    """INSERT INTO phase3_resume_events
+                       (event_hash, run_id, event_index, prior_event_hash,
+                        checkpoint_hash, checkpoint_output_hash, event_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        event.event_hash,
+                        event.run_id,
+                        event.event_index,
+                        event.prior_event_hash,
+                        event.checkpoint_hash,
+                        event.checkpoint_output_hash,
+                        canonical_json_bytes(event).decode(),
+                    ),
+                )
+
+        try:
+            self._snapshot_transaction(mutate)
+        except (TypeError, ValueError, ValidationError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def verify_candidate_run_chain(
+        self,
+        run_id: str,
+        *,
+        expected_authority: CandidateExecutionAuthorityV1 | None = None,
+    ) -> VerifiedCandidateRunChain:
+        """Reconstruct and reverify every persisted Phase 3 authority link."""
+
+        try:
+            run = self._db.execute(
+                "SELECT * FROM phase3_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            identity = self._candidate_identity_from_json(str(run["identity_json"]))
+            if (
+                identity.run_id != run["run_id"]
+                or identity.identity_digest != run["identity_digest"]
+                or identity.candidate_execution_authority_digest
+                != run["authority_digest"]
+                or (
+                    expected_authority is not None
+                    and (
+                        type(expected_authority) is not CandidateExecutionAuthorityV1
+                        or identity.candidate_execution_authority != expected_authority
+                    )
+                )
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            attempts: list[CandidateStageAttemptV1] = []
+            for row in self._db.execute(
+                """SELECT * FROM phase3_attempts
+                   WHERE run_id = ? ORDER BY stage_index, attempt_no""",
+                (run_id,),
+            ):
+                record = CandidateStageAttemptV1.model_validate_json(
+                    str(row["attempt_json"]), strict=True
+                )
+                if (
+                    record.attempt_hash != row["attempt_hash"]
+                    or record.stage.value != row["stage"]
+                    or record.stage_index != row["stage_index"]
+                    or record.attempt_no != row["attempt_no"]
+                    or canonical_json_bytes(record).decode() != row["attempt_json"]
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                attempts.append(record)
+
+            results: list[CandidateStageResultV1] = []
+            for row in self._db.execute(
+                """SELECT * FROM phase3_results
+                   WHERE run_id = ? ORDER BY stage_index""",
+                (run_id,),
+            ):
+                record = CandidateStageResultV1.model_validate_json(
+                    str(row["result_json"]), strict=True
+                )
+                if (
+                    record.result_hash != row["result_hash"]
+                    or record.attempt_hash != row["attempt_hash"]
+                    or record.stage.value != row["stage"]
+                    or record.stage_index != row["stage_index"]
+                    or record.output_hash != row["output_hash"]
+                    or canonical_json_bytes(record).decode() != row["result_json"]
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                results.append(record)
+
+            checkpoints: list[CandidateStageCheckpointV1] = []
+            for row in self._db.execute(
+                """SELECT * FROM phase3_checkpoints
+                   WHERE run_id = ? ORDER BY stage_index""",
+                (run_id,),
+            ):
+                record = CandidateStageCheckpointV1.model_validate_json(
+                    str(row["checkpoint_json"]), strict=True
+                )
+                if (
+                    record.checkpoint_hash != row["checkpoint_hash"]
+                    or record.result_hash != row["result_hash"]
+                    or record.output_hash != row["output_hash"]
+                    or record.previous_checkpoint_hash != row["previous_checkpoint_hash"]
+                    or (
+                        record.next_stage.value if record.next_stage is not None else None
+                    )
+                    != row["next_stage"]
+                    or int(record.terminal) != row["terminal"]
+                    or canonical_json_bytes(record).decode() != row["checkpoint_json"]
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                checkpoints.append(record)
+
+            events: list[CandidateResumeEventV1] = []
+            for row in self._db.execute(
+                """SELECT * FROM phase3_resume_events
+                   WHERE run_id = ? ORDER BY event_index""",
+                (run_id,),
+            ):
+                record = CandidateResumeEventV1.model_validate_json(
+                    str(row["event_json"]), strict=True
+                )
+                if (
+                    record.event_hash != row["event_hash"]
+                    or record.event_index != row["event_index"]
+                    or record.prior_event_hash != row["prior_event_hash"]
+                    or record.checkpoint_hash != row["checkpoint_hash"]
+                    or record.checkpoint_output_hash != row["checkpoint_output_hash"]
+                    or canonical_json_bytes(record).decode() != row["event_json"]
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                events.append(record)
+
+            return VerifiedCandidateRunChain(
+                identity=identity,
+                attempts=tuple(attempts),
+                results=tuple(results),
+                checkpoints=tuple(checkpoints),
+                resume_events=tuple(events),
+            )
+        except SafeFailure:
+            raise
+        except (json.JSONDecodeError, TypeError, ValueError, ValidationError, sqlite3.Error):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def find_resumable_candidate(
+        self,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> VerifiedCandidateRunChain | None:
+        """Return only an exact-authority verified unfinished candidate."""
+
+        if type(authority) is not CandidateExecutionAuthorityV1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        rows = self._db.execute(
+            """SELECT run_id FROM phase3_runs
+               WHERE authority_digest = ? AND status IN ('running', 'interrupted')""",
+            (authority.authority_digest,),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return self.verify_candidate_run_chain(
+            str(rows[0]["run_id"]), expected_authority=authority
+        )
+
+    def _phase3_artifacts(self) -> AnchoredDirectory:
+        if self._phase3_artifact_anchor is None:
+            self._phase3_artifact_anchor = AnchoredDirectory.open(
+                self.phase3_artifact_root,
+                create=True,
+                filesystem_seam=self._filesystem_seam,
+            )
+        return self._phase3_artifact_anchor
+
+    def persist_candidate_terminal(
+        self,
+        run_id: str,
+        *,
+        terminal_summary: CandidateTerminalSummaryV1,
+        artifacts: Mapping[str, bytes],
+    ) -> None:
+        """Atomically expose terminal rows only after exact artifacts are durable."""
+
+        try:
+            chain = self.verify_candidate_run_chain(run_id)
+            if (
+                type(terminal_summary) is not CandidateTerminalSummaryV1
+                or terminal_summary.candidate_execution_authority
+                != chain.identity.candidate_execution_authority
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            qualification_payload = artifacts.get("qualification_report")
+            if type(qualification_payload) is not bytes:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            qualification = QualificationReportV1.model_validate_json(
+                qualification_payload, strict=True
+            )
+            if (
+                qualification_report_bytes(qualification) != qualification_payload
+                or qualification_report_digest(qualification)
+                != terminal_summary.qualification_report_digest
+                or qualification.header.candidate_execution_authority
+                != chain.identity.candidate_execution_authority
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            payloads = {
+                **artifacts,
+                "terminal_summary": candidate_terminal_summary_bytes(terminal_summary),
+            }
+            digests = {
+                kind: sha256_digest(payload) for kind, payload in payloads.items()
+            }
+            digests["terminal_summary"] = terminal_summary.terminal_summary_digest
+            locators: dict[str, str] = {}
+            anchor = self._phase3_artifacts()
+            for kind, payload in payloads.items():
+                if type(kind) is not str or type(payload) is not bytes:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                locator = AnchoredDirectory.validate_child_name(
+                    f"{digests[kind].removeprefix('sha256:')}.json"
+                )
+                anchor.atomic_write(
+                    locator,
+                    payload,
+                    max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
+                    seam_prefix="phase3_artifact_",
+                )
+                locators[kind] = locator
+
+            def mutate(database: sqlite3.Connection) -> None:
+                for kind, payload in payloads.items():
+                    database.execute(
+                        """INSERT INTO phase3_artifacts
+                           (run_id, artifact_kind, artifact_digest, locator, byte_count)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (run_id, kind, digests[kind], locators[kind], len(payload)),
+                    )
+                database.execute(
+                    """INSERT INTO phase3_terminals
+                       (run_id, terminal_summary_digest, outcome)
+                       VALUES (?, ?, ?)""",
+                    (
+                        run_id,
+                        terminal_summary.terminal_summary_digest,
+                        terminal_summary.outcome,
+                    ),
+                )
+                updated = database.execute(
+                    """UPDATE phase3_runs SET status = 'completed'
+                       WHERE run_id = ? AND status IN ('running', 'interrupted')""",
+                    (run_id,),
+                )
+                if updated.rowcount != 1:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            self._snapshot_transaction(mutate)
+        except SafeFailure:
+            raise
+        except (
+            DurableWriteError,
+            json.JSONDecodeError,
+            OSError,
+            TypeError,
+            ValueError,
+            ValidationError,
+            sqlite3.Error,
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def read_candidate_artifact(self, run_id: str, kind: str) -> bytes:
+        """Read and rehash one artifact cited by the Phase 3 ledger."""
+
+        row = self._db.execute(
+            """SELECT artifact_digest, locator, byte_count FROM phase3_artifacts
+               WHERE run_id = ? AND artifact_kind = ?""",
+            (run_id, kind),
+        ).fetchone()
+        if row is None:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        try:
+            payload = self._phase3_artifacts().read_bytes(
+                str(row["locator"]),
+                max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
+            )
+            actual_digest = sha256_digest(payload) if payload is not None else None
+            if kind == "terminal_summary" and payload is not None:
+                summary = CandidateTerminalSummaryV1.model_validate_json(
+                    payload, strict=True
+                )
+                if candidate_terminal_summary_bytes(summary) != payload:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                actual_digest = summary.terminal_summary_digest
+            if (
+                payload is None
+                or len(payload) != row["byte_count"]
+                or actual_digest != row["artifact_digest"]
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            return payload
+        except SafeFailure:
+            raise
+        except (OSError, TypeError, ValueError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def project_verified_prior_lineage_evidence(
+        self, prior_lineage_binding_digest: str
+    ) -> None:
+        """Fail closed until an exact verified completed lineage is available."""
+
+        if _DIGEST_PATTERN.fullmatch(prior_lineage_binding_digest) is None:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return None
 
     def _snapshot_transaction(self, mutation: Callable[[sqlite3.Connection], _T]) -> _T:
         if self._durable_bytes is None or self._poisoned:
