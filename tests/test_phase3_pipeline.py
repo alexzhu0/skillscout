@@ -1849,6 +1849,43 @@ class _CascadeReviewer:
         )
 
 
+def _real_eligible_candidate(
+    root: Path,
+    *,
+    workflow: WorkflowSpec,
+    run_id: str,
+) -> tuple[Path, object]:
+    root.mkdir(mode=0o700)
+    state_path = root / "state.db"
+    calls: list[str] = []
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: (
+            state_module.DescriptorAnchoredCompletedCandidateProjector(state_path)
+        ),
+        mutable_state_factory=lambda: SQLiteStateStore(state_path),
+        generator_factory=lambda: _CascadeGenerator("parsed", calls),
+        validator_factory=lambda: _CascadeValidator(False, calls),
+        reviewer_factory=lambda: _CascadeReviewer(
+            "eligible_local_candidate", calls
+        ),
+        artifact_projector_factory=lambda: object(),
+        run_id_factory=lambda: run_id,
+    )
+    result = PhaseThreeApplication(
+        source=_CompositionSource(workflow=workflow),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    ).run(
+        _write_composition_descriptor_for_workflow(
+            root,
+            workflow=workflow,
+        )
+    )
+    assert result.outcome == "eligible_local_candidate"
+    assert calls == ["generator", "validator", "reviewer"]
+    return state_path, result
+
+
 @pytest.mark.parametrize("outcome", TERMINAL_OUTCOMES)
 def test_terminal_cascade_reaches_only_the_exact_twelve_outcomes(
     tmp_path: Path,
@@ -1923,6 +1960,85 @@ def test_terminal_cascade_reaches_only_the_exact_twelve_outcomes(
     assert projected.terminal_summary.eligible is (
         outcome == "eligible_local_candidate"
     )
+
+
+@pytest.mark.parametrize("artifact_kind", ("rendered_package", "package_manifest"))
+def test_exact_reuse_rejects_canonical_package_identity_substitution(
+    tmp_path: Path,
+    artifact_kind: str,
+) -> None:
+    first_state, first = _real_eligible_candidate(
+        tmp_path / "first",
+        workflow=_workflow(),
+        run_id="first-run",
+    )
+    changed_workflow = _workflow().model_copy(
+        update={
+            "title": "Changed review workflow",
+            "goal": "Produce a different reviewable result.",
+        }
+    )
+    _second_state, second = _real_eligible_candidate(
+        tmp_path / "second",
+        workflow=changed_workflow,
+        run_id="second-run",
+    )
+    payload = second.artifacts[artifact_kind]
+    digest = sha256_digest(payload)
+    locator = f"{digest.removeprefix('sha256:')}.json"
+    store = SQLiteStateStore(first_state)
+    try:
+        store._phase3_artifacts().atomic_write(
+            locator,
+            payload,
+            max_bytes=state_module._PHASE3_ARTIFACT_MAX_BYTES,
+        )
+        store._write_transaction(
+            """UPDATE phase3_artifacts
+               SET artifact_digest = ?, locator = ?, byte_count = ?
+               WHERE artifact_kind = ?""",
+            (digest, locator, len(payload), artifact_kind),
+        )
+    finally:
+        store.close()
+
+    with pytest.raises(SafeFailure) as raised:
+        state_module.DescriptorAnchoredCompletedCandidateProjector(
+            first_state
+        ).find_completed_candidate(first.authority)
+    assert raised.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+
+
+def test_exact_reuse_rejects_unknown_uncited_artifact_kind(tmp_path: Path) -> None:
+    state_path, result = _real_eligible_candidate(
+        tmp_path / "candidate",
+        workflow=_workflow(),
+        run_id="candidate-run",
+    )
+    payload = canonical_json_bytes({"unknown": True})
+    digest = sha256_digest(payload)
+    locator = f"{digest.removeprefix('sha256:')}.json"
+    store = SQLiteStateStore(state_path)
+    try:
+        store._phase3_artifacts().atomic_write(
+            locator,
+            payload,
+            max_bytes=state_module._PHASE3_ARTIFACT_MAX_BYTES,
+        )
+        store._write_transaction(
+            """INSERT INTO phase3_artifacts
+               (run_id, artifact_kind, artifact_digest, locator, byte_count)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("candidate-run", "unknown_artifact", digest, locator, len(payload)),
+        )
+    finally:
+        store.close()
+
+    with pytest.raises(SafeFailure) as raised:
+        state_module.DescriptorAnchoredCompletedCandidateProjector(
+            state_path
+        ).find_completed_candidate(result.authority)
+    assert raised.value.code is ErrorCode.STATE_INTEGRITY_ERROR
 
 
 def test_real_state_adapter_retains_one_exact_approved_prior_lineage(
