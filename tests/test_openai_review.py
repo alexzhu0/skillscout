@@ -48,9 +48,11 @@ from skillscout.domain.review import (
     ReviewResult,
     ReviewerJudgment,
     candidate_terminal_summary,
+    candidate_terminal_summary_bytes,
     generator_outcome_evidence,
     is_eligible,
     review_attestation,
+    review_attestation_bytes,
     review_disposition,
 )
 from skillscout.domain.skill_artifacts import (
@@ -674,9 +676,13 @@ def _rejected_lineage(*, qualification: bool = False) -> LineageResolutionV1:
     )
 
 
-def _terminal_report(*, error_count: int) -> ValidationReportV1:
+def _terminal_report(
+    *,
+    error_count: int,
+    package: FrozenSkillPackageV1 | None = None,
+) -> ValidationReportV1:
     execution = _execution_authority()
-    package = _package()
+    package = _package() if package is None else package
     return ValidationReportV1.model_construct(
         schema_version="validation-report-v1",
         validation_report_schema_version="validation-report-v1",
@@ -889,40 +895,40 @@ def test_terminal_summary_accepts_exact_branch_evidence_matrix(outcome: str) -> 
     assert summary.eligibility_policy_version == ELIGIBILITY_POLICY_VERSION
     assert (
         summary.generator_outcome_evidence is not None
-    ) is outcome not in {"qualification_rejected", "lineage_rejected"}
+    ) is (outcome not in {"qualification_rejected", "lineage_rejected"})
     assert (
         summary.package_identity is not None
-    ) is outcome not in {
+    ) is (outcome not in {
         "qualification_rejected",
         "lineage_rejected",
         "generator_refusal",
         "generator_incomplete",
         "generator_schema_failure",
-    }
+    })
     assert (
         summary.validation_report_digest is not None
-    ) is outcome not in {
+    ) is (outcome not in {
         "qualification_rejected",
         "lineage_rejected",
         "generator_refusal",
         "generator_incomplete",
         "generator_schema_failure",
-    }
+    })
     assert (
         summary.review_attestation_digest is not None
-    ) is outcome in {
+    ) is (outcome in {
         "reviewer_refusal",
         "reviewer_incomplete",
         "reviewer_schema_failure",
         "review_rejected",
         "review_low_confidence",
         "eligible_local_candidate",
-    }
+    })
 
 
 def test_attestation_binds_exact_external_evidence_and_raw_review() -> None:
     package = _package()
-    report = _terminal_report(error_count=0)
+    report = _terminal_report(error_count=0, package=package)
     result = _review_result()
     attestation = _attestation(result=result, report=report, package=package)
 
@@ -943,6 +949,54 @@ def test_attestation_binds_exact_external_evidence_and_raw_review() -> None:
     assert attestation.usage == result.usage
     assert attestation.latency_ms == result.latency_ms
     assert attestation.attestation_digest.startswith("sha256:")
+    assert review_attestation_bytes(attestation) == review_attestation_bytes(
+        attestation
+    )
+
+
+def test_terminal_summary_rejects_raw_review_that_disagrees_with_disposition() -> None:
+    case = _matrix_case("eligible_local_candidate")
+    package = _package()
+    report = _terminal_report(error_count=0, package=package)
+    no_attestation = _attestation(
+        result=_review_result(verdict="NO", confidence=0.99),
+        report=report,
+        package=package,
+    )
+
+    with pytest.raises(ValueError, match="raw review result disagree"):
+        candidate_terminal_summary(
+            outcome="eligible_local_candidate",
+            **{
+                **case,
+                "generated_artifact_identity": package.generated_artifact_identity,
+                "package_identity": package.package_identity,
+                "validation_report": report,
+                "review_attestation": no_attestation,
+            },
+        )
+
+
+def test_terminal_summary_digest_is_canonical_and_evidence_sensitive() -> None:
+    case = _matrix_case("eligible_local_candidate")
+    first = candidate_terminal_summary(
+        outcome="eligible_local_candidate",
+        **case,
+    )
+    second = candidate_terminal_summary(
+        outcome="eligible_local_candidate",
+        **case,
+    )
+    changed = candidate_terminal_summary(
+        outcome="eligible_local_candidate",
+        **{**case, "qualification_report_digest": _digest("1")},
+    )
+
+    assert candidate_terminal_summary_bytes(first) == (
+        candidate_terminal_summary_bytes(second)
+    )
+    assert first.terminal_summary_digest == second.terminal_summary_digest
+    assert changed.terminal_summary_digest != first.terminal_summary_digest
 
 
 @pytest.mark.parametrize(
@@ -990,7 +1044,7 @@ def test_terminal_summary_rejects_impossible_branch_combinations(
 
 
 def test_attestation_and_terminal_construction_never_mutate_package_bytes() -> None:
-    package = _package(injection=True)
+    package = _package()
     before = tuple((file.path, file.content, file.mode) for file in package.files)
     report = _terminal_report(error_count=0)
     result = _review_result()
