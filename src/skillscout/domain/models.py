@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from enum import Enum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
@@ -35,6 +36,11 @@ MAX_STAGE_INTEGER_ABS = 9_007_199_254_740_991
 SUPPORTED_PRODUCER_SCHEMAS: frozenset[tuple[str, str]] = frozenset(
     {("1", "fixture-v1"), ("2", "fixture-v1"), ("2", "phase2-v1")}
 )
+
+PHASE_THREE_SCHEMA_VERSION = "phase3-ledger-v1"
+PHASE_THREE_PROFILE_VERSION = "phase3-profile-v1"
+CANDIDATE_CHECKPOINT_SCHEMA_VERSION = "candidate-stage-checkpoint-v1"
+CANDIDATE_CHECKPOINT_PROFILE_VERSION = "phase3-checkpoint-v1"
 
 
 def validate_manifest_bytes(manifest_bytes: bytes) -> bytes:
@@ -124,6 +130,296 @@ class StrictFrozenModel(BaseModel):
     """One fail-closed configuration for every persisted domain object."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class PhaseThreeStageV1(str, Enum):
+    """Closed stage order for the isolated candidate ledger."""
+
+    QUALIFIER = "qualifier"
+    GENERATOR = "generator"
+    VALIDATOR = "validator"
+    REVIEWER = "reviewer"
+
+
+PHASE_THREE_STAGE_SEQUENCE = tuple(PhaseThreeStageV1)
+
+
+def _canonical_self_hash(model: BaseModel, field: str) -> str:
+    """Digest every canonical field except the digest being verified."""
+
+    from skillscout.domain.canonical import sha256_digest
+
+    return sha256_digest(
+        model.model_dump(
+            mode="json",
+            exclude_none=False,
+            exclude={field},
+        )
+    )
+
+
+PHASE_THREE_GENESIS_CHECKPOINT_HASH = "sha256:" + ("0" * 64)
+
+
+class CandidateRunIdentityV1(StrictFrozenModel):
+    """Complete prelookup execution authority rooting one Phase 3 run."""
+
+    schema_version: Literal["phase3-ledger-v1"]
+    run_id: PersistedIdentifier
+    candidate_execution_authority: Any
+    candidate_execution_authority_digest: Digest
+    identity_digest: Digest
+
+    @model_validator(mode="after")
+    def validate_candidate_identity(self) -> CandidateRunIdentityV1:
+        from skillscout.domain.candidate_authority import CandidateExecutionAuthorityV1
+
+        authority = self.candidate_execution_authority
+        if (
+            type(authority) is not CandidateExecutionAuthorityV1
+            or self.candidate_execution_authority_digest != authority.authority_digest
+            or self.identity_digest != _canonical_self_hash(self, "identity_digest")
+        ):
+            raise ValueError("candidate run identity authority disagrees")
+        return self
+
+
+class CandidateStageAttemptV1(StrictFrozenModel):
+    """One Phase 3 stage attempt citing the exact verified predecessor."""
+
+    schema_version: Literal["phase3-ledger-v1"]
+    run_id: PersistedIdentifier
+    candidate_execution_authority_digest: Digest
+    stage: PhaseThreeStageV1
+    stage_index: Annotated[int, Field(ge=0, lt=4)]
+    attempt_no: Annotated[int, Field(ge=1, le=1_000_000)]
+    previous_checkpoint_hash: Digest
+    previous_output_hash: Digest | None
+    producer_version: PersistedVersion
+    profile_version: Literal["phase3-profile-v1"]
+    retry_policy_version: PersistedVersion
+    status: Literal["running", "succeeded", "failed", "abandoned"]
+    outcome_code: Annotated[
+        str,
+        Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"),
+    ]
+    payload_digest: Digest
+    attempt_hash: Digest
+
+    @model_validator(mode="after")
+    def validate_candidate_attempt(self) -> CandidateStageAttemptV1:
+        if (
+            self.stage_index != PHASE_THREE_STAGE_SEQUENCE.index(self.stage)
+            or self.attempt_hash != _canonical_self_hash(self, "attempt_hash")
+        ):
+            raise ValueError("candidate attempt identity disagrees")
+        return self
+
+
+class CandidateStageResultV1(StrictFrozenModel):
+    """Canonical successful output from one exact Phase 3 attempt."""
+
+    schema_version: Literal["phase3-ledger-v1"]
+    run_id: PersistedIdentifier
+    candidate_execution_authority_digest: Digest
+    stage: PhaseThreeStageV1
+    stage_index: Annotated[int, Field(ge=0, lt=4)]
+    attempt_no: Annotated[int, Field(ge=1, le=1_000_000)]
+    attempt_hash: Digest
+    previous_result_hash: Digest | None
+    producer_version: PersistedVersion
+    profile_version: Literal["phase3-profile-v1"]
+    retry_policy_version: PersistedVersion
+    outcome_code: Annotated[
+        str,
+        Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"),
+    ]
+    payload_digest: Digest
+    output_hash: Digest
+    result_hash: Digest
+
+    @model_validator(mode="after")
+    def validate_candidate_result(self) -> CandidateStageResultV1:
+        from skillscout.domain.canonical import sha256_digest
+
+        expected_output = sha256_digest(
+            {
+                "schema_version": self.schema_version,
+                "run_id": self.run_id,
+                "stage": self.stage.value,
+                "attempt_hash": self.attempt_hash,
+                "payload_digest": self.payload_digest,
+                "outcome_code": self.outcome_code,
+            }
+        )
+        if (
+            self.stage_index != PHASE_THREE_STAGE_SEQUENCE.index(self.stage)
+            or self.output_hash != expected_output
+            or self.result_hash != _canonical_self_hash(self, "result_hash")
+        ):
+            raise ValueError("candidate result identity disagrees")
+        return self
+
+
+class CandidateStageCheckpointV1(StrictFrozenModel):
+    """Successful result boundary binding the exact next legal stage."""
+
+    schema_version: Literal["candidate-stage-checkpoint-v1"]
+    profile_version: Literal["phase3-checkpoint-v1"]
+    run_id: PersistedIdentifier
+    candidate_execution_authority_digest: Digest
+    stage: PhaseThreeStageV1
+    stage_index: Annotated[int, Field(ge=0, lt=4)]
+    attempt_no: Annotated[int, Field(ge=1, le=1_000_000)]
+    result_hash: Digest
+    output_hash: Digest
+    previous_checkpoint_hash: Digest
+    next_stage: PhaseThreeStageV1 | None
+    terminal: bool
+    checkpoint_hash: Digest
+
+    @model_validator(mode="after")
+    def validate_candidate_checkpoint(self) -> CandidateStageCheckpointV1:
+        expected_index = PHASE_THREE_STAGE_SEQUENCE.index(self.stage)
+        expected_next = (
+            PHASE_THREE_STAGE_SEQUENCE[expected_index + 1]
+            if expected_index + 1 < len(PHASE_THREE_STAGE_SEQUENCE)
+            else None
+        )
+        if (
+            self.stage_index != expected_index
+            or self.next_stage is not expected_next
+            or self.terminal is (expected_next is not None)
+            or self.checkpoint_hash != _canonical_self_hash(self, "checkpoint_hash")
+        ):
+            raise ValueError("candidate checkpoint transition disagrees")
+        return self
+
+
+class CandidateResumeEventV1(StrictFrozenModel):
+    """Immutable Phase 3 invocation/checkpoint projection."""
+
+    schema_version: Literal["phase3-ledger-v1"]
+    run_id: PersistedIdentifier
+    candidate_execution_authority_digest: Digest
+    event_index: PersistedSQLiteInt
+    prior_event_hash: Digest | None
+    checkpoint_hash: Digest | None
+    checkpoint_output_hash: Digest | None
+    next_stage: PhaseThreeStageV1 | None
+    terminal: bool
+    event_hash: Digest
+
+    @model_validator(mode="after")
+    def validate_candidate_resume_event(self) -> CandidateResumeEventV1:
+        checkpoint_fields = (self.checkpoint_hash, self.checkpoint_output_hash)
+        if self.event_index == 0:
+            valid_shape = (
+                self.prior_event_hash is None
+                and all(value is None for value in checkpoint_fields)
+                and self.next_stage is PhaseThreeStageV1.QUALIFIER
+                and not self.terminal
+            )
+        else:
+            valid_shape = (
+                self.prior_event_hash is not None
+                and all(value is not None for value in checkpoint_fields)
+                and (self.next_stage is None) is self.terminal
+            )
+        if (
+            not valid_shape
+            or self.event_hash != _canonical_self_hash(self, "event_hash")
+        ):
+            raise ValueError("candidate resume event shape disagrees")
+        return self
+
+
+class VerifiedCandidateRunChain(StrictFrozenModel):
+    """Fully verified, isolated Phase 3 authority and successful prefix."""
+
+    identity: CandidateRunIdentityV1
+    attempts: tuple[CandidateStageAttemptV1, ...]
+    results: tuple[CandidateStageResultV1, ...]
+    checkpoints: tuple[CandidateStageCheckpointV1, ...]
+    resume_events: tuple[CandidateResumeEventV1, ...]
+
+    @model_validator(mode="after")
+    def validate_candidate_chain(self) -> VerifiedCandidateRunChain:
+        count = len(self.results)
+        if (
+            count > len(PHASE_THREE_STAGE_SEQUENCE)
+            or len(self.attempts) != count
+            or len(self.checkpoints) != count
+            or len(self.resume_events) != count + 1
+        ):
+            raise ValueError("candidate chain cardinality disagrees")
+
+        run_id = self.identity.run_id
+        authority_digest = self.identity.candidate_execution_authority_digest
+        genesis = self.resume_events[0]
+        if (
+            genesis.run_id != run_id
+            or genesis.candidate_execution_authority_digest != authority_digest
+            or genesis.event_index != 0
+        ):
+            raise ValueError("candidate genesis authority disagrees")
+
+        previous_checkpoint_hash = PHASE_THREE_GENESIS_CHECKPOINT_HASH
+        previous_output_hash: str | None = None
+        previous_result_hash: str | None = None
+        previous_event_hash = genesis.event_hash
+        for index, (attempt, result, checkpoint, event) in enumerate(
+            zip(
+                self.attempts,
+                self.results,
+                self.checkpoints,
+                self.resume_events[1:],
+                strict=True,
+            )
+        ):
+            stage = PHASE_THREE_STAGE_SEQUENCE[index]
+            common_records = (attempt, result, checkpoint, event)
+            if any(
+                record.run_id != run_id
+                or record.candidate_execution_authority_digest != authority_digest
+                for record in common_records
+            ):
+                raise ValueError("candidate record authority disagrees")
+            if (
+                attempt.stage is not stage
+                or result.stage is not stage
+                or checkpoint.stage is not stage
+                or attempt.stage_index != index
+                or result.stage_index != index
+                or checkpoint.stage_index != index
+                or attempt.status != "succeeded"
+                or attempt.previous_checkpoint_hash != previous_checkpoint_hash
+                or attempt.previous_output_hash != previous_output_hash
+                or result.attempt_no != attempt.attempt_no
+                or result.attempt_hash != attempt.attempt_hash
+                or result.previous_result_hash != previous_result_hash
+                or result.producer_version != attempt.producer_version
+                or result.profile_version != attempt.profile_version
+                or result.retry_policy_version != attempt.retry_policy_version
+                or result.outcome_code != attempt.outcome_code
+                or result.payload_digest != attempt.payload_digest
+                or checkpoint.attempt_no != result.attempt_no
+                or checkpoint.result_hash != result.result_hash
+                or checkpoint.output_hash != result.output_hash
+                or checkpoint.previous_checkpoint_hash != previous_checkpoint_hash
+                or event.event_index != index + 1
+                or event.prior_event_hash != previous_event_hash
+                or event.checkpoint_hash != checkpoint.checkpoint_hash
+                or event.checkpoint_output_hash != checkpoint.output_hash
+                or event.next_stage is not checkpoint.next_stage
+                or event.terminal is not checkpoint.terminal
+            ):
+                raise ValueError("candidate chain continuity disagrees")
+            previous_checkpoint_hash = checkpoint.checkpoint_hash
+            previous_output_hash = result.output_hash
+            previous_result_hash = result.result_hash
+            previous_event_hash = event.event_hash
+        return self
 
 
 class TokenUsage(StrictFrozenModel):

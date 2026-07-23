@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from skillscout.domain.candidate_authority import (
     CandidateExecutionAuthorityV1,
@@ -111,7 +111,17 @@ def _execution_authority(**changes: object) -> CandidateExecutionAuthorityV1:
 
 
 def _self_hash(values: dict[str, object], field: str) -> str:
-    return sha256_digest({key: value for key, value in values.items() if key != field})
+    return sha256_digest(
+        {
+            key: (
+                value.model_dump(mode="json", exclude_none=False)
+                if isinstance(value, BaseModel)
+                else value
+            )
+            for key, value in values.items()
+            if key != field
+        }
+    )
 
 
 def _identity(authority: CandidateExecutionAuthorityV1 | None = None) -> CandidateRunIdentityV1:
@@ -324,6 +334,8 @@ def _revalidate_chain(
     mutate: Callable[[dict[str, object]], None],
 ) -> None:
     values = chain.model_dump(mode="python")
+    for collection in ("attempts", "results", "checkpoints", "resume_events"):
+        values[collection] = list(values[collection])
     mutate(values)
     with pytest.raises(ValidationError):
         VerifiedCandidateRunChain.model_validate(values)
@@ -472,4 +484,3 @@ def test_domain_chain_accepts_only_a_legal_prefix_or_complete_terminal() -> None
     assert prefix.checkpoints[-1].terminal is False
     complete = _domain_chain()
     assert complete.checkpoints[-1].terminal is True
-
