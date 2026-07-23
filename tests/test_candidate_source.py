@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import skillscout.adapters.phase2_state as phase2_state_module
+import skillscout.adapters.state as state_module
 from skillscout.application import candidate_source
 from skillscout.application.candidate_source import (
     MAX_CANDIDATE_DESCRIPTOR_BYTES,
@@ -283,6 +284,68 @@ def test_phase2_query_admits_descriptor_bytes_under_shared_lock_before_sqlite(
     assert lock_operations == [
         phase2_state_module.fcntl.LOCK_SH | phase2_state_module.fcntl.LOCK_NB
     ]
+
+
+def _replace_regular_file(path: Path) -> None:
+    payload = path.read_bytes()
+    path.unlink()
+    path.write_bytes(payload)
+    path.chmod(0o600)
+
+
+def test_phase2_query_rejects_lock_path_replacement_after_flock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path, descriptor, _workflow_spec = _create_phase2_state(tmp_path)
+    lock_path = state_path.with_name(f".{state_path.name}.lock")
+    real_flock = phase2_state_module.fcntl.flock
+
+    def replacing_flock(descriptor_fd: int, operation: int) -> None:
+        real_flock(descriptor_fd, operation)
+        _replace_regular_file(lock_path)
+
+    monkeypatch.setattr(phase2_state_module.fcntl, "flock", replacing_flock)
+
+    _assert_unavailable(SQLitePhaseTwoCandidateSource(state_path), descriptor)
+
+
+def test_phase2_query_rejects_state_replacement_between_lock_and_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path, descriptor, _workflow_spec = _create_phase2_state(tmp_path)
+    real_flock = phase2_state_module.fcntl.flock
+
+    def replacing_flock(descriptor_fd: int, operation: int) -> None:
+        real_flock(descriptor_fd, operation)
+        _replace_regular_file(state_path)
+
+    monkeypatch.setattr(phase2_state_module.fcntl, "flock", replacing_flock)
+
+    _assert_unavailable(SQLitePhaseTwoCandidateSource(state_path), descriptor)
+
+
+def test_phase2_query_rejects_state_path_replacement_after_descriptor_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path, descriptor, _workflow_spec = _create_phase2_state(tmp_path)
+    real_read = state_module.os.read
+    replaced = False
+
+    def replacing_read(descriptor_fd: int, size: int) -> bytes:
+        nonlocal replaced
+        payload = real_read(descriptor_fd, size)
+        if not payload and not replaced:
+            replaced = True
+            _replace_regular_file(state_path)
+        return payload
+
+    monkeypatch.setattr(state_module.os, "read", replacing_read)
+
+    _assert_unavailable(SQLitePhaseTwoCandidateSource(state_path), descriptor)
+    assert replaced
 
 
 def test_phase2_query_protocol_and_adapter_expose_no_mutation_methods() -> None:

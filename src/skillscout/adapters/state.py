@@ -700,14 +700,20 @@ def _read_stable_private_file(
     name: str,
     *,
     max_bytes: int,
+    expected_metadata: os.stat_result | None = None,
 ) -> bytes:
-    """Bounded no-follow read with complete pre/open/post metadata stability."""
+    """Read one retained identity and reverify its descriptor and pathname."""
 
     child = AnchoredDirectory.validate_child_name(name)
     before = anchor.stat_child(child)
     if before is None:
         raise DurableWriteError("file_missing")
     AnchoredDirectory._require_private_regular(before)
+    if (
+        expected_metadata is not None
+        and _complete_stat_facts(expected_metadata) != _complete_stat_facts(before)
+    ):
+        raise DurableWriteError("file_identity")
     if before.st_size > max_bytes:
         raise DurableWriteError("file_invalid")
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -728,7 +734,13 @@ def _read_stable_private_file(
             consumed += len(chunk)
             if consumed > max_bytes:
                 raise DurableWriteError("file_too_large")
-        if _complete_stat_facts(opened) != _complete_stat_facts(os.fstat(descriptor)):
+        after_descriptor = os.fstat(descriptor)
+        after_path = anchor.stat_child(child)
+        if (
+            after_path is None
+            or _complete_stat_facts(opened) != _complete_stat_facts(after_descriptor)
+            or _complete_stat_facts(opened) != _complete_stat_facts(after_path)
+        ):
             raise DurableWriteError("file_changed")
         return b"".join(chunks)
     finally:

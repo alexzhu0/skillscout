@@ -108,11 +108,19 @@ def _open_read_only_verifier(path: Path) -> SQLiteStateStore:
             verifier._lock_descriptor,
             fcntl.LOCK_SH | fcntl.LOCK_NB,
         )
+        locked_path = verifier._state_parent.stat_child(verifier._lock_name)
+        if (
+            locked_path is None
+            or _complete_stat_facts(opened_lock)
+            != _complete_stat_facts(locked_path)
+        ):
+            raise ValueError("Phase 2 authority lock changed")
 
         payload = _read_stable_private_file(
             verifier._state_parent,
             verifier._state_name,
             max_bytes=MAX_STATE_DB_BYTES,
+            expected_metadata=state_metadata,
         )
         connection = sqlite3.connect(":memory:", isolation_level=None)
         connection.row_factory = sqlite3.Row
