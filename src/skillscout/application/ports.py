@@ -354,6 +354,11 @@ class MutableCandidateState(Protocol):
         authority: CandidateExecutionAuthorityV1,
     ) -> object | None: ...
 
+    def find_pending_candidate_projection(
+        self,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> object | None: ...
+
     def persist_candidate_chain(self, chain: object, *, status: str) -> None: ...
 
     def persist_candidate_stage(
@@ -384,6 +389,14 @@ class MutableCandidateState(Protocol):
         *,
         terminal_summary: object,
         artifacts: Mapping[str, bytes],
+        projection_required: bool = False,
+    ) -> None: ...
+
+    def complete_candidate_projection(
+        self,
+        run_id: str,
+        *,
+        authority: CandidateExecutionAuthorityV1,
     ) -> None: ...
 
     def close(self) -> None: ...

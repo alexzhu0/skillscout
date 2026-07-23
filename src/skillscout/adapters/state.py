@@ -109,7 +109,9 @@ def _phase3_schema_statements() -> tuple[str, ...]:
             authority_digest TEXT NOT NULL UNIQUE,
             identity_digest TEXT NOT NULL,
             identity_json TEXT NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('running', 'interrupted', 'completed'))
+            status TEXT NOT NULL CHECK (
+                status IN ('running', 'interrupted', 'projecting', 'completed')
+            )
         )""",
         """CREATE TABLE phase3_attempts (
             attempt_hash TEXT PRIMARY KEY,
@@ -3566,10 +3568,13 @@ class SQLiteStateStore:
         *,
         terminal_summary: CandidateTerminalSummaryV1,
         artifacts: Mapping[str, bytes],
+        projection_required: bool = False,
     ) -> None:
-        """Atomically expose terminal rows only after exact artifacts are durable."""
+        """Persist terminal facts without exposing reuse before projection is durable."""
 
         try:
+            if type(projection_required) is not bool:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             chain = self.verify_candidate_run_chain(run_id)
             if (
                 type(terminal_summary) is not CandidateTerminalSummaryV1
@@ -3646,9 +3651,12 @@ class SQLiteStateStore:
                     ),
                 )
                 updated = database.execute(
-                    """UPDATE phase3_runs SET status = 'completed'
+                    """UPDATE phase3_runs SET status = ?
                        WHERE run_id = ? AND status IN ('running', 'interrupted')""",
-                    (run_id,),
+                    (
+                        "projecting" if projection_required else "completed",
+                        run_id,
+                    ),
                 )
                 if updated.rowcount != 1:
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
@@ -3666,6 +3674,109 @@ class SQLiteStateStore:
             sqlite3.Error,
         ):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def find_pending_candidate_projection(
+        self,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> CompletedCandidateProjectionV1 | None:
+        """Return one exact terminal whose local projection is still recoverable."""
+
+        if type(authority) is not CandidateExecutionAuthorityV1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        rows = self._db.execute(
+            """SELECT run_id FROM phase3_runs
+               WHERE authority_digest = ? AND status = 'projecting'""",
+            (authority.authority_digest,),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        run_id = str(rows[0]["run_id"])
+        chain = self.verify_candidate_run_chain(
+            run_id, expected_authority=authority
+        )
+        terminal_rows = self._db.execute(
+            "SELECT * FROM phase3_terminals WHERE run_id = ?",
+            (run_id,),
+        ).fetchall()
+        artifact_rows = self._db.execute(
+            """SELECT artifact_kind FROM phase3_artifacts
+               WHERE run_id = ? ORDER BY artifact_kind""",
+            (run_id,),
+        ).fetchall()
+        if len(terminal_rows) != 1 or not artifact_rows:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        artifacts = {
+            str(row["artifact_kind"]): self.read_candidate_artifact(
+                run_id, str(row["artifact_kind"])
+            )
+            for row in artifact_rows
+        }
+        terminal_payload = artifacts.get("terminal_summary")
+        if terminal_payload is None:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        try:
+            terminal = CandidateTerminalSummaryV1.model_validate_json(
+                terminal_payload, strict=True
+            )
+            terminal_row = terminal_rows[0]
+            if (
+                terminal.terminal_summary_digest
+                != terminal_row["terminal_summary_digest"]
+                or terminal.outcome != terminal_row["outcome"]
+                or terminal.candidate_execution_authority != authority
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            DescriptorAnchoredCompletedCandidateProjector._validate_terminal_artifact_matrix(
+                terminal=terminal,
+                artifacts=artifacts,
+            )
+            return CompletedCandidateProjectionV1(
+                chain=chain,
+                terminal_summary=terminal,
+                terminal_summary_bytes=terminal_payload,
+                artifacts=MappingProxyType(artifacts),
+            )
+        except SafeFailure:
+            raise
+        except (TypeError, ValueError, ValidationError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def has_pending_candidate_projection(self) -> bool:
+        """Report only whether this already-admitted ledger has a projection to resume."""
+
+        rows = self._db.execute(
+            """SELECT run_id FROM phase3_runs
+               WHERE status = 'projecting'"""
+        ).fetchall()
+        if len(rows) > 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return bool(rows)
+
+    def complete_candidate_projection(
+        self,
+        run_id: str,
+        *,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> None:
+        """Expose completed reuse only after the caller durably projects all output."""
+
+        pending = self.find_pending_candidate_projection(authority)
+        if pending is None or pending.chain.identity.run_id != run_id:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+        def mutate(database: sqlite3.Connection) -> None:
+            updated = database.execute(
+                """UPDATE phase3_runs SET status = 'completed'
+                   WHERE run_id = ? AND authority_digest = ?
+                     AND status = 'projecting'""",
+                (run_id, authority.authority_digest),
+            )
+            if updated.rowcount != 1:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+        self._snapshot_transaction(mutate)
 
     def read_candidate_artifact(self, run_id: str, kind: str) -> bytes:
         """Read and rehash one artifact cited by the Phase 3 ledger."""

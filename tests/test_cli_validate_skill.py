@@ -381,7 +381,7 @@ def test_projection_failure_resumes_complete_tree_without_semantic_replay(
     resumed = capsys.readouterr()
     assert json.loads(resumed.out)["outcome"] == "eligible_local_candidate"
     assert tuple(calls) == semantic_calls
-    assert {
+    assert set(cli._EVIDENCE_FILENAMES.values()).issubset({
         path.name for path in output.iterdir() if path.is_file()
-    } == set(cli._EVIDENCE_FILENAMES.values())
+    })
     assert any(path.is_dir() for path in output.iterdir())

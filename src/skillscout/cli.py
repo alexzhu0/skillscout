@@ -371,8 +371,18 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
         return client
 
     def mutable_state_factory() -> object:
-        _require_mutable_output_ready(arguments.output)
-        state = SQLiteStateStore(arguments.state)
+        state: SQLiteStateStore | None = None
+        try:
+            _require_mutable_output_ready(arguments.output)
+        except SafeFailure:
+            if not arguments.state.is_file():
+                raise
+            state = SQLiteStateStore(arguments.state)
+            if not state.has_pending_candidate_projection():
+                state.close()
+                raise
+        if state is None:
+            state = SQLiteStateStore(arguments.state)
         if arguments.fail_after is not None:
             return _InterruptingCandidateState(state, arguments.fail_after)
         return state

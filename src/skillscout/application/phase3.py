@@ -385,12 +385,14 @@ class PhaseThreeRunner:
         authority: CandidateExecutionAuthorityV1,
         profile: PhaseThreeRuntimeProfile,
         dependencies: PhaseThreeDependencies,
+        projection_required: bool = False,
     ) -> None:
         self.state = state
         self.source = source
         self.authority = authority
         self.profile = profile
         self.dependencies = dependencies
+        self.projection_required = projection_required
 
     @staticmethod
     def _require_configured_semantic_client(
@@ -1039,10 +1041,15 @@ class PhaseThreeRunner:
             != self.authority.eligibility_policy_version
         ):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        terminal_arguments: dict[str, object] = {
+            "terminal_summary": terminal,
+            "artifacts": artifacts,
+        }
+        if self.projection_required:
+            terminal_arguments["projection_required"] = True
         self.state.persist_candidate_terminal(
             chain.identity.run_id,
-            terminal_summary=terminal,
-            artifacts=artifacts,
+            **terminal_arguments,
         )
         return terminal, artifacts
 
@@ -1094,6 +1101,35 @@ class PhaseThreeApplication:
 
         mutable = self._dependencies.mutable_state_factory()
         try:
+            find_pending = getattr(
+                mutable, "find_pending_candidate_projection", None
+            )
+            pending = (
+                find_pending(authority) if callable(find_pending) else None
+            )
+            if pending is not None:
+                if output_directory is None:
+                    raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+                output = self._dependencies.artifact_projector_factory()
+                project = getattr(output, "project")
+                project(
+                    output_directory=output_directory,
+                    terminal_summary=pending.terminal_summary,
+                    artifacts=pending.artifacts,
+                )
+                complete_projection = getattr(
+                    mutable, "complete_candidate_projection"
+                )
+                complete_projection(
+                    pending.chain.identity.run_id,
+                    authority=authority,
+                )
+                return PhaseThreeApplicationResult(
+                    outcome=pending.terminal_summary.outcome,
+                    authority=authority,
+                    terminal_summary=pending.terminal_summary,
+                    artifacts=pending.artifacts,
+                )
             try:
                 terminal, artifacts = PhaseThreeRunner(
                     state=mutable,
@@ -1101,6 +1137,7 @@ class PhaseThreeApplication:
                     authority=authority,
                     profile=self._profile,
                     dependencies=self._dependencies,
+                    projection_required=output_directory is not None,
                 ).run()
             except SafeFailure:
                 raise
@@ -1113,6 +1150,18 @@ class PhaseThreeApplication:
                     output_directory=output_directory,
                     terminal_summary=terminal,
                     artifacts=artifacts,
+                )
+                complete_projection = getattr(
+                    mutable, "complete_candidate_projection"
+                )
+                projected_pending = mutable.find_pending_candidate_projection(
+                    authority
+                )
+                if projected_pending is None:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                complete_projection(
+                    projected_pending.chain.identity.run_id,
+                    authority=authority,
                 )
             return PhaseThreeApplicationResult(
                 outcome=terminal.outcome,
