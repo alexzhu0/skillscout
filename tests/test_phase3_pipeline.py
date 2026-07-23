@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import sqlite3
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
+import skillscout.adapters.state as state_module
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import (
@@ -745,3 +749,161 @@ def test_state_ledger_prior_lineage_projection_has_no_unverified_fallback(
         assert store.project_verified_prior_lineage_evidence(_digest("8")) is None
     finally:
         store.close()
+
+
+def _recursive_exact_snapshot(root: Path) -> dict[str, object]:
+    snapshot: dict[str, object] = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        metadata = os.lstat(path)
+        facts = (
+            metadata.st_mode,
+            metadata.st_ino,
+            metadata.st_dev,
+            metadata.st_nlink,
+            metadata.st_uid,
+            metadata.st_gid,
+            metadata.st_size,
+            metadata.st_atime_ns,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+        if path.is_dir():
+            snapshot[relative] = (
+                "directory",
+                facts,
+                tuple(sorted(child.name for child in path.iterdir())),
+            )
+        else:
+            snapshot[relative] = ("file", facts, path.read_bytes())
+    return snapshot
+
+
+def _completed_refusal_state(tmp_path: Path) -> tuple[
+    Path,
+    VerifiedCandidateRunChain,
+    dict[str, bytes],
+    CandidateTerminalSummaryV1,
+]:
+    state_path = tmp_path / "phase3-state.db"
+    chain = _domain_chain(stage_count=2)
+    qualification_bytes, terminal = _qualification_and_generator_refusal(
+        chain.identity.candidate_execution_authority
+    )
+    store = SQLiteStateStore(state_path)
+    try:
+        store.persist_candidate_chain(chain, status="running")
+        store.persist_candidate_terminal(
+            chain.identity.run_id,
+            terminal_summary=terminal,
+            artifacts={"qualification_report": qualification_bytes},
+        )
+        artifacts = {
+            "qualification_report": store.read_candidate_artifact(
+                chain.identity.run_id, "qualification_report"
+            ),
+            "terminal_summary": store.read_candidate_artifact(
+                chain.identity.run_id, "terminal_summary"
+            ),
+        }
+    finally:
+        store.close()
+    return state_path, chain, artifacts, terminal
+
+
+def test_exact_reuse_projects_admitted_bytes_without_any_path_mutation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    state_path, chain, expected_artifacts, terminal = _completed_refusal_state(tmp_path)
+    before = _recursive_exact_snapshot(tmp_path)
+    original_open = os.open
+    original_connect = sqlite3.connect
+    sqlite_targets: list[object] = []
+
+    def guarded_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        forbidden = (
+            os.O_WRONLY
+            | os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_TRUNC
+            | os.O_APPEND
+        )
+        assert flags & forbidden == 0
+        return original_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+    def guarded_connect(target: object, *args: object, **kwargs: object):
+        sqlite_targets.append(target)
+        assert target == ":memory:"
+        return original_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", guarded_open)
+    monkeypatch.setattr(sqlite3, "connect", guarded_connect)
+    projector = state_module.DescriptorAnchoredCompletedCandidateProjector(state_path)
+    projection = projector.find_completed_candidate(
+        chain.identity.candidate_execution_authority
+    )
+
+    assert projection is not None
+    assert projection.chain == chain
+    assert projection.terminal_summary == terminal
+    assert dict(projection.artifacts) == expected_artifacts
+    assert projection.terminal_summary_bytes == expected_artifacts["terminal_summary"]
+    assert sqlite_targets == [":memory:"]
+    assert _recursive_exact_snapshot(tmp_path) == before
+
+
+def test_exact_reuse_exact_authority_miss_is_clean_and_releases_lock(tmp_path) -> None:
+    state_path, chain, _, _ = _completed_refusal_state(tmp_path)
+    before = _recursive_exact_snapshot(tmp_path)
+    projector = state_module.DescriptorAnchoredCompletedCandidateProjector(state_path)
+
+    assert (
+        projector.find_completed_candidate(
+            _execution_authority(configured_generator_model_id="different-generator")
+        )
+        is None
+    )
+    assert _recursive_exact_snapshot(tmp_path) == before
+
+    writable = SQLiteStateStore(state_path)
+    try:
+        assert writable.verify_candidate_run_chain(chain.identity.run_id) == chain
+    finally:
+        writable.close()
+
+
+def test_exact_reuse_rejects_tampered_completed_chain_without_fallback(tmp_path) -> None:
+    state_path, chain, _, _ = _completed_refusal_state(tmp_path)
+    writable = SQLiteStateStore(state_path)
+    try:
+        writable._write_transaction(
+            "UPDATE phase3_results SET output_hash = ? WHERE stage_index = 1",
+            (_digest("8"),),
+        )
+    finally:
+        writable.close()
+    before = _recursive_exact_snapshot(tmp_path)
+    projector = state_module.DescriptorAnchoredCompletedCandidateProjector(state_path)
+
+    with pytest.raises(SafeFailure) as failure:
+        projector.find_completed_candidate(
+            chain.identity.candidate_execution_authority
+        )
+    assert failure.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    assert _recursive_exact_snapshot(tmp_path) == before
+
+
+def test_exact_reuse_existing_state_requires_the_retained_lock(tmp_path) -> None:
+    state_path, chain, _, _ = _completed_refusal_state(tmp_path)
+    lock_path = state_path.with_name(f".{state_path.name}.lock")
+    lock_path.unlink()
+    before = _recursive_exact_snapshot(tmp_path)
+
+    with pytest.raises(SafeFailure) as failure:
+        state_module.DescriptorAnchoredCompletedCandidateProjector(
+            state_path
+        ).find_completed_candidate(chain.identity.candidate_execution_authority)
+    assert failure.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    assert _recursive_exact_snapshot(tmp_path) == before
