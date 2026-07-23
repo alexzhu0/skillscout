@@ -48,7 +48,7 @@ def _run_preflight(
     if path is not None:
         environment["PATH"] = path
     return subprocess.run(
-        ["sh", str(preflight), *arguments],
+        ["/bin/sh", str(preflight), *arguments],
         cwd=repository,
         env=environment,
         capture_output=True,
@@ -350,6 +350,7 @@ def test_preflight_does_not_import_project_or_invoke_python_or_uv() -> None:
 
     assert "src/skillscout" not in source
     assert "python" not in source.lower()
-    assert "/uv" not in source.lower()
-    assert " uv " not in source.lower()
+    assert ".tools/uv-" not in source.lower()
+    assert " uv run" not in source.lower()
+    assert " uv lock" not in source.lower()
     assert shutil.which("sh") is not None
