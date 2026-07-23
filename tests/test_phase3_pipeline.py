@@ -1899,6 +1899,9 @@ def test_terminal_cascade_reaches_only_the_exact_twelve_outcomes(
     ).find_completed_candidate(result.authority)
     assert projected is not None
     assert projected.terminal_summary.outcome == outcome
+    assert projected.terminal_summary.eligible is (
+        outcome == "eligible_local_candidate"
+    )
 
 
 def test_real_state_adapter_retains_one_exact_approved_prior_lineage(
@@ -1984,9 +1987,6 @@ def test_real_state_adapter_retains_one_exact_approved_prior_lineage(
     assert current.terminal_summary.lineage_resolution.lineage_id == binding.lineage_id
     assert current.terminal_summary.lineage_resolution.stable_slug == binding.stable_slug
     assert current_calls == ["generator", "validator", "reviewer"]
-    assert projected.terminal_summary.eligible is (
-        outcome == "eligible_local_candidate"
-    )
 
 
 def test_resume_budgets_runner_retries_only_transient_infrastructure(

@@ -370,6 +370,14 @@ class MutableCandidateState(Protocol):
         run_id: str,
     ) -> Mapping[str, bytes]: ...
 
+    def project_prior_lineage_binding(self, binding_digest: str) -> object | None: ...
+
+    def project_verified_prior_lineage_evidence(
+        self, binding_digest: str
+    ) -> object | None: ...
+
+    def project_lineage_slug_owners(self, stable_slug: str) -> tuple[str, ...]: ...
+
     def persist_candidate_terminal(
         self,
         run_id: str,

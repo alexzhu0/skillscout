@@ -62,8 +62,17 @@ from skillscout.domain.models import (
     VerifiedCandidateRunChain,
     validate_manifest_bytes,
 )
-from skillscout.domain.candidate_authority import CandidateExecutionAuthorityV1
+from skillscout.domain.candidate_authority import (
+    CandidateExecutionAuthorityV1,
+    PriorLineageApprovalRecordV1,
+    PriorLineageBindingV1,
+    VerifiedPriorLineageEvidenceV1,
+    prior_lineage_approval_record,
+    prior_lineage_binding_digest,
+    verified_prior_lineage_evidence,
+)
 from skillscout.domain.skill_artifacts import (
+    FrozenSkillPackageV1,
     GeneratedArtifactIdentityV1,
     PackageIdentityV1,
 )
@@ -87,6 +96,8 @@ _MIGRATION_SEAMS = frozenset({"after_schema", "after_copy", "after_validation"})
 _DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-f]{64})$")
 _T = TypeVar("_T")
 _PHASE3_ARTIFACT_MAX_BYTES = 8_388_608
+_LINEAGE_BINDING_KIND_PREFIX = "lineage_binding_"
+_LINEAGE_APPROVAL_KIND_PREFIX = "lineage_approval_"
 
 
 def _phase3_schema_statements() -> tuple[str, ...]:
@@ -776,6 +787,18 @@ class DescriptorAnchoredCompletedCandidateProjector:
             if review_attestation_bytes(attestation) != payload:
                 raise ValueError("noncanonical review attestation")
             return attestation.attestation_digest
+        if kind.startswith(_LINEAGE_BINDING_KIND_PREFIX):
+            binding = PriorLineageBindingV1.model_validate_json(payload, strict=True)
+            if canonical_json_bytes(binding) != payload:
+                raise ValueError("noncanonical lineage binding")
+            return prior_lineage_binding_digest(binding)
+        if kind.startswith(_LINEAGE_APPROVAL_KIND_PREFIX):
+            approval = PriorLineageApprovalRecordV1.model_validate_json(
+                payload, strict=True
+            )
+            if canonical_json_bytes(approval) != payload:
+                raise ValueError("noncanonical lineage approval")
+            return approval.approval_record_digest
         return sha256_digest(payload)
 
     @staticmethod
@@ -940,6 +963,7 @@ class DescriptorAnchoredCompletedCandidateProjector:
                 create=False,
             )
             artifacts: dict[str, bytes] = {}
+            lineage_artifacts: dict[str, bytes] = {}
             for row in artifact_rows:
                 kind = str(row["artifact_kind"])
                 digest = str(row["artifact_digest"])
@@ -949,6 +973,7 @@ class DescriptorAnchoredCompletedCandidateProjector:
                 if (
                     row["locator"] != expected_locator
                     or kind in artifacts
+                    or kind in lineage_artifacts
                     or type(row["byte_count"]) is not int
                 ):
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
@@ -962,7 +987,36 @@ class DescriptorAnchoredCompletedCandidateProjector:
                     or self._artifact_declared_digest(kind, artifact) != digest
                 ):
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                artifacts[kind] = artifact
+                if kind.startswith(
+                    (_LINEAGE_BINDING_KIND_PREFIX, _LINEAGE_APPROVAL_KIND_PREFIX)
+                ):
+                    lineage_artifacts[kind] = artifact
+                else:
+                    artifacts[kind] = artifact
+
+            binding_digests = {
+                kind.removeprefix(_LINEAGE_BINDING_KIND_PREFIX)
+                for kind in lineage_artifacts
+                if kind.startswith(_LINEAGE_BINDING_KIND_PREFIX)
+            }
+            approval_digests = {
+                kind.removeprefix(_LINEAGE_APPROVAL_KIND_PREFIX)
+                for kind in lineage_artifacts
+                if kind.startswith(_LINEAGE_APPROVAL_KIND_PREFIX)
+            }
+            if binding_digests != approval_digests:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            for suffix in binding_digests:
+                binding = PriorLineageBindingV1.model_validate_json(
+                    lineage_artifacts[f"{_LINEAGE_BINDING_KIND_PREFIX}{suffix}"],
+                    strict=True,
+                )
+                approval = PriorLineageApprovalRecordV1.model_validate_json(
+                    lineage_artifacts[f"{_LINEAGE_APPROVAL_KIND_PREFIX}{suffix}"],
+                    strict=True,
+                )
+                if prior_lineage_approval_record(binding) != approval:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
             terminal_bytes = artifacts.get("terminal_summary")
             if terminal_bytes is None:
@@ -3647,14 +3701,262 @@ class SQLiteStateStore:
         except (OSError, TypeError, ValueError):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
-    def project_verified_prior_lineage_evidence(
-        self, prior_lineage_binding_digest: str
+    def _verified_prior_lineage_evidence(
+        self,
+        binding: PriorLineageBindingV1,
+        approval: PriorLineageApprovalRecordV1,
+    ) -> VerifiedPriorLineageEvidenceV1:
+        if (
+            prior_lineage_binding_digest(binding) != binding.binding_id
+            or prior_lineage_approval_record(binding) != approval
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        rows = self._db.execute(
+            """SELECT run_id FROM phase3_terminals
+               WHERE terminal_summary_digest = ?""",
+            (binding.prior_terminal_summary_digest,),
+        ).fetchall()
+        if len(rows) != 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        prior_run_id = str(rows[0]["run_id"])
+        prior_chain = self.verify_candidate_run_chain(prior_run_id)
+        prior_terminal_payload = self.read_candidate_artifact(
+            prior_run_id, "terminal_summary"
+        )
+        prior_package_payload = self.read_candidate_artifact(
+            prior_run_id, "rendered_package"
+        )
+        prior_terminal = CandidateTerminalSummaryV1.model_validate_json(
+            prior_terminal_payload, strict=True
+        )
+        prior_package = FrozenSkillPackageV1.model_validate_json(
+            prior_package_payload, strict=True
+        )
+        resolution = prior_terminal.lineage_resolution
+        if (
+            prior_chain.identity.candidate_execution_authority
+            != prior_terminal.candidate_execution_authority
+            or prior_terminal.terminal_summary_digest
+            != binding.prior_terminal_summary_digest
+            or prior_terminal.package_identity is None
+            or prior_terminal.package_identity != prior_package.package_identity
+            or prior_package.package_identity.package_digest
+            != binding.prior_package_digest
+            or prior_package.provenance.repository_id != binding.repository_id
+            or prior_package.provenance.lineage_id != binding.lineage_id
+            or prior_package.provenance.stable_slug != binding.stable_slug
+            or resolution.lineage_authority_digest
+            != binding.lineage_authority_digest
+            or resolution.lineage_id != binding.lineage_id
+            or resolution.stable_slug != binding.stable_slug
+            or resolution.initial_workflow_spec_authority_digest is None
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+        initial_candidates = []
+        candidate_rows = self._db.execute(
+            """SELECT run_id FROM phase3_runs
+               WHERE status = 'completed' ORDER BY run_id"""
+        ).fetchall()
+        for candidate_row in candidate_rows:
+            candidate_run_id = str(candidate_row["run_id"])
+            try:
+                candidate_terminal = CandidateTerminalSummaryV1.model_validate_json(
+                    self.read_candidate_artifact(
+                        candidate_run_id, "terminal_summary"
+                    ),
+                    strict=True,
+                )
+            except SafeFailure:
+                raise
+            if (
+                candidate_terminal.workflow_spec_authority.authority_digest
+                != resolution.initial_workflow_spec_authority_digest
+                or candidate_terminal.lineage_resolution.lineage_id
+                != binding.lineage_id
+            ):
+                continue
+            candidate_package = FrozenSkillPackageV1.model_validate_json(
+                self.read_candidate_artifact(candidate_run_id, "rendered_package"),
+                strict=True,
+            )
+            if (
+                candidate_package.provenance.repository_id
+                != binding.repository_id
+                or candidate_package.provenance.lineage_id != binding.lineage_id
+                or candidate_package.provenance.workflow_spec_authority
+                != candidate_terminal.workflow_spec_authority
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            initial_candidates.append(candidate_terminal.workflow_spec_authority)
+        if len(initial_candidates) != 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+        return verified_prior_lineage_evidence(
+            binding_id=binding.binding_id,
+            repository_id=binding.repository_id,
+            lineage_authority_digest=binding.lineage_authority_digest,
+            lineage_id=binding.lineage_id,
+            stable_slug=binding.stable_slug,
+            initial_workflow_spec_authority=initial_candidates[0],
+            prior_package_digest=binding.prior_package_digest,
+            prior_terminal_summary_digest=binding.prior_terminal_summary_digest,
+            approval_record_digest=binding.approval_record_digest,
+        )
+
+    def persist_prior_lineage_binding(
+        self,
+        binding: PriorLineageBindingV1,
     ) -> None:
-        """Fail closed until an exact verified completed lineage is available."""
+        """Persist one exact approved binding only after prior-chain verification."""
+
+        try:
+            if type(binding) is not PriorLineageBindingV1:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            approval = prior_lineage_approval_record(binding)
+            self._verified_prior_lineage_evidence(binding, approval)
+            suffix = binding.binding_id.removeprefix("sha256:")
+            payloads = {
+                f"{_LINEAGE_BINDING_KIND_PREFIX}{suffix}": canonical_json_bytes(
+                    binding
+                ),
+                f"{_LINEAGE_APPROVAL_KIND_PREFIX}{suffix}": canonical_json_bytes(
+                    approval
+                ),
+            }
+            digests = {
+                kind: DescriptorAnchoredCompletedCandidateProjector._artifact_declared_digest(
+                    kind, payload
+                )
+                for kind, payload in payloads.items()
+            }
+            anchor = self._phase3_artifacts()
+            locators: dict[str, str] = {}
+            for kind, payload in payloads.items():
+                locator = AnchoredDirectory.validate_child_name(
+                    f"{digests[kind].removeprefix('sha256:')}.json"
+                )
+                anchor.atomic_write(
+                    locator,
+                    payload,
+                    max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
+                    seam_prefix="phase3_lineage_",
+                )
+                locators[kind] = locator
+            prior_row = self._db.execute(
+                """SELECT run_id FROM phase3_terminals
+                   WHERE terminal_summary_digest = ?""",
+                (binding.prior_terminal_summary_digest,),
+            ).fetchone()
+            if prior_row is None:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            prior_run_id = str(prior_row["run_id"])
+
+            def mutate(database: sqlite3.Connection) -> None:
+                for kind, payload in payloads.items():
+                    existing = database.execute(
+                        """SELECT artifact_digest, locator, byte_count
+                           FROM phase3_artifacts
+                           WHERE run_id = ? AND artifact_kind = ?""",
+                        (prior_run_id, kind),
+                    ).fetchone()
+                    expected = (digests[kind], locators[kind], len(payload))
+                    if existing is None:
+                        database.execute(
+                            """INSERT INTO phase3_artifacts
+                               (run_id, artifact_kind, artifact_digest, locator, byte_count)
+                               VALUES (?, ?, ?, ?, ?)""",
+                            (prior_run_id, kind, *expected),
+                        )
+                    elif tuple(existing) != expected:
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            self._snapshot_transaction(mutate)
+        except SafeFailure:
+            raise
+        except (
+            DurableWriteError,
+            OSError,
+            TypeError,
+            ValueError,
+            ValidationError,
+            sqlite3.Error,
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def project_prior_lineage_binding(
+        self, prior_lineage_binding_digest: str
+    ) -> PriorLineageBindingV1 | None:
+        """Return exactly one canonical persisted binding by its full digest."""
 
         if _DIGEST_PATTERN.fullmatch(prior_lineage_binding_digest) is None:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-        return None
+        suffix = prior_lineage_binding_digest.removeprefix("sha256:")
+        rows = self._db.execute(
+            """SELECT run_id FROM phase3_artifacts
+               WHERE artifact_kind = ? AND artifact_digest = ?""",
+            (
+                f"{_LINEAGE_BINDING_KIND_PREFIX}{suffix}",
+                prior_lineage_binding_digest,
+            ),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        payload = self.read_candidate_artifact(
+            str(rows[0]["run_id"]),
+            f"{_LINEAGE_BINDING_KIND_PREFIX}{suffix}",
+        )
+        binding = PriorLineageBindingV1.model_validate_json(payload, strict=True)
+        if binding.binding_id != prior_lineage_binding_digest:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return binding
+
+    def project_verified_prior_lineage_evidence(
+        self, prior_lineage_binding_digest: str
+    ) -> VerifiedPriorLineageEvidenceV1 | None:
+        """Reverify the exact prior chain and typed approval for one binding."""
+
+        binding = self.project_prior_lineage_binding(
+            prior_lineage_binding_digest
+        )
+        if binding is None:
+            return None
+        suffix = binding.binding_id.removeprefix("sha256:")
+        rows = self._db.execute(
+            """SELECT run_id FROM phase3_artifacts
+               WHERE artifact_kind = ?""",
+            (f"{_LINEAGE_APPROVAL_KIND_PREFIX}{suffix}",),
+        ).fetchall()
+        if len(rows) != 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        approval = PriorLineageApprovalRecordV1.model_validate_json(
+            self.read_candidate_artifact(
+                str(rows[0]["run_id"]),
+                f"{_LINEAGE_APPROVAL_KIND_PREFIX}{suffix}",
+            ),
+            strict=True,
+        )
+        return self._verified_prior_lineage_evidence(binding, approval)
+
+    def project_lineage_slug_owners(self, stable_slug: str) -> tuple[str, ...]:
+        """Return every verified completed lineage that owns an exact slug."""
+
+        owners: list[str] = []
+        rows = self._db.execute(
+            """SELECT run_id FROM phase3_runs
+               WHERE status = 'completed' ORDER BY run_id"""
+        ).fetchall()
+        for row in rows:
+            terminal = CandidateTerminalSummaryV1.model_validate_json(
+                self.read_candidate_artifact(str(row["run_id"]), "terminal_summary"),
+                strict=True,
+            )
+            resolution = terminal.lineage_resolution
+            if resolution.stable_slug == stable_slug and resolution.lineage_id is not None:
+                owners.append(resolution.lineage_id)
+        return tuple(dict.fromkeys(owners))
 
     def _snapshot_transaction(self, mutation: Callable[[sqlite3.Connection], _T]) -> _T:
         if self._durable_bytes is None or self._poisoned:

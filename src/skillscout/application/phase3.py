@@ -36,6 +36,7 @@ from skillscout.domain.candidate_authority import (
     LineageResolutionV1,
     candidate_execution_authority,
     derive_new_lineage,
+    resolve_lineage,
 )
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.models import (
@@ -480,26 +481,47 @@ class PhaseThreeRunner:
         if self.authority.prior_lineage_binding_digest is not None:
             if len(chain.results) != 1:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            lineage = LineageResolutionV1(
-                schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
-                status="lineage_rejected",
-                lineage_authority_digest=None,
-                lineage_id=None,
-                stable_slug=None,
-                initial_workflow_spec_authority_digest=None,
-                reason_codes=("missing_verified_evidence",),
+            binding = self.state.project_prior_lineage_binding(
+                self.authority.prior_lineage_binding_digest
             )
-            return self._terminal(
-                chain=chain,
-                outcome="lineage_rejected",
-                report=report,
-                lineage=lineage,
-                artifacts=artifacts,
+            evidence = self.state.project_verified_prior_lineage_evidence(
+                self.authority.prior_lineage_binding_digest
             )
-        lineage = derive_new_lineage(
-            repository_id=self.source.repository_id,
-            initial_workflow_spec_authority=self.authority.workflow_spec_authority,
-        )
+            if binding is None or evidence is None:
+                lineage = LineageResolutionV1(
+                    schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
+                    status="lineage_rejected",
+                    lineage_authority_digest=None,
+                    lineage_id=None,
+                    stable_slug=None,
+                    initial_workflow_spec_authority_digest=None,
+                    reason_codes=("missing_verified_evidence",),
+                )
+            else:
+                lineage = resolve_lineage(
+                    repository_id=self.source.repository_id,
+                    new_workflow_spec_authority=self.authority.workflow_spec_authority,
+                    prior_bindings=(binding,),
+                    verified_prior_evidence=(evidence,),
+                    slug_owner_lineage_ids=self.state.project_lineage_slug_owners(
+                        binding.stable_slug
+                    ),
+                )
+            if lineage.status == "lineage_rejected":
+                return self._terminal(
+                    chain=chain,
+                    outcome="lineage_rejected",
+                    report=report,
+                    lineage=lineage,
+                    artifacts=artifacts,
+                )
+            if lineage.status != "retained_lineage":
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        else:
+            lineage = derive_new_lineage(
+                repository_id=self.source.repository_id,
+                initial_workflow_spec_authority=self.authority.workflow_spec_authority,
+            )
         generator_outcomes = {
             "refused": "generator_refusal",
             "incomplete": "generator_incomplete",

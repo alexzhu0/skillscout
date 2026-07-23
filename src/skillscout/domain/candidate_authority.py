@@ -285,6 +285,35 @@ class PriorLineageBindingV1(StrictFrozenModel):
     approval_record_digest: Digest
 
 
+class PriorLineageApprovalRecordV1(StrictFrozenModel):
+    """Canonical durable record of the exact human-approved lineage update."""
+
+    schema_version: Literal["lineage-approval-record-v1"]
+    binding_schema_version: Literal["prior-lineage-binding-v1"]
+    binding_policy_version: _Version
+    repository_id: _RepositoryId
+    lineage_authority_digest: Digest
+    lineage_id: Digest
+    stable_slug: _StableSlug
+    prior_package_digest: Digest
+    prior_terminal_summary_digest: Digest
+    new_workflow_spec_authority_digest: Digest
+    approval_record_digest: Digest
+
+    @model_validator(mode="after")
+    def validate_record_digest(self) -> PriorLineageApprovalRecordV1:
+        expected = sha256_digest(
+            self.model_dump(
+                mode="json",
+                exclude_none=False,
+                exclude={"approval_record_digest"},
+            )
+        )
+        if self.approval_record_digest != expected:
+            raise ValueError("lineage approval record digest mismatch")
+        return self
+
+
 class VerifiedPriorLineageEvidenceV1(StrictFrozenModel):
     """Narrow projection available only after the prior Phase 3 chain is verified."""
 
@@ -390,6 +419,34 @@ def prior_lineage_approval_record_digest(
             new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
         )
     )
+
+
+def prior_lineage_approval_record(
+    binding: PriorLineageBindingV1,
+) -> PriorLineageApprovalRecordV1:
+    """Materialize the typed approval artifact carried by one canonical binding."""
+
+    if type(binding) is not PriorLineageBindingV1:
+        raise TypeError("lineage approval requires a strict binding")
+    values = _approval_record_preimage(
+        binding_policy_version=binding.binding_policy_version,
+        repository_id=binding.repository_id,
+        lineage_authority_digest=binding.lineage_authority_digest,
+        lineage_id=binding.lineage_id,
+        stable_slug=binding.stable_slug,
+        prior_package_digest=binding.prior_package_digest,
+        prior_terminal_summary_digest=binding.prior_terminal_summary_digest,
+        new_workflow_spec_authority_digest=(
+            binding.new_workflow_spec_authority_digest
+        ),
+    )
+    record = PriorLineageApprovalRecordV1(
+        **values,
+        approval_record_digest=binding.approval_record_digest,
+    )
+    if record.approval_record_digest != binding.approval_record_digest:
+        raise ValueError("binding and approval record disagree")
+    return record
 
 
 def _binding_preimage(
