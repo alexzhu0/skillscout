@@ -7,12 +7,16 @@ from collections.abc import Callable
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from skillscout.adapters.state import SQLiteStateStore
+from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import (
     CandidateExecutionAuthorityV1,
+    LineageResolutionV1,
     candidate_execution_authority,
+    derive_new_lineage,
     workflow_spec_authority,
 )
-from skillscout.domain.canonical import sha256_digest
+from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.extraction import WorkflowSpec
 from skillscout.domain.models import (
     CANDIDATE_CHECKPOINT_PROFILE_VERSION,
@@ -27,6 +31,18 @@ from skillscout.domain.models import (
     CandidateStageResultV1,
     PhaseThreeStageV1,
     VerifiedCandidateRunChain,
+)
+from skillscout.domain.qualification import (
+    evaluate_qualification_checks,
+    qualification_report,
+    qualification_report_bytes,
+)
+from skillscout.domain.review import (
+    CandidateTerminalSummaryV1,
+    candidate_terminal_summary,
+    candidate_terminal_summary_bytes,
+    generator_outcome_evidence,
+    review_disposition,
 )
 
 
@@ -484,3 +500,249 @@ def test_domain_chain_accepts_only_a_legal_prefix_or_complete_terminal() -> None
     assert prefix.checkpoints[-1].terminal is False
     complete = _domain_chain()
     assert complete.checkpoints[-1].terminal is True
+
+
+PHASE3_TABLES = {
+    "phase3_runs",
+    "phase3_attempts",
+    "phase3_results",
+    "phase3_checkpoints",
+    "phase3_resume_events",
+    "phase3_terminals",
+    "phase3_artifacts",
+}
+
+
+def _qualification_and_generator_refusal(
+    authority: CandidateExecutionAuthorityV1,
+) -> tuple[bytes, CandidateTerminalSummaryV1]:
+    report = qualification_report(
+        checks=evaluate_qualification_checks(authority.workflow_spec_authority.workflow_spec),
+        selected_workflow_fingerprint=authority.selected_workflow_fingerprint,
+        workflow_spec_authority=authority.workflow_spec_authority,
+        candidate_execution_authority=authority,
+    )
+    assert report.passed is True
+    lineage = derive_new_lineage(
+        repository_id=123,
+        initial_workflow_spec_authority=authority.workflow_spec_authority,
+    )
+    generator = generator_outcome_evidence(
+        candidate_execution_authority=authority,
+        outcome="refused",
+        actual_generator_model_id="gpt-generator-actual",
+        request_id="req-generator-refusal",
+        usage=None,
+        latency_ms=7,
+        generated_artifact_identity=None,
+    )
+    terminal = candidate_terminal_summary(
+        outcome="generator_refusal",
+        candidate_execution_authority=authority,
+        qualification_passed=True,
+        qualification_report_digest=sha256_digest(qualification_report_bytes(report)),
+        lineage_resolution=lineage,
+        generator_outcome_evidence=generator,
+        generated_artifact_identity=None,
+        package_identity=None,
+        validation_report=None,
+        review_disposition=review_disposition(
+            generation_succeeded=False,
+            validation_report=None,
+            review_result=None,
+        ),
+        review_attestation=None,
+    )
+    return qualification_report_bytes(report), terminal
+
+
+def test_state_ledger_adds_only_the_seven_isolated_phase3_tables(tmp_path) -> None:
+    store = SQLiteStateStore(tmp_path / "phase3-state.db")
+    try:
+        tables = {
+            str(row[0])
+            for row in store.connection.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE type = 'table' AND name LIKE 'phase3_%'"""
+            )
+        }
+        assert tables == PHASE3_TABLES
+        assert set(store.connection.execute("PRAGMA table_list").fetchall()[0].keys())
+        assert set(__import__("skillscout.application.pipeline", fromlist=["PIPELINE_PROFILES"]).PIPELINE_PROFILES) == {
+            "fixture-v1",
+            "phase2-v1",
+        }
+    finally:
+        store.close()
+
+
+def test_state_ledger_persists_and_reverifies_the_complete_candidate_chain(
+    tmp_path,
+) -> None:
+    chain = _domain_chain()
+    store = SQLiteStateStore(tmp_path / "phase3-state.db")
+    try:
+        store.persist_candidate_chain(chain, status="running")
+        verified = store.verify_candidate_run_chain(
+            chain.identity.run_id,
+            expected_authority=chain.identity.candidate_execution_authority,
+        )
+        resumed = store.find_resumable_candidate(
+            chain.identity.candidate_execution_authority
+        )
+        counts = {
+            table: store.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in PHASE3_TABLES
+        }
+    finally:
+        store.close()
+
+    assert verified == chain
+    assert resumed == chain
+    assert counts == {
+        "phase3_runs": 1,
+        "phase3_attempts": 4,
+        "phase3_results": 4,
+        "phase3_checkpoints": 4,
+        "phase3_resume_events": 5,
+        "phase3_terminals": 0,
+        "phase3_artifacts": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("statement", "parameters"),
+    [
+        (
+            "UPDATE phase3_runs SET authority_digest = ?",
+            (_digest("8"),),
+        ),
+        (
+            "UPDATE phase3_attempts SET attempt_json = ? WHERE stage_index = 1",
+            (canonical_json_bytes({"tampered": True}).decode(),),
+        ),
+        (
+            "UPDATE phase3_results SET output_hash = ? WHERE stage_index = 1",
+            (_digest("8"),),
+        ),
+        (
+            "DELETE FROM phase3_checkpoints WHERE stage_index = 1",
+            (),
+        ),
+        (
+            "UPDATE phase3_checkpoints SET previous_checkpoint_hash = ? "
+            "WHERE stage_index = 2",
+            (_digest("8"),),
+        ),
+        (
+            "UPDATE phase3_resume_events SET prior_event_hash = ? WHERE event_index = 2",
+            (_digest("8"),),
+        ),
+    ],
+    ids=(
+        "authority_swap",
+        "attempt_payload",
+        "result_output_hash",
+        "checkpoint_deleted",
+        "checkpoint_spliced",
+        "resume_link",
+    ),
+)
+def test_state_ledger_rejects_every_row_or_continuity_mutation(
+    tmp_path,
+    statement: str,
+    parameters: tuple[object, ...],
+) -> None:
+    chain = _domain_chain()
+    store = SQLiteStateStore(tmp_path / "phase3-state.db")
+    try:
+        store.persist_candidate_chain(chain, status="running")
+        store.connection.execute(statement, parameters)
+        with pytest.raises(SafeFailure) as failure:
+            store.verify_candidate_run_chain(chain.identity.run_id)
+        assert failure.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    finally:
+        store.close()
+
+
+def test_state_ledger_terminal_is_atomic_with_exact_external_records(tmp_path) -> None:
+    chain = _domain_chain(stage_count=2)
+    qualification_bytes, terminal = _qualification_and_generator_refusal(
+        chain.identity.candidate_execution_authority
+    )
+    store = SQLiteStateStore(tmp_path / "phase3-state.db")
+    try:
+        store.persist_candidate_chain(chain, status="running")
+        store.persist_candidate_terminal(
+            chain.identity.run_id,
+            terminal_summary=terminal,
+            artifacts={"qualification_report": qualification_bytes},
+        )
+        verified = store.verify_candidate_run_chain(chain.identity.run_id)
+        terminal_row = store.connection.execute(
+            "SELECT * FROM phase3_terminals WHERE run_id = ?",
+            (chain.identity.run_id,),
+        ).fetchone()
+        artifact_rows = store.connection.execute(
+            """SELECT artifact_kind, artifact_digest, byte_count
+               FROM phase3_artifacts WHERE run_id = ? ORDER BY artifact_kind""",
+            (chain.identity.run_id,),
+        ).fetchall()
+        terminal_bytes = store.read_candidate_artifact(
+            chain.identity.run_id, "terminal_summary"
+        )
+        report_bytes = store.read_candidate_artifact(
+            chain.identity.run_id, "qualification_report"
+        )
+    finally:
+        store.close()
+
+    assert verified.identity == chain.identity
+    assert terminal_row["terminal_summary_digest"] == terminal.terminal_summary_digest
+    assert [(row["artifact_kind"], row["artifact_digest"]) for row in artifact_rows] == [
+        ("qualification_report", terminal.qualification_report_digest),
+        ("terminal_summary", terminal.terminal_summary_digest),
+    ]
+    assert terminal_bytes == candidate_terminal_summary_bytes(terminal)
+    assert report_bytes == qualification_bytes
+
+
+def test_state_ledger_rejects_terminal_with_missing_or_mismatched_artifact(
+    tmp_path,
+) -> None:
+    chain = _domain_chain(stage_count=2)
+    qualification_bytes, terminal = _qualification_and_generator_refusal(
+        chain.identity.candidate_execution_authority
+    )
+    store = SQLiteStateStore(tmp_path / "phase3-state.db")
+    try:
+        store.persist_candidate_chain(chain, status="running")
+        for artifacts in ({}, {"qualification_report": qualification_bytes + b"x"}):
+            before = store.connection.execute(
+                "SELECT COUNT(*) FROM phase3_terminals"
+            ).fetchone()[0]
+            with pytest.raises(SafeFailure) as failure:
+                store.persist_candidate_terminal(
+                    chain.identity.run_id,
+                    terminal_summary=terminal,
+                    artifacts=artifacts,
+                )
+            assert failure.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+            assert (
+                store.connection.execute(
+                    "SELECT COUNT(*) FROM phase3_terminals"
+                ).fetchone()[0]
+                == before
+            )
+    finally:
+        store.close()
+
+
+def test_state_ledger_prior_lineage_projection_has_no_unverified_fallback(
+    tmp_path,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "phase3-state.db")
+    try:
+        assert store.project_verified_prior_lineage_evidence(_digest("8")) is None
+    finally:
+        store.close()
