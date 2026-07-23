@@ -378,8 +378,12 @@ def _check_dependency_bootstrap_authority(
             f'"{APPROVED_LOCK_SHA256}"',
             f'"{EXPECTED_VALIDATOR_RUNTIME_SHA256}"',
             "os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC",
-            "def _verify_validator_distribution() -> str:",
-            "def require_phase3_gate_b3() -> str:",
+            "class ValidatorDistributionAdmission:",
+            "def _verify_validator_distribution() -> ValidatorDistributionAdmission:",
+            "def reverify_admitted_validator_module(",
+            "def require_phase3_gate_b3() -> ValidatorDistributionAdmission:",
+            'relative == _VALIDATOR_MODULE_RECORD_PATH',
+            "len(distributions) != 1",
         ),
     )
 

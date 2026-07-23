@@ -175,7 +175,7 @@ def test_exact_openai_and_skills_ref_importer_sets_are_required(
     _replace_once(
         acceptance_repository,
         "src/skillscout/adapters/skills_ref.py",
-        "from skills_ref import validate as _official_validate",
+        "from skills_ref import validate",
         "_official_validate = None",
     )
     with pytest.raises(inspector.AcceptanceError):
@@ -197,7 +197,7 @@ def test_exact_openai_and_skills_ref_importer_sets_are_required(
         ),
         (
             "src/skillscout/adapters/skills_ref.py",
-            "_OBSERVED_VALIDATOR_DISTRIBUTION_DIGEST = require_phase3_gate_b3()",
+            "_VALIDATOR_ADMISSION = require_phase3_gate_b3()",
             "_OBSERVED_VALIDATOR_DISTRIBUTION_DIGEST = 'sha256:' + '0' * 64",
         ),
         (

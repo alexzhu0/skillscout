@@ -4,12 +4,18 @@
 
 from __future__ import annotations
 
-from skillscout.bootstrap import require_phase3_gate_b3
+from skillscout.bootstrap import (
+    require_phase3_gate_b3,
+    reverify_admitted_validator_module,
+)
 
-_OBSERVED_VALIDATOR_DISTRIBUTION_DIGEST = require_phase3_gate_b3()
+_VALIDATOR_ADMISSION = require_phase3_gate_b3()
+_OBSERVED_VALIDATOR_DISTRIBUTION_DIGEST = _VALIDATOR_ADMISSION.runtime_digest
 
 import importlib.metadata
+from importlib.machinery import PathFinder
 from pathlib import Path
+import sys
 from typing import Callable
 
 from skillscout.domain.skill_artifacts import FrozenSkillPackageV1
@@ -46,7 +52,30 @@ def official_validator_authority():
 def _official_validator() -> Callable[[Path], list[str]] | None:
     global _official_validate
     if _official_validate is _UNLOADED:
-        from skills_ref import validate as _official_validate
+        spec = PathFinder.find_spec("skills_ref")
+        if spec is None:
+            return None
+        reverify_admitted_validator_module(
+            _VALIDATOR_ADMISSION,
+            module_origin=spec.origin,
+            package_search_paths=spec.submodule_search_locations,
+        )
+        from skills_ref import validate
+
+        module = sys.modules.get("skills_ref")
+        if module is None:
+            return None
+        loaded_spec = getattr(module, "__spec__", None)
+        if loaded_spec is None:
+            return None
+        reverify_admitted_validator_module(
+            _VALIDATOR_ADMISSION,
+            module_origin=loaded_spec.origin,
+            package_search_paths=loaded_spec.submodule_search_locations,
+        )
+        if getattr(module, "validate", None) is not validate:
+            return None
+        _official_validate = validate
 
     if _official_validate is None:
         return None

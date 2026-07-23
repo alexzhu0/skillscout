@@ -118,6 +118,48 @@ def test_same_version_modified_validator_is_rejected_before_module_execution(
     assert b"Gate B3" in completed.stderr
 
 
+def test_shadow_validator_is_rejected_before_module_execution(
+    tmp_path: Path,
+) -> None:
+    repository = _copy_repository(tmp_path, corrupt_lock=False)
+    shadow_site = tmp_path / "shadow-site"
+    shadow_package = shadow_site / "skills_ref"
+    shadow_package.mkdir(parents=True)
+    marker = tmp_path / "shadow-validator-imported"
+    (shadow_package / "__init__.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['SKILLSCOUT_IMPORT_CANARY']).write_text('executed')\n"
+        "def validate(_root): return []\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(repository / "src"), str(shadow_site))
+    )
+    environment["SKILLSCOUT_IMPORT_CANARY"] = str(marker)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from skillscout.adapters.skills_ref import _official_validator;"
+                "_official_validator()"
+            ),
+        ],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode != 0
+    assert not marker.exists()
+    assert b"Gate B3" in completed.stderr
+
+
 def test_official_authority_distinguishes_approved_wheel_and_observed_runtime() -> None:
     authority = official_validator_authority()
 

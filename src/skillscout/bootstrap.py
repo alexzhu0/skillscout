@@ -10,8 +10,9 @@ import io
 import os
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import NoReturn
+from typing import Iterable, NoReturn
 
 _APPROVED_LOCK_DIGEST = (
     "b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
@@ -25,10 +26,22 @@ _MAX_DIGEST_BYTES = 65
 _MAX_LOCK_BYTES = 2_000_000
 _MAX_DISTRIBUTION_FILE_BYTES = 2_000_000
 _GENERATED_RECORD_NAMES = frozenset({"INSTALLER", "RECORD", "REQUESTED"})
+_VALIDATOR_MODULE_RECORD_PATH = "skills_ref/__init__.py"
 
 
 class PhaseThreeGateError(RuntimeError):
     """Sanitized fail-closed pre-import dependency authority failure."""
+
+
+@dataclass(frozen=True)
+class ValidatorDistributionAdmission:
+    """Exact RECORD-backed package root admitted before dependency import."""
+
+    distribution_root: str
+    module_origin: str
+    package_search_path: str
+    module_digest: str
+    runtime_digest: str
 
 
 def _fail() -> NoReturn:
@@ -149,9 +162,14 @@ def _closed_record_path(value: str) -> PurePosixPath:
     return path
 
 
-def _verify_validator_distribution() -> str:
+def _verify_validator_distribution() -> ValidatorDistributionAdmission:
     try:
-        distribution = importlib.metadata.distribution(_VALIDATOR_DISTRIBUTION)
+        distributions = tuple(
+            importlib.metadata.distributions(name=_VALIDATOR_DISTRIBUTION)
+        )
+        if len(distributions) != 1:
+            _fail()
+        distribution = distributions[0]
         record_entry = next(
             entry
             for entry in (distribution.files or ())
@@ -177,6 +195,7 @@ def _verify_validator_distribution() -> str:
 
     site_packages = record_path.parent.parent
     observed: list[tuple[str, str, int]] = []
+    admitted_module: tuple[str, str] | None = None
     record_rows = 0
     for row in rows:
         if len(row) != 3:
@@ -204,7 +223,11 @@ def _verify_validator_distribution() -> str:
             and path.name not in _GENERATED_RECORD_NAMES
         ):
             observed.append((relative, digest, size))
-    if record_rows != 1 or not observed:
+        if relative == _VALIDATOR_MODULE_RECORD_PATH:
+            if admitted_module is not None:
+                _fail()
+            admitted_module = (os.fspath(target), digest)
+    if record_rows != 1 or not observed or admitted_module is None:
         _fail()
     preimage = b"".join(
         (
@@ -220,10 +243,58 @@ def _verify_validator_distribution() -> str:
     runtime_digest = hashlib.sha256(preimage).hexdigest()
     if runtime_digest != _EXPECTED_VALIDATOR_RUNTIME_DIGEST:
         _fail()
-    return f"sha256:{runtime_digest}"
+    module_origin, module_digest = admitted_module
+    return ValidatorDistributionAdmission(
+        distribution_root=os.fspath(
+            Path(os.path.abspath(os.fspath(site_packages)))
+        ),
+        module_origin=module_origin,
+        package_search_path=os.fspath(Path(module_origin).parent),
+        module_digest=f"sha256:{module_digest}",
+        runtime_digest=f"sha256:{runtime_digest}",
+    )
 
 
-def require_phase3_gate_b3() -> str:
+def reverify_admitted_validator_module(
+    admission: ValidatorDistributionAdmission,
+    *,
+    module_origin: str | None,
+    package_search_paths: Iterable[str] | None,
+) -> None:
+    """Bind a resolved or loaded module identity back to the admitted RECORD."""
+
+    if type(admission) is not ValidatorDistributionAdmission:
+        _fail()
+    try:
+        paths = (
+            tuple(os.path.abspath(os.fspath(path)) for path in package_search_paths)
+            if package_search_paths is not None
+            else ()
+        )
+        origin = (
+            os.path.abspath(os.fspath(module_origin))
+            if module_origin is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        _fail()
+    if (
+        origin != admission.module_origin
+        or paths != (admission.package_search_path,)
+        or not admission.module_origin.startswith(
+            admission.distribution_root + os.sep
+        )
+    ):
+        _fail()
+    payload = _read_stable_private_file(
+        Path(admission.module_origin),
+        max_bytes=_MAX_DISTRIBUTION_FILE_BYTES,
+    )
+    if f"sha256:{hashlib.sha256(payload).hexdigest()}" != admission.module_digest:
+        _fail()
+
+
+def require_phase3_gate_b3() -> ValidatorDistributionAdmission:
     """Admit the exact lock and installed official-validator bytes."""
 
     _verify_lock_authority(_repository_root())
