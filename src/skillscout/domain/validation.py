@@ -16,12 +16,21 @@ from typing import Annotated, Callable, Final, Iterator, Literal
 
 from pydantic import Field, model_validator
 
+from skillscout.domain.candidate_authority import (
+    CandidateExecutionAuthorityV1,
+    WorkflowSpecAuthorityV1,
+)
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.models import Digest, StrictFrozenModel
 from skillscout.domain.skill_artifacts import (
+    GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION,
     MAX_RENDERED_FILE_BYTES,
     MAX_RENDERED_PACKAGE_BYTES,
+    PROVENANCE_SCHEMA_VERSION,
+    RENDERER_VERSION,
     FrozenSkillPackageV1,
+    GeneratedArtifactIdentityV1,
+    PackageIdentityV1,
     PackageProvenanceV1,
     RenderedFileV1,
     RenderedPackageManifestV1,
@@ -49,6 +58,8 @@ LOCAL_SAFETY_POLICY_VERSION: Final = "local-safety-v1"
 LOCAL_PROVENANCE_POLICY_VERSION: Final = "local-provenance-v1"
 URL_POLICY_VERSION: Final = "local-url-v1"
 OVERCOPY_POLICY_VERSION: Final = "overcopy-policy-v1"
+CUSTOM_VALIDATION_POLICY_VERSION: Final = "local-validation-policy-v1"
+VALIDATION_REPORT_SCHEMA_VERSION: Final = "validation-report-v1"
 MAX_SKILL_LINES: Final = 500
 MAX_SKILL_ESTIMATED_TOKENS: Final = 5_000
 MAX_REGISTERED_QUOTE_CHARS: Final = 120
@@ -124,6 +135,138 @@ class OfficialValidationResultV1(StrictFrozenModel):
             raise ValueError("official validation pass flag is inconsistent")
         if self.infrastructure_succeeded != (self.admission is not None):
             raise ValueError("official validation admission state is inconsistent")
+        return self
+
+
+class ValidationReportV1(StrictFrozenModel):
+    """Complete immutable authority and finding gate over one frozen package."""
+
+    schema_version: Literal["validation-report-v1"]
+    validation_report_schema_version: Literal["validation-report-v1"]
+    selected_workflow_fingerprint: Digest
+    workflow_spec_authority: WorkflowSpecAuthorityV1
+    candidate_execution_authority: CandidateExecutionAuthorityV1
+    renderer_version: Literal["skill-renderer-v1"]
+    generated_artifact_identity: GeneratedArtifactIdentityV1
+    package_identity: PackageIdentityV1
+    package_digest: Digest
+    workspace_admission: WorkspaceAdmissionV1 | None
+    official_validator_authority: OfficialValidatorAuthorityV1
+    official_infrastructure_succeeded: bool
+    custom_validation_policy_version: Literal["local-validation-policy-v1"]
+    local_structure_policy_version: Literal["local-structure-v1"]
+    progressive_disclosure_policy_version: Literal["progressive-disclosure-v1"]
+    local_safety_policy_version: Literal["local-safety-v1"]
+    local_provenance_policy_version: Literal["local-provenance-v1"]
+    url_policy_version: Literal["local-url-v1"]
+    overcopy_policy_version: Literal["overcopy-policy-v1"]
+    findings: Annotated[tuple[ValidationFindingV1, ...], Field(max_length=256)]
+    error_count: Annotated[int, Field(ge=0, le=256)]
+    warning_count: Annotated[int, Field(ge=0, le=256)]
+    info_count: Annotated[int, Field(ge=0, le=256)]
+    passed: bool
+    report_digest: Digest
+
+    @model_validator(mode="after")
+    def validate_complete_report(self) -> ValidationReportV1:
+        execution = CandidateExecutionAuthorityV1.model_validate(
+            self.candidate_execution_authority.model_dump(
+                mode="python",
+                exclude_none=False,
+            )
+        )
+        if (
+            self.workflow_spec_authority != execution.workflow_spec_authority
+            or self.selected_workflow_fingerprint
+            != execution.selected_workflow_fingerprint
+            or self.selected_workflow_fingerprint
+            != self.workflow_spec_authority.workflow_spec.fingerprint
+            or execution.renderer_version != self.renderer_version
+            or execution.artifact_schema_version
+            != self.generated_artifact_identity.schema_version
+            or execution.provenance_schema_version != PROVENANCE_SCHEMA_VERSION
+            or execution.official_validator_distribution
+            != self.official_validator_authority.distribution
+            or execution.official_validator_version
+            != self.official_validator_authority.version
+            or execution.official_validator_distribution_hash
+            != self.official_validator_authority.distribution_hash
+            or execution.approved_lock_digest
+            != self.official_validator_authority.approved_lock_digest
+            or execution.custom_validation_policy_version
+            != self.custom_validation_policy_version
+            or execution.validation_report_schema_version
+            != self.validation_report_schema_version
+            or self.package_digest != self.package_identity.package_digest
+        ):
+            raise ValueError("validation report authority bindings disagree")
+        if self.official_infrastructure_succeeded != (
+            self.workspace_admission is not None
+        ):
+            raise ValueError("validation report workspace state is inconsistent")
+        if (
+            self.workspace_admission is not None
+            and (
+                self.workspace_admission.package_digest != self.package_digest
+                or self.workspace_admission.manifest_digest
+                != self.package_identity.rendered_manifest_digest
+            )
+        ):
+            raise ValueError("validation report admission identity disagrees")
+
+        identities = tuple(
+            (
+                finding.severity,
+                finding.code,
+                finding.location,
+                finding.validator_version,
+            )
+            for finding in self.findings
+        )
+        if len(identities) != len(set(identities)):
+            raise ValueError("validation report contains duplicate finding identities")
+        ordered = tuple(
+            sorted(
+                self.findings,
+                key=lambda finding: (
+                    finding.severity,
+                    finding.code,
+                    finding.location,
+                    finding.message,
+                    finding.validator_version,
+                ),
+            )
+        )
+        if self.findings != ordered:
+            raise ValueError("validation report findings are not canonically ordered")
+        counts = {
+            severity: sum(
+                finding.severity == severity for finding in self.findings
+            )
+            for severity in ("error", "warning", "info")
+        }
+        if (
+            self.error_count != counts["error"]
+            or self.warning_count != counts["warning"]
+            or self.info_count != counts["info"]
+        ):
+            raise ValueError("validation report counts are inconsistent")
+        expected_passed = (
+            self.official_infrastructure_succeeded
+            and self.workspace_admission is not None
+            and self.error_count == 0
+        )
+        if self.passed is not expected_passed:
+            raise ValueError("validation report pass gate is inconsistent")
+        expected_digest = sha256_digest(
+            self.model_dump(
+                mode="json",
+                exclude_none=False,
+                exclude={"report_digest"},
+            )
+        )
+        if self.report_digest != expected_digest:
+            raise ValueError("validation report digest mismatch")
         return self
 
 
@@ -604,6 +747,23 @@ def _sort_findings(
     )
 
 
+def _report_json_preimage(values: dict[str, object]) -> dict[str, object]:
+    converted: dict[str, object] = {}
+    for key, value in values.items():
+        if hasattr(value, "model_dump"):
+            converted[key] = value.model_dump(mode="json", exclude_none=False)
+        elif isinstance(value, tuple):
+            converted[key] = [
+                item.model_dump(mode="json", exclude_none=False)
+                if hasattr(item, "model_dump")
+                else item
+                for item in value
+            ]
+        else:
+            converted[key] = value
+    return converted
+
+
 def _raw_files(package: FrozenSkillPackageV1) -> tuple[object, ...]:
     try:
         files = tuple(package.files)
@@ -1046,7 +1206,7 @@ def _provenance_findings(
             )
         )
     try:
-        parsed = PackageProvenanceV1.model_validate(decoded)
+        parsed = PackageProvenanceV1.model_validate_json(provenance_bytes)
         if parsed != expected:
             raise ValueError
     except (TypeError, ValueError):
@@ -1205,3 +1365,177 @@ def validate_local_policy(
     findings.extend(_provenance_findings(package))
     findings.extend(_overcopy_findings(package, decoded))
     return _sort_findings(findings)
+
+
+def build_validation_report(
+    *,
+    package: FrozenSkillPackageV1,
+    candidate_execution_authority: CandidateExecutionAuthorityV1,
+    official_result: OfficialValidationResultV1,
+    local_structure_findings: tuple[ValidationFindingV1, ...],
+    local_policy_findings: tuple[ValidationFindingV1, ...],
+) -> ValidationReportV1:
+    """Compose one strict report after independently validating every direct link."""
+
+    if (
+        type(package) is not FrozenSkillPackageV1
+        or type(candidate_execution_authority) is not CandidateExecutionAuthorityV1
+        or type(official_result) is not OfficialValidationResultV1
+        or type(local_structure_findings) is not tuple
+        or type(local_policy_findings) is not tuple
+    ):
+        raise TypeError("validation report requires strict input contracts")
+    try:
+        frozen = FrozenSkillPackageV1.model_validate(
+            package.model_dump(mode="python", exclude_none=False)
+        )
+        execution = CandidateExecutionAuthorityV1.model_validate(
+            candidate_execution_authority.model_dump(
+                mode="python",
+                exclude_none=False,
+            )
+        )
+        official = OfficialValidationResultV1.model_validate(
+            official_result.model_dump(mode="python", exclude_none=False)
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("validation report input contract failed verification") from None
+
+    provenance = frozen.provenance
+    direct_pairs = (
+        (execution.workflow_spec_authority, provenance.workflow_spec_authority),
+        (
+            execution.selected_workflow_fingerprint,
+            provenance.selected_workflow_fingerprint,
+        ),
+        (
+            execution.configured_generator_model_id,
+            provenance.configured_generator_model_id,
+        ),
+        (execution.generator_prompt_version, provenance.generator_prompt_version),
+        (
+            execution.generator_output_schema_version,
+            provenance.generator_output_schema_version,
+        ),
+        (execution.generator_policy_version, provenance.generator_policy_version),
+        (execution.renderer_version, provenance.renderer_version),
+        (execution.artifact_schema_version, provenance.artifact_schema_version),
+        (execution.provenance_schema_version, provenance.provenance_schema_version),
+        (execution.phase3_profile_version, provenance.phase3_profile_version),
+        (execution.retry_policy_version, provenance.retry_policy_version),
+        (official.authority.distribution, execution.official_validator_distribution),
+        (official.authority.version, execution.official_validator_version),
+        (
+            official.authority.distribution_hash,
+            execution.official_validator_distribution_hash,
+        ),
+        (official.authority.approved_lock_digest, execution.approved_lock_digest),
+    )
+    if (
+        any(left != right for left, right in direct_pairs)
+        or execution.renderer_version != RENDERER_VERSION
+        or execution.artifact_schema_version
+        != GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION
+        or execution.provenance_schema_version != PROVENANCE_SCHEMA_VERSION
+        or execution.custom_validation_policy_version
+        != CUSTOM_VALIDATION_POLICY_VERSION
+        or execution.validation_report_schema_version
+        != VALIDATION_REPORT_SCHEMA_VERSION
+        or frozen.generated_artifact_identity
+        != provenance.generated_artifact_identity
+        or frozen.package_identity.package_digest
+        != getattr(official.admission, "package_digest", frozen.package_identity.package_digest)
+        or frozen.package_identity.rendered_manifest_digest
+        != getattr(
+            official.admission,
+            "manifest_digest",
+            frozen.package_identity.rendered_manifest_digest,
+        )
+    ):
+        raise ValueError("validation report direct authority mismatch")
+
+    allowed_structure_versions = {
+        LOCAL_STRUCTURE_POLICY_VERSION,
+        PROGRESSIVE_DISCLOSURE_POLICY_VERSION,
+    }
+    allowed_policy_versions = {
+        LOCAL_SAFETY_POLICY_VERSION,
+        LOCAL_PROVENANCE_POLICY_VERSION,
+        URL_POLICY_VERSION,
+        OVERCOPY_POLICY_VERSION,
+    }
+    if any(
+        type(finding) is not ValidationFindingV1
+        or finding.validator_version not in allowed_structure_versions
+        for finding in local_structure_findings
+    ):
+        raise ValueError("local structural finding authority mismatch")
+    if any(
+        type(finding) is not ValidationFindingV1
+        or finding.validator_version not in allowed_policy_versions
+        for finding in local_policy_findings
+    ):
+        raise ValueError("local policy finding authority mismatch")
+    if any(
+        finding.validator_version != OFFICIAL_VALIDATOR_ADAPTER_VERSION
+        for finding in official.findings
+    ):
+        raise ValueError("official finding authority mismatch")
+
+    findings = _sort_findings(
+        [
+            *official.findings,
+            *local_structure_findings,
+            *local_policy_findings,
+        ]
+    )
+    identities = tuple(
+        (
+            finding.severity,
+            finding.code,
+            finding.location,
+            finding.validator_version,
+        )
+        for finding in findings
+    )
+    if len(identities) != len(set(identities)):
+        raise ValueError("duplicate validation finding identity")
+    error_count = sum(finding.severity == "error" for finding in findings)
+    warning_count = sum(finding.severity == "warning" for finding in findings)
+    info_count = sum(finding.severity == "info" for finding in findings)
+    preimage: dict[str, object] = {
+        "schema_version": VALIDATION_REPORT_SCHEMA_VERSION,
+        "validation_report_schema_version": VALIDATION_REPORT_SCHEMA_VERSION,
+        "selected_workflow_fingerprint": execution.selected_workflow_fingerprint,
+        "workflow_spec_authority": execution.workflow_spec_authority,
+        "candidate_execution_authority": execution,
+        "renderer_version": RENDERER_VERSION,
+        "generated_artifact_identity": frozen.generated_artifact_identity,
+        "package_identity": frozen.package_identity,
+        "package_digest": frozen.package_identity.package_digest,
+        "workspace_admission": official.admission,
+        "official_validator_authority": official.authority,
+        "official_infrastructure_succeeded": official.infrastructure_succeeded,
+        "custom_validation_policy_version": CUSTOM_VALIDATION_POLICY_VERSION,
+        "local_structure_policy_version": LOCAL_STRUCTURE_POLICY_VERSION,
+        "progressive_disclosure_policy_version": (
+            PROGRESSIVE_DISCLOSURE_POLICY_VERSION
+        ),
+        "local_safety_policy_version": LOCAL_SAFETY_POLICY_VERSION,
+        "local_provenance_policy_version": LOCAL_PROVENANCE_POLICY_VERSION,
+        "url_policy_version": URL_POLICY_VERSION,
+        "overcopy_policy_version": OVERCOPY_POLICY_VERSION,
+        "findings": findings,
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "info_count": info_count,
+        "passed": (
+            official.infrastructure_succeeded
+            and official.admission is not None
+            and error_count == 0
+        ),
+    }
+    return ValidationReportV1(
+        **preimage,
+        report_digest=sha256_digest(_report_json_preimage(preimage)),
+    )

@@ -1037,6 +1037,14 @@ def test_validation_report_merge_and_digest_are_deterministic() -> None:
         "info",
         "warning",
     )
+    changed = _validation_report(
+        policy=(
+            _report_finding("warning", "changed_warning"),
+            _report_finding("info", "a_info"),
+            _report_finding("error", "m_error"),
+        )
+    )
+    assert changed.report_digest != first.report_digest
 
 
 def test_validation_report_rejects_duplicate_finding_identities() -> None:
@@ -1058,6 +1066,11 @@ def test_validation_finding_rejects_unknown_severity() -> None:
         ("validation_report_schema_version", "validation-report-v2"),
         ("package_digest", _digest("e")),
         ("local_safety_policy_version", "local-safety-v2"),
+        ("workflow_spec_authority", None),
+        ("official_validator_authority", None),
+        ("generated_artifact_identity", None),
+        ("package_identity", None),
+        ("official_infrastructure_succeeded", False),
         ("passed", False),
         ("error_count", 1),
         ("report_digest", _digest("d")),
