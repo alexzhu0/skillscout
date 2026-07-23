@@ -2087,3 +2087,105 @@ def test_resume_budgets_completed_application_reuse_bypasses_every_mutable_facto
     assert second.completed_projection is not None
     assert forbidden == []
     assert before == after
+
+
+def test_resume_budgets_generator_token_ceiling_fails_before_validator(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class OverBudgetGenerator(_CascadeGenerator):
+        def generate(self, *, request):
+            result = super().generate(request=request)
+            return result.model_copy(
+                update={
+                    "usage": TokenUsage(
+                        prompt_tokens=8,
+                        completion_tokens=6,
+                        total_tokens=14,
+                    )
+                }
+            )
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: SQLiteStateStore(
+            tmp_path / "token-budget-state.db"
+        ),
+        generator_factory=lambda: OverBudgetGenerator("parsed", calls),
+        validator_factory=lambda: calls.append("validator"),
+        reviewer_factory=lambda: calls.append("reviewer"),
+        artifact_projector_factory=lambda: calls.append("output"),
+        run_id_factory=lambda: "token-budget-run",
+    )
+    with pytest.raises(SafeFailure) as raised:
+        PhaseThreeApplication(
+            source=_CompositionSource(),
+            profile=PhaseThreeRuntimeProfile(
+                configured_generator_model_id="generator-configured",
+                configured_reviewer_model_id="reviewer-configured",
+                max_generator_output_tokens=5,
+            ),
+            dependencies=dependencies,
+        ).run(_write_composition_descriptor(tmp_path))
+
+    assert raised.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert calls == ["generator"]
+
+
+def test_resume_budgets_authority_mutation_is_a_clean_completed_miss(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "authority-mutation.db"
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    first = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: SQLiteStateStore(state_path),
+            generator_factory=lambda: _CascadeGenerator("refused", []),
+            validator_factory=lambda: pytest.fail("validator must not run"),
+            reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+            artifact_projector_factory=lambda: pytest.fail("output must not run"),
+            run_id_factory=lambda: "authority-first",
+        ),
+    ).run(descriptor)
+    mutable_calls = 0
+
+    def mutated_state():
+        nonlocal mutable_calls
+        mutable_calls += 1
+        return SQLiteStateStore(state_path)
+
+    second = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=PhaseThreeRuntimeProfile(
+            configured_generator_model_id="generator-mutated",
+            configured_reviewer_model_id="reviewer-configured",
+        ),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: (
+                state_module.DescriptorAnchoredCompletedCandidateProjector(state_path)
+            ),
+            mutable_state_factory=mutated_state,
+            generator_factory=lambda: _CascadeGenerator("refused", []),
+            validator_factory=lambda: pytest.fail("validator must not run"),
+            reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+            artifact_projector_factory=lambda: pytest.fail("output must not run"),
+            run_id_factory=lambda: "authority-second",
+        ),
+    ).run(descriptor)
+
+    assert first.authority.authority_digest != second.authority.authority_digest
+    assert second.completed_projection is None
+    assert mutable_calls == 1
