@@ -35,7 +35,6 @@ from skillscout.domain.review import (
 from skillscout.domain.skill_artifacts import (
     FROZEN_PACKAGE_SCHEMA_VERSION,
     GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION,
-    PACKAGE_IDENTITY_SCHEMA_VERSION,
     PROVENANCE_SCHEMA_VERSION,
     FrozenSkillPackageV1,
     GeneratedArtifactIdentityV1,
@@ -400,7 +399,17 @@ def test_adapter_request_is_exact_four_section_user_only_envelope() -> None:
         REPORT_CANARY,
     ):
         assert canary not in developer
-        assert user.count(canary) == 1
+        assert canary in user
+    isolated_sections = tuple(_envelope_section(user, ordinal) for ordinal in range(1, 5))
+    for index, canary in enumerate(
+        (WORKFLOW_CANARY, ARTIFACT_CANARY, PROVENANCE_CANARY, REPORT_CANARY)
+    ):
+        assert canary in isolated_sections[index]
+        assert all(
+            canary not in section
+            for other_index, section in enumerate(isolated_sections)
+            if other_index != index
+        )
     assert "references/provenance.json" not in _envelope_section(user, 2)
     assert PROVENANCE_CANARY in _envelope_section(user, 3)
     assert GENERATOR_TRANSCRIPT_CANARY not in user
