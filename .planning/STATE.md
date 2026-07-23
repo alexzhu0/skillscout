@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-07-23T09:39:12.499Z"
+stopped_at: Completed 03-05-PLAN.md
+last_updated: "2026-07-23T09:56:54.065Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 36
-  completed_plans: 26
+  completed_plans: 27
   percent: 33
 ---
 
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 03 (validated-skill-candidate) — EXECUTING
-**Plan:** 5 of 14
+**Plan:** 6 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-23T09:39:12.494Z
-**Stopped at:** Completed 03-04-PLAN.md
+**Last session:** 2026-07-23T09:56:54.060Z
+**Stopped at:** Completed 03-05-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -151,6 +151,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 03 P02 | 5min | 1 tasks | 6 files |
 | Phase 03 P03 | 4 min | 1 tasks | 4 files |
 | Phase 03 P04 | 9 min | 1 tasks | 3 files |
+| Phase 03 P05 | 14 min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -220,3 +221,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 03]: Use fixed OS secure-descriptor primitives inside the Gate B3 shell preflight — O_NOFOLLOW, FD_CLOEXEC, bounded retained-stream hashing, and high-resolution identity stability are exact without importing project or third-party code.
 - [Phase 03]: Keep the Gate B3 authority registry closed to exactly the committed digest and uv.lock — No caller-supplied path, consumer, environment, or recomputed digest can substitute for the human-approved bytes.
 - [Phase 03]: Reject every authority admission or identity failure before dependency execution — Missing, malformed, linked, unsafe, oversized, swapped, mutated, or byte-different inputs cannot reach the downstream command.
+- [Phase 03]: Embed the complete strict WorkflowSpec and both verified Phase 2 anchors in WorkflowSpecAuthorityV1; wf-fingerprint-v1 remains only the selected workflow discriminator. — Prevent partial fingerprints from authorizing Phase 3 reuse.
+- [Phase 03]: Keep configured Generator and Reviewer identities in CandidateExecutionAuthorityV1 and structurally exclude actual response model identities until later terminal evidence. — Only configured identities exist before lookup; actual identities are later evidence.
+- [Phase 03]: Derive new lineage from numeric repository ID plus initial complete WorkflowSpec authority; retain it only when one canonical binding and verified prior evidence agree. — Prevent stale or heuristic remapping from aliasing unrelated Skills.
+- [Phase 03]: Derive a bounded Agent Skills slug from normalized title plus a lineage-digest suffix, but never use title, slug, path, or content similarity as matching authority. — Provide readable stable names without turning presentation text into ownership authority.
