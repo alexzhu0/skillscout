@@ -25,16 +25,16 @@ files_reviewed_list:
   - tests/test_phase3_acceptance_tool.py
   - tools/verify_phase3_acceptance.py
 findings:
-  critical: 2
+  critical: 0
   warning: 0
   info: 0
-  total: 2
+  total: 0
 resolved_findings:
-  critical: 10
+  critical: 12
   warning: 1
   info: 0
-  total: 11
-status: issues_found
+  total: 13
+status: clean
 ---
 
 # Phase 03: Code Review Report
@@ -43,7 +43,7 @@ status: issues_found
 **Round:** 3
 **Depth:** deep
 **Files Reviewed:** 19
-**Status:** issues_found
+**Status:** clean
 
 ## Summary
 
@@ -56,22 +56,22 @@ transient Reviewer history survives interruption, completed packages remain
 identity-bound, projection is recoverable, and the dependency gate still
 precedes imports.
 
-The phase is not clean. Two normal restart/failure paths still violate the
-configured semantic-call limits and durable audit contract:
-
-- Generator attempts are never persisted before or after failed calls, so the
-  same resumable run gets a fresh three-call budget on every invocation.
-- A Reviewer result rejected by the caller's post-call token-ceiling check is
-  left `running`; resume records the completed call as `abandoned` and calls the
-  Reviewer again.
+The two Round-3 blockers are resolved by `279b61d`, with regression coverage
+introduced separately in `1d83d02`. Generator and Reviewer now share one
+durable semantic-attempt lifecycle: each call is recorded before invocation,
+every sanitized outcome is finalized, in-flight attempts conservatively consume
+the authority-bound budget, and successful stage evidence is persisted before
+control returns to the cascade. Permanent post-call failures are replayed from
+the ledger without another remote call.
 
 ## Narrative Findings (AI reviewer)
 
-## Critical Issues
+## Resolved Round-3 Findings
 
 ### CR-11: Generator retry budget resets on every restart of the same run
 
 **Classification:** BLOCKER
+**Round-3 fix status:** RESOLVED — `279b61d`, regression tests in `1d83d02`.
 **File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/phase3.py:1086-1102`
 **Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/phase3.py:756-768`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/phase3.py:832-847`
 **Issue:** `_retry_generate()` keeps all failed Generator attempts in a local
@@ -97,6 +97,7 @@ tests equivalent to the Reviewer tests.
 ### CR-12: Post-call Reviewer rejection is recorded as interruption and retried
 
 **Classification:** BLOCKER
+**Round-3 fix status:** RESOLVED — `279b61d`, regression tests in `1d83d02`.
 **File:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/phase3.py:1026-1042`
 **Related:** `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/phase3.py:1175-1191`, `/Users/alexzhu/Lenovo/skillscout/src/skillscout/application/phase3.py:1124-1137`
 **Issue:** `_retry_review()` returns while the durable Reviewer attempt is still
@@ -162,17 +163,17 @@ interruption paths — `79e573a`. CR-12 covers the distinct post-call failure ga
 
 ## Verification
 
-- Commit inspection: `f62b8c6`, `2f57439`, `f79650b`, `79e573a`,
-  `2a80975`, plus the earlier CR-01..06 / WR-01 fixes.
-- Repository-local locked suite, prefixed by Gate B3: **1241 passed in
-  36.20s**.
+- Red commit `1d83d02`: B3-prefixed regression run failed in the expected five
+  CR-11/CR-12 paths before the implementation.
+- Green commit `279b61d`: focused semantic-attempt restart matrix passed,
+  including Generator finalized/in-flight/exhaustion and Reviewer post-call
+  budget rejection.
+- Affected B3-prefixed suite: **400 passed**; acceptance verifier and Ruff
+  passed.
+- Exact Phase 3 release chain: validation map passed, **41 validation-map tests
+  passed**, `uv lock --check` passed, repository-local `uv build --no-sources`
+  passed, acceptance passed, Ruff passed, and **1,247 tests passed in 33.34s**.
 - Terminal `sh tools/verify_phase3_gate_b3.sh` postflight: passed.
-- Round-3 temporary regression suite, prefixed by Gate B3: **2 failed as
-  expected**, exposing CR-11 and CR-12.
-- CR-11 observed: **6 Generator calls** across two resumptions under a configured
-  total of 3.
-- CR-12 observed: the second invocation made a second Reviewer call; durable
-  statuses were `abandoned, running` instead of one permanent `failed` attempt.
 
 ## Prior-Finding Reverification
 
@@ -180,11 +181,11 @@ interruption paths — `79e573a`. CR-12 covers the distinct post-call failure ga
 |---|---|---|
 | CR-01 / CR-07 | closed | Real-state retained-lineage path requires separately supplied typed approval; binding-only and mismatched approval paths reject. |
 | CR-02 / CR-08 | closed | Shared-lock admission and all three lock/state replacement seams pass. |
-| CR-03 | original authority-binding and call-boundary checks closed | Runtime-profile sensitivity and token-ceiling tests pass; CR-11 is a newly isolated cross-restart Generator-budget defect. |
+| CR-03 / CR-11 | closed | Generator attempts are authority-capped, durable across interruption/restart, and retain exact sanitized running/failed/abandoned/succeeded history. |
 | CR-04 | closed | Pending projection remains recoverable and completed reuse is exposed only after projection completion. |
 | CR-05 | closed | Rendered-package/manifest substitution and uncited artifact tests reject. |
 | CR-06 / CR-09 | closed | Import-before-gate, modified-distribution, duplicate-distribution, and shadow-module canaries pass. |
-| WR-01 / CR-10 | original retry-history paths closed | Transient failures, in-flight abandonment, and exhaustion across restarts pass; CR-12 is a distinct returned-result failure path. |
+| WR-01 / CR-10 / CR-12 | closed | Reviewer transient, in-flight, exhaustion, and post-call permanent failure paths are durable; deterministic rejection replays without another call. |
 
 ---
 

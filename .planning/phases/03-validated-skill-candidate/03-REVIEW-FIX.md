@@ -1,54 +1,64 @@
 ---
 phase: 03-validated-skill-candidate
-fixed_at: 2026-07-23T15:50:10Z
+fixed_at: 2026-07-23T16:16:09Z
 review_path: .planning/phases/03-validated-skill-candidate/03-REVIEW.md
-iteration: 2
-findings_in_scope: 4
-fixed: 4
+iteration: 3
+findings_in_scope: 2
+fixed: 2
 skipped: 0
 status: all_fixed
 ---
 
 # Phase 03: Code Review Fix Report
 
-**Fixed at:** 2026-07-23T15:50:10Z
+**Fixed at:** 2026-07-23T16:16:09Z
 **Source review:** `.planning/phases/03-validated-skill-candidate/03-REVIEW.md`
-**Iteration:** 2
+**Iteration:** 3
 
 **Summary:**
 
-- Findings in scope: 4
-- Fixed: 4
+- Findings in scope: 2
+- Fixed: 2
 - Skipped: 0
-- Release verification: validation map, 41 map mutation tests, lock check, local build, acceptance, Ruff, 1,241 tests, and terminal Gate B3 all passed
+- Red tests: `1d83d02`
+- Implementation: `279b61d`
+- Release verification: validation map, 41 map mutation tests, lock check,
+  local build, acceptance, Ruff, 1,247 tests, and terminal Gate B3 all passed
 
 ## Fixed Issues
 
-### CR-07: Lineage “approval” is synthesized from the binding being approved
+### CR-11: Generator retry budget resets on every restart of the same run
 
 **Status:** fixed: requires human verification
-**Files modified:** `src/skillscout/domain/candidate_authority.py`, `src/skillscout/adapters/state.py`, `tests/test_lineage.py`, `tests/test_phase3_pipeline.py`
-**Commits:** `f62b8c6`, `2a80975`
-**Applied fix:** Removed the approval digest cycle from the binding, introduced an independently supplied affirmative approval artifact with stable reviewer and audit identities, bound it to the exact binding and new WorkflowSpec authority, and required both inputs at state admission. Binding-only and mismatched approvals fail closed.
+**Files modified:** `src/skillscout/adapters/state.py`,
+`src/skillscout/application/phase3.py`, `src/skillscout/application/ports.py`,
+`src/skillscout/domain/candidate_authority.py`,
+`src/skillscout/domain/models.py`, `tests/test_candidate_authority.py`,
+`tests/test_openai_review.py`, `tests/test_phase3_pipeline.py`,
+`tests/test_qualification.py`, `tests/test_skill_validation.py`,
+`tools/verify_phase3_acceptance.py`
+**Commits:** `1d83d02`, `279b61d`
+**Applied fix:** Generalized the durable semantic-attempt lifecycle across
+Generator and Reviewer. Generator calls are now recorded before invocation,
+finalized with sanitized success/failure/abandon outcomes, bounded by the
+explicit execution-authority attempt limit, and reconstructed on resume.
+Interrupted, transient, permanent, invalid-output, and output-budget paths
+cannot reset or exceed the per-run call budget.
 
-### CR-08: Phase 2 lock and state authority can change after the shared lock is acquired
-
-**Files modified:** `src/skillscout/adapters/phase2_state.py`, `src/skillscout/adapters/state.py`, `tests/test_candidate_source.py`
-**Commit:** `2f57439`
-**Applied fix:** Reverified the lock pathname after `flock()`, required the state descriptor to match the pre-lock identity, and compared opened, post-read descriptor, and post-read pathname metadata. Deterministic replacement seams cover all three race windows.
-
-### CR-09: The validated `skills-ref` distribution is not bound to the imported module
-
-**Files modified:** `src/skillscout/bootstrap.py`, `src/skillscout/adapters/skills_ref.py`, `tests/test_phase3_bootstrap.py`, `tests/test_phase3_acceptance_tool.py`, `tools/verify_phase3_acceptance.py`
-**Commit:** `f79650b`
-**Applied fix:** Gate B3 now returns a typed RECORD-backed module admission, rejects duplicate distributions, verifies the pre-import spec origin and package path, and reverifies loaded module origin and bytes. A subprocess shadow-module canary proves the earlier module is never executed.
-
-### CR-10: Reviewer retry budget and audit history reset after interruption
+### CR-12: Post-call Reviewer rejection is recorded as interruption and retried
 
 **Status:** fixed: requires human verification
-**Files modified:** `.planning/phases/03-validated-skill-candidate/03-VALIDATION.md`, `src/skillscout/adapters/state.py`, `src/skillscout/application/phase3.py`, `src/skillscout/application/ports.py`, `src/skillscout/domain/models.py`, `src/skillscout/domain/review.py`, `tests/test_phase3_pipeline.py`, `tools/verify_phase3_acceptance.py`
-**Commit:** `79e573a`
-**Applied fix:** Persisted every Reviewer attempt before its remote call and finalized durable failed/abandoned/successful states afterward. Resume conservatively consumes in-flight attempts, reconstructs exact history, and cannot exceed the configured total budget across restarts. The verified chain and attestation now admit and cross-check failed or abandoned attempts without fabricating successful results.
+**Files modified:** `src/skillscout/adapters/state.py`,
+`src/skillscout/application/phase3.py`, `src/skillscout/application/ports.py`,
+`src/skillscout/domain/models.py`, `tests/test_phase3_pipeline.py`,
+`tools/verify_phase3_acceptance.py`
+**Commits:** `1d83d02`, `279b61d`
+**Applied fix:** Moved Reviewer result type checks, output-token enforcement,
+disposition construction, attestation construction, successful ledger
+finalization, and stage persistence inside the durable attempt lifecycle.
+Every deterministic post-call rejection is finalized with its exact sanitized
+failure code before propagation; restart replays that failure without another
+Reviewer call.
 
 ## Skipped Issues
 
@@ -56,17 +66,18 @@ None.
 
 ## Release Verification
 
-- `PYTHONDONTWRITEBYTECODE=1 python3 tools/verify_phase3_validation_map.py`: passed
+- `PYTHONDONTWRITEBYTECODE=1 python3 tools/verify_phase3_validation_map.py`:
+  passed
 - Validation-map mutation suite: 41 passed
 - Gate-B3-prefixed `uv lock --check`: passed
 - Gate-B3-prefixed `uv build --no-sources`: passed
 - Gate-B3-prefixed Phase 3 acceptance: passed
 - Gate-B3-prefixed Ruff: passed
-- Gate-B3-prefixed full pytest: 1,241 passed in 32.61s
+- Gate-B3-prefixed full pytest: 1,247 passed in 33.34s
 - Terminal `sh tools/verify_phase3_gate_b3.sh`: passed
 
 ---
 
-_Fixed: 2026-07-23T15:50:10Z_
+_Fixed: 2026-07-23T16:16:09Z_
 _Fixer: the agent (gsd-code-fixer)_
-_Iteration: 2_
+_Iteration: 3_
