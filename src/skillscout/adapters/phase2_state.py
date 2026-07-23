@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import sqlite3
@@ -11,7 +12,12 @@ from typing import Mapping
 from pydantic import ValidationError
 
 from skillscout.adapters.localfs import AnchoredDirectory
-from skillscout.adapters.state import SQLiteStateStore
+from skillscout.adapters.state import (
+    MAX_STATE_DB_BYTES,
+    SQLiteStateStore,
+    _complete_stat_facts,
+    _read_stable_private_file,
+)
 from skillscout.application.ports import (
     CandidateSourceUnavailable,
     PhaseTwoCandidateProjection,
@@ -65,6 +71,9 @@ def _open_read_only_verifier(path: Path) -> SQLiteStateStore:
     verifier._manifest_name = AnchoredDirectory.validate_child_name(
         verifier.manifest_root.name
     )
+    verifier._lock_name = AnchoredDirectory.validate_child_name(
+        f".{verifier._state_name}.lock"
+    )
     verifier._filesystem_seam = None
     verifier._state_parent = None
     verifier._manifest_anchor = None
@@ -78,9 +87,37 @@ def _open_read_only_verifier(path: Path) -> SQLiteStateStore:
             resolved.parent,
             create=False,
         )
-        uri = f"{resolved.as_uri()}?mode=ro&immutable=1"
-        connection = sqlite3.connect(uri, uri=True, isolation_level=None)
+        state_metadata = verifier._state_parent.stat_child(verifier._state_name)
+        lock_metadata = verifier._state_parent.stat_child(verifier._lock_name)
+        if state_metadata is None or lock_metadata is None:
+            raise ValueError("Phase 2 authority state is incomplete")
+        AnchoredDirectory._require_private_regular(state_metadata)
+        AnchoredDirectory._require_private_regular(lock_metadata)
+
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        verifier._lock_descriptor = os.open(
+            verifier._lock_name,
+            flags,
+            dir_fd=verifier._state_parent.descriptor,
+        )
+        opened_lock = os.fstat(verifier._lock_descriptor)
+        AnchoredDirectory._require_private_regular(opened_lock)
+        if _complete_stat_facts(lock_metadata) != _complete_stat_facts(opened_lock):
+            raise ValueError("Phase 2 authority lock changed")
+        fcntl.flock(
+            verifier._lock_descriptor,
+            fcntl.LOCK_SH | fcntl.LOCK_NB,
+        )
+
+        payload = _read_stable_private_file(
+            verifier._state_parent,
+            verifier._state_name,
+            max_bytes=MAX_STATE_DB_BYTES,
+        )
+        connection = sqlite3.connect(":memory:", isolation_level=None)
         connection.row_factory = sqlite3.Row
+        connection.deserialize(payload)
+        connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA query_only = ON")
         connection.set_authorizer(_read_only_authorizer)
         verifier.connection = connection
