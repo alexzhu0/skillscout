@@ -36,8 +36,8 @@
 
 ### Qualification
 
-- [ ] **QUAL-01**: 系统在生成 Skill 前使用版本化确定性规则评估工作流的具体性、可复用性、可验证性、证据充分性及其是否依赖未授权执行。
-- [ ] **QUAL-02**: 默认资格通过线为 75/100 且无硬性失败；资格结果必须输出逐项检查、得分、门槛版本、通过状态和拒绝理由。
+- [x] **QUAL-01**: 系统在生成 Skill 前使用版本化确定性规则评估工作流的具体性、可复用性、可验证性、证据充分性及其是否依赖未授权执行。
+- [x] **QUAL-02**: 默认资格通过线为 75/100 且无硬性失败；资格结果必须输出逐项检查、得分、门槛版本、通过状态和拒绝理由。
 
 ### Skill Generation
 
@@ -153,8 +153,8 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | EXTR-02 | Phase 2 | Complete |
 | EXTR-03 | Phase 2 | Complete |
 | EXTR-04 | Phase 2 | Complete |
-| QUAL-01 | Phase 3 | Pending |
-| QUAL-02 | Phase 3 | Pending |
+| QUAL-01 | Phase 3 | Complete |
+| QUAL-02 | Phase 3 | Complete |
 | GEN-01 | Phase 3 | Pending |
 | GEN-02 | Phase 3 | Pending |
 | GEN-03 | Phase 3 | Pending |
