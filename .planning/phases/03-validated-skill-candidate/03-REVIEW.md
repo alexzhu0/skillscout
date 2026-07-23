@@ -1,7 +1,7 @@
 ---
 phase: 03-validated-skill-candidate
-reviewed: 2026-07-23T15:58:16Z
-round: 3
+reviewed: 2026-07-23T16:24:24Z
+round: 4
 depth: deep
 files_reviewed: 19
 files_reviewed_list:
@@ -39,32 +39,35 @@ status: clean
 
 # Phase 03: Code Review Report
 
-**Reviewed:** 2026-07-23T15:58:16Z
-**Round:** 3
+**Reviewed:** 2026-07-23T16:24:24Z
+**Round:** 4
 **Depth:** deep
 **Files Reviewed:** 19
 **Status:** clean
 
 ## Summary
 
-Round 3 independently reverified the five Round-2 fix commits (`f62b8c6`,
-`2f57439`, `f79650b`, `79e573a`, and `2a80975`) and the earlier CR-01 through
-CR-06 / WR-01 fixes. The exact previously reported defects remain closed:
-independent lineage approval is required, the Phase 2 lock/state snapshot is
-identity-stable, the imported validator is bound to its admitted distribution,
-transient Reviewer history survives interruption, completed packages remain
-identity-bound, projection is recoverable, and the dependency gate still
-precedes imports.
+Round 4 independently reviewed the complete CR-01 through CR-12 / WR-01 fix
+chain, including the Round-3 red/green commits `1d83d02` and `279b61d`. No new
+blocker or warning was found, and every prior finding remains closed.
 
-The two Round-3 blockers are resolved by `279b61d`, with regression coverage
-introduced separately in `1d83d02`. Generator and Reviewer now share one
-durable semantic-attempt lifecycle: each call is recorded before invocation,
-every sanitized outcome is finalized, in-flight attempts conservatively consume
-the authority-bound budget, and successful stage evidence is persisted before
-control returns to the cascade. Permanent post-call failures are replayed from
-the ledger without another remote call.
+Generator and Reviewer now satisfy the same durable-attempt invariants. A
+`running` record is committed before every remote call; interruption consumes
+that authority-bound attempt; transient histories and exhaustion survive
+restart; sanitized permanent or invalid post-call outcomes are finalized and
+replayed without another call; and a successful result, checkpoint, and exact
+recovery payload are persisted before control returns to the cascade.
+
+The earlier trust and recovery fixes also remain intact: lineage approval is an
+independent typed input, the Phase 2 lock/state snapshot is identity-stable, the
+official validator import is bound to its admitted distribution, runtime policy
+changes alter execution authority, completed package identities are
+cross-checked, output projection is recoverable, and dependency admission still
+precedes dependency import.
 
 ## Narrative Findings (AI reviewer)
+
+No Round-4 blocker, warning, or information finding.
 
 ## Resolved Round-3 Findings
 
@@ -163,21 +166,22 @@ interruption paths — `79e573a`. CR-12 covers the distinct post-call failure ga
 
 ## Verification
 
-- Red commit `1d83d02`: B3-prefixed regression run failed in the expected five
-  CR-11/CR-12 paths before the implementation.
-- Green commit `279b61d`: focused semantic-attempt restart matrix passed,
-  including Generator finalized/in-flight/exhaustion and Reviewer post-call
-  budget rejection.
-- Affected B3-prefixed suite: **400 passed**; acceptance verifier and Ruff
-  passed.
-- Exact Phase 3 release chain: validation map passed, **41 validation-map tests
-  passed**, `uv lock --check` passed, repository-local `uv build --no-sources`
-  passed, acceptance passed, Ruff passed, and **1,247 tests passed in 33.34s**.
-- Terminal `sh tools/verify_phase3_gate_b3.sh` postflight: passed.
+- Reviewed every CR-01 through CR-12 / WR-01 fix commit from `e52ed6e` through
+  `279b61d`, including the separate Round-3 regression commit `1d83d02`.
+- B3-prefixed focused semantic-attempt restart/exhaustion/in-flight/post-call
+  matrix: **10 passed**.
+- B3-prefixed independent Round-4 probes outside the production tree:
+  Generator post-call token-budget rejection and Reviewer post-call invalid
+  output both replayed durably with exactly one remote call; **2 passed**.
+- B3-prefixed CR-01 through CR-10 / WR-01 closure matrix: **95 passed**.
+- B3-prefixed full repository suite: **1,247 passed in 32.48s**.
+- Terminal `sh tools/verify_phase3_gate_b3.sh` postflight: passed after every
+  successful dependency-backed run.
+- `git diff 1d83d02^..279b61d --check`: passed.
 
 ## Prior-Finding Reverification
 
-| Finding | Round-3 result | Evidence |
+| Finding | Round-4 result | Evidence |
 |---|---|---|
 | CR-01 / CR-07 | closed | Real-state retained-lineage path requires separately supplied typed approval; binding-only and mismatched approval paths reject. |
 | CR-02 / CR-08 | closed | Shared-lock admission and all three lock/state replacement seams pass. |
@@ -189,6 +193,6 @@ interruption paths — `79e573a`. CR-12 covers the distinct post-call failure ga
 
 ---
 
-_Reviewed: 2026-07-23T15:58:16Z_
+_Reviewed: 2026-07-23T16:24:24Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: deep_
