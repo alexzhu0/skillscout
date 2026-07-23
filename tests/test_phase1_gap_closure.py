@@ -10,12 +10,18 @@ import sqlite3
 import subprocess
 import sys
 import tomllib
+import inspect
 from pathlib import Path
 from typing import Any
 
 from conftest import parse_cli_error, parse_cli_json
+from skillscout.adapters.state import SQLiteStateStore
+from skillscout.adapters.subjects import load_subject
+from skillscout.application.pipeline import PIPELINE_PROFILES
+from skillscout.application.processors import PhaseTwoProcessor
 from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode
-from skillscout.domain.enums import PipelineStage
+from skillscout.domain.enums import PipelineStage, RunStatus
+from skillscout.domain.subjects import RepositorySubject
 
 PROJECT_ROOT = Path(__file__).parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "skillscout"
@@ -839,3 +845,52 @@ def test_production_capability_surface_remains_local_only() -> None:
         "pytest==9.1.1",
         "ruff==0.15.21",
     }
+
+
+def test_phase3_acceptance_protects_repository_subject_and_loader_contract(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "schema_version": "1",
+        "subject_id": "repo:example/repository",
+        "repository": "https://github.com/example/repository",
+        "ref": "main",
+    }
+    subject = RepositorySubject.model_validate(payload, strict=True)
+    assert subject.model_dump(mode="json") == payload
+    source = tmp_path / "subject.json"
+    source.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    assert load_subject(source) == subject
+    assert tuple(inspect.signature(load_subject).parameters) == ("path",)
+
+
+def test_phase3_acceptance_protects_phase_two_processor_contract() -> None:
+    signature = inspect.signature(PhaseTwoProcessor)
+    assert tuple(signature.parameters) == ("github", "openai")
+    assert PhaseTwoProcessor.producer_version == "phase2-v1"
+    assert PhaseTwoProcessor.effect_scope.fget is not None
+    process = inspect.signature(PhaseTwoProcessor.process)
+    assert tuple(process.parameters) == ("self", "stage_input", "context")
+
+
+def test_phase3_acceptance_protects_pipeline_profiles_exactly() -> None:
+    assert tuple(PIPELINE_PROFILES) == ("fixture-v1", "phase2-v1")
+    assert PIPELINE_PROFILES["fixture-v1"].stages == tuple(PipelineStage)
+    assert PIPELINE_PROFILES["fixture-v1"].uses_context is False
+    assert (
+        PIPELINE_PROFILES["fixture-v1"].terminal_status
+        is RunStatus.PLANNED_NOT_PUBLISHED
+    )
+    assert PIPELINE_PROFILES["phase2-v1"].stages == tuple(PipelineStage)[:4]
+    assert PIPELINE_PROFILES["phase2-v1"].uses_context is True
+    assert PIPELINE_PROFILES["phase2-v1"].terminal_status is RunStatus.COMPLETED
+
+
+def test_phase3_acceptance_protects_verify_run_chain_signature_and_delegation() -> None:
+    signature = inspect.signature(SQLiteStateStore.verify_run_chain)
+    assert tuple(signature.parameters) == ("self", "run_id", "expected_identity")
+    source = inspect.getsource(SQLiteStateStore.verify_run_chain)
+    assert "return self._verify_run_chain(self._db, run_id, expected_identity)" in source
