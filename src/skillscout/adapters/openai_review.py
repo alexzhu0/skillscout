@@ -87,6 +87,10 @@ class OpenAIReviewClient:
     def model(self) -> str:
         return self._model
 
+    @property
+    def max_output_tokens(self) -> int:
+        return self._max_output_tokens
+
     def close(self) -> None:
         self._client.close()
 
@@ -245,6 +249,25 @@ def _review_envelope(sections: tuple[_Section, ...]) -> str:
             )
         )
     return "\n".join(chunks)
+
+
+def review_input_size_bytes(
+    *,
+    workflow_spec: WorkflowSpec,
+    package: FrozenSkillPackageV1,
+    validation_report: ValidationReportV1,
+) -> int:
+    """Return the exact UTF-8 request-envelope size including delimiters."""
+
+    return len(
+        _review_envelope(
+            _review_sections(
+                workflow_spec=workflow_spec,
+                package=package,
+                validation_report=validation_report,
+            )
+        ).encode("utf-8")
+    )
 
 
 def _fresh_non_colliding_token(sections: tuple[bytes, ...]) -> str:

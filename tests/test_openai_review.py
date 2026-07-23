@@ -17,6 +17,7 @@ from skillscout.adapters.openai_review import (
     MAX_REVIEWER_OUTPUT_TOKENS,
     REVIEWER_INSTRUCTIONS_V1,
     OpenAIReviewClient,
+    review_input_size_bytes,
 )
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import (
@@ -418,6 +419,11 @@ def test_adapter_request_is_exact_four_section_user_only_envelope() -> None:
 
     developer = body["input"][0]["content"]
     user = body["input"][1]["content"]
+    assert len(user.encode("utf-8")) == review_input_size_bytes(
+        workflow_spec=_workflow(injection=True),
+        package=_package(injection=True),
+        validation_report=_adapter_report(injection=True),
+    )
     for canary in (
         WORKFLOW_CANARY,
         ARTIFACT_CANARY,
@@ -639,6 +645,7 @@ def _execution_authority():
         phase3_producer_version="phase3-v1",
         phase3_profile_version="phase3-profile-v1",
         retry_policy_version="phase3-retry-v1",
+        runtime_profile_digest=_digest("a"),
     )
 
 

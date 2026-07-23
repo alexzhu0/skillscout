@@ -154,6 +154,7 @@ class CandidateExecutionAuthorityV1(StrictFrozenModel):
     phase3_producer_version: _Version
     phase3_profile_version: _Version
     retry_policy_version: _Version
+    runtime_profile_digest: Digest
     authority_digest: Digest
 
     @model_validator(mode="after")
@@ -203,6 +204,7 @@ def candidate_execution_authority(
     phase3_producer_version: str,
     phase3_profile_version: str,
     retry_policy_version: str,
+    runtime_profile_digest: Digest,
 ) -> CandidateExecutionAuthorityV1:
     """Construct the sole complete prelookup Phase 3 execution identity."""
 
@@ -236,6 +238,7 @@ def candidate_execution_authority(
         "phase3_producer_version": phase3_producer_version,
         "phase3_profile_version": phase3_profile_version,
         "retry_policy_version": retry_policy_version,
+        "runtime_profile_digest": runtime_profile_digest,
     }
     return CandidateExecutionAuthorityV1(
         schema_version=CANDIDATE_EXECUTION_AUTHORITY_SCHEMA_VERSION,
@@ -265,6 +268,7 @@ def candidate_execution_authority(
         phase3_producer_version=phase3_producer_version,
         phase3_profile_version=phase3_profile_version,
         retry_policy_version=retry_policy_version,
+        runtime_profile_digest=runtime_profile_digest,
         authority_digest=sha256_digest(preimage),
     )
 

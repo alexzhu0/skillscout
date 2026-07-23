@@ -352,14 +352,21 @@ def _require_mutable_output_ready(path: Path) -> None:
 def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     _validate_candidate_paths(arguments)
     clients: list[object] = []
+    profile = PhaseThreeRuntimeProfile()
 
     def generator_factory() -> object:
-        client = OpenAIGenerationClient()
+        client = OpenAIGenerationClient(
+            model=profile.configured_generator_model_id,
+            max_output_tokens=profile.max_generator_output_tokens,
+        )
         clients.append(client)
         return client
 
     def reviewer_factory() -> object:
-        client = OpenAIReviewClient()
+        client = OpenAIReviewClient(
+            model=profile.configured_reviewer_model_id,
+            max_output_tokens=profile.max_reviewer_output_tokens,
+        )
         clients.append(client)
         return client
 
@@ -373,7 +380,7 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     try:
         result = PhaseThreeApplication(
             source=SQLitePhaseTwoCandidateSource(arguments.phase2_state),
-            profile=PhaseThreeRuntimeProfile(),
+            profile=profile,
             dependencies=PhaseThreeDependencies(
                 completed_projector_factory=lambda: (
                     DescriptorAnchoredCompletedCandidateProjector(arguments.state)

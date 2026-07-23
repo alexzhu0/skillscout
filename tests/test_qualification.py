@@ -410,6 +410,7 @@ def _execution_authority(
         "phase3_producer_version": "phase3-v1",
         "phase3_profile_version": "phase3-profile-v1",
         "retry_policy_version": "retry-v1",
+        "runtime_profile_digest": _digest("a"),
     }
     values.update(changes)
     return candidate_execution_authority(**values)  # type: ignore[arg-type]

@@ -149,7 +149,12 @@ def _patch_phase3_ports(
     monkeypatch.setattr(
         cli,
         "OpenAIGenerationClient",
-        lambda: _CascadeGenerator(generator_status, calls),
+        lambda **kwargs: _CascadeGenerator(
+            generator_status,
+            calls,
+            model=kwargs["model"],
+            max_output_tokens=kwargs["max_output_tokens"],
+        ),
     )
     monkeypatch.setattr(
         cli,
@@ -159,7 +164,12 @@ def _patch_phase3_ports(
     monkeypatch.setattr(
         cli,
         "OpenAIReviewClient",
-        lambda: _CascadeReviewer(outcome, calls),
+        lambda **kwargs: _CascadeReviewer(
+            outcome,
+            calls,
+            model=kwargs["model"],
+            max_output_tokens=kwargs["max_output_tokens"],
+        ),
     )
 
 

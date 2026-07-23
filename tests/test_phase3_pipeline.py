@@ -155,6 +155,7 @@ def _execution_authority(
         "phase3_producer_version": "phase3-v1",
         "phase3_profile_version": PHASE_THREE_PROFILE_VERSION,
         "retry_policy_version": "retry-v1",
+        "runtime_profile_digest": _digest("a"),
     }
     values.update(changes)
     return candidate_execution_authority(**values)  # type: ignore[arg-type]
@@ -1710,9 +1711,18 @@ def _generated_draft():
 
 
 class _CascadeGenerator:
-    def __init__(self, status: str, calls: list[str]) -> None:
+    def __init__(
+        self,
+        status: str,
+        calls: list[str],
+        *,
+        model: str = "generator-configured",
+        max_output_tokens: int = 6_000,
+    ) -> None:
         self.status = status
         self.calls = calls
+        self.model = model
+        self.max_output_tokens = max_output_tokens
 
     def generate(self, *, request):
         from skillscout.adapters.openai_generate import GenerationResult
@@ -1788,9 +1798,18 @@ class _CascadeValidator:
 
 
 class _CascadeReviewer:
-    def __init__(self, outcome: str, calls: list[str]) -> None:
+    def __init__(
+        self,
+        outcome: str,
+        calls: list[str],
+        *,
+        model: str = "reviewer-configured",
+        max_output_tokens: int = 2_000,
+    ) -> None:
         self.outcome = outcome
         self.calls = calls
+        self.model = model
+        self.max_output_tokens = max_output_tokens
 
     def review(self, **_kwargs):
         self.calls.append("reviewer")
@@ -2038,6 +2057,9 @@ def test_resume_budgets_exhaustion_uses_closed_retry_code(tmp_path: Path) -> Non
     calls = 0
 
     class AlwaysTransient:
+        model = "generator-configured"
+        max_output_tokens = 6_000
+
         def generate(self, *, request):
             nonlocal calls
             calls += 1
@@ -2503,7 +2525,9 @@ def test_resume_budgets_generator_token_ceiling_fails_before_validator(
         mutable_state_factory=lambda: SQLiteStateStore(
             tmp_path / "token-budget-state.db"
         ),
-        generator_factory=lambda: OverBudgetGenerator("parsed", calls),
+        generator_factory=lambda: OverBudgetGenerator(
+            "parsed", calls, max_output_tokens=5
+        ),
         validator_factory=lambda: calls.append("validator"),
         reviewer_factory=lambda: calls.append("reviewer"),
         artifact_projector_factory=lambda: calls.append("output"),
@@ -2565,7 +2589,9 @@ def test_resume_budgets_authority_mutation_is_a_clean_completed_miss(
                 state_module.DescriptorAnchoredCompletedCandidateProjector(state_path)
             ),
             mutable_state_factory=mutated_state,
-            generator_factory=lambda: _CascadeGenerator("refused", []),
+            generator_factory=lambda: _CascadeGenerator(
+                "refused", [], model="generator-mutated"
+            ),
             validator_factory=lambda: pytest.fail("validator must not run"),
             reviewer_factory=lambda: pytest.fail("reviewer must not run"),
             artifact_projector_factory=lambda: pytest.fail("output must not run"),
@@ -2667,13 +2693,15 @@ def test_resume_budgets_three_sibling_application_cap_and_isolation(
                             path
                         ),
                         generator_factory=lambda i=index: _CascadeGenerator(
-                            "parsed", calls[i]
+                            "parsed", calls[i], model=f"generator-{i}"
                         ),
                         validator_factory=lambda i=index: _CascadeValidator(
                             False, calls[i]
                         ),
                         reviewer_factory=lambda i=index: _CascadeReviewer(
-                            "eligible_local_candidate", calls[i]
+                            "eligible_local_candidate",
+                            calls[i],
+                            model=f"reviewer-{i}",
                         ),
                         artifact_projector_factory=lambda: object(),
                         run_id_factory=lambda i=index: f"sibling-{i}",
@@ -2712,6 +2740,9 @@ def test_resume_budgets_429_500_one_request_per_runner_attempt(
     raw_requests: list[str] = []
 
     class TransportCounted:
+        model = "generator-configured"
+        max_output_tokens = 6_000
+
         def generate(self, *, request):
             raw_requests.append(failure_label)
             if len(raw_requests) < 3:

@@ -22,6 +22,7 @@ from skillscout.adapters.openai_review import (
     DEFAULT_REVIEWER_MODEL,
     MAX_REVIEWER_INPUT_BYTES,
     MAX_REVIEWER_OUTPUT_TOKENS,
+    review_input_size_bytes,
 )
 from skillscout.application.candidate_source import load_candidate_subject
 from skillscout.application.ports import (
@@ -132,6 +133,17 @@ class PhaseThreeRuntimeProfile(StrictFrozenModel):
         int, Field(ge=1, le=MAX_REVIEWER_OUTPUT_TOKENS)
     ] = MAX_REVIEWER_OUTPUT_TOKENS
 
+    @property
+    def profile_digest(self) -> str:
+        """Bind every immutable runtime and cost-policy field."""
+
+        return sha256_digest(
+            {
+                "schema_version": "phase3-runtime-profile-v1",
+                "profile": self.model_dump(mode="json", exclude_none=False),
+            }
+        )
+
 
 @dataclass(frozen=True)
 class PhaseThreeDependencies:
@@ -190,6 +202,7 @@ def _execution_authority(
         phase3_producer_version=profile.producer_version,
         phase3_profile_version=profile.profile_version,
         retry_policy_version=profile.retry_policy_version,
+        runtime_profile_digest=profile.profile_digest,
     )
 
 
@@ -378,6 +391,19 @@ class PhaseThreeRunner:
         self.authority = authority
         self.profile = profile
         self.dependencies = dependencies
+
+    @staticmethod
+    def _require_configured_semantic_client(
+        client: object,
+        *,
+        model: str,
+        max_output_tokens: int,
+    ) -> None:
+        if (
+            getattr(client, "model", None) != model
+            or getattr(client, "max_output_tokens", None) != max_output_tokens
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
 
     def _generation_authority(
         self,
@@ -636,6 +662,11 @@ class PhaseThreeRunner:
             ):
                 raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
             generator = self.dependencies.generator_factory()
+            self._require_configured_semantic_client(
+                generator,
+                model=self.profile.configured_generator_model_id,
+                max_output_tokens=self.profile.max_generator_output_tokens,
+            )
             generation, generator_attempt = self._retry_generate(generator, request)
             if (
                 generation.usage is not None
@@ -863,17 +894,18 @@ class PhaseThreeRunner:
             if len(chain.results) == 3 and set(checkpoint_payloads) != expected_payload_keys:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             reviewer = self.dependencies.reviewer_factory()
-            reviewer_input_bytes = (
-                len(
-                    canonical_json_bytes(
-                        self.authority.workflow_spec_authority.workflow_spec
-                    )
-                )
-                + sum(len(item.content) for item in package.files)
-                + len(canonical_json_bytes(validation))
+            reviewer_input_bytes = review_input_size_bytes(
+                workflow_spec=self.authority.workflow_spec_authority.workflow_spec,
+                package=package,
+                validation_report=validation,
             )
             if reviewer_input_bytes > self.profile.max_reviewer_input_bytes:
                 raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            self._require_configured_semantic_client(
+                reviewer,
+                model=self.profile.configured_reviewer_model_id,
+                max_output_tokens=self.profile.max_reviewer_output_tokens,
+            )
             review_result, reviewer_attempt = self._retry_review(
                 reviewer, package, validation
             )
@@ -1097,15 +1129,18 @@ class PhaseThreeApplication:
 def run_phase_three_batch(
     candidates: tuple[tuple[PhaseThreeApplication, Path], ...],
 ) -> tuple[PhaseThreeApplicationResult, ...]:
-    """Execute at most three already-derived sibling descriptors independently."""
+    """Execute only a batch admitted by every candidate's bound runtime profile."""
 
-    if not candidates or len(candidates) > 3:
+    if not candidates:
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
     if any(
         not isinstance(application, PhaseThreeApplication)
         or not isinstance(descriptor_path, Path)
         for application, descriptor_path in candidates
     ):
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    effective_cap = min(application._profile.max_candidates for application, _ in candidates)
+    if len(candidates) > effective_cap:
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
     return tuple(
         application.run(descriptor_path)

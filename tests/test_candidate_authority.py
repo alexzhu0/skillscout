@@ -112,6 +112,7 @@ def _execution_kwargs(**changes: object) -> dict[str, object]:
         "phase3_producer_version": "phase3-v1",
         "phase3_profile_version": "phase3-profile-v1",
         "retry_policy_version": "retry-v1",
+        "runtime_profile_digest": _digest("a"),
     }
     values.update(changes)
     return values
@@ -288,6 +289,7 @@ EXECUTION_MUTATIONS: tuple[tuple[str, object], ...] = (
     ("phase3_producer_version", "phase3-v2"),
     ("phase3_profile_version", "phase3-profile-v2"),
     ("retry_policy_version", "retry-v2"),
+    ("runtime_profile_digest", _digest("b")),
 )
 
 

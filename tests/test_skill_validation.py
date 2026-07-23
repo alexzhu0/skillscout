@@ -242,6 +242,7 @@ def _execution_authority(
         "phase3_producer_version": "phase3-candidate-v1",
         "phase3_profile_version": provenance.phase3_profile_version,
         "retry_policy_version": provenance.retry_policy_version,
+        "runtime_profile_digest": _digest("a"),
     }
     values.update(changes)
     return candidate_execution_authority(**values)

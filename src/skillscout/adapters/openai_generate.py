@@ -142,6 +142,10 @@ class OpenAIGenerationClient:
     def model(self) -> str:
         return self._model
 
+    @property
+    def max_output_tokens(self) -> int:
+        return self._max_output_tokens
+
     def close(self) -> None:
         self._client.close()
 
