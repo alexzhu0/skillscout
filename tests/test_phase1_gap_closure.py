@@ -171,6 +171,7 @@ FORBIDDEN_PRODUCTION_MODULES = frozenset(
 FORBIDDEN_DIRECT_CALLS = frozenset({"compile", "eval", "exec"})
 FORBIDDEN_QUALIFIED_CALLS = frozenset({"os.popen", "os.system"})
 IMPORT_CARVE_OUTS: dict[str, frozenset[str]] = {
+    "bootstrap.py": frozenset({"importlib"}),
     "adapters/github.py": frozenset({"httpx"}),
     "adapters/openai_extract.py": frozenset({"openai"}),
     "adapters/openai_generate.py": frozenset({"openai"}),
@@ -840,7 +841,9 @@ def test_production_capability_surface_remains_local_only() -> None:
         "skills-ref==0.1.1",
     ]
     assert metadata["build-system"]["requires"] == ["uv_build==0.11.29"]
-    assert metadata["project"]["scripts"] == {"skillscout": "skillscout.cli:main"}
+    assert metadata["project"]["scripts"] == {
+        "skillscout": "skillscout.bootstrap:main"
+    }
     assert set(metadata["dependency-groups"]["dev"]) == {
         "pytest==9.1.1",
         "ruff==0.15.21",

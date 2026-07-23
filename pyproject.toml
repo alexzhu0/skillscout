@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-skillscout = "skillscout.cli:main"
+skillscout = "skillscout.bootstrap:main"
 
 [dependency-groups]
 dev = [

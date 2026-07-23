@@ -474,7 +474,11 @@ def test_official_validator_accepts_exact_fixture_and_records_authority() -> Non
     )
     assert result.authority.distribution == OFFICIAL_VALIDATOR_DISTRIBUTION
     assert result.authority.version == OFFICIAL_VALIDATOR_VERSION
-    assert result.authority.distribution_hash == OFFICIAL_VALIDATOR_DISTRIBUTION_HASH
+    assert (
+        result.authority.approved_distribution_hash
+        == OFFICIAL_VALIDATOR_DISTRIBUTION_HASH
+    )
+    assert result.authority.observed_distribution_digest.startswith("sha256:")
     assert result.authority.approved_lock_digest == APPROVED_PHASE3_LOCK_DIGEST
     assert result.authority.adapter_version == OFFICIAL_VALIDATOR_ADAPTER_VERSION
 
@@ -949,7 +953,7 @@ def test_validation_report_clean_empty_findings_passes_and_binds_direct_header()
     assert report.package_identity == package.package_identity
     assert report.package_digest == package.package_identity.package_digest
     assert report.workspace_admission is not None
-    assert report.official_validator_authority.distribution_hash == (
+    assert report.official_validator_authority.approved_distribution_hash == (
         OFFICIAL_VALIDATOR_DISTRIBUTION_HASH
     )
     assert report.official_validator_authority.approved_lock_digest == (

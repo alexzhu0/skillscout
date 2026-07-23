@@ -21,6 +21,9 @@ MAX_PACKAGE_FILE_BYTES = 65_536
 APPROVED_LOCK_SHA256 = (
     "b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
 )
+EXPECTED_VALIDATOR_RUNTIME_SHA256 = (
+    "6ef6a0d4df321648c5ec967762d99e4ad9164a3d070ffae337feda890914ed36"
+)
 DIGEST_PATH = Path("config/supply-chain/phase3-gate-b3.lock.sha256")
 LOCK_PATH = Path("uv.lock")
 SOURCE_ROOT = Path("src/skillscout")
@@ -37,6 +40,7 @@ EXPECTED_OPENAI_IMPORTERS = frozenset(
 )
 EXPECTED_SKILLS_REF_IMPORTERS = frozenset({"adapters/skills_ref.py"})
 EXPECTED_CHECK_IDS = (
+    "dependency_bootstrap_authority",
     "import_capability_isolation",
     "package_provenance_surface",
     "identity_and_evidence_ownership",
@@ -314,6 +318,121 @@ def _check_import_capability_isolation(repository_root: Path) -> tuple[str, ...]
         "exact three OpenAI importers",
         "sole skills_ref importer",
         "closed local/static production capability surface",
+    )
+
+
+def _gate_precedes_project_imports(tree: ast.Module) -> None:
+    def gate_call(node: ast.stmt) -> ast.Call | None:
+        value: ast.expr | None = None
+        if isinstance(node, ast.Expr):
+            value = node.value
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "require_phase3_gate_b3"
+        ):
+            return value
+        return None
+
+    calls = [
+        index
+        for index, node in enumerate(tree.body)
+        if gate_call(node) is not None
+    ]
+    _require(len(calls) == 1)
+    gate_index = calls[0]
+    for index, node in enumerate(tree.body):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module is not None
+            and node.module.startswith("skillscout.")
+            and node.module != "skillscout.bootstrap"
+        ):
+            _require(index > gate_index)
+
+
+def _check_dependency_bootstrap_authority(
+    repository_root: Path,
+) -> tuple[str, ...]:
+    project = _secure_read(
+        repository_root, Path("pyproject.toml"), MAX_SOURCE_BYTES
+    ).payload.decode("utf-8")
+    _require(project.count('skillscout = "skillscout.bootstrap:main"') == 1)
+    _require('skillscout = "skillscout.cli:main"' not in project)
+
+    bootstrap = _read_source(
+        repository_root, SOURCE_ROOT / "bootstrap.py"
+    ).decode("utf-8")
+    bootstrap_tree = ast.parse(bootstrap)
+    imports, calls = _imports_and_calls(bootstrap_tree)
+    _require(
+        not imports & {"httpx", "openai", "pydantic", "skills_ref"}
+        and imports & {"skillscout.cli"} == {"skillscout.cli"}
+        and "subprocess.run" not in calls
+    )
+    _require_tokens(
+        bootstrap,
+        (
+            f'"{APPROVED_LOCK_SHA256}"',
+            f'"{EXPECTED_VALIDATOR_RUNTIME_SHA256}"',
+            "os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC",
+            "def _verify_validator_distribution() -> str:",
+            "def require_phase3_gate_b3() -> str:",
+        ),
+    )
+
+    cli_tree = ast.parse(
+        _read_source(repository_root, SOURCE_ROOT / "cli.py")
+    )
+    adapter_tree = ast.parse(
+        _read_source(repository_root, SOURCE_ROOT / "adapters/skills_ref.py")
+    )
+    _gate_precedes_project_imports(cli_tree)
+    _gate_precedes_project_imports(adapter_tree)
+    _require(
+        all(
+            not (
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                and (
+                    (
+                        isinstance(node, ast.Import)
+                        and any(
+                            alias.name == "skills_ref"
+                            or alias.name.startswith("skills_ref.")
+                            for alias in node.names
+                        )
+                    )
+                    or (
+                        isinstance(node, ast.ImportFrom)
+                        and node.module is not None
+                        and (
+                            node.module == "skills_ref"
+                            or node.module.startswith("skills_ref.")
+                        )
+                    )
+                )
+            )
+            for node in adapter_tree.body
+        )
+    )
+
+    validation_tree = ast.parse(
+        _read_source(repository_root, SOURCE_ROOT / "domain/validation.py")
+    )
+    authority_fields = _class_fields(
+        validation_tree, "OfficialValidatorAuthorityV1"
+    )
+    _require(
+        "approved_distribution_hash" in authority_fields
+        and "observed_distribution_digest" in authority_fields
+        and "distribution_hash" not in authority_fields
+    )
+    return (
+        "dependency-free bootstrap is the sole console entry",
+        "lock and installed-validator bytes precede project dependency imports",
+        "approved wheel and observed runtime distribution remain distinct",
     )
 
 
@@ -750,6 +869,10 @@ def _check_protected_contract_evidence(repository_root: Path) -> tuple[str, ...]
 
 
 CHECK_REGISTRY = (
+    CheckSpec(
+        "dependency_bootstrap_authority",
+        _check_dependency_bootstrap_authority,
+    ),
     CheckSpec("import_capability_isolation", _check_import_capability_isolation),
     CheckSpec("package_provenance_surface", _check_package_provenance_surface),
     CheckSpec("identity_and_evidence_ownership", _check_identity_and_evidence_ownership),

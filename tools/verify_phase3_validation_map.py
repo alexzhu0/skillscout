@@ -206,7 +206,7 @@ _command_pairs = (
             (
                 GATE,
                 f"{UV} run --locked pytest -q tests/test_phase3_acceptance_tool.py "
-                "tests/test_phase1_gap_closure.py",
+                "tests/test_phase3_bootstrap.py tests/test_phase1_gap_closure.py",
                 GATE,
                 f"{UV} run --locked python tools/verify_phase3_acceptance.py",
             )

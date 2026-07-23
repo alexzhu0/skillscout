@@ -757,7 +757,10 @@ def _terminal_matrix_fixture(
                 schema_version="official-validator-authority-v1",
                 distribution=authority.official_validator_distribution,
                 version=authority.official_validator_version,
-                distribution_hash=authority.official_validator_distribution_hash,
+                approved_distribution_hash=(
+                    authority.official_validator_distribution_hash
+                ),
+                observed_distribution_digest=_digest("9"),
                 approved_lock_digest=authority.approved_lock_digest,
                 adapter_version="skills-ref-adapter-v1",
             ),
@@ -1776,6 +1779,7 @@ class _CascadeValidator:
         self.calls = calls
 
     def validate(self, *, package, authority):
+        from skillscout.adapters.skills_ref import official_validator_authority
         from skillscout.domain.canonical import canonical_json_bytes
         from skillscout.domain.validation import (
             OFFICIAL_VALIDATION_RESULT_SCHEMA_VERSION,
@@ -1784,7 +1788,6 @@ class _CascadeValidator:
             ValidationFindingV1,
             WorkspaceAdmissionV1,
             build_validation_report,
-            official_validator_authority,
         )
 
         self.calls.append("validator")

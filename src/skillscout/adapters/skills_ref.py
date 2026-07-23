@@ -1,11 +1,16 @@
 """Sole import and invocation boundary for the approved skills-ref validator."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
+
+from skillscout.bootstrap import require_phase3_gate_b3
+
+_OBSERVED_VALIDATOR_DISTRIBUTION_DIGEST = require_phase3_gate_b3()
 
 import importlib.metadata
 from pathlib import Path
-
-from skills_ref import validate as _official_validate
+from typing import Callable
 
 from skillscout.domain.skill_artifacts import FrozenSkillPackageV1
 from skillscout.domain.validation import (
@@ -21,11 +26,33 @@ from skillscout.domain.validation import (
     WorkspaceAdmissionError,
     admitted_skill_workspace,
     normalize_official_problems,
-    official_validator_authority,
+    official_validator_authority as _official_validator_authority,
     secure_sha256_file,
 )
 
 _APPROVED_LOCK_HEX = APPROVED_PHASE3_LOCK_DIGEST.removeprefix("sha256:")
+_UNLOADED = object()
+_official_validate: object = _UNLOADED
+
+
+def official_validator_authority():
+    """Bind the approved wheel separately from verified installed bytes."""
+
+    return _official_validator_authority(
+        observed_distribution_digest=_OBSERVED_VALIDATOR_DISTRIBUTION_DIGEST
+    )
+
+
+def _official_validator() -> Callable[[Path], list[str]] | None:
+    global _official_validate
+    if _official_validate is _UNLOADED:
+        from skills_ref import validate as _official_validate
+
+    if _official_validate is None:
+        return None
+    if not callable(_official_validate):
+        return None
+    return _official_validate
 
 
 def _installed_distribution_version() -> str:
@@ -83,7 +110,8 @@ def validate_with_official_validator(
         _verify_approved_lock_authority()
         if _installed_distribution_version() != OFFICIAL_VALIDATOR_VERSION:
             raise RuntimeError
-        if not callable(_official_validate):
+        official_validate = _official_validator()
+        if official_validate is None:
             raise RuntimeError
         with admitted_skill_workspace(
             package,
@@ -93,7 +121,7 @@ def validate_with_official_validator(
             if filesystem_seam is not None:
                 filesystem_seam("before_official_invocation", workspace.root)
             workspace.reverify()
-            problems = _official_validate(workspace.root)
+            problems = official_validate(workspace.root)
             if type(problems) is not list or any(
                 type(problem) is not str for problem in problems
             ):

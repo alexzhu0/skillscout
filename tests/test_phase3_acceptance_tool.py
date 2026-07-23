@@ -184,6 +184,48 @@ def test_exact_openai_and_skills_ref_importer_sets_are_required(
 
 @pytest.mark.parametrize(
     ("relative", "old", "new"),
+    (
+        (
+            "pyproject.toml",
+            'skillscout = "skillscout.bootstrap:main"',
+            'skillscout = "skillscout.cli:main"',
+        ),
+        (
+            "src/skillscout/cli.py",
+            "require_phase3_gate_b3()",
+            "dependency_gate_was_skipped()",
+        ),
+        (
+            "src/skillscout/adapters/skills_ref.py",
+            "_OBSERVED_VALIDATOR_DISTRIBUTION_DIGEST = require_phase3_gate_b3()",
+            "_OBSERVED_VALIDATOR_DISTRIBUTION_DIGEST = 'sha256:' + '0' * 64",
+        ),
+        (
+            "src/skillscout/bootstrap.py",
+            inspector.EXPECTED_VALIDATOR_RUNTIME_SHA256,
+            "0" * 64,
+        ),
+        (
+            "src/skillscout/domain/validation.py",
+            "observed_distribution_digest: Digest",
+            "distribution_hash: Digest",
+        ),
+    ),
+)
+def test_dependency_bootstrap_authority_mutations_are_rejected(
+    acceptance_repository: Path,
+    relative: str,
+    old: str,
+    new: str,
+) -> None:
+    _replace_once(acceptance_repository, relative, old, new)
+
+    with pytest.raises(inspector.AcceptanceError):
+        inspector.verify_phase3_acceptance(acceptance_repository)
+
+
+@pytest.mark.parametrize(
+    ("relative", "old", "new"),
     [
         (
             "src/skillscout/domain/skill_artifacts.py",

@@ -1,5 +1,7 @@
 """Packaged command-line boundary for the local-only dry-run."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +11,10 @@ import stat
 import sys
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
+
+from skillscout.bootstrap import require_phase3_gate_b3
+
+require_phase3_gate_b3()
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.github import GitHubReadClient

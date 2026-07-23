@@ -104,12 +104,13 @@ class WorkspaceAdmissionV1(StrictFrozenModel):
 
 
 class OfficialValidatorAuthorityV1(StrictFrozenModel):
-    """The approved installed distribution and lock authorities."""
+    """Separate approved wheel, observed installation, and lock authorities."""
 
     schema_version: Literal["official-validator-authority-v1"]
     distribution: Literal["skills-ref"]
     version: Literal["0.1.1"]
-    distribution_hash: Digest
+    approved_distribution_hash: Digest
+    observed_distribution_digest: Digest
     approved_lock_digest: Digest
     adapter_version: Literal["skills-ref-adapter-v1"]
 
@@ -190,7 +191,7 @@ class ValidationReportV1(StrictFrozenModel):
             or execution.official_validator_version
             != self.official_validator_authority.version
             or execution.official_validator_distribution_hash
-            != self.official_validator_authority.distribution_hash
+            != self.official_validator_authority.approved_distribution_hash
             or execution.approved_lock_digest
             != self.official_validator_authority.approved_lock_digest
             or execution.custom_validation_policy_version
@@ -270,14 +271,18 @@ class ValidationReportV1(StrictFrozenModel):
         return self
 
 
-def official_validator_authority() -> OfficialValidatorAuthorityV1:
-    """Return the immutable Gate-B3-approved official validator authority."""
+def official_validator_authority(
+    *,
+    observed_distribution_digest: str,
+) -> OfficialValidatorAuthorityV1:
+    """Bind immutable approval to an independently verified runtime digest."""
 
     return OfficialValidatorAuthorityV1(
         schema_version=OFFICIAL_VALIDATOR_AUTHORITY_SCHEMA_VERSION,
         distribution=OFFICIAL_VALIDATOR_DISTRIBUTION,
         version=OFFICIAL_VALIDATOR_VERSION,
-        distribution_hash=OFFICIAL_VALIDATOR_DISTRIBUTION_HASH,
+        approved_distribution_hash=OFFICIAL_VALIDATOR_DISTRIBUTION_HASH,
+        observed_distribution_digest=observed_distribution_digest,
         approved_lock_digest=APPROVED_PHASE3_LOCK_DIGEST,
         adapter_version=OFFICIAL_VALIDATOR_ADAPTER_VERSION,
     )
@@ -1426,7 +1431,7 @@ def build_validation_report(
         (official.authority.distribution, execution.official_validator_distribution),
         (official.authority.version, execution.official_validator_version),
         (
-            official.authority.distribution_hash,
+            official.authority.approved_distribution_hash,
             execution.official_validator_distribution_hash,
         ),
         (official.authority.approved_lock_digest, execution.approved_lock_digest),
