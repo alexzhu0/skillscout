@@ -834,3 +834,22 @@ class PhaseThreeApplication:
             close = getattr(mutable, "close", None)
             if callable(close):
                 close()
+
+
+def run_phase_three_batch(
+    candidates: tuple[tuple[PhaseThreeApplication, Path], ...],
+) -> tuple[PhaseThreeApplicationResult, ...]:
+    """Execute at most three already-derived sibling descriptors independently."""
+
+    if not candidates or len(candidates) > 3:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    if any(
+        not isinstance(application, PhaseThreeApplication)
+        or not isinstance(descriptor_path, Path)
+        for application, descriptor_path in candidates
+    ):
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    return tuple(
+        application.run(descriptor_path)
+        for application, descriptor_path in candidates
+    )
