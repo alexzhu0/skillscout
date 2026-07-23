@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -41,7 +40,7 @@ def test_build_candidate_parser_exposes_only_the_closed_local_contract() -> None
         option
         for action in parser._actions
         for option in action.option_strings
-        if option != "--help"
+        if option not in {"-h", "--help"}
     }
 
     assert isinstance(parser, cli.SafeArgumentParser)
