@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Completed 03-07-PLAN.md
-last_updated: "2026-07-23T10:38:42.442Z"
+stopped_at: Completed 03-08-PLAN.md
+last_updated: "2026-07-23T11:07:18.573Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 36
-  completed_plans: 29
-  percent: 33
+  completed_plans: 30
+  percent: 83
 ---
 
 # Project State: SkillScout
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 03 (validated-skill-candidate) — EXECUTING
-**Plan:** 8 of 14
+**Plan:** 9 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-23T10:38:18.553Z
-**Stopped at:** Completed 03-07-PLAN.md
+**Last session:** 2026-07-23T11:07:18.568Z
+**Stopped at:** Completed 03-08-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -154,6 +154,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 03 P05 | 14 min | 2 tasks | 3 files |
 | Phase 03 P06 | 20 min | 2 tasks | 4 files |
 | Phase 03 P07 | 13 min | 2 tasks | 2 files |
+| Phase 03 P08 | 24 min | 3 tasks | 7 files |
 
 ## Decisions
 
@@ -233,3 +234,6 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 03]: Treat WorkflowSpec workflow-level evidence as the complete authoritative registry against which every step reference path, blob SHA, and content hash is reconciled.
 - [Phase 03]: Keep qualification weights, the 0.70 confidence floor, the 75 threshold, and every schema/policy version as code-owned constants with no runtime or caller override.
 - [Phase 03]: Embed the selected full fingerprint, complete WorkflowSpecAuthorityV1, and complete CandidateExecutionAuthorityV1 directly in the report header and reject any stale or cross-candidate combination.
+- [Phase 03]: Separate semantic artifact identity from rendered package identity — Request telemetry and exact rendered layout can change package evidence without rewriting semantic generation authority.
+- [Phase 03]: Admit only one strict bounded Generator request — Generation uses one no-tools store-false Responses parse with SDK retries disabled and only verified structured authority.
+- [Phase 03]: Promote complete Skill trees under one retained lock — Descriptor-relative private staging and whole-tree rename preserve the exact prior package on every pre-commit failure.

@@ -41,9 +41,9 @@
 
 ### Skill Generation
 
-- [ ] **GEN-01**: Generator 根据通过资格门槛的 `WorkflowSpec` 生成符合 Agent Skills 规范的目录、`SKILL.md` 以及必要的 `references/` 或 `assets/`。
-- [ ] **GEN-02**: v1 只生成文档型 Skill，禁止创建 `scripts/`、二进制、带可执行位的文件或复制候选仓库中的可执行代码。
-- [ ] **GEN-03**: 生成内容必须将来源工作流改写为通用指令；必要短摘录必须受长度政策限制，并标注来源路径与 commit SHA。
+- [x] **GEN-01**: Generator 根据通过资格门槛的 `WorkflowSpec` 生成符合 Agent Skills 规范的目录、`SKILL.md` 以及必要的 `references/` 或 `assets/`。
+- [x] **GEN-02**: v1 只生成文档型 Skill，禁止创建 `scripts/`、二进制、带可执行位的文件或复制候选仓库中的可执行代码。
+- [x] **GEN-03**: 生成内容必须将来源工作流改写为通用指令；必要短摘录必须受长度政策限制，并标注来源路径与 commit SHA。
 - [x] **GEN-04**: 每个 Skill 包含机器可读 provenance，至少记录来源仓库 URL、GitHub repo ID、精确 commit SHA、许可证 SPDX、证据路径、blob/content hash、schema/prompt/policy 版本和生成模型。
 - [x] **GEN-05**: Skill 使用符合规范的稳定 slug 和版本化 workflow fingerprint；相同来源工作流的后续有效变更应更新已有 Skill Draft，而非创建重复 Skill。
 
@@ -155,9 +155,9 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | EXTR-04 | Phase 2 | Complete |
 | QUAL-01 | Phase 3 | Complete |
 | QUAL-02 | Phase 3 | Complete |
-| GEN-01 | Phase 3 | Pending |
-| GEN-02 | Phase 3 | Pending |
-| GEN-03 | Phase 3 | Pending |
+| GEN-01 | Phase 3 | Complete |
+| GEN-02 | Phase 3 | Complete |
+| GEN-03 | Phase 3 | Complete |
 | GEN-04 | Phase 3 | Complete |
 | GEN-05 | Phase 3 | Complete |
 | VAL-01 | Phase 3 | Complete |
