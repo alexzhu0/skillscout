@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 03
 current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Completed 03-10-PLAN.md
-last_updated: "2026-07-23T12:03:19.467Z"
+stopped_at: Completed 03-11-PLAN.md
+last_updated: "2026-07-23T12:40:24.532Z"
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 36
-  completed_plans: 32
+  completed_plans: 33
   percent: 33
 ---
 
@@ -24,7 +24,7 @@ progress:
 ## Current Position
 
 **Phase:** 03 (validated-skill-candidate) — EXECUTING
-**Plan:** 11 of 14
+**Plan:** 12 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-23T12:03:02.209Z
-**Stopped at:** Completed 03-10-PLAN.md
+**Last session:** 2026-07-23T12:40:24.527Z
+**Stopped at:** Completed 03-11-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -157,6 +157,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 03 P08 | 24 min | 3 tasks | 7 files |
 | Phase 03 P09 | 24 min | 3 tasks | 6 files |
 | Phase 03 P10 | 23min | 3 tasks | 5 files |
+| Phase 03 P11 | 35min | 3 tasks | 3 files |
 
 ## Decisions
 
@@ -245,3 +246,6 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 03]: Reviewer dynamic payload is confined to four freshly delimited user-role sections; the developer role is static policy only.
 - [Phase 03]: ReviewAttestation records raw review evidence without eligibility; CandidateTerminalSummary alone owns the versioned derived decision.
 - [Phase 03]: Every semantic Reviewer outcome is terminal; SDK retries remain disabled and each adapter invocation owns exactly one raw request.
+- [Phase 03]: Keep Phase 3 in seven additive phase3_* tables without changing PIPELINE_PROFILES or the Phase 1/2 verify_run_chain trust path. — Preserve shipped verifier behavior while adding independently auditable candidate state.
+- [Phase 03]: Completed exact-authority lookup uses only an existing retained lock, read-only descriptors, and query-only private :memory: SQLite. — Make exact reuse structurally incapable of filesystem or SQLite side effects.
+- [Phase 03]: Resume accepts only a strict verified extension of an interrupted or running Phase 3 prefix. — Append auditable progress without accepting reordered, substituted, or cross-authority history.
