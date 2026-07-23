@@ -172,7 +172,11 @@ def test_malformed_coverage_and_dropped_requirement_are_rejected(
 
 def test_plan_map_command_drift_is_rejected(planning_repository: Path) -> None:
     plan = _phase(planning_repository) / "03-05-PLAN.md"
-    _replace_once(plan, "tests/test_lineage.py", "tests/test_candidate_authority.py")
+    _replace_once(
+        plan,
+        "run --locked pytest -q tests/test_lineage.py</automated>",
+        "run --locked pytest -q tests/test_candidate_authority.py</automated>",
+    )
     with pytest.raises(checker.ValidationMapError):
         checker.verify_validation_map(planning_repository)
 
@@ -211,8 +215,9 @@ def test_parity_preserving_release_shell_bypasses_are_rejected(
     _synchronize_release(planning_repository, mutated)
     plan = (_phase(planning_repository) / "03-14-PLAN.md").read_text(encoding="utf-8")
     validation = _map(planning_repository).read_text(encoding="utf-8")
-    assert html.unescape(mutated.replace("&", "&amp;")) in html.unescape(plan)
-    assert validation.count(mutated) == 2
+    normalized_mutated = mutated.replace("\r", "\n")
+    assert html.unescape(normalized_mutated.replace("&", "&amp;")) in html.unescape(plan)
+    assert validation.count(normalized_mutated) == 2
     with pytest.raises(checker.ValidationMapError):
         checker.verify_validation_map(planning_repository)
 
