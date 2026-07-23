@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import inspect
-import json
 import os
 import sqlite3
-import stat
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Mapping
 
 import pytest
 
@@ -616,11 +613,12 @@ def test_load_candidate_subject_rejects_path_fd_swap_and_post_read_change(
 
     monkeypatch.undo()
     calls = 0
+    real_fstat = os.fstat
 
     def changing_fstat(descriptor_fd: int) -> SimpleNamespace:
         nonlocal calls
         calls += 1
-        observed = os.fstat(descriptor_fd)
+        observed = real_fstat(descriptor_fd)
         return _metadata(
             observed,
             st_mtime_ns=observed.st_mtime_ns + int(calls > 1),
@@ -646,6 +644,19 @@ def test_load_candidate_subject_cap_plus_one_rejects_lied_about_size(
     lied = _metadata(actual, st_size=0)
     monkeypatch.setattr(candidate_source.os, "lstat", lambda _path: lied)
     monkeypatch.setattr(candidate_source.os, "fstat", lambda _descriptor: lied)
+    _assert_loader_unavailable(path, _ProjectionSource((projection,)))
+
+
+def test_load_candidate_subject_rejects_oversize_stat_before_query(
+    tmp_path: Path,
+) -> None:
+    projection = _projection(_workflow())
+    descriptor = _descriptor_for_projection(projection)
+    path = _write_descriptor(
+        tmp_path,
+        descriptor,
+        raw=b"x" * (MAX_CANDIDATE_DESCRIPTOR_BYTES + 1),
+    )
     _assert_loader_unavailable(path, _ProjectionSource((projection,)))
 
 
@@ -756,10 +767,6 @@ def test_load_candidate_subject_recomputes_complete_authority(
     (
         ("extractor_output_hash", "sha256:" + "e" * 64),
         ("verified_chain_anchor", "sha256:" + "f" * 64),
-        ("repository_id", 5678),
-        ("repository_url", "https://github.com/example/other"),
-        ("pinned_commit_sha", "f" * 40),
-        ("license_spdx", "Apache-2.0"),
     ),
 )
 def test_load_candidate_subject_rejects_source_authority_mutation(

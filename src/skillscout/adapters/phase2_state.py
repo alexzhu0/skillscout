@@ -142,22 +142,78 @@ class SQLitePhaseTwoCandidateSource:
         self,
         descriptor: CandidateSubjectDescriptorV1,
     ) -> PhaseTwoCandidateProjection:
-        verifier: SQLiteStateStore | None = None
         try:
             if type(descriptor) is not CandidateSubjectDescriptorV1:
                 raise ValueError("invalid candidate descriptor")
-            if descriptor.phase2_profile_version != PHASE_TWO_PROFILE_VERSION:
-                raise ValueError("invalid Phase 2 profile")
-
-            verifier = _open_read_only_verifier(self._path)
-            chain = verifier.verify_run_chain(descriptor.phase2_run_id)
+            projections = self._resolve_all(
+                phase2_run_id=descriptor.phase2_run_id,
+                phase2_profile_version=descriptor.phase2_profile_version,
+                phase2_producer_version=descriptor.phase2_producer_version,
+            )
+            matches = [
+                projection
+                for projection in projections
+                if WorkflowSpec.model_validate_json(
+                    projection.workflow_spec_bytes,
+                    strict=True,
+                ).fingerprint
+                == descriptor.selected_workflow_fingerprint
+            ]
+            if len(matches) != 1:
+                raise ValueError("ambiguous workflow selection")
+            selected = matches[0]
             if (
-                chain.run.run_id != descriptor.phase2_run_id
+                selected.extractor_output_hash != descriptor.extractor_output_hash
+                or selected.verified_chain_anchor != descriptor.verified_chain_anchor
+            ):
+                raise ValueError("invalid Phase 2 source anchor")
+            return selected
+        except CandidateSourceUnavailable:
+            raise
+        except Exception:
+            raise CandidateSourceUnavailable() from None
+
+    def resolve_all(
+        self,
+        *,
+        phase2_run_id: str,
+        phase2_profile_version: str,
+        phase2_producer_version: str,
+    ) -> tuple[PhaseTwoCandidateProjection, ...]:
+        try:
+            return self._resolve_all(
+                phase2_run_id=phase2_run_id,
+                phase2_profile_version=phase2_profile_version,
+                phase2_producer_version=phase2_producer_version,
+            )
+        except CandidateSourceUnavailable:
+            raise
+        except Exception:
+            raise CandidateSourceUnavailable() from None
+
+    def _resolve_all(
+        self,
+        *,
+        phase2_run_id: str,
+        phase2_profile_version: str,
+        phase2_producer_version: str,
+    ) -> tuple[PhaseTwoCandidateProjection, ...]:
+        verifier: SQLiteStateStore | None = None
+        try:
+            if (
+                type(phase2_run_id) is not str
+                or not phase2_run_id
+                or phase2_profile_version != PHASE_TWO_PROFILE_VERSION
+                or phase2_producer_version != PHASE_TWO_PROFILE_VERSION
+            ):
+                raise ValueError("invalid Phase 2 identity")
+            verifier = _open_read_only_verifier(self._path)
+            chain = verifier.verify_run_chain(phase2_run_id)
+            if (
+                chain.run.run_id != phase2_run_id
                 or chain.run.status is not RunStatus.COMPLETED
                 or chain.identity.schema_version != "2"
-                or chain.identity.producer_version
-                != descriptor.phase2_producer_version
-                or descriptor.phase2_producer_version != PHASE_TWO_PROFILE_VERSION
+                or chain.identity.producer_version != phase2_producer_version
                 or tuple(result.stage for result in chain.results)
                 != _PHASE_TWO_STAGES
                 or len(chain.results) != len(_PHASE_TWO_STAGES)
@@ -168,12 +224,6 @@ class SQLitePhaseTwoCandidateSource:
                 chain.model_dump(mode="json", exclude_none=False)
             )
             extractor = chain.results[-1]
-            if (
-                extractor.output_hash != descriptor.extractor_output_hash
-                or chain_anchor != descriptor.verified_chain_anchor
-            ):
-                raise ValueError("invalid Phase 2 source anchor")
-
             scout_payload = _mapping(chain.results[0].payload)
             filter_payload = _mapping(chain.results[1].payload)
             reader_payload = _mapping(chain.results[2].payload)
@@ -187,29 +237,23 @@ class SQLitePhaseTwoCandidateSource:
                 raise ValueError("Phase 2 source did not succeed")
 
             workflows = extractor_payload.get("workflows")
-            if not isinstance(workflows, list):
+            if not isinstance(workflows, list) or not workflows:
                 raise ValueError("invalid workflow collection")
-            matches = [
-                candidate
-                for candidate in workflows
-                if isinstance(candidate, Mapping)
-                and candidate.get("fingerprint")
-                == descriptor.selected_workflow_fingerprint
-            ]
-            if len(matches) != 1:
-                raise ValueError("ambiguous workflow selection")
-
-            stored_bytes = canonical_json_bytes(dict(matches[0]))
-            workflow = WorkflowSpec.model_validate_json(stored_bytes, strict=True)
-            canonical_bytes = canonical_json_bytes(
-                workflow.model_dump(mode="json", exclude_none=False)
-            )
-            if (
-                stored_bytes != canonical_bytes
-                or workflow.fingerprint
-                != descriptor.selected_workflow_fingerprint
-            ):
-                raise ValueError("invalid canonical workflow")
+            parsed: list[tuple[WorkflowSpec, bytes]] = []
+            for candidate in workflows:
+                if not isinstance(candidate, Mapping):
+                    raise ValueError("invalid workflow projection")
+                stored_bytes = canonical_json_bytes(dict(candidate))
+                workflow = WorkflowSpec.model_validate_json(stored_bytes, strict=True)
+                canonical_bytes = canonical_json_bytes(
+                    workflow.model_dump(mode="json", exclude_none=False)
+                )
+                if stored_bytes != canonical_bytes:
+                    raise ValueError("invalid canonical workflow")
+                parsed.append((workflow, stored_bytes))
+            fingerprints = tuple(workflow.fingerprint for workflow, _raw in parsed)
+            if len(set(fingerprints)) != len(fingerprints):
+                raise ValueError("duplicate workflow fingerprints")
 
             repository_id, repository_url, pinned_commit_sha, license_spdx = (
                 _source_facts(
@@ -218,15 +262,18 @@ class SQLitePhaseTwoCandidateSource:
                     filter_payload=filter_payload,
                 )
             )
-            return PhaseTwoCandidateProjection(
-                phase2_run_id=descriptor.phase2_run_id,
-                workflow_spec_bytes=stored_bytes,
-                extractor_output_hash=extractor.output_hash,
-                verified_chain_anchor=chain_anchor,
-                repository_id=repository_id,
-                repository_url=repository_url,
-                pinned_commit_sha=pinned_commit_sha,
-                license_spdx=license_spdx,
+            return tuple(
+                PhaseTwoCandidateProjection(
+                    phase2_run_id=phase2_run_id,
+                    workflow_spec_bytes=stored_bytes,
+                    extractor_output_hash=extractor.output_hash,
+                    verified_chain_anchor=chain_anchor,
+                    repository_id=repository_id,
+                    repository_url=repository_url,
+                    pinned_commit_sha=pinned_commit_sha,
+                    license_spdx=license_spdx,
+                )
+                for _workflow, stored_bytes in parsed
             )
         except CandidateSourceUnavailable:
             raise

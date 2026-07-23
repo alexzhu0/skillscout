@@ -106,6 +106,14 @@ class PhaseTwoCandidateSource(Protocol):
         descriptor: CandidateSubjectDescriptorV1,
     ) -> PhaseTwoCandidateProjection: ...
 
+    def resolve_all(
+        self,
+        *,
+        phase2_run_id: str,
+        phase2_profile_version: str,
+        phase2_producer_version: str,
+    ) -> tuple[PhaseTwoCandidateProjection, ...]: ...
+
 
 @runtime_checkable
 class ScopedAdapter(Protocol):
