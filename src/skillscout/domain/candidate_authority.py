@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
@@ -15,9 +17,41 @@ WORKFLOW_SPEC_AUTHORITY_SCHEMA_VERSION = "workflow-spec-authority-v1"
 PRIOR_LINEAGE_BINDING_SCHEMA_VERSION = "prior-lineage-binding-v1"
 LINEAGE_RESOLUTION_SCHEMA_VERSION = "lineage-resolution-v1"
 CANDIDATE_EXECUTION_AUTHORITY_SCHEMA_VERSION = "candidate-execution-authority-v1"
+VERIFIED_PRIOR_LINEAGE_EVIDENCE_SCHEMA_VERSION = "verified-prior-lineage-evidence-v1"
+LINEAGE_VERSION = "lineage-v1"
+LINEAGE_APPROVAL_RECORD_SCHEMA_VERSION = "lineage-approval-record-v1"
 
 _Identifier = Annotated[str, Field(min_length=1, max_length=512)]
 _Version = Annotated[str, Field(min_length=1, max_length=128)]
+_RepositoryId = Annotated[int, Field(ge=1, le=9_223_372_036_854_775_807)]
+_StableSlug = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    ),
+]
+_LineageReason = Literal[
+    "approval_record_mismatch",
+    "ambiguous_ownership",
+    "ambiguous_verified_evidence",
+    "binding_id_mismatch",
+    "binding_target_mismatch",
+    "duplicate_binding_id",
+    "evidence_without_binding",
+    "initial_authority_mismatch",
+    "lineage_authority_mismatch",
+    "lineage_id_mismatch",
+    "missing_verified_evidence",
+    "multiple_bindings",
+    "prior_package_mismatch",
+    "prior_terminal_summary_mismatch",
+    "qualification_rejected",
+    "repository_mismatch",
+    "slug_collision",
+    "slug_mismatch",
+]
 _DistributionName = Annotated[
     str,
     Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$"),
@@ -232,4 +266,460 @@ def candidate_execution_authority(
         phase3_profile_version=phase3_profile_version,
         retry_policy_version=retry_policy_version,
         authority_digest=sha256_digest(preimage),
+    )
+
+
+class PriorLineageBindingV1(StrictFrozenModel):
+    """Canonical human-approved target from one prior lineage to one new authority."""
+
+    schema_version: Literal["prior-lineage-binding-v1"]
+    binding_id: Digest
+    binding_policy_version: _Version
+    repository_id: _RepositoryId
+    lineage_authority_digest: Digest
+    lineage_id: Digest
+    stable_slug: _StableSlug
+    prior_package_digest: Digest
+    prior_terminal_summary_digest: Digest
+    new_workflow_spec_authority_digest: Digest
+    approval_record_digest: Digest
+
+
+class VerifiedPriorLineageEvidenceV1(StrictFrozenModel):
+    """Narrow projection available only after the prior Phase 3 chain is verified."""
+
+    schema_version: Literal["verified-prior-lineage-evidence-v1"]
+    binding_id: Digest
+    repository_id: _RepositoryId
+    lineage_authority_digest: Digest
+    lineage_id: Digest
+    stable_slug: _StableSlug
+    initial_workflow_spec_authority: WorkflowSpecAuthorityV1
+    prior_package_digest: Digest
+    prior_terminal_summary_digest: Digest
+    approval_record_digest: Digest
+
+
+class LineageResolutionV1(StrictFrozenModel):
+    """One closed lineage decision with no heuristic or external-text reasons."""
+
+    schema_version: Literal["lineage-resolution-v1"]
+    status: Literal[
+        "new_lineage",
+        "retained_lineage",
+        "lineage_rejected",
+        "not_evaluated_qualification_rejected",
+    ]
+    lineage_authority_digest: Digest | None
+    lineage_id: Digest | None
+    stable_slug: _StableSlug | None
+    initial_workflow_spec_authority_digest: Digest | None
+    reason_codes: Annotated[tuple[_LineageReason, ...], Field(max_length=16)]
+
+    @model_validator(mode="after")
+    def validate_resolution_shape(self) -> LineageResolutionV1:
+        identity = (
+            self.lineage_authority_digest,
+            self.lineage_id,
+            self.stable_slug,
+            self.initial_workflow_spec_authority_digest,
+        )
+        has_complete_identity = all(value is not None for value in identity)
+        has_any_identity = any(value is not None for value in identity)
+        if self.status in {"new_lineage", "retained_lineage"}:
+            if not has_complete_identity or self.reason_codes:
+                raise ValueError("resolved lineage shape is inconsistent")
+        elif self.status == "lineage_rejected":
+            if has_any_identity or not self.reason_codes:
+                raise ValueError("rejected lineage shape is inconsistent")
+        elif (
+            has_any_identity
+            or self.reason_codes != ("qualification_rejected",)
+        ):
+            raise ValueError("not-evaluated lineage shape is inconsistent")
+        return self
+
+
+def _approval_record_preimage(
+    *,
+    binding_policy_version: str,
+    repository_id: int,
+    lineage_authority_digest: Digest,
+    lineage_id: Digest,
+    stable_slug: str,
+    prior_package_digest: Digest,
+    prior_terminal_summary_digest: Digest,
+    new_workflow_spec_authority_digest: Digest,
+) -> dict[str, object]:
+    return {
+        "schema_version": LINEAGE_APPROVAL_RECORD_SCHEMA_VERSION,
+        "binding_schema_version": PRIOR_LINEAGE_BINDING_SCHEMA_VERSION,
+        "binding_policy_version": binding_policy_version,
+        "repository_id": repository_id,
+        "lineage_authority_digest": lineage_authority_digest,
+        "lineage_id": lineage_id,
+        "stable_slug": stable_slug,
+        "prior_package_digest": prior_package_digest,
+        "prior_terminal_summary_digest": prior_terminal_summary_digest,
+        "new_workflow_spec_authority_digest": new_workflow_spec_authority_digest,
+    }
+
+
+def prior_lineage_approval_record_digest(
+    *,
+    binding_policy_version: str,
+    repository_id: int,
+    lineage_authority_digest: Digest,
+    lineage_id: Digest,
+    stable_slug: str,
+    prior_package_digest: Digest,
+    prior_terminal_summary_digest: Digest,
+    new_workflow_spec_authority_digest: Digest,
+) -> str:
+    """Digest the complete durable human approval target."""
+
+    return sha256_digest(
+        _approval_record_preimage(
+            binding_policy_version=binding_policy_version,
+            repository_id=repository_id,
+            lineage_authority_digest=lineage_authority_digest,
+            lineage_id=lineage_id,
+            stable_slug=stable_slug,
+            prior_package_digest=prior_package_digest,
+            prior_terminal_summary_digest=prior_terminal_summary_digest,
+            new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
+        )
+    )
+
+
+def _binding_preimage(
+    *,
+    binding_policy_version: str,
+    repository_id: int,
+    lineage_authority_digest: Digest,
+    lineage_id: Digest,
+    stable_slug: str,
+    prior_package_digest: Digest,
+    prior_terminal_summary_digest: Digest,
+    new_workflow_spec_authority_digest: Digest,
+    approval_record_digest: Digest,
+) -> dict[str, object]:
+    return {
+        "schema_version": PRIOR_LINEAGE_BINDING_SCHEMA_VERSION,
+        "binding_policy_version": binding_policy_version,
+        "repository_id": repository_id,
+        "lineage_authority_digest": lineage_authority_digest,
+        "lineage_id": lineage_id,
+        "stable_slug": stable_slug,
+        "prior_package_digest": prior_package_digest,
+        "prior_terminal_summary_digest": prior_terminal_summary_digest,
+        "new_workflow_spec_authority_digest": new_workflow_spec_authority_digest,
+        "approval_record_digest": approval_record_digest,
+    }
+
+
+def prior_lineage_binding(
+    *,
+    binding_policy_version: str,
+    repository_id: int,
+    lineage_authority_digest: Digest,
+    lineage_id: Digest,
+    stable_slug: str,
+    prior_package_digest: Digest,
+    prior_terminal_summary_digest: Digest,
+    new_workflow_spec_authority_digest: Digest,
+) -> PriorLineageBindingV1:
+    """Construct a canonical approved prior-lineage binding."""
+
+    approval_record_digest = prior_lineage_approval_record_digest(
+        binding_policy_version=binding_policy_version,
+        repository_id=repository_id,
+        lineage_authority_digest=lineage_authority_digest,
+        lineage_id=lineage_id,
+        stable_slug=stable_slug,
+        prior_package_digest=prior_package_digest,
+        prior_terminal_summary_digest=prior_terminal_summary_digest,
+        new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
+    )
+    preimage = _binding_preimage(
+        binding_policy_version=binding_policy_version,
+        repository_id=repository_id,
+        lineage_authority_digest=lineage_authority_digest,
+        lineage_id=lineage_id,
+        stable_slug=stable_slug,
+        prior_package_digest=prior_package_digest,
+        prior_terminal_summary_digest=prior_terminal_summary_digest,
+        new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
+        approval_record_digest=approval_record_digest,
+    )
+    return PriorLineageBindingV1(
+        schema_version=PRIOR_LINEAGE_BINDING_SCHEMA_VERSION,
+        binding_id=sha256_digest(preimage),
+        binding_policy_version=binding_policy_version,
+        repository_id=repository_id,
+        lineage_authority_digest=lineage_authority_digest,
+        lineage_id=lineage_id,
+        stable_slug=stable_slug,
+        prior_package_digest=prior_package_digest,
+        prior_terminal_summary_digest=prior_terminal_summary_digest,
+        new_workflow_spec_authority_digest=new_workflow_spec_authority_digest,
+        approval_record_digest=approval_record_digest,
+    )
+
+
+def prior_lineage_binding_digest(binding: PriorLineageBindingV1) -> str:
+    """Recompute the canonical digest one descriptor may carry."""
+
+    return sha256_digest(
+        _binding_preimage(
+            binding_policy_version=binding.binding_policy_version,
+            repository_id=binding.repository_id,
+            lineage_authority_digest=binding.lineage_authority_digest,
+            lineage_id=binding.lineage_id,
+            stable_slug=binding.stable_slug,
+            prior_package_digest=binding.prior_package_digest,
+            prior_terminal_summary_digest=binding.prior_terminal_summary_digest,
+            new_workflow_spec_authority_digest=(
+                binding.new_workflow_spec_authority_digest
+            ),
+            approval_record_digest=binding.approval_record_digest,
+        )
+    )
+
+
+def verified_prior_lineage_evidence(
+    *,
+    binding_id: Digest,
+    repository_id: int,
+    lineage_authority_digest: Digest,
+    lineage_id: Digest,
+    stable_slug: str,
+    initial_workflow_spec_authority: WorkflowSpecAuthorityV1,
+    prior_package_digest: Digest,
+    prior_terminal_summary_digest: Digest,
+    approval_record_digest: Digest,
+) -> VerifiedPriorLineageEvidenceV1:
+    """Construct the narrow projection returned by a future verified state adapter."""
+
+    return VerifiedPriorLineageEvidenceV1(
+        schema_version=VERIFIED_PRIOR_LINEAGE_EVIDENCE_SCHEMA_VERSION,
+        binding_id=binding_id,
+        repository_id=repository_id,
+        lineage_authority_digest=lineage_authority_digest,
+        lineage_id=lineage_id,
+        stable_slug=stable_slug,
+        initial_workflow_spec_authority=initial_workflow_spec_authority,
+        prior_package_digest=prior_package_digest,
+        prior_terminal_summary_digest=prior_terminal_summary_digest,
+        approval_record_digest=approval_record_digest,
+    )
+
+
+def _lineage_digest(
+    *,
+    repository_id: int,
+    initial_workflow_spec_authority_digest: Digest,
+) -> str:
+    return sha256_digest(
+        {
+            "lineage_version": LINEAGE_VERSION,
+            "repository_id": repository_id,
+            "initial_workflow_spec_authority_digest": (
+                initial_workflow_spec_authority_digest
+            ),
+        }
+    )
+
+
+def _stable_slug(*, title: str, lineage_id: Digest) -> str:
+    normalized = unicodedata.normalize("NFKD", title).encode(
+        "ascii", errors="ignore"
+    ).decode("ascii")
+    words = re.sub(r"[^a-z0-9]+", "-", normalized.casefold()).strip("-")
+    base = (words or "skill")[:54].rstrip("-") or "skill"
+    return f"{base}-{lineage_id.removeprefix('sha256:')[:8]}"
+
+
+def derive_new_lineage(
+    *,
+    repository_id: int,
+    initial_workflow_spec_authority: WorkflowSpecAuthorityV1,
+) -> LineageResolutionV1:
+    """Derive a deterministic lineage from repository ID and initial authority."""
+
+    if type(repository_id) is not int or not 1 <= repository_id <= 9_223_372_036_854_775_807:
+        raise ValueError("repository id is outside the closed lineage contract")
+    lineage_id = _lineage_digest(
+        repository_id=repository_id,
+        initial_workflow_spec_authority_digest=(
+            initial_workflow_spec_authority.authority_digest
+        ),
+    )
+    return LineageResolutionV1(
+        schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
+        status="new_lineage",
+        lineage_authority_digest=lineage_id,
+        lineage_id=lineage_id,
+        stable_slug=_stable_slug(
+            title=initial_workflow_spec_authority.workflow_spec.title,
+            lineage_id=lineage_id,
+        ),
+        initial_workflow_spec_authority_digest=(
+            initial_workflow_spec_authority.authority_digest
+        ),
+        reason_codes=(),
+    )
+
+
+def _lineage_rejected(*reasons: _LineageReason) -> LineageResolutionV1:
+    ordered = tuple(dict.fromkeys(reasons))
+    return LineageResolutionV1(
+        schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
+        status="lineage_rejected",
+        lineage_authority_digest=None,
+        lineage_id=None,
+        stable_slug=None,
+        initial_workflow_spec_authority_digest=None,
+        reason_codes=ordered,
+    )
+
+
+def _slug_ownership_reasons(
+    *,
+    expected_lineage_id: Digest,
+    slug_owner_lineage_ids: tuple[Digest, ...],
+) -> tuple[_LineageReason, ...]:
+    if len(slug_owner_lineage_ids) > 1:
+        return ("ambiguous_ownership",)
+    if slug_owner_lineage_ids and slug_owner_lineage_ids[0] != expected_lineage_id:
+        return ("slug_collision",)
+    return ()
+
+
+def resolve_lineage(
+    *,
+    repository_id: int,
+    new_workflow_spec_authority: WorkflowSpecAuthorityV1,
+    prior_bindings: tuple[PriorLineageBindingV1, ...],
+    verified_prior_evidence: tuple[VerifiedPriorLineageEvidenceV1, ...],
+    slug_owner_lineage_ids: tuple[Digest, ...],
+) -> LineageResolutionV1:
+    """Resolve only a new lineage or one exact fully reverified prior binding."""
+
+    if not prior_bindings:
+        if verified_prior_evidence:
+            return _lineage_rejected("evidence_without_binding")
+        resolution = derive_new_lineage(
+            repository_id=repository_id,
+            initial_workflow_spec_authority=new_workflow_spec_authority,
+        )
+        ownership_reasons = _slug_ownership_reasons(
+            expected_lineage_id=resolution.lineage_id,
+            slug_owner_lineage_ids=slug_owner_lineage_ids,
+        )
+        if ownership_reasons:
+            return _lineage_rejected(*ownership_reasons)
+        return resolution
+
+    binding_ids = tuple(binding.binding_id for binding in prior_bindings)
+    if len(set(binding_ids)) != len(binding_ids):
+        return _lineage_rejected("duplicate_binding_id")
+    if len(prior_bindings) != 1:
+        return _lineage_rejected("multiple_bindings")
+    if not verified_prior_evidence:
+        return _lineage_rejected("missing_verified_evidence")
+    if len(verified_prior_evidence) != 1:
+        return _lineage_rejected("ambiguous_verified_evidence")
+
+    binding = prior_bindings[0]
+    evidence = verified_prior_evidence[0]
+    expected_approval = prior_lineage_approval_record_digest(
+        binding_policy_version=binding.binding_policy_version,
+        repository_id=binding.repository_id,
+        lineage_authority_digest=binding.lineage_authority_digest,
+        lineage_id=binding.lineage_id,
+        stable_slug=binding.stable_slug,
+        prior_package_digest=binding.prior_package_digest,
+        prior_terminal_summary_digest=binding.prior_terminal_summary_digest,
+        new_workflow_spec_authority_digest=(
+            binding.new_workflow_spec_authority_digest
+        ),
+    )
+    expected_binding_id = prior_lineage_binding_digest(binding)
+    recomputed_initial_lineage = _lineage_digest(
+        repository_id=evidence.repository_id,
+        initial_workflow_spec_authority_digest=(
+            evidence.initial_workflow_spec_authority.authority_digest
+        ),
+    )
+
+    reasons: list[_LineageReason] = []
+
+    def note(reason: _LineageReason) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if (
+        binding.binding_id != expected_binding_id
+        or evidence.binding_id != binding.binding_id
+    ):
+        note("binding_id_mismatch")
+    if (
+        binding.repository_id != repository_id
+        or evidence.repository_id != repository_id
+        or evidence.repository_id != binding.repository_id
+    ):
+        note("repository_mismatch")
+    if (
+        binding.new_workflow_spec_authority_digest
+        != new_workflow_spec_authority.authority_digest
+    ):
+        note("binding_target_mismatch")
+    if (
+        binding.approval_record_digest != expected_approval
+        or evidence.approval_record_digest != expected_approval
+    ):
+        note("approval_record_mismatch")
+    if (
+        binding.lineage_authority_digest != evidence.lineage_authority_digest
+        or binding.lineage_authority_digest != recomputed_initial_lineage
+    ):
+        note("lineage_authority_mismatch")
+    if (
+        binding.lineage_id != evidence.lineage_id
+        or binding.lineage_id != recomputed_initial_lineage
+    ):
+        note("lineage_id_mismatch")
+    if (
+        evidence.lineage_authority_digest != recomputed_initial_lineage
+        or evidence.lineage_id != recomputed_initial_lineage
+    ):
+        note("initial_authority_mismatch")
+    if binding.stable_slug != evidence.stable_slug:
+        note("slug_mismatch")
+    if binding.prior_package_digest != evidence.prior_package_digest:
+        note("prior_package_mismatch")
+    if (
+        binding.prior_terminal_summary_digest
+        != evidence.prior_terminal_summary_digest
+    ):
+        note("prior_terminal_summary_mismatch")
+    for ownership_reason in _slug_ownership_reasons(
+        expected_lineage_id=binding.lineage_id,
+        slug_owner_lineage_ids=slug_owner_lineage_ids,
+    ):
+        note(ownership_reason)
+
+    if reasons:
+        return _lineage_rejected(*reasons)
+    return LineageResolutionV1(
+        schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
+        status="retained_lineage",
+        lineage_authority_digest=binding.lineage_authority_digest,
+        lineage_id=binding.lineage_id,
+        stable_slug=binding.stable_slug,
+        initial_workflow_spec_authority_digest=(
+            evidence.initial_workflow_spec_authority.authority_digest
+        ),
+        reason_codes=(),
     )
