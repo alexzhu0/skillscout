@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 3
-current_phase_name: Validated Skill Candidate
+current_phase: 03
+current_phase_name: validated-skill-candidate
 status: executing
-stopped_at: Phase 2 verified and complete; ready to plan Phase 3
-last_updated: "2026-07-23T06:17:24.622Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-07-23T08:24:41.255Z"
 progress:
   total_phases: 6
   completed_phases: 2
-  total_plans: 22
-  completed_plans: 22
+  total_plans: 36
+  completed_plans: 23
   percent: 33
 ---
 
@@ -23,8 +23,8 @@ progress:
 
 ## Current Position
 
-**Phase:** 3 — Validated Skill Candidate
-**Plan:** Not started
+**Phase:** 03 (validated-skill-candidate) — EXECUTING
+**Plan:** 2 of 14
 **Verification:** Phase 2 passed — 14/14 must-haves verified; UAT 15/15 countersigned; security audit 19/19 threats closed
 **Next command:** `$gsd-discuss-phase 3`
 
@@ -52,7 +52,7 @@ Phase 2 extraction      [██████████] 100%
 See: `.planning/PROJECT.md` (updated 2026-07-22)
 
 **Core value:** 安全、可追溯地把公开仓库中的可复用 AI 工作流转化为值得人类审核的标准 Agent Skill Draft PR。
-**Current focus:** Phase 3 — Validated Skill Candidate
+**Current focus:** Phase 03 — validated-skill-candidate
 
 ## Accumulated Context
 
@@ -105,8 +105,8 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 
 ## Session Continuity
 
-**Last session:** 2026-07-22T09:57:10Z
-**Stopped at:** Phase 2 verified and complete; ready to plan Phase 3
+**Last session:** 2026-07-23T08:24:41.250Z
+**Stopped at:** Completed 03-01-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -147,6 +147,7 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 | Phase 02 P02 | 64min | 3 tasks | 27 files |
 | Phase 02 P03 | 43min | 2 tasks | 10 files |
 | Phase 02 P04 | 56min | 3 tasks | 33 files |
+| Phase 03 P01 | 1 min | 1 tasks | 4 files |
 
 ## Decisions
 
@@ -210,3 +211,4 @@ None. Phase 2 goal verification passed 14/14, UAT countersigned 15/15, and the s
 - [Phase 02]: Bind SDK retry to zero and let the runner RetryPolicy own re-attempts — one extract() is exactly one recorded HTTP request, so the one-call-per-attempt discipline is structural rather than configurational — A single responses.parse call site with max_retries=0; business outcomes are succeeded attempts and only 429/5xx/timeout/connection map to stage_transient_failure
 - [Phase 02]: Reuse a completed phase-two run only through an additive find_completed_run seam and a runner short-circuit gated on the COMPLETED terminal — no new run rows, events or status transitions, and the fixture-v1 terminal path stays byte-identical — The plan-mandated zero-call idempotent rerun had no existing seam (find_resumable_run matches running/interrupted only and completed-to-completed transitions are illegal); the gated short-circuit rewrites the summary artifact through the durable core without touching Phase 1 semantics
 - [Phase 02]: Prefer the per-invocation scratch bundle and rebuild it through hash-verified hydrate_read_bundle on fresh contexts — the runner shape always hydrates, so resume re-issues blob GETs only for byte-verified hydration — Per-invocation StageContext scratch never crosses stages in the runner; hydration against recorded content hashes preserves the no-raw-text-persistence boundary without weakening resume integrity
+- [Phase 03]: Approved Gate A3 for exactly skills-ref==0.1.1 and wheel SHA-256 d35db5bb8de71ae301daf5ca9cb71f8a555e8c6f83a6d40e46a5bc09f8f461b5 — Human approval is limited to registry-only dependency declaration and graph resolution for separate Gate B3 review; it does not authorize installation, import, tests, validator execution, or a substitute validator.
