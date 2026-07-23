@@ -1,78 +1,72 @@
 ---
 phase: 03-validated-skill-candidate
-fixed_at: 2026-07-23T15:13:50Z
+fixed_at: 2026-07-23T15:50:10Z
 review_path: .planning/phases/03-validated-skill-candidate/03-REVIEW.md
-iteration: 1
-findings_in_scope: 7
-fixed: 7
+iteration: 2
+findings_in_scope: 4
+fixed: 4
 skipped: 0
 status: all_fixed
 ---
 
 # Phase 03: Code Review Fix Report
 
-**Fixed at:** 2026-07-23T15:13:50Z  
-**Source review:** `.planning/phases/03-validated-skill-candidate/03-REVIEW.md`  
-**Iteration:** 1
+**Fixed at:** 2026-07-23T15:50:10Z
+**Source review:** `.planning/phases/03-validated-skill-candidate/03-REVIEW.md`
+**Iteration:** 2
 
 **Summary:**
 
-- Findings in scope: 7
-- Fixed: 7
+- Findings in scope: 4
+- Fixed: 4
 - Skipped: 0
-- Release verification: validation map, lock check, local build, acceptance, Ruff, 1235 tests, and terminal Gate B3 all passed
+- Release verification: validation map, 41 map mutation tests, lock check, local build, acceptance, Ruff, 1,241 tests, and terminal Gate B3 all passed
 
 ## Fixed Issues
 
-### CR-01: Approved prior lineage can never be retained
+### CR-07: Lineage “approval” is synthesized from the binding being approved
 
-**Status:** fixed: requires human verification  
-**Files modified:** `src/skillscout/domain/candidate_authority.py`, `src/skillscout/application/phase3.py`, `src/skillscout/application/ports.py`, `src/skillscout/adapters/state.py`, `tests/test_phase3_pipeline.py`  
-**Commit:** e52ed6e  
-**Applied fix:** Added typed, content-addressed binding and approval evidence; exact prior terminal/package/owner re-verification; and real retained-lineage resolution through the state adapter.
+**Status:** fixed: requires human verification
+**Files modified:** `src/skillscout/domain/candidate_authority.py`, `src/skillscout/adapters/state.py`, `tests/test_lineage.py`, `tests/test_phase3_pipeline.py`
+**Commits:** `f62b8c6`, `2a80975`
+**Applied fix:** Removed the approval digest cycle from the binding, introduced an independently supplied affirmative approval artifact with stable reviewer and audit identities, bound it to the exact binding and new WorkflowSpec authority, and required both inputs at state admission. Binding-only and mismatched approvals fail closed.
 
-### CR-02: Phase 2 authority state is opened through a raceable, followable pathname
+### CR-08: Phase 2 lock and state authority can change after the shared lock is acquired
 
-**Files modified:** `src/skillscout/adapters/phase2_state.py`  
-**Commit:** c46bd35  
-**Applied fix:** Replaced pathname SQLite admission with a retained shared lock, private no-follow stable descriptor read, in-memory deserialization, query-only mode, and read-only authorization.
+**Files modified:** `src/skillscout/adapters/phase2_state.py`, `src/skillscout/adapters/state.py`, `tests/test_candidate_source.py`
+**Commit:** `2f57439`
+**Applied fix:** Reverified the lock pathname after `flock()`, required the state descriptor to match the pre-lock identity, and compared opened, post-read descriptor, and post-read pathname metadata. Deterministic replacement seams cover all three race windows.
 
-### CR-03: Runtime budgets change behavior without changing execution authority
+### CR-09: The validated `skills-ref` distribution is not bound to the imported module
 
-**Status:** fixed: requires human verification  
-**Files modified:** `src/skillscout/adapters/openai_generate.py`, `src/skillscout/adapters/openai_review.py`, `src/skillscout/application/phase3.py`, `src/skillscout/cli.py`, `src/skillscout/domain/candidate_authority.py`, `tests/test_candidate_authority.py`, `tests/test_cli_validate_skill.py`, `tests/test_openai_review.py`, `tests/test_phase3_pipeline.py`, `tests/test_qualification.py`, `tests/test_skill_validation.py`  
-**Commit:** fc9547c  
-**Applied fix:** Bound every runtime-profile field into execution identity and enforced exact batch, input-envelope, model, and output-token budgets before semantic calls.
+**Files modified:** `src/skillscout/bootstrap.py`, `src/skillscout/adapters/skills_ref.py`, `tests/test_phase3_bootstrap.py`, `tests/test_phase3_acceptance_tool.py`, `tools/verify_phase3_acceptance.py`
+**Commit:** `f79650b`
+**Applied fix:** Gate B3 now returns a typed RECORD-backed module admission, rejects duplicate distributions, verifies the pre-import spec origin and package path, and reverifies loaded module origin and bytes. A subprocess shadow-module canary proves the earlier module is never executed.
 
-### CR-04: A projection failure leaves completed state with missing or partial output forever
+### CR-10: Reviewer retry budget and audit history reset after interruption
 
-**Status:** fixed: requires human verification  
-**Files modified:** `src/skillscout/adapters/state.py`, `src/skillscout/application/phase3.py`, `src/skillscout/application/ports.py`, `src/skillscout/cli.py`, `tests/test_cli_validate_skill.py`  
-**Commit:** 1e0d15a  
-**Applied fix:** Added the recoverable `projecting` ledger state, exact pending projection retrieval, idempotent repair, and completion only after durable output projection.
+**Status:** fixed: requires human verification
+**Files modified:** `.planning/phases/03-validated-skill-candidate/03-VALIDATION.md`, `src/skillscout/adapters/state.py`, `src/skillscout/application/phase3.py`, `src/skillscout/application/ports.py`, `src/skillscout/domain/models.py`, `src/skillscout/domain/review.py`, `tests/test_phase3_pipeline.py`, `tools/verify_phase3_acceptance.py`
+**Commit:** `79e573a`
+**Applied fix:** Persisted every Reviewer attempt before its remote call and finalized durable failed/abandoned/successful states afterward. Resume conservatively consumes in-flight attempts, reconstructs exact history, and cannot exceed the configured total budget across restarts. The verified chain and attestation now admit and cross-check failed or abandoned attempts without fabricating successful results.
 
-### CR-05: Completed reuse accepts a rendered package unrelated to terminal identity
+## Skipped Issues
 
-**Status:** fixed: requires human verification  
-**Files modified:** `src/skillscout/adapters/state.py`, `tests/test_phase3_pipeline.py`  
-**Commit:** 3042d95  
-**Applied fix:** Enforced a closed terminal artifact set and canonical cross-validation of frozen package, manifest, generated identity, validation report, provenance, lineage, and terminal package identity.
+None.
 
-### CR-06: Gate B3 is checked only after dependency code has already executed
+## Release Verification
 
-**Files modified:** `.planning/phases/03-validated-skill-candidate/03-14-PLAN.md`, `.planning/phases/03-validated-skill-candidate/03-VALIDATION.md`, `pyproject.toml`, `src/skillscout/bootstrap.py`, `src/skillscout/adapters/skills_ref.py`, `src/skillscout/cli.py`, `src/skillscout/domain/validation.py`, `tests/test_phase1_gap_closure.py`, `tests/test_phase3_acceptance_tool.py`, `tests/test_phase3_pipeline.py`, `tests/test_skill_validation.py`, `tools/verify_phase3_acceptance.py`, `tools/verify_phase3_validation_map.py`  
-**Commit:** 4e27a30  
-**Applied fix:** Added a standard-library bootstrap that admits the lock and installed validator bytes before dependency import, made validator loading lazy, separated approved wheel and observed runtime digests, and registered the boundary in acceptance.
-
-### WR-01: Reviewer attestation says “no retry” even when the runner retries three times
-
-**Status:** fixed: requires human verification  
-**Files modified:** `.planning/phases/03-validated-skill-candidate/03-VALIDATION.md`, `src/skillscout/adapters/state.py`, `src/skillscout/application/phase3.py`, `src/skillscout/domain/candidate_authority.py`, `src/skillscout/domain/review.py`, `tests/test_candidate_authority.py`, `tests/test_openai_review.py`, `tests/test_phase3_acceptance_tool.py`, `tests/test_phase3_pipeline.py`, `tests/test_qualification.py`, `tests/test_skill_validation.py`, `tools/verify_phase3_acceptance.py`  
-**Commit:** e42f671  
-**Applied fix:** Bound reviewer-specific retry policy and maximum attempts into execution authority and attestation, persisted bounded transient-failure facts, and verified attestation attempt count against the reviewer ledger attempt.
+- `PYTHONDONTWRITEBYTECODE=1 python3 tools/verify_phase3_validation_map.py`: passed
+- Validation-map mutation suite: 41 passed
+- Gate-B3-prefixed `uv lock --check`: passed
+- Gate-B3-prefixed `uv build --no-sources`: passed
+- Gate-B3-prefixed Phase 3 acceptance: passed
+- Gate-B3-prefixed Ruff: passed
+- Gate-B3-prefixed full pytest: 1,241 passed in 32.61s
+- Terminal `sh tools/verify_phase3_gate_b3.sh`: passed
 
 ---
 
-_Fixed: 2026-07-23T15:13:50Z_  
-_Fixer: the agent (gsd-code-fixer)_  
-_Iteration: 1_
+_Fixed: 2026-07-23T15:50:10Z_
+_Fixer: the agent (gsd-code-fixer)_
+_Iteration: 2_

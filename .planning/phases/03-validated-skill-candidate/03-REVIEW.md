@@ -1,6 +1,7 @@
 ---
 phase: 03-validated-skill-candidate
 reviewed: 2026-07-23T15:29:37Z
+resolved: 2026-07-23T15:50:10Z
 round: 2
 depth: deep
 files_reviewed: 19
@@ -29,7 +30,8 @@ findings:
   warning: 0
   info: 0
   total: 4
-status: issues_found
+resolved_findings: 4
+status: clean
 ---
 
 # Phase 03: Code Review Report
@@ -38,18 +40,18 @@ status: issues_found
 **Round:** 2
 **Depth:** deep
 **Files Reviewed:** 19
-**Status:** issues_found
+**Status:** clean after Round-2 fixes
 
 ## Summary
 
-Round 2 rechecked four residual correctness and trust-boundary concerns behind the prior resolved report. All four concerns are real and remain release blockers:
+Round 2 identified four residual correctness and trust-boundary blockers:
 
 - lineage approval is derived from the binding instead of supplied as independent human-review evidence;
 - the Phase 2 shared-lock and state path identities are not reverified across the locked snapshot;
 - Gate B3 hashes one installed `skills-ref` distribution but the adapter can import a different `skills_ref` module selected earlier on `sys.path`;
 - Reviewer transient-attempt history is held only in memory until a later success, so interruption resets the attempt budget and loses audit facts.
 
-The normal locked repository suite passes, but its tests cover uninterrupted retries and independently validated distribution bytes rather than these missing invariants.
+All four findings were fixed in isolated commits and the expanded release suite now covers the missing invariants. The original findings remain below as the audit source; their applied fixes and commit evidence are recorded in `03-REVIEW-FIX.md`.
 
 ## Narrative Findings (AI reviewer)
 
@@ -93,11 +95,18 @@ The normal locked repository suite passes, but its tests cover uninterrupted ret
 
 ## Verification
 
+- Round-2 fix commits: `f62b8c6`, `2f57439`, `f79650b`, `79e573a`
+- Test cleanup commit: `2a80975`
+- Dependency-free validation-map checker: passed
+- Validation-map mutation suite: **41 passed**
+- Locked graph check and repository-local build: passed
+- Phase 3 acceptance checker: passed
+- Ruff: passed
 - `sh tools/verify_phase3_gate_b3.sh`
 - Repository-local locked unit suite with `UV_CACHE_DIR="$PWD/.tools/uv-cache"` and `.tools/uv-0.11.29/bin/uv`
-- Result: **1235 passed in 37.88s**
+- Result: **1241 passed in 32.61s**
 - Terminal Gate B3 postflight: passed
-- Source files modified by review: none
+- Resolution status: all four Round-2 blockers fixed
 
 ---
 
