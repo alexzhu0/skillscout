@@ -828,6 +828,7 @@ def test_production_capability_surface_remains_local_only() -> None:
         "httpx==0.28.1",
         "openai==2.46.0",
         "pydantic==2.13.4",
+        "skills-ref==0.1.1",
     ]
     assert metadata["build-system"]["requires"] == ["uv_build==0.11.29"]
     assert metadata["project"]["scripts"] == {"skillscout": "skillscout.cli:main"}
