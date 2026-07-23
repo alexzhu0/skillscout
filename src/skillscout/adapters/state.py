@@ -12,7 +12,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping, TypeVar
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.application.ports import (
@@ -63,6 +63,10 @@ from skillscout.domain.models import (
     validate_manifest_bytes,
 )
 from skillscout.domain.candidate_authority import CandidateExecutionAuthorityV1
+from skillscout.domain.skill_artifacts import (
+    GeneratedArtifactIdentityV1,
+    PackageIdentityV1,
+)
 from skillscout.domain.qualification import (
     QualificationReportV1,
     qualification_report_bytes,
@@ -70,8 +74,11 @@ from skillscout.domain.qualification import (
 )
 from skillscout.domain.review import (
     CandidateTerminalSummaryV1,
+    ReviewAttestationV1,
     candidate_terminal_summary_bytes,
+    review_attestation_bytes,
 )
+from skillscout.domain.validation import ValidationReportV1
 
 SCHEMA_VERSION = 3
 MAX_STATE_DB_BYTES = 67_108_864
@@ -647,6 +654,371 @@ _EXPECTED_INDEXES = MappingProxyType(
         ),
     }
 )
+
+
+class CompletedCandidateProjectionV1(BaseModel):
+    """Exact immutable projection of one fully verified completed candidate."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    chain: VerifiedCandidateRunChain
+    terminal_summary: CandidateTerminalSummaryV1
+    terminal_summary_bytes: bytes
+    artifacts: Mapping[str, bytes]
+
+
+def _complete_stat_facts(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _read_stable_private_file(
+    anchor: AnchoredDirectory,
+    name: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Bounded no-follow read with complete pre/open/post metadata stability."""
+
+    child = AnchoredDirectory.validate_child_name(name)
+    before = anchor.stat_child(child)
+    if before is None:
+        raise DurableWriteError("file_missing")
+    AnchoredDirectory._require_private_regular(before)
+    if before.st_size > max_bytes:
+        raise DurableWriteError("file_invalid")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = -1
+    try:
+        descriptor = os.open(child, flags, dir_fd=anchor.descriptor)
+        opened = os.fstat(descriptor)
+        AnchoredDirectory._require_private_regular(opened)
+        if _complete_stat_facts(before) != _complete_stat_facts(opened):
+            raise DurableWriteError("file_identity")
+        chunks: list[bytes] = []
+        consumed = 0
+        while True:
+            chunk = os.read(descriptor, min(8192, max_bytes + 1 - consumed))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            consumed += len(chunk)
+            if consumed > max_bytes:
+                raise DurableWriteError("file_too_large")
+        if _complete_stat_facts(opened) != _complete_stat_facts(os.fstat(descriptor)):
+            raise DurableWriteError("file_changed")
+        return b"".join(chunks)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+class DescriptorAnchoredCompletedCandidateProjector:
+    """Read-only exact-reuse projector that cannot create or recover state."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(os.path.abspath(os.fspath(path)))
+        self._state_name = AnchoredDirectory.validate_child_name(self.path.name)
+        self._lock_name = AnchoredDirectory.validate_child_name(
+            f".{self._state_name}.lock"
+        )
+        self._artifact_root = self.path.with_suffix(".phase3-artifacts")
+
+    @staticmethod
+    def _schema_reader(connection: sqlite3.Connection) -> SQLiteStateStore:
+        reader = object.__new__(SQLiteStateStore)
+        reader.connection = connection
+        reader._poisoned = False
+        return reader
+
+    @staticmethod
+    def _artifact_declared_digest(kind: str, payload: bytes) -> str:
+        if kind == "qualification_report":
+            report = QualificationReportV1.model_validate_json(payload, strict=True)
+            if qualification_report_bytes(report) != payload:
+                raise ValueError("noncanonical qualification report")
+            return qualification_report_digest(report)
+        if kind == "terminal_summary":
+            summary = CandidateTerminalSummaryV1.model_validate_json(
+                payload, strict=True
+            )
+            if candidate_terminal_summary_bytes(summary) != payload:
+                raise ValueError("noncanonical terminal summary")
+            return summary.terminal_summary_digest
+        if kind == "generated_artifact_identity":
+            identity = GeneratedArtifactIdentityV1.model_validate_json(
+                payload, strict=True
+            )
+            if canonical_json_bytes(identity) != payload:
+                raise ValueError("noncanonical generated artifact identity")
+            return identity.artifact_digest
+        if kind == "package_identity":
+            identity = PackageIdentityV1.model_validate_json(payload, strict=True)
+            if canonical_json_bytes(identity) != payload:
+                raise ValueError("noncanonical package identity")
+            return identity.package_digest
+        if kind == "validation_report":
+            report = ValidationReportV1.model_validate_json(payload, strict=True)
+            if canonical_json_bytes(report) != payload:
+                raise ValueError("noncanonical validation report")
+            return report.report_digest
+        if kind == "review_attestation":
+            attestation = ReviewAttestationV1.model_validate_json(payload, strict=True)
+            if review_attestation_bytes(attestation) != payload:
+                raise ValueError("noncanonical review attestation")
+            return attestation.attestation_digest
+        return sha256_digest(payload)
+
+    @staticmethod
+    def _validate_terminal_artifact_matrix(
+        *,
+        terminal: CandidateTerminalSummaryV1,
+        artifacts: Mapping[str, bytes],
+    ) -> None:
+        required = {"qualification_report", "terminal_summary"}
+        cited = (
+            ("generated_artifact_identity", terminal.generated_artifact_identity),
+            ("package_identity", terminal.package_identity),
+            ("validation_report", terminal.validation_report_digest),
+            ("review_attestation", terminal.review_attestation_digest),
+        )
+        for kind, value in cited:
+            if value is not None:
+                required.add(kind)
+            elif kind in artifacts:
+                raise ValueError("uncited terminal artifact")
+        if not required.issubset(artifacts):
+            raise ValueError("incomplete terminal artifacts")
+
+        qualification = QualificationReportV1.model_validate_json(
+            artifacts["qualification_report"], strict=True
+        )
+        if (
+            qualification_report_digest(qualification)
+            != terminal.qualification_report_digest
+            or qualification.header.candidate_execution_authority
+            != terminal.candidate_execution_authority
+            or qualification.passed is not terminal.qualification_passed
+        ):
+            raise ValueError("qualification authority mismatch")
+        if terminal.generated_artifact_identity is not None:
+            generated = GeneratedArtifactIdentityV1.model_validate_json(
+                artifacts["generated_artifact_identity"], strict=True
+            )
+            if generated != terminal.generated_artifact_identity:
+                raise ValueError("generated artifact identity mismatch")
+        if terminal.package_identity is not None:
+            package = PackageIdentityV1.model_validate_json(
+                artifacts["package_identity"], strict=True
+            )
+            if package != terminal.package_identity:
+                raise ValueError("package identity mismatch")
+        if terminal.validation_report_digest is not None:
+            validation = ValidationReportV1.model_validate_json(
+                artifacts["validation_report"], strict=True
+            )
+            if (
+                validation.report_digest != terminal.validation_report_digest
+                or validation.candidate_execution_authority
+                != terminal.candidate_execution_authority
+            ):
+                raise ValueError("validation report mismatch")
+        if terminal.review_attestation_digest is not None:
+            attestation = ReviewAttestationV1.model_validate_json(
+                artifacts["review_attestation"], strict=True
+            )
+            if (
+                attestation.attestation_digest
+                != terminal.review_attestation_digest
+                or attestation.generated_artifact_identity
+                != terminal.generated_artifact_identity
+                or attestation.package_identity != terminal.package_identity
+                or attestation.validation_report_digest
+                != terminal.validation_report_digest
+                or attestation.configured_reviewer_model_id
+                != terminal.candidate_execution_authority.configured_reviewer_model_id
+                or attestation.reviewer_prompt_version
+                != terminal.candidate_execution_authority.reviewer_prompt_version
+                or attestation.reviewer_output_schema_version
+                != terminal.candidate_execution_authority.reviewer_output_schema_version
+                or attestation.reviewer_policy_version
+                != terminal.candidate_execution_authority.reviewer_policy_version
+            ):
+                raise ValueError("review attestation mismatch")
+
+    def find_completed_candidate(
+        self,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> CompletedCandidateProjectionV1 | None:
+        """Return exact completed bytes, a clean miss, or sanitized integrity failure."""
+
+        if type(authority) is not CandidateExecutionAuthorityV1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        parent: AnchoredDirectory | None = None
+        artifact_anchor: AnchoredDirectory | None = None
+        lock_descriptor = -1
+        connection: sqlite3.Connection | None = None
+        try:
+            try:
+                parent = AnchoredDirectory.open(self.path.parent, create=False)
+            except DurableWriteError as error:
+                if error.operation == "directory_missing":
+                    return None
+                raise
+            state_metadata = parent.stat_child(self._state_name)
+            if state_metadata is None:
+                return None
+            AnchoredDirectory._require_private_regular(state_metadata)
+
+            lock_metadata = parent.stat_child(self._lock_name)
+            if lock_metadata is None:
+                raise DurableWriteError("lock_missing")
+            AnchoredDirectory._require_private_regular(lock_metadata)
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+            lock_descriptor = os.open(
+                self._lock_name,
+                flags,
+                dir_fd=parent.descriptor,
+            )
+            opened_lock = os.fstat(lock_descriptor)
+            AnchoredDirectory._require_private_regular(opened_lock)
+            if _complete_stat_facts(lock_metadata) != _complete_stat_facts(opened_lock):
+                raise DurableWriteError("lock_identity")
+            fcntl.flock(lock_descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
+            payload = _read_stable_private_file(
+                parent,
+                self._state_name,
+                max_bytes=MAX_STATE_DB_BYTES,
+            )
+            connection = sqlite3.connect(":memory:", isolation_level=None)
+            connection.row_factory = sqlite3.Row
+            connection.deserialize(payload)
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA query_only = ON")
+            reader = self._schema_reader(connection)
+            reader._validate_current_schema()
+            reader._validate_phase3_schema()
+
+            rows = connection.execute(
+                """SELECT run_id FROM phase3_runs
+                   WHERE authority_digest = ? AND status = 'completed'""",
+                (authority.authority_digest,),
+            ).fetchall()
+            if not rows:
+                return None
+            if len(rows) != 1:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            run_id = str(rows[0]["run_id"])
+            chain = reader.verify_candidate_run_chain(
+                run_id, expected_authority=authority
+            )
+
+            terminal_rows = connection.execute(
+                "SELECT * FROM phase3_terminals WHERE run_id = ?",
+                (run_id,),
+            ).fetchall()
+            artifact_rows = connection.execute(
+                """SELECT * FROM phase3_artifacts
+                   WHERE run_id = ? ORDER BY artifact_kind""",
+                (run_id,),
+            ).fetchall()
+            if len(terminal_rows) != 1 or not artifact_rows:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            artifact_anchor = AnchoredDirectory.open(
+                self._artifact_root,
+                create=False,
+            )
+            artifacts: dict[str, bytes] = {}
+            for row in artifact_rows:
+                kind = str(row["artifact_kind"])
+                digest = str(row["artifact_digest"])
+                expected_locator = AnchoredDirectory.validate_child_name(
+                    f"{digest.removeprefix('sha256:')}.json"
+                )
+                if (
+                    row["locator"] != expected_locator
+                    or kind in artifacts
+                    or type(row["byte_count"]) is not int
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                artifact = _read_stable_private_file(
+                    artifact_anchor,
+                    expected_locator,
+                    max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
+                )
+                if (
+                    len(artifact) != row["byte_count"]
+                    or self._artifact_declared_digest(kind, artifact) != digest
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                artifacts[kind] = artifact
+
+            terminal_bytes = artifacts.get("terminal_summary")
+            if terminal_bytes is None:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            terminal = CandidateTerminalSummaryV1.model_validate_json(
+                terminal_bytes, strict=True
+            )
+            terminal_row = terminal_rows[0]
+            if (
+                terminal.terminal_summary_digest
+                != terminal_row["terminal_summary_digest"]
+                or terminal.outcome != terminal_row["outcome"]
+                or terminal.candidate_execution_authority != authority
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            self._validate_terminal_artifact_matrix(
+                terminal=terminal,
+                artifacts=artifacts,
+            )
+            return CompletedCandidateProjectionV1(
+                chain=chain,
+                terminal_summary=terminal,
+                terminal_summary_bytes=terminal_bytes,
+                artifacts=MappingProxyType(artifacts),
+            )
+        except SafeFailure:
+            raise
+        except (
+            BlockingIOError,
+            DurableWriteError,
+            MemoryError,
+            OSError,
+            OverflowError,
+            TypeError,
+            ValueError,
+            ValidationError,
+            sqlite3.Error,
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+        finally:
+            if connection is not None:
+                connection.close()
+            if artifact_anchor is not None:
+                artifact_anchor.close()
+            if lock_descriptor >= 0:
+                os.close(lock_descriptor)
+            if parent is not None:
+                parent.close()
+
+    def project_candidate_terminal(
+        self,
+        authority: CandidateExecutionAuthorityV1,
+    ) -> CompletedCandidateProjectionV1 | None:
+        """Explicit projection alias retaining the same read-only contract."""
+
+        return self.find_completed_candidate(authority)
 
 
 class SQLiteStateStore:
@@ -2737,22 +3109,49 @@ class SQLiteStateStore:
             "interrupted",
         }:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        existing_row = self._db.execute(
+            "SELECT status FROM phase3_runs WHERE run_id = ?",
+            (chain.identity.run_id,),
+        ).fetchone()
+        prior_count = 0
+        if existing_row is not None:
+            prior = self.verify_candidate_run_chain(
+                chain.identity.run_id,
+                expected_authority=chain.identity.candidate_execution_authority,
+            )
+            prior_count = len(prior.results)
+            if (
+                existing_row["status"] not in {"running", "interrupted"}
+                or len(chain.results) <= prior_count
+                or chain.identity != prior.identity
+                or chain.attempts[:prior_count] != prior.attempts
+                or chain.results[:prior_count] != prior.results
+                or chain.checkpoints[:prior_count] != prior.checkpoints
+                or chain.resume_events[: prior_count + 1] != prior.resume_events
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
         def mutate(database: sqlite3.Connection) -> None:
             identity = chain.identity
-            database.execute(
-                """INSERT INTO phase3_runs
-                   (run_id, authority_digest, identity_digest, identity_json, status)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (
-                    identity.run_id,
-                    identity.candidate_execution_authority_digest,
-                    identity.identity_digest,
-                    canonical_json_bytes(identity).decode(),
-                    status,
-                ),
-            )
-            for attempt in chain.attempts:
+            if existing_row is None:
+                database.execute(
+                    """INSERT INTO phase3_runs
+                       (run_id, authority_digest, identity_digest, identity_json, status)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        identity.run_id,
+                        identity.candidate_execution_authority_digest,
+                        identity.identity_digest,
+                        canonical_json_bytes(identity).decode(),
+                        status,
+                    ),
+                )
+            else:
+                database.execute(
+                    "UPDATE phase3_runs SET status = ? WHERE run_id = ?",
+                    (status, identity.run_id),
+                )
+            for attempt in chain.attempts[prior_count:]:
                 database.execute(
                     """INSERT INTO phase3_attempts
                        (attempt_hash, run_id, stage, stage_index, attempt_no, attempt_json)
@@ -2766,7 +3165,7 @@ class SQLiteStateStore:
                         canonical_json_bytes(attempt).decode(),
                     ),
                 )
-            for result in chain.results:
+            for result in chain.results[prior_count:]:
                 database.execute(
                     """INSERT INTO phase3_results
                        (result_hash, attempt_hash, run_id, stage, stage_index,
@@ -2782,7 +3181,7 @@ class SQLiteStateStore:
                         canonical_json_bytes(result).decode(),
                     ),
                 )
-            for checkpoint in chain.checkpoints:
+            for checkpoint in chain.checkpoints[prior_count:]:
                 database.execute(
                     """INSERT INTO phase3_checkpoints
                        (checkpoint_hash, run_id, stage, stage_index, result_hash,
@@ -2804,7 +3203,8 @@ class SQLiteStateStore:
                         canonical_json_bytes(checkpoint).decode(),
                     ),
                 )
-            for event in chain.resume_events:
+            event_offset = 0 if existing_row is None else prior_count + 1
+            for event in chain.resume_events[event_offset:]:
                 database.execute(
                     """INSERT INTO phase3_resume_events
                        (event_hash, run_id, event_index, prior_event_hash,
@@ -3017,10 +3417,16 @@ class SQLiteStateStore:
                 **artifacts,
                 "terminal_summary": candidate_terminal_summary_bytes(terminal_summary),
             }
+            DescriptorAnchoredCompletedCandidateProjector._validate_terminal_artifact_matrix(
+                terminal=terminal_summary,
+                artifacts=payloads,
+            )
             digests = {
-                kind: sha256_digest(payload) for kind, payload in payloads.items()
+                kind: DescriptorAnchoredCompletedCandidateProjector._artifact_declared_digest(
+                    kind, payload
+                )
+                for kind, payload in payloads.items()
             }
-            digests["terminal_summary"] = terminal_summary.terminal_summary_digest
             locators: dict[str, str] = {}
             anchor = self._phase3_artifacts()
             for kind, payload in payloads.items():
@@ -3092,14 +3498,13 @@ class SQLiteStateStore:
                 str(row["locator"]),
                 max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
             )
-            actual_digest = sha256_digest(payload) if payload is not None else None
-            if kind == "terminal_summary" and payload is not None:
-                summary = CandidateTerminalSummaryV1.model_validate_json(
-                    payload, strict=True
+            actual_digest = (
+                DescriptorAnchoredCompletedCandidateProjector._artifact_declared_digest(
+                    kind, payload
                 )
-                if candidate_terminal_summary_bytes(summary) != payload:
-                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                actual_digest = summary.terminal_summary_digest
+                if payload is not None
+                else None
+            )
             if (
                 payload is None
                 or len(payload) != row["byte_count"]
