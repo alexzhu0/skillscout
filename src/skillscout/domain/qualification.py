@@ -7,11 +7,19 @@ from typing import Annotated, Final, Literal
 
 from pydantic import Field, model_validator
 
+from skillscout.domain.candidate_authority import (
+    CandidateExecutionAuthorityV1,
+    WorkflowSpecAuthorityV1,
+)
+from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.extraction import WorkflowEvidence, WorkflowSpec
-from skillscout.domain.models import StrictFrozenModel
+from skillscout.domain.models import Digest, StrictFrozenModel
 
 QUALIFICATION_CHECK_SCHEMA_VERSION: Final = "qualification-check-v1"
 QUALIFICATION_POLICY_VERSION: Final = "qualification-policy-v1"
+QUALIFICATION_REPORT_SCHEMA_VERSION: Final = "qualification-report-v1"
+QUALIFICATION_THRESHOLD_VERSION: Final = "qualification-threshold-v1"
+DEFAULT_QUALIFICATION_THRESHOLD: Final = 75
 EVIDENCE_CONFIDENCE_FLOOR: Final = 0.70
 
 QualificationCheckId = Literal[
@@ -126,6 +134,77 @@ class QualificationCheckResultV1(StrictFrozenModel):
         )
         if self.passed is not expected_passed:
             raise ValueError("qualification check pass flag is inconsistent")
+        return self
+
+
+class QualificationReportHeaderV1(StrictFrozenModel):
+    """Direct immutable authority and version bindings for one qualification."""
+
+    report_schema_version: Literal["qualification-report-v1"]
+    policy_version: Literal["qualification-policy-v1"]
+    threshold_version: Literal["qualification-threshold-v1"]
+    threshold: Literal[75]
+    selected_workflow_fingerprint: Digest
+    workflow_spec_authority: WorkflowSpecAuthorityV1
+    candidate_execution_authority: CandidateExecutionAuthorityV1
+
+    @model_validator(mode="after")
+    def validate_direct_authority_bindings(self) -> QualificationReportHeaderV1:
+        workflow_fingerprint = self.workflow_spec_authority.workflow_spec.fingerprint
+        execution = self.candidate_execution_authority
+        if self.selected_workflow_fingerprint != workflow_fingerprint:
+            raise ValueError("selected fingerprint and workflow authority disagree")
+        if execution.selected_workflow_fingerprint != self.selected_workflow_fingerprint:
+            raise ValueError("selected fingerprint and execution authority disagree")
+        if execution.workflow_spec_authority != self.workflow_spec_authority:
+            raise ValueError("workflow authority and execution authority disagree")
+        if (
+            execution.qualification_policy_version != self.policy_version
+            or execution.qualification_report_schema_version
+            != self.report_schema_version
+        ):
+            raise ValueError("qualification version authority disagrees")
+        return self
+
+
+class QualificationReportV1(StrictFrozenModel):
+    """Canonical threshold decision that cannot disagree with its itemized checks."""
+
+    header: QualificationReportHeaderV1
+    items: Annotated[
+        tuple[QualificationCheckResultV1, ...],
+        Field(min_length=len(QUALIFICATION_CHECK_ORDER), max_length=len(QUALIFICATION_CHECK_ORDER)),
+    ]
+    total_score: Annotated[int, Field(ge=0, le=100)]
+    passed: bool
+    reason_codes: _ReasonTuple
+
+    @model_validator(mode="after")
+    def validate_report_decision(self) -> QualificationReportV1:
+        item_ids = tuple(item.check_id for item in self.items)
+        if item_ids != QUALIFICATION_CHECK_ORDER:
+            raise ValueError("qualification report check set or order is inconsistent")
+        if sum(item.weight for item in self.items) != 100:
+            raise ValueError("qualification report weights do not total 100")
+        expected_total = sum(item.awarded_points for item in self.items)
+        if self.total_score != expected_total:
+            raise ValueError("qualification report total is inconsistent")
+        has_hard_failure = any(item.hard_failure for item in self.items)
+        expected_passed = (
+            expected_total >= DEFAULT_QUALIFICATION_THRESHOLD
+            and not has_hard_failure
+        )
+        if self.passed is not expected_passed:
+            raise ValueError("qualification report pass flag is inconsistent")
+        expected_reasons = _ordered_reasons(
+            {
+                reason
+                for item in self.items
+                for reason in item.reason_codes
+            }
+        )
+        if self.reason_codes != expected_reasons:
+            raise ValueError("qualification report reasons are inconsistent")
         return self
 
 
@@ -460,3 +539,60 @@ def evaluate_qualification_checks(
             reasons=safety_reasons,
         ),
     )
+
+
+def qualification_report(
+    *,
+    checks: tuple[QualificationCheckResultV1, ...],
+    selected_workflow_fingerprint: Digest,
+    workflow_spec_authority: WorkflowSpecAuthorityV1,
+    candidate_execution_authority: CandidateExecutionAuthorityV1,
+) -> QualificationReportV1:
+    """Construct one fixed-threshold report from canonicalized policy checks."""
+
+    order = {
+        check_id: index
+        for index, check_id in enumerate(QUALIFICATION_CHECK_ORDER)
+    }
+    ordered_checks = tuple(sorted(checks, key=lambda item: order[item.check_id]))
+    total_score = sum(item.awarded_points for item in ordered_checks)
+    has_hard_failure = any(item.hard_failure for item in ordered_checks)
+    reasons = _ordered_reasons(
+        {
+            reason
+            for item in ordered_checks
+            for reason in item.reason_codes
+        }
+    )
+    return QualificationReportV1(
+        header=QualificationReportHeaderV1(
+            report_schema_version=QUALIFICATION_REPORT_SCHEMA_VERSION,
+            policy_version=QUALIFICATION_POLICY_VERSION,
+            threshold_version=QUALIFICATION_THRESHOLD_VERSION,
+            threshold=DEFAULT_QUALIFICATION_THRESHOLD,
+            selected_workflow_fingerprint=selected_workflow_fingerprint,
+            workflow_spec_authority=workflow_spec_authority,
+            candidate_execution_authority=candidate_execution_authority,
+        ),
+        items=ordered_checks,
+        total_score=total_score,
+        passed=(
+            total_score >= DEFAULT_QUALIFICATION_THRESHOLD
+            and not has_hard_failure
+        ),
+        reason_codes=reasons,
+    )
+
+
+def qualification_report_bytes(report: QualificationReportV1) -> bytes:
+    """Return the sole canonical persistence bytes for a validated report."""
+
+    if not isinstance(report, QualificationReportV1):
+        raise TypeError("canonical qualification bytes require a report")
+    return canonical_json_bytes(report)
+
+
+def qualification_report_digest(report: QualificationReportV1) -> str:
+    """Address the complete validated qualification report."""
+
+    return sha256_digest(qualification_report_bytes(report))

@@ -455,10 +455,13 @@ def _checks_with_total(
     for check_id, weight in QUALIFICATION_CHECK_WEIGHTS.items():
         points = min(weight, remaining)
         remaining -= points
+        is_hard_item = hard_failure and (
+            check_id == "unauthorized_execution_safety"
+        )
         reasons: tuple[str, ...] = (
             () if points == weight else (non_hard_reasons[check_id],)
         )
-        if hard_failure and check_id == "unauthorized_execution_safety":
+        if is_hard_item:
             reasons = ("source_code_execution",)
         items.append(
             QualificationCheckResultV1(
@@ -467,9 +470,8 @@ def _checks_with_total(
                 check_id=check_id,
                 weight=weight,
                 awarded_points=points,
-                passed=points == weight and not hard_failure,
-                hard_failure=hard_failure
-                and check_id == "unauthorized_execution_safety",
+                passed=points == weight and not is_hard_item,
+                hard_failure=is_hard_item,
                 reason_codes=reasons,
             )
         )
@@ -603,6 +605,26 @@ def test_report_rejects_stale_policy_authority_versions() -> None:
             _report(authority=authority, execution=execution)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("report_schema_version", "qualification-report-stale"),
+        ("policy_version", "qualification-policy-stale"),
+        ("threshold_version", "qualification-threshold-stale"),
+        ("threshold", 74),
+    ),
+)
+def test_report_rejects_every_header_policy_version_mutation(
+    field: str,
+    value: object,
+) -> None:
+    payload = _report().model_dump(mode="python")
+    payload["header"][field] = value  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        QualificationReportV1.model_validate(payload)
+
+
 def test_report_rejects_cross_candidate_header_swaps() -> None:
     first_authority = _workflow_authority()
     first_execution = _execution_authority(first_authority)
@@ -618,9 +640,9 @@ def test_report_rejects_cross_candidate_header_swaps() -> None:
     )
     second_execution = _execution_authority(second_authority)
 
-    with pytest.raises(ValueError, match="workflow authority"):
+    with pytest.raises(ValueError, match="authority disagree"):
         _report(authority=first_authority, execution=second_execution)
-    with pytest.raises(ValueError, match="workflow authority"):
+    with pytest.raises(ValueError, match="authority disagree"):
         _report(authority=second_authority, execution=first_execution)
 
 
