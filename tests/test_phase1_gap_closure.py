@@ -168,6 +168,7 @@ IMPORT_CARVE_OUTS: dict[str, frozenset[str]] = {
     "adapters/github.py": frozenset({"httpx"}),
     "adapters/openai_extract.py": frozenset({"openai"}),
     "adapters/openai_generate.py": frozenset({"openai"}),
+    "adapters/skills_ref.py": frozenset({"importlib"}),
 }
 
 
