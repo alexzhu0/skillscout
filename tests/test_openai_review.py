@@ -19,18 +19,39 @@ from skillscout.adapters.openai_review import (
     OpenAIReviewClient,
 )
 from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.domain.candidate_authority import (
+    CANDIDATE_EXECUTION_AUTHORITY_SCHEMA_VERSION,
+    LINEAGE_RESOLUTION_SCHEMA_VERSION,
+    LineageResolutionV1,
+    candidate_execution_authority,
+    workflow_spec_authority,
+)
+from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.extraction import WorkflowSpec
 from skillscout.domain.models import TokenUsage
 from skillscout.domain.review import (
+    CANDIDATE_TERMINAL_SUMMARY_SCHEMA_VERSION,
     ELIGIBILITY_POLICY_VERSION,
+    GENERATOR_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+    REVIEW_ATTESTATION_SCHEMA_VERSION,
+    REVIEW_DISPOSITION_SCHEMA_VERSION,
     REVIEW_OUTPUT_SCHEMA_VERSION,
     REVIEW_POLICY_VERSION,
     REVIEW_PROMPT_VERSION,
+    REVIEW_RETRY_POLICY_VERSION,
+    CandidateTerminalSummaryV1,
+    GeneratorOutcomeEvidenceV1,
+    ReviewAttestationV1,
+    ReviewDispositionV1,
     ReviewReasonV1,
     ReviewResult,
     ReviewerJudgment,
+    candidate_terminal_summary,
+    generator_outcome_evidence,
     is_eligible,
+    review_attestation,
+    review_disposition,
 )
 from skillscout.domain.skill_artifacts import (
     FROZEN_PACKAGE_SCHEMA_VERSION,
@@ -164,11 +185,14 @@ def _package(*, injection: bool = False) -> FrozenSkillPackageV1:
         ),
     )
     manifest = RenderedPackageManifestV1.from_files(files)
-    identity = GeneratedArtifactIdentityV1.model_construct(
-        schema_version=GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION,
-        draft_digest=_digest("3"),
-        generation_authority_digest=_digest("4"),
-        artifact_digest=_digest("5"),
+    identity_preimage = {
+        "schema_version": GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION,
+        "draft_digest": _digest("3"),
+        "generation_authority_digest": _digest("4"),
+    }
+    identity = GeneratedArtifactIdentityV1(
+        **identity_preimage,
+        artifact_digest=sha256_digest(identity_preimage),
     )
     return FrozenSkillPackageV1.model_construct(
         schema_version=FROZEN_PACKAGE_SCHEMA_VERSION,
@@ -562,3 +586,426 @@ def test_adapter_is_remote_read_and_keeps_credentials_header_only() -> None:
     sent = recorded.requests[0]
     assert sent.headers["authorization"] == f"Bearer {CANARY_KEY}"
     assert CANARY_KEY.encode() not in sent.content
+
+
+TERMINAL_OUTCOMES = (
+    "qualification_rejected",
+    "lineage_rejected",
+    "generator_refusal",
+    "generator_incomplete",
+    "generator_schema_failure",
+    "validation_rejected",
+    "reviewer_refusal",
+    "reviewer_incomplete",
+    "reviewer_schema_failure",
+    "review_rejected",
+    "review_low_confidence",
+    "eligible_local_candidate",
+)
+
+
+def _execution_authority():
+    workflow_authority = workflow_spec_authority(
+        workflow_spec=_workflow(),
+        phase2_extractor_output_hash=_digest("8"),
+        phase2_verified_chain_anchor=_digest("9"),
+    )
+    return candidate_execution_authority(
+        workflow_spec_authority=workflow_authority,
+        selected_workflow_fingerprint=workflow_authority.workflow_spec.fingerprint,
+        prior_lineage_binding_digest=None,
+        qualification_policy_version="qualification-policy-v1",
+        qualification_report_schema_version="qualification-report-v1",
+        configured_generator_model_id="gpt-generator-configured",
+        generator_prompt_version="generator-prompt-v1",
+        generator_output_schema_version="generated-skill-draft-v1",
+        generator_policy_version="generator-policy-v1",
+        renderer_version="skill-renderer-v1",
+        artifact_schema_version=GENERATED_ARTIFACT_IDENTITY_SCHEMA_VERSION,
+        provenance_schema_version=PROVENANCE_SCHEMA_VERSION,
+        official_validator_distribution="skills-ref",
+        official_validator_version="0.1.1",
+        official_validator_distribution_hash=_digest("a"),
+        approved_lock_digest=_digest("b"),
+        custom_validation_policy_version="local-validation-policy-v1",
+        validation_report_schema_version="validation-report-v1",
+        configured_reviewer_model_id="gpt-reviewer-configured",
+        reviewer_prompt_version=REVIEW_PROMPT_VERSION,
+        reviewer_output_schema_version=REVIEW_OUTPUT_SCHEMA_VERSION,
+        reviewer_policy_version=REVIEW_POLICY_VERSION,
+        eligibility_policy_version=ELIGIBILITY_POLICY_VERSION,
+        phase3_producer_version="phase3-v1",
+        phase3_profile_version="phase3-profile-v1",
+        retry_policy_version="phase3-retry-v1",
+    )
+
+
+def _resolved_lineage() -> LineageResolutionV1:
+    return LineageResolutionV1(
+        schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
+        status="new_lineage",
+        lineage_authority_digest=_digest("c"),
+        lineage_id=_digest("d"),
+        stable_slug="review-candidate",
+        initial_workflow_spec_authority_digest=(
+            _execution_authority().workflow_spec_authority.authority_digest
+        ),
+        reason_codes=(),
+    )
+
+
+def _rejected_lineage(*, qualification: bool = False) -> LineageResolutionV1:
+    return LineageResolutionV1(
+        schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
+        status=(
+            "not_evaluated_qualification_rejected"
+            if qualification
+            else "lineage_rejected"
+        ),
+        lineage_authority_digest=None,
+        lineage_id=None,
+        stable_slug=None,
+        initial_workflow_spec_authority_digest=None,
+        reason_codes=(
+            ("qualification_rejected",)
+            if qualification
+            else ("missing_verified_evidence",)
+        ),
+    )
+
+
+def _terminal_report(*, error_count: int) -> ValidationReportV1:
+    execution = _execution_authority()
+    package = _package()
+    return ValidationReportV1.model_construct(
+        schema_version="validation-report-v1",
+        validation_report_schema_version="validation-report-v1",
+        selected_workflow_fingerprint=execution.selected_workflow_fingerprint,
+        workflow_spec_authority=execution.workflow_spec_authority,
+        candidate_execution_authority=execution,
+        renderer_version=execution.renderer_version,
+        generated_artifact_identity=package.generated_artifact_identity,
+        package_identity=package.package_identity,
+        package_digest=package.package_identity.package_digest,
+        findings=(),
+        error_count=error_count,
+        warning_count=0,
+        info_count=0,
+        passed=error_count == 0,
+        report_digest=_digest("e" if error_count == 0 else "f"),
+    )
+
+
+def _review_result(
+    status: str = "parsed",
+    *,
+    verdict: str = "YES",
+    confidence: float = 0.80,
+) -> ReviewResult:
+    return ReviewResult(
+        status=status,
+        judgment=(
+            _judgment(verdict=verdict, confidence=confidence)
+            if status == "parsed"
+            else None
+        ),
+        refusal_text="bounded refusal" if status == "refused" else None,
+        incomplete_reason="max_output_tokens" if status == "incomplete" else None,
+        request_id="resp_terminal_review",
+        model="gpt-reviewer-actual",
+        usage=TokenUsage(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+        ),
+        latency_ms=12,
+    )
+
+
+def _generator_evidence(
+    outcome: str,
+    *,
+    package: FrozenSkillPackageV1 | None = None,
+) -> GeneratorOutcomeEvidenceV1:
+    execution = _execution_authority()
+    return generator_outcome_evidence(
+        candidate_execution_authority=execution,
+        outcome=outcome,
+        actual_generator_model_id="gpt-generator-actual",
+        request_id=f"resp_generator_{outcome}",
+        usage=TokenUsage(
+            prompt_tokens=200,
+            completion_tokens=40,
+            total_tokens=240,
+        ),
+        latency_ms=9,
+        generated_artifact_identity=(
+            package.generated_artifact_identity if package is not None else None
+        ),
+    )
+
+
+def _attestation(
+    *,
+    result: ReviewResult,
+    report: ValidationReportV1,
+    package: FrozenSkillPackageV1,
+) -> ReviewAttestationV1:
+    return review_attestation(
+        candidate_execution_authority=_execution_authority(),
+        generated_artifact_identity=package.generated_artifact_identity,
+        package_identity=package.package_identity,
+        validation_report=report,
+        review_result=result,
+    )
+
+
+def _matrix_case(outcome: str) -> dict[str, object]:
+    package = _package()
+    qualification_passed = outcome != "qualification_rejected"
+    lineage = (
+        _rejected_lineage(qualification=True)
+        if outcome == "qualification_rejected"
+        else (
+            _rejected_lineage()
+            if outcome == "lineage_rejected"
+            else _resolved_lineage()
+        )
+    )
+    generator: GeneratorOutcomeEvidenceV1 | None = None
+    report: ValidationReportV1 | None = None
+    result: ReviewResult | None = None
+    attestation: ReviewAttestationV1 | None = None
+    package_identity = None
+    artifact_identity = None
+
+    if outcome.startswith("generator_"):
+        generator_status = {
+            "generator_refusal": "refused",
+            "generator_incomplete": "incomplete",
+            "generator_schema_failure": "schema_invalid",
+        }[outcome]
+        generator = _generator_evidence(generator_status)
+    elif outcome not in {"qualification_rejected", "lineage_rejected"}:
+        generator = _generator_evidence("parsed", package=package)
+        package_identity = package.package_identity
+        artifact_identity = package.generated_artifact_identity
+        report = _terminal_report(
+            error_count=1 if outcome == "validation_rejected" else 0
+        )
+
+    if outcome == "validation_rejected":
+        disposition = review_disposition(
+            generation_succeeded=True,
+            validation_report=report,
+            review_result=None,
+        )
+    elif outcome in {
+        "reviewer_refusal",
+        "reviewer_incomplete",
+        "reviewer_schema_failure",
+        "review_rejected",
+        "review_low_confidence",
+        "eligible_local_candidate",
+    }:
+        result = {
+            "reviewer_refusal": _review_result("refused"),
+            "reviewer_incomplete": _review_result("incomplete"),
+            "reviewer_schema_failure": _review_result("schema_invalid"),
+            "review_rejected": _review_result(verdict="NO", confidence=0.99),
+            "review_low_confidence": _review_result(confidence=0.799),
+            "eligible_local_candidate": _review_result(confidence=0.80),
+        }[outcome]
+        disposition = review_disposition(
+            generation_succeeded=True,
+            validation_report=report,
+            review_result=result,
+        )
+        attestation = _attestation(result=result, report=report, package=package)
+    else:
+        disposition = review_disposition(
+            generation_succeeded=False,
+            validation_report=None,
+            review_result=None,
+        )
+
+    return {
+        "candidate_execution_authority": _execution_authority(),
+        "qualification_passed": qualification_passed,
+        "qualification_report_digest": _digest("0"),
+        "lineage_resolution": lineage,
+        "generator_outcome_evidence": generator,
+        "generated_artifact_identity": artifact_identity,
+        "package_identity": package_identity,
+        "validation_report": report,
+        "review_disposition": disposition,
+        "review_attestation": attestation,
+    }
+
+
+def test_external_contract_vocabularies_are_exact_and_attestation_has_no_eligibility() -> None:
+    assert CANDIDATE_EXECUTION_AUTHORITY_SCHEMA_VERSION == (
+        "candidate-execution-authority-v1"
+    )
+    assert GENERATOR_OUTCOME_EVIDENCE_SCHEMA_VERSION == (
+        "generator-outcome-evidence-v1"
+    )
+    assert REVIEW_DISPOSITION_SCHEMA_VERSION == "review-disposition-v1"
+    assert REVIEW_ATTESTATION_SCHEMA_VERSION == "review-attestation-v1"
+    assert CANDIDATE_TERMINAL_SUMMARY_SCHEMA_VERSION == (
+        "candidate-terminal-summary-v1"
+    )
+
+    terminal_schema = CandidateTerminalSummaryV1.model_json_schema()
+    assert terminal_schema["properties"]["outcome"]["enum"] == list(TERMINAL_OUTCOMES)
+    assert "candidate_source_unavailable" not in json.dumps(terminal_schema)
+
+    disposition_schema = ReviewDispositionV1.model_json_schema()
+    assert disposition_schema["properties"]["status"]["enum"] == [
+        "review_not_reached_generation_unsuccessful",
+        "review_skipped_validation_errors",
+        "reviewer_refusal",
+        "reviewer_incomplete",
+        "reviewer_schema_failure",
+        "review_completed_no",
+        "review_completed_low_confidence",
+        "review_completed_eligible",
+    ]
+
+    attestation_properties = set(
+        ReviewAttestationV1.model_json_schema()["properties"]
+    )
+    assert "eligible" not in attestation_properties
+    assert "eligibility_policy_version" not in attestation_properties
+
+
+@pytest.mark.parametrize("outcome", TERMINAL_OUTCOMES)
+def test_terminal_summary_accepts_exact_branch_evidence_matrix(outcome: str) -> None:
+    case = _matrix_case(outcome)
+    summary = candidate_terminal_summary(outcome=outcome, **case)
+
+    assert summary.outcome == outcome
+    assert summary.eligible is (outcome == "eligible_local_candidate")
+    assert summary.eligibility_policy_version == ELIGIBILITY_POLICY_VERSION
+    assert (
+        summary.generator_outcome_evidence is not None
+    ) is outcome not in {"qualification_rejected", "lineage_rejected"}
+    assert (
+        summary.package_identity is not None
+    ) is outcome not in {
+        "qualification_rejected",
+        "lineage_rejected",
+        "generator_refusal",
+        "generator_incomplete",
+        "generator_schema_failure",
+    }
+    assert (
+        summary.validation_report_digest is not None
+    ) is outcome not in {
+        "qualification_rejected",
+        "lineage_rejected",
+        "generator_refusal",
+        "generator_incomplete",
+        "generator_schema_failure",
+    }
+    assert (
+        summary.review_attestation_digest is not None
+    ) is outcome in {
+        "reviewer_refusal",
+        "reviewer_incomplete",
+        "reviewer_schema_failure",
+        "review_rejected",
+        "review_low_confidence",
+        "eligible_local_candidate",
+    }
+
+
+def test_attestation_binds_exact_external_evidence_and_raw_review() -> None:
+    package = _package()
+    report = _terminal_report(error_count=0)
+    result = _review_result()
+    attestation = _attestation(result=result, report=report, package=package)
+
+    assert attestation.generated_artifact_identity == (
+        package.generated_artifact_identity
+    )
+    assert attestation.package_identity == package.package_identity
+    assert attestation.package_digest == package.package_identity.package_digest
+    assert attestation.validation_report_digest == report.report_digest
+    assert attestation.configured_reviewer_model_id == "gpt-reviewer-configured"
+    assert attestation.actual_reviewer_model_id == "gpt-reviewer-actual"
+    assert attestation.reviewer_prompt_version == REVIEW_PROMPT_VERSION
+    assert attestation.reviewer_output_schema_version == REVIEW_OUTPUT_SCHEMA_VERSION
+    assert attestation.reviewer_policy_version == REVIEW_POLICY_VERSION
+    assert attestation.reviewer_retry_policy_version == REVIEW_RETRY_POLICY_VERSION
+    assert attestation.review_result == result
+    assert attestation.request_id == result.request_id
+    assert attestation.usage == result.usage
+    assert attestation.latency_ms == result.latency_ms
+    assert attestation.attestation_digest.startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    ("outcome", "mutator"),
+    (
+        (
+            "qualification_rejected",
+            lambda case: {
+                **case,
+                "lineage_resolution": _resolved_lineage(),
+            },
+        ),
+        (
+            "validation_rejected",
+            lambda case: {
+                **case,
+                "review_disposition": ReviewDispositionV1(
+                    schema_version=REVIEW_DISPOSITION_SCHEMA_VERSION,
+                    status="review_completed_no",
+                ),
+            },
+        ),
+        (
+            "eligible_local_candidate",
+            lambda case: {
+                **case,
+                "review_attestation": None,
+            },
+        ),
+        (
+            "review_rejected",
+            lambda case: {
+                **case,
+                "package_identity": None,
+            },
+        ),
+    ),
+)
+def test_terminal_summary_rejects_impossible_branch_combinations(
+    outcome: str,
+    mutator,
+) -> None:
+    with pytest.raises((TypeError, ValueError, ValidationError)):
+        candidate_terminal_summary(outcome=outcome, **mutator(_matrix_case(outcome)))
+
+
+def test_attestation_and_terminal_construction_never_mutate_package_bytes() -> None:
+    package = _package(injection=True)
+    before = tuple((file.path, file.content, file.mode) for file in package.files)
+    report = _terminal_report(error_count=0)
+    result = _review_result()
+    attestation = _attestation(result=result, report=report, package=package)
+    case = _matrix_case("eligible_local_candidate")
+    summary = candidate_terminal_summary(
+        outcome="eligible_local_candidate",
+        **{
+            **case,
+            "generated_artifact_identity": package.generated_artifact_identity,
+            "package_identity": package.package_identity,
+            "validation_report": report,
+            "review_attestation": attestation,
+        },
+    )
+
+    assert summary.eligible is True
+    assert tuple((file.path, file.content, file.mode) for file in package.files) == before
