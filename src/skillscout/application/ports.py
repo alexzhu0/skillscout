@@ -356,6 +356,20 @@ class MutableCandidateState(Protocol):
 
     def persist_candidate_chain(self, chain: object, *, status: str) -> None: ...
 
+    def persist_candidate_stage(
+        self,
+        chain: object,
+        *,
+        stage_payload: bytes,
+        recovery_artifacts: Mapping[str, bytes],
+        status: str,
+    ) -> None: ...
+
+    def read_candidate_checkpoint_payloads(
+        self,
+        run_id: str,
+    ) -> Mapping[str, bytes]: ...
+
     def persist_candidate_terminal(
         self,
         run_id: str,

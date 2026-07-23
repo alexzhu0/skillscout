@@ -3096,14 +3096,12 @@ class SQLiteStateStore:
         values["candidate_execution_authority"] = authority
         return CandidateRunIdentityV1.model_validate(values, strict=True)
 
-    def persist_candidate_chain(
+    def _candidate_chain_mutation(
         self,
         chain: VerifiedCandidateRunChain,
         *,
         status: str,
-    ) -> None:
-        """Atomically persist one already-verified Phase 3 successful prefix."""
-
+    ) -> Callable[[sqlite3.Connection], None]:
         if type(chain) is not VerifiedCandidateRunChain or status not in {
             "running",
             "interrupted",
@@ -3221,9 +3219,134 @@ class SQLiteStateStore:
                     ),
                 )
 
+        return mutate
+
+    def persist_candidate_chain(
+        self,
+        chain: VerifiedCandidateRunChain,
+        *,
+        status: str,
+    ) -> None:
+        """Atomically persist one already-verified Phase 3 successful prefix."""
+
         try:
-            self._snapshot_transaction(mutate)
+            self._snapshot_transaction(
+                self._candidate_chain_mutation(chain, status=status)
+            )
         except (TypeError, ValueError, ValidationError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def persist_candidate_stage(
+        self,
+        chain: VerifiedCandidateRunChain,
+        *,
+        stage_payload: bytes,
+        recovery_artifacts: Mapping[str, bytes],
+        status: str,
+    ) -> None:
+        """Atomically index exact recovery payloads with one verified chain extension."""
+
+        try:
+            if (
+                type(chain) is not VerifiedCandidateRunChain
+                or not chain.results
+                or type(stage_payload) is not bytes
+                or sha256_digest(stage_payload) != chain.results[-1].output_hash
+                or not isinstance(recovery_artifacts, Mapping)
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            stage = chain.results[-1].stage.value
+            expected_payload_kind = f"checkpoint_{stage}_payload"
+            payloads = {expected_payload_kind: stage_payload}
+            for kind, payload in recovery_artifacts.items():
+                if (
+                    type(kind) is not str
+                    or not kind.startswith("checkpoint_")
+                    or kind == expected_payload_kind
+                    or type(payload) is not bytes
+                    or not payload
+                    or len(payload) > _PHASE3_ARTIFACT_MAX_BYTES
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                payloads[kind] = payload
+            anchor = self._phase3_artifacts()
+            rows: dict[str, tuple[str, str, int]] = {}
+            for kind, payload in payloads.items():
+                digest = sha256_digest(payload)
+                locator = AnchoredDirectory.validate_child_name(
+                    f"{digest.removeprefix('sha256:')}.json"
+                )
+                anchor.atomic_write(
+                    locator,
+                    payload,
+                    max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
+                    seam_prefix="phase3_checkpoint_payload_",
+                )
+                rows[kind] = (digest, locator, len(payload))
+
+            chain_mutation = self._candidate_chain_mutation(chain, status=status)
+
+            def mutate(database: sqlite3.Connection) -> None:
+                chain_mutation(database)
+                for kind, (digest, locator, byte_count) in rows.items():
+                    database.execute(
+                        """INSERT INTO phase3_artifacts
+                           (run_id, artifact_kind, artifact_digest, locator, byte_count)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (
+                            chain.identity.run_id,
+                            kind,
+                            digest,
+                            locator,
+                            byte_count,
+                        ),
+                    )
+
+            self._snapshot_transaction(mutate)
+        except SafeFailure:
+            raise
+        except (
+            DurableWriteError,
+            TypeError,
+            ValueError,
+            ValidationError,
+            sqlite3.Error,
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def read_candidate_checkpoint_payloads(
+        self,
+        run_id: str,
+    ) -> Mapping[str, bytes]:
+        """Read and verify every durable payload for one unfinished chain."""
+
+        try:
+            chain = self.verify_candidate_run_chain(run_id)
+            rows = self._db.execute(
+                """SELECT artifact_kind FROM phase3_artifacts
+                   WHERE run_id = ? AND artifact_kind LIKE 'checkpoint_%'
+                   ORDER BY artifact_kind""",
+                (run_id,),
+            ).fetchall()
+            payloads = {
+                str(row["artifact_kind"]): self.read_candidate_artifact(
+                    run_id, str(row["artifact_kind"])
+                )
+                for row in rows
+            }
+            required_payloads = {
+                f"checkpoint_{result.stage.value}_payload": result.output_hash
+                for result in chain.results
+            }
+            if set(required_payloads) - set(payloads):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            for kind, expected_digest in required_payloads.items():
+                if sha256_digest(payloads[kind]) != expected_digest:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            return MappingProxyType(payloads)
+        except SafeFailure:
+            raise
+        except (TypeError, ValueError, sqlite3.Error):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
     def verify_candidate_run_chain(
@@ -3444,6 +3567,11 @@ class SQLiteStateStore:
                 locators[kind] = locator
 
             def mutate(database: sqlite3.Connection) -> None:
+                database.execute(
+                    """DELETE FROM phase3_artifacts
+                       WHERE run_id = ? AND artifact_kind LIKE 'checkpoint_%'""",
+                    (run_id,),
+                )
                 for kind, payload in payloads.items():
                     database.execute(
                         """INSERT INTO phase3_artifacts
