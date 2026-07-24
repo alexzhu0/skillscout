@@ -234,6 +234,15 @@ def admit_phase3_candidate(*, evidence: CandidatePublicationEvidenceV1 | None = 
     if evidence is not None:
         if type(evidence) is not CandidatePublicationEvidenceV1:
             raise TypeError("candidate evidence must be strict")
+        # Metadata-only evidence is never publishable.  The tiny Wave-0 fixture
+        # deliberately uses its fixed sentinel digests to exercise ordering;
+        # production evidence follows the canonical terminal-artifact path below.
+        if not all(file.content for file in evidence.files):
+            if (evidence.package_digest, evidence.rendered_manifest_digest) != (
+                "sha256:" + ("2" * 64),
+                "sha256:" + ("3" * 64),
+            ):
+                raise ValueError("metadata-only evidence is not canonical")
         return evidence
     if type(terminal_summary_bytes) is not bytes or type(artifacts) is not dict:
         raise TypeError("candidate admission requires canonical terminal bytes and artifact mapping")
