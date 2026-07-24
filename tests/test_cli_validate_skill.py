@@ -68,6 +68,21 @@ def test_build_candidate_parser_exposes_only_the_closed_local_contract() -> None
     } == {"candidate", "phase2_state", "state", "output"}
 
 
+def test_publication_admission_parser_exposes_only_fixed_handoff_inputs() -> None:
+    parser = cli.build_parser()
+    subparsers = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    admission = subparsers.choices["verify-publication-admission"]
+    options = {
+        option
+        for action in admission._actions
+        for option in action.option_strings
+        if option not in {"-h", "--help"}
+    }
+    assert options == {"--candidate", "--phase2-state", "--phase3-state", "--compare-env"}
+
+
 def test_candidate_source_failure_precedes_phase3_state_and_output(
     tmp_path: Path,
     capsys,

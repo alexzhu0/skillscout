@@ -52,6 +52,15 @@ class PublicationRuntimeConfig:
     token_factory: Callable[[], str]
 
 
+@dataclass(frozen=True)
+class PublicationEvidenceLocatorV1:
+    """Canonical, workflow-safe local evidence locators and candidate digests."""
+
+    candidate_descriptor_locator: str
+    phase2_state_locator: str
+    phase3_state_locator: str
+
+
 def _publication_config_fail() -> NoReturn:
     # This crosses a public boundary only through the CLI's closed diagnostic.
     raise ValueError("publication authority configuration rejected")
@@ -129,6 +138,209 @@ def load_publication_runtime_config(
     if type(authority) is not PublicationAuthorityConfig or not callable(token_factory):
         _publication_config_fail()
     return PublicationRuntimeConfig(authority=authority, token_factory=token_factory)
+
+
+_PUBLICATION_HANDOFF_FIELDS = (
+    "candidate_descriptor_locator",
+    "phase2_state_locator",
+    "phase3_state_locator",
+    "candidate_descriptor_digest",
+    "phase2_chain_digest",
+    "terminal_summary_digest",
+    "package_digest",
+    "manifest_digest",
+    "validation_report_digest",
+    "review_attestation_digest",
+)
+
+
+def _closed_publication_locator(path: Path, *, root: str) -> str:
+    """Admit one fixed workflow-relative locator, never an operator root."""
+
+    raw = os.fspath(path)
+    if (
+        type(raw) is not str
+        or not raw.isascii()
+        or len(raw.encode("ascii")) > 255
+        or "\\" in raw
+    ):
+        _publication_config_fail()
+    parsed = PurePosixPath(raw)
+    if (
+        parsed.is_absolute()
+        or not parsed.parts
+        or parsed.parts[0] != root
+        or parsed.as_posix() != raw
+        or any(part in {"", ".", ".."} for part in parsed.parts)
+        or any(not all(char.isalnum() or char in "._-" for char in part) for part in parsed.parts)
+    ):
+        _publication_config_fail()
+    return raw
+
+
+def _publication_projection(
+    *, candidate: Path, phase2_state: Path, phase3_state: Path
+) -> tuple[object, object]:
+    """Resolve Phase 2 and project only an exact completed Phase 3 candidate."""
+
+    from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
+    from skillscout.adapters.state import DescriptorAnchoredCompletedCandidateProjector
+    from skillscout.application.candidate_source import load_candidate_subject
+    from skillscout.application.phase3 import PhaseThreeRuntimeProfile, _execution_authority
+    from skillscout.application.ports import CandidateSourceUnavailable, ErrorCode, SafeFailure
+
+    try:
+        resolved = load_candidate_subject(candidate, SQLitePhaseTwoCandidateSource(phase2_state))
+        authority = _execution_authority(source=resolved, profile=PhaseThreeRuntimeProfile())
+        projector = DescriptorAnchoredCompletedCandidateProjector(phase3_state)
+        try:
+            completed = projector.find_completed_candidate(authority)
+        finally:
+            projector.close()
+        if completed is None:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return resolved, completed
+    except CandidateSourceUnavailable:
+        raise SafeFailure(ErrorCode.CANDIDATE_SOURCE_UNAVAILABLE) from None
+
+
+def verify_publication_admission_handoff(
+    *,
+    candidate: Path,
+    phase2_state: Path,
+    phase3_state: Path,
+    compare_env: bool = False,
+    environ: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return candidate-only evidence, optionally bind it inside a protected job.
+
+    The non-comparison branch deliberately has no reference to protected config,
+    token construction, publication intent, or publication admission.
+    """
+
+    candidate_locator = _closed_publication_locator(candidate, root="evidence")
+    phase2_locator = _closed_publication_locator(phase2_state, root="state")
+    phase3_locator = _closed_publication_locator(phase3_state, root="state")
+    if len({candidate_locator, phase2_locator, phase3_locator}) != 3:
+        _publication_config_fail()
+    resolved, completed = _publication_projection(
+        candidate=Path(candidate_locator),
+        phase2_state=Path(phase2_locator),
+        phase3_state=Path(phase3_locator),
+    )
+    from skillscout.domain.canonical import sha256_digest
+    from skillscout.domain.publication import admit_phase3_candidate
+
+    evidence = admit_phase3_candidate(
+        terminal_summary=completed.terminal_summary,
+        terminal_summary_bytes=completed.terminal_summary_bytes,
+        artifacts=dict(completed.artifacts),
+    )
+    terminal = completed.terminal_summary
+    handoff = {
+        "candidate_descriptor_locator": candidate_locator,
+        "phase2_state_locator": phase2_locator,
+        "phase3_state_locator": phase3_locator,
+        "candidate_descriptor_digest": sha256_digest(Path(candidate_locator).read_bytes()),
+        "phase2_chain_digest": resolved.descriptor.verified_chain_anchor,
+        "terminal_summary_digest": terminal.terminal_summary_digest,
+        "package_digest": evidence.package_digest,
+        "manifest_digest": evidence.rendered_manifest_digest,
+        "validation_report_digest": evidence.validation_report_digest,
+        "review_attestation_digest": evidence.review_attestation_digest,
+    }
+    if not compare_env:
+        return handoff
+
+    values = os.environ if environ is None else environ
+    expected_names = {
+        field: f"SKILLSCOUT_EXPECTED_{field.upper()}" for field in _PUBLICATION_HANDOFF_FIELDS
+    }
+    try:
+        expected = {field: values[expected_names[field]] for field in _PUBLICATION_HANDOFF_FIELDS}
+    except (KeyError, TypeError):
+        _publication_config_fail()
+    if expected != handoff:
+        _publication_config_fail()
+    authority = load_publication_authority_config(values)
+    from skillscout.domain.publication import (
+        CatalogAuthorityV1,
+        ReviewerTargetsV1,
+        bind_publication_admission,
+        derive_publication_intent,
+    )
+
+    catalog = CatalogAuthorityV1(
+        schema_version="catalog-authority-v1",
+        catalog_repository_id=authority.catalog_repository_id,
+        catalog_full_name=authority.catalog_full_name,
+        base_branch=authority.catalog_base_branch,
+        catalog_root="skills",
+    )
+    intent = derive_publication_intent(
+        evidence=evidence,
+        catalog_authority=catalog,
+        reviewer_targets=ReviewerTargetsV1(
+            schema_version="reviewer-targets-v1", reviewers=authority.catalog_reviewers
+        ),
+    )
+    admission = bind_publication_admission(
+        evidence=evidence, intent=intent, catalog_authority=catalog
+    )
+    return {
+        **handoff,
+        "publication_intent_digest": intent.intent_digest,
+        "admission_digest": admission.admission_digest,
+    }
+
+
+def build_publication_application(
+    *,
+    admission: object,
+    authority: PublicationAuthorityConfig,
+    publication_state: Path,
+    token_factory: Callable[[], str],
+) -> object:
+    """Build the sole write graph after exact evidence and authority admission.
+
+    No token is read here.  The application asks the delayed remote factory only
+    after its own local publication ledger has admitted the canonical intent.
+    """
+
+    from skillscout.adapters.github_publish import GitHubPublishClient
+    from skillscout.adapters.publication_state import PublicationStateStore
+    from skillscout.application.publication import PublicationApplication, PublicationDependencies
+    from skillscout.domain.publication import PublicationAdmissionV1
+
+    if type(admission) is not PublicationAdmissionV1 or type(authority) is not PublicationAuthorityConfig:
+        _publication_config_fail()
+    if (
+        admission.catalog_repository_id != authority.catalog_repository_id
+        or admission.catalog_full_name != authority.catalog_full_name
+        or admission.intent.base_branch != authority.catalog_base_branch
+        or admission.intent.reviewers != authority.catalog_reviewers
+    ):
+        _publication_config_fail()
+    runtime = load_publication_runtime_config(authority, token_factory=token_factory)
+
+    def remote_factory() -> object:
+        token = runtime.token_factory()
+        if type(token) is not str or not token:
+            _publication_config_fail()
+        return GitHubPublishClient(
+            token=token,
+            catalog_repository_id=runtime.authority.catalog_repository_id,
+            catalog_full_name=runtime.authority.catalog_full_name,
+            base_branch=runtime.authority.catalog_base_branch,
+            stable_slug=admission.evidence.stable_slug,
+        )
+
+    return PublicationApplication(
+        PublicationDependencies(
+            state_factory=lambda: PublicationStateStore(publication_state),
+            remote_factory=remote_factory,
+        )
+    )
 
 
 @dataclass(frozen=True)

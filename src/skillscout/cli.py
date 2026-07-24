@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
-from skillscout.bootstrap import require_phase3_gate_b3
+from skillscout.bootstrap import (
+    build_publication_application,
+    load_publication_authority_config,
+    require_phase3_gate_b3,
+    verify_publication_admission_handoff,
+)
 
 require_phase3_gate_b3()
 
@@ -108,6 +113,16 @@ def build_parser() -> SafeArgumentParser:
     inspect_run.add_argument("run_id")
     inspect_run.add_argument("--state", required=True, type=Path)
     inspect_run.add_argument("--format", choices=("json",), default="json")
+    verify_admission = commands.add_parser("verify-publication-admission")
+    verify_admission.add_argument("--candidate", required=True, type=Path)
+    verify_admission.add_argument("--phase2-state", required=True, type=Path)
+    verify_admission.add_argument("--phase3-state", required=True, type=Path)
+    verify_admission.add_argument("--compare-env", action="store_true")
+    publish = commands.add_parser("publish-candidate")
+    publish.add_argument("--candidate", required=True, type=Path)
+    publish.add_argument("--phase2-state", required=True, type=Path)
+    publish.add_argument("--phase3-state", required=True, type=Path)
+    publish.add_argument("--publication-state", required=True, type=Path)
     return parser
 
 
@@ -431,6 +446,108 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
                 close()
 
 
+def _run_verify_publication_admission(arguments: argparse.Namespace) -> dict[str, str]:
+    """Run the authority-blind handoff, or its protected comparison variant."""
+
+    try:
+        return verify_publication_admission_handoff(
+            candidate=arguments.candidate,
+            phase2_state=arguments.phase2_state,
+            phase3_state=arguments.phase3_state,
+            compare_env=arguments.compare_env,
+        )
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _publication_admission_for_publish(arguments: argparse.Namespace) -> tuple[object, object]:
+    """Rebuild the exact protected admission after comparison has succeeded."""
+
+    from skillscout.bootstrap import _publication_projection
+    from skillscout.domain.publication import (
+        CatalogAuthorityV1,
+        ReviewerTargetsV1,
+        admit_phase3_candidate,
+        bind_publication_admission,
+        derive_publication_intent,
+    )
+
+    verify_publication_admission_handoff(
+        candidate=arguments.candidate,
+        phase2_state=arguments.phase2_state,
+        phase3_state=arguments.phase3_state,
+        compare_env=True,
+    )
+    authority = load_publication_authority_config()
+    _resolved, completed = _publication_projection(
+        candidate=arguments.candidate,
+        phase2_state=arguments.phase2_state,
+        phase3_state=arguments.phase3_state,
+    )
+    evidence = admit_phase3_candidate(
+        terminal_summary=completed.terminal_summary,
+        terminal_summary_bytes=completed.terminal_summary_bytes,
+        artifacts=dict(completed.artifacts),
+    )
+    catalog = CatalogAuthorityV1(
+        schema_version="catalog-authority-v1",
+        catalog_repository_id=authority.catalog_repository_id,
+        catalog_full_name=authority.catalog_full_name,
+        base_branch=authority.catalog_base_branch,
+        catalog_root="skills",
+    )
+    intent = derive_publication_intent(
+        evidence=evidence,
+        catalog_authority=catalog,
+        reviewer_targets=ReviewerTargetsV1(
+            schema_version="reviewer-targets-v1", reviewers=authority.catalog_reviewers
+        ),
+    )
+    return bind_publication_admission(
+        evidence=evidence, intent=intent, catalog_authority=catalog
+    ), authority
+
+
+def _public_publication_payload(*, result: object, admission: object) -> dict[str, object]:
+    """Project the publisher's bounded public result without provider bodies."""
+
+    status = str(getattr(result, "status", "manual_intervention_required"))
+    outcome = "draft_updated" if status == "published" else "manual_intervention_required"
+    intent = getattr(admission, "intent")
+    evidence = getattr(admission, "evidence")
+    return {
+        "outcome": outcome,
+        "catalog_repository_id": getattr(admission, "catalog_repository_id"),
+        "base_branch": getattr(intent, "base_branch"),
+        "head_branch": getattr(admission, "head_branch"),
+        "package_digest": getattr(evidence, "package_digest"),
+        "marker_digest": getattr(getattr(result, "record", None), "marker_digest", None),
+        "reviewers": list(getattr(intent, "reviewers")),
+        "reason_code": str(getattr(result, "code", "publication_failed")),
+    }
+
+
+def _run_publish_candidate(arguments: argparse.Namespace) -> dict[str, object]:
+    """The only credentialed path; protected comparison completes before token use."""
+
+    try:
+        admission, authority = _publication_admission_for_publish(arguments)
+        application = build_publication_application(
+            admission=admission,
+            authority=authority,
+            publication_state=arguments.publication_state,
+            token_factory=lambda: os.environ["SKILLSCOUT_GITHUB_TOKEN"],
+        )
+        result = application.run(admission)
+        return _public_publication_payload(result=result, admission=admission)
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     state: SQLiteStateStore | None = None
@@ -440,6 +557,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = state.inspect_run(arguments.run_id)
         elif arguments.command == "build-candidate":
             payload = _run_build_candidate(arguments)
+        elif arguments.command == "verify-publication-admission":
+            payload = _run_verify_publication_admission(arguments)
+        elif arguments.command == "publish-candidate":
+            payload = _run_publish_candidate(arguments)
         elif arguments.command == "extract-repo":
             subject = load_subject(arguments.subject)
             state = SQLiteStateStore(arguments.state)
