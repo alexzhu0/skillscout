@@ -45,8 +45,8 @@ All commands run from the repository root. Offline tests use injected transports
 | PUB-01 | T-04-01, T-04-02 | Only configured catalog, allowed machine ref, exact frozen-manifest owned subtree, Draft PR, and configured reviewer request are reachable | contract + transport integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_github_publish_adapter.py -x` | ❌ W0 | ⬜ pending |
 | PUB-02 | T-04-03 | Canonical PR body contains every required provenance, evidence, review, and human-control field plus machine marker | unit + golden | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_domain.py -x` | ❌ W0 | ⬜ pending |
 | PUB-03 | T-04-04 | Production adapter exposes no merge, review submission/approve, ready, auto-merge, ruleset, default-ref, arbitrary-repository, or arbitrary-ref operation; bounded completed-review GET is read-only | static AST + negative transport | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_security.py -x` | ❌ W0 | ⬜ pending |
-| PUB-04 | T-04-05, T-04-06 | Token action follows fixed authoritative byte/digest revalidation; same-identity canary permits only machine-branch/Draft flow and causally denies default write, merge, approve, ready, ruleset, unauthorized resource, and secret access | workflow static + opt-in live integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_live_canary.py -x` | ❌ W0 | ⬜ pending |
-| PUB-05 | T-04-07, T-04-08 | Stable publication identity accepts verified later revision lineage; same slug reuses one Draft PR, deletes stale owned files, recovers after local-state loss, and does not re-notify requested or completed reviewers | crash/recovery matrix | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_recovery.py -x` | ❌ W0 | ⬜ pending |
+| PUB-04 | T-04-05, T-04-06 | Exact `verify-publication-admission --compare-env` precedes token; same-identity live canary denies default write, merge, ruleset/admin, unauthorized resource, and secret access, while isolated transport/static evidence proves production cannot approve or ready a Draft | workflow static + opt-in live integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_live_canary.py tests/test_publication_security.py -x` | ❌ W0 | ⬜ pending |
+| PUB-05 | T-04-07, T-04-08 | Stable publication identity accepts verified later revision lineage; same slug reuses one Draft PR, deletes stale owned files, recovers after local-state loss, and does not re-notify users or teams with current/completed/timeline receipts | crash/recovery matrix | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_recovery.py -x` | ❌ W0 | ⬜ pending |
 | SEC-02 | T-04-09, T-04-10 | Minimal workflow permissions, protected environment, pinned action SHA, safe logging, and zero candidate-to-shell interpolation | workflow parser + AST/security | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_security.py -x` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
@@ -58,10 +58,10 @@ All commands run from the repository root. Offline tests use injected transports
 1. **Admission/identity:** every mutation of canonical bytes, digest, path, mode, size, validation report, review verdict, confidence, or terminal eligibility fails before token or network access; stable identity accepts a verified later revision but rejects malformed, spoofed, cross-catalog, or inconsistent machine lineage.
 2. **Provider responses:** success plus redirect, 401, 403, 404, 409, 422, 429, 5xx, oversized body, malformed JSON, wrong content type, missing request ID, pagination, unknown fields, and `truncated=true` tree.
 3. **Crash points:** after blob/tree/commit, ref create/update, PR create/update, reviewer request, remote verification, and remote success before local checkpoint.
-4. **Remote recovery/ambiguity:** complete owned-subtree enumeration and null-SHA stale deletion; duplicate PRs, non-Draft PR, wrong head/base, malformed/cross-catalog marker, inconsistent lineage, human commit, force-updated ref, deleted/reopened/closed PR, changed default branch, local-state loss, requested reviewers, and completed reviews.
+4. **Remote recovery/ambiguity:** complete owned-subtree enumeration and null-SHA stale deletion; duplicate PRs, non-Draft PR, wrong head/base, malformed/cross-catalog marker, inconsistent lineage, human commit, force-updated ref, deleted/reopened/closed PR, changed default branch, local-state loss, current requests, completed user reviews, fulfilled/removed team requests, assignment-expanded team requests, and ambiguous timeline evidence.
 5. **Forbidden routes:** reject `PUT`, `DELETE`, GraphQL, `/merge`, review-submission/approval POST, `/update-branch`, `/rulesets`, default-branch refs, arbitrary refs, and arbitrary repositories; allow only the bounded read-only completed-review history needed for notification recovery.
-6. **Workflow handoff:** substitute each authoritative artifact/digest between jobs and prove fixed pre-token canonical re-read/equality failure prevents token action and publication network.
-7. **Live canary:** prove the positive machine-branch/Draft/reviewer path and causal negative default-ref/merge/approve/ready/ruleset/unauthorized-resource/secret-resource probes with the same installation identity and unchanged state; separately authorized human/admin cleanup only.
+6. **Workflow handoff:** exercise project-owned `PublicationEvidenceLocatorV1`, `verify_publication_admission_handoff`, canonical ten-field JSON, exact `verify-publication-admission --compare-env` command, and every locator/artifact/field/digest substitution; failure prevents token action and publication network.
+7. **Capability proof:** live canary proves the positive machine-branch/Draft/reviewer path and causal negative default-ref/merge/ruleset/unauthorized-resource/secret-resource probes with the same installation identity and unchanged state. Isolated negative transport/static tests prove production has no approval submission or ready/GraphQL transition. Record residual coarse-token ready capability and require separate-authority cleanup.
 
 ---
 
@@ -82,6 +82,8 @@ All commands run from the repository root. Offline tests use injected transports
 
 | Task | Required automated command |
 |---|---|
+| `04-06-02` | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_cli_validate_skill.py -k 'publish or admission_handoff'` |
+| `04-06-03` | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_cli_security.py tests/test_publication_security.py tests/test_cli_validate_skill.py -x` |
 | `04-07-01` | `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_action_audit.py` |
 | `04-07-02` | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase4_action_audit.py && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_action_audit.py` |
 | `04-11-03` | `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_validation_map.py && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_action_audit.py && .tools/uv-0.11.29/bin/uv run --locked ruff check . && .tools/uv-0.11.29/bin/uv run --locked pytest -q && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_acceptance.py` |
@@ -96,7 +98,8 @@ The locked project does not include mypy, so Phase 4 makes no mypy gate claim.
 |----------|-------------|------------|-------------------|
 | GitHub App action identity and exact SHA approval | SEC-02 | Third-party executable supply-chain identity cannot auto-approve itself | Review source, release provenance, permissions, exact full SHA, and resolved workflow diff before enabling the publishing job. |
 | Catalog ruleset and installation-permission canary | PUB-04 | Repository rules and installation permissions are external control-plane state | In the protected environment, run positive Draft flow and negative default-push/merge/ruleset probes; a human reviews evidence and performs cleanup with separate authority. |
-| Reviewer/team configuration | PUB-01 | Catalog governance decides the authorized human review destination | Confirm configured reviewer/team exists, is authorized, and receives the Draft PR request. |
+| Reviewer/team configuration | PUB-01 | Catalog governance decides the authorized human review destination | Confirm configured reviewer/team exists, is authorized, and current/completed/timeline evidence preserves user and team notification receipts after local-state loss. |
+| Approve/ready production boundary | PUB-03 | GitHub Pull requests write is coarse and may retain out-of-process ready capability | Review isolated route/transport/CLI/workflow absence evidence and explicitly acknowledge the residual token risk; do not record it as platform denial. |
 
 ---
 
@@ -108,7 +111,7 @@ The locked project does not include mypy, so Phase 4 makes no mypy gate claim.
 - [ ] Wave 0 covers every missing fixture and test file.
 - [ ] No watch-mode flags or implicit live-network dependency.
 - [ ] Offline feedback latency stays under 60 seconds.
-- [ ] Live canary evidence proves negative capabilities using the production installation identity.
+- [ ] Live canary evidence proves platform-enforceable negative capabilities using the production installation identity; approve/ready are proven absent from the production surface with residual token risk recorded.
 - [ ] `nyquist_compliant: true` is set only after execution verification.
 
 **Approval:** pending

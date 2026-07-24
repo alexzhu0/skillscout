@@ -249,7 +249,7 @@ Plans:
 
 **Wave 5** *(blocked on recovery application)*
 
-- [ ] `04-06-PLAN.md` — Compose late-token publication and expose the closed `publish-candidate` CLI.
+- [ ] `04-06-PLAN.md` — Compose late-token publication and expose concrete closed admission-verifier and `publish-candidate` CLIs.
 
 **Wave 6** *(blocked on CLI and action approval)*
 
@@ -257,7 +257,7 @@ Plans:
 
 **Wave 7** *(blocked on workflow)*
 
-- [ ] `04-10-PLAN.md` — Run the non-auto-approvable live ruleset/App denial canary for all forbidden capabilities and separate-authority cleanup.
+- [ ] `04-10-PLAN.md` — Review live platform denials, approve/ready production-surface prohibitions, residual token risk, and separate-authority cleanup.
 
 **Wave 8** *(blocked on live evidence)*
 
@@ -269,7 +269,7 @@ Plans:
 2. Draft PR 正文包含来源、精确 SHA、许可证、fingerprint、证据、资格、安全/格式检查、独立审核与明确人工审核提示。
 3. 重复发布同一 slug 会更新同一 Draft PR；在本地 publication state 缺失时，可通过远端 head 和机器 marker 恢复，而不创建重复 PR。
 4. 如果已有 PR 不是 Draft、head 出现不可安全覆盖的人类冲突，或目标文件不在验证 manifest 中，Publisher 停止并给出人工处理结果。
-5. catalog ruleset canary 实测自动化身份无法 push 默认分支、merge、approve、标记 ready、修改 ruleset 或访问未授权 secrets。
+5. catalog ruleset/App canary 实测自动化身份无法 push 默认分支、merge、修改 ruleset/administration 或访问未授权资源与 secrets；approve 与 ready-for-review 由 production adapter、CLI、workflow 的封闭 route/transport allowlist 和隔离负向测试证明不可调用，明确记录 `Pull requests: write` token 在 SkillScout 之外可能保留 ready 能力的残余风险，Draft 转换仍只允许人类操作。
 6. Publisher adapter 和请求 allowlist 不提供 merge/auto-merge/administration 能力；候选数据不被直接插值到 shell。
 
 ### Phase 5: Automated Discovery Operations
@@ -303,7 +303,7 @@ Plans:
 2. 验收集明确覆盖成功生成、确定性过滤、资格低分、格式/安全失败、Reviewer 拒绝、多工作流仓库及多类 Prompt Injection。
 3. 对相同 repo/SHA/fingerprint/policy 重跑不产生重复 WorkflowSpec、Skill、分支或 PR；修改相关来源后重新评估并更新对应 Draft。
 4. 至少一个符合门禁的 Skill 创建真实 Draft PR 并请求人类审核；最终是否合并完全由人类决定。
-5. live canary 再次证明自动化身份无法写默认分支、merge、approve、ready 或读取未授权 secrets；日志和输出通过 secret scan。
+5. live canary 再次证明自动化身份无法写默认分支、merge、修改 ruleset/admin 或读取未授权资源与 secrets；隔离的 production-surface 测试再次证明 SkillScout 无 approve/ready 调用路径，并记录粗粒度 token 的残余风险；日志和输出通过 secret scan。
 6. MVP 报告列出所有 44 条需求的验证证据、遗留 warning、已知限制和是否满足发布标准。
 
 ## Requirement Mapping
