@@ -12,7 +12,7 @@ import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable, NoReturn
+from typing import Callable, Iterable, NoReturn
 
 _APPROVED_LOCK_DIGEST = (
     "b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
@@ -31,6 +31,104 @@ _VALIDATOR_MODULE_RECORD_PATH = "skills_ref/__init__.py"
 
 class PhaseThreeGateError(RuntimeError):
     """Sanitized fail-closed pre-import dependency authority failure."""
+
+
+@dataclass(frozen=True)
+class PublicationAuthorityConfig:
+    """Protected, catalog-bound authority with no credential material."""
+
+    catalog_repository_id: int
+    catalog_full_name: str
+    catalog_base_branch: str
+    catalog_reviewers: tuple[str, ...]
+    publication_policy_version: str
+
+
+@dataclass(frozen=True)
+class PublicationRuntimeConfig:
+    """Authority plus a deliberately late credential factory."""
+
+    authority: PublicationAuthorityConfig
+    token_factory: Callable[[], str]
+
+
+def _publication_config_fail() -> NoReturn:
+    # This crosses a public boundary only through the CLI's closed diagnostic.
+    raise ValueError("publication authority configuration rejected")
+
+
+def load_publication_authority_config(
+    environ: dict[str, str] | None = None,
+) -> PublicationAuthorityConfig:
+    """Load the sole protected source of catalog/reviewer authority.
+
+    Importantly this function never reads the token variable.  The compatibility
+    team setting is intentionally accepted only when absent or blank, so a
+    deployment cannot silently widen the individual-reviewer contract.
+    """
+
+    values = os.environ if environ is None else environ
+    try:
+        forbidden_team = values.get("SKILLSCOUT_CATALOG_TEAM_REVIEWERS", "")
+        if type(forbidden_team) is not str or forbidden_team.strip():
+            _publication_config_fail()
+        raw_id = values["SKILLSCOUT_CATALOG_REPOSITORY_ID"]
+        full_name = values["SKILLSCOUT_CATALOG_FULL_NAME"]
+        branch = values["SKILLSCOUT_CATALOG_BASE_BRANCH"]
+        raw_reviewers = values["SKILLSCOUT_CATALOG_REVIEWERS"]
+        policy = values["SKILLSCOUT_PUBLICATION_POLICY_VERSION"]
+        if (
+            type(raw_id) is not str
+            or not raw_id.isascii()
+            or not raw_id.isdecimal()
+            or raw_id.startswith("0")
+            or type(full_name) is not str
+            or type(branch) is not str
+            or type(raw_reviewers) is not str
+            or policy != "publication-policy-v1"
+        ):
+            _publication_config_fail()
+        repository_id = int(raw_id)
+        # Domain models own the closed repository/ref/login grammars.
+        from skillscout.domain.publication import CatalogAuthorityV1, ReviewerTargetsV1
+
+        authority = CatalogAuthorityV1(
+            schema_version="catalog-authority-v1",
+            catalog_repository_id=repository_id,
+            catalog_full_name=full_name,
+            base_branch=branch,
+            catalog_root="skills",
+        )
+        entries = tuple(item.strip() for item in raw_reviewers.split(","))
+        if not entries or any(not item for item in entries):
+            _publication_config_fail()
+        reviewers = tuple(sorted(set(entries)))
+        targets = ReviewerTargetsV1(
+            schema_version="reviewer-targets-v1", reviewers=reviewers
+        )
+        if len(targets.reviewers) > 16:
+            _publication_config_fail()
+        return PublicationAuthorityConfig(
+            catalog_repository_id=authority.catalog_repository_id,
+            catalog_full_name=authority.catalog_full_name,
+            catalog_base_branch=authority.base_branch,
+            catalog_reviewers=targets.reviewers,
+            publication_policy_version=policy,
+        )
+    except (KeyError, TypeError, ValueError):
+        _publication_config_fail()
+
+
+def load_publication_runtime_config(
+    authority: PublicationAuthorityConfig,
+    *,
+    token_factory: Callable[[], str],
+) -> PublicationRuntimeConfig:
+    """Compose a token seam only after protected admission succeeds."""
+
+    if type(authority) is not PublicationAuthorityConfig or not callable(token_factory):
+        _publication_config_fail()
+    return PublicationRuntimeConfig(authority=authority, token_factory=token_factory)
 
 
 @dataclass(frozen=True)

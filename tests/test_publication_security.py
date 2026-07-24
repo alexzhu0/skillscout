@@ -130,6 +130,60 @@ def test_remote_write_scope_is_isolated_from_read_client_and_dry_run_graph() -> 
     assert "github_publish" not in dry_run_text
 
 
+def test_protected_publication_config_is_strict_token_blind_and_individual_only() -> None:
+    from skillscout.bootstrap import load_publication_authority_config
+
+    environment = {
+        "SKILLSCOUT_CATALOG_REPOSITORY_ID": "202",
+        "SKILLSCOUT_CATALOG_FULL_NAME": "catalog-org/skills",
+        "SKILLSCOUT_CATALOG_BASE_BRANCH": "main",
+        "SKILLSCOUT_CATALOG_REVIEWERS": "zeta-reviewer, alpha-reviewer,alpha-reviewer",
+        "SKILLSCOUT_PUBLICATION_POLICY_VERSION": "publication-policy-v1",
+        "SKILLSCOUT_GITHUB_TOKEN": CANARY,
+    }
+    authority = load_publication_authority_config(environment)
+    assert authority.catalog_reviewers == ("alpha-reviewer", "zeta-reviewer")
+    assert CANARY not in repr(authority)
+
+    for key, value in (
+        ("SKILLSCOUT_CATALOG_TEAM_REVIEWERS", "review-team"),
+        ("SKILLSCOUT_CATALOG_REVIEWERS", ""),
+        ("SKILLSCOUT_CATALOG_BASE_BRANCH", "refs/heads/main"),
+        ("SKILLSCOUT_PUBLICATION_POLICY_VERSION", "other-policy"),
+    ):
+        rejected = dict(environment)
+        rejected[key] = value
+        with pytest.raises(ValueError):
+            load_publication_authority_config(rejected)
+
+
+def test_runtime_config_does_not_mint_token_until_explicit_remote_factory() -> None:
+    from skillscout.bootstrap import (
+        load_publication_authority_config,
+        load_publication_runtime_config,
+    )
+
+    calls = 0
+
+    def token_factory() -> str:
+        nonlocal calls
+        calls += 1
+        return CANARY
+
+    authority = load_publication_authority_config(
+        {
+            "SKILLSCOUT_CATALOG_REPOSITORY_ID": "202",
+            "SKILLSCOUT_CATALOG_FULL_NAME": "catalog-org/skills",
+            "SKILLSCOUT_CATALOG_BASE_BRANCH": "main",
+            "SKILLSCOUT_CATALOG_REVIEWERS": "alpha-reviewer",
+            "SKILLSCOUT_PUBLICATION_POLICY_VERSION": "publication-policy-v1",
+        }
+    )
+    runtime = load_publication_runtime_config(authority, token_factory=token_factory)
+    assert runtime.authority == authority
+    assert calls == 0
+
+
 def test_publication_models_and_rendering_do_not_echo_secrets_or_candidate_prose() -> None:
     from skillscout.domain import publication
 
