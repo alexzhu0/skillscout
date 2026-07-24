@@ -25,7 +25,7 @@ The binding constraints are therefore the Phase 4 goal, requirements `PUB-01` th
 
 ## Summary
 
-Phase 4 should be planned as a new, narrowly authorized publication subsystem that consumes the exact durable Phase 3 result; it must not turn the existing dry-run publisher or read-only GitHub adapter into a generic remote client. The current code already supplies the essential trust root: `CandidateTerminalSummaryV1` proves `eligible_local_candidate`, `FrozenSkillPackageV1` binds exact bytes to a canonical manifest and package digest, `ValidationReportV1` binds zero errors to that package, and `ReviewAttestationV1` binds the independent review. [VERIFIED: codebase grep] The Phase 4 admission gate should re-parse canonical durable bytes and re-check every digest relationship before minting a token or making any remote call. [VERIFIED: existing Phase 3 recovery and canonicalization patterns]
+Phase 4 should be planned as a new, narrowly authorized publication subsystem that consumes the exact durable Phase 3 result; it must not turn the existing dry-run publisher or read-only GitHub adapter into a generic remote client. The current code already supplies the essential trust root: `CandidateTerminalSummaryV1` proves `eligible_local_candidate`, `FrozenSkillPackageV1` binds exact bytes to a canonical manifest and package digest, `ValidationReportV1` binds zero errors to that package, and `ReviewAttestationV1` binds the independent review. [VERIFIED: codebase grep] The Phase 4 gate is deliberately split: an unprivileged job may derive only canonical Phase 2/3 candidate locators and digests, while the protected job must re-parse the same durable bytes, compare the candidate handoff, load catalog/reviewer authority, and derive the authority-bound publication intent/admission before minting a token or making any remote call. [VERIFIED: existing Phase 3 recovery and canonicalization patterns plus workflow trust-boundary analysis]
 
 The safe write protocol is a reconcile-first state machine. Resolve the configured catalog and its default-branch SHA, derive one deterministic machine branch from the stable slug, recover any matching open PR by the exact `owner:head` and `base` filters plus a machine-readable body marker, and reject ambiguous or human-modified states. [CITED: https://docs.github.com/en/rest/pulls/pulls] Publish all files as one Git commit through Git blobs, a tree based on the observed head tree, and a commit whose parent is the observed head; update the ref with `force: false`. [CITED: https://docs.github.com/en/rest/git/trees] [CITED: https://docs.github.com/en/rest/git/commits] [CITED: https://docs.github.com/en/rest/git/refs] Create the PR with `draft: true`, then request only configured individual user logins. v1 rejects team targets because GitHub's documented timeline properties describe `requested_reviewer` as a person and do not promise durable team identity after the current request disappears. [CITED: https://docs.github.com/en/rest/pulls/review-requests] [CITED: https://docs.github.com/en/rest/using-the-rest-api/issue-event-types]
 
@@ -173,7 +173,7 @@ This structure follows existing module boundaries and keeps `REMOTE_WRITE` autho
 
 **What:** Load the completed Phase 3 projection from durable state, require the exact terminal outcome `eligible_local_candidate`, parse every artifact strictly, require canonical bytes, re-derive the frozen manifest/package identity, and cross-check terminal, validation, and review digests. [VERIFIED: Phase 3 contracts]
 
-**When to use:** Before constructing a publication intent and before entering the protected environment step that exposes credentials. [VERIFIED: security decomposition]
+**When to use:** First in the unprivileged job to produce candidate-only evidence, then again inside the protected job to re-read and compare exact candidate bytes before protected authority composition and token issuance. [VERIFIED: security decomposition]
 
 **Required checks:**
 
@@ -183,11 +183,13 @@ This structure follows existing module boundaries and keeps `REMOTE_WRITE` autho
 4. Validation digest matches and error count is zero; review attestation digest and artifact/package identities match. [VERIFIED: `domain/validation.py` and `domain/review.py`]
 5. Repository URL/ID, source SHA, license, workflow fingerprint, qualification digest, and stable slug come from provenance/authority rather than CLI strings. [VERIFIED: `domain/skill_artifacts.py`]
 
+The cross-job contract contains exactly three canonical artifact locators (`candidate_descriptor_locator`, `phase2_state_locator`, `phase3_state_locator`) and seven candidate digests (`candidate_descriptor_digest`, `phase2_chain_digest`, `terminal_summary_digest`, `package_digest`, `manifest_digest`, `validation_report_digest`, `review_attestation_digest`). The unprivileged job has no protected environment or catalog/reviewer variables and cannot construct `PublicationIntentV1`, `publication_intent_digest`, or `admission_digest`. [VERIFIED: workflow authority decomposition]
+
 ### Pattern 2: Closed Publication Intent
 
-**What:** Build one immutable `PublicationIntentV1` containing the configured catalog repository ID/full name, observed default branch, deterministic head ref, target root, package digest, manifest digest, terminal/validation/review digests, reviewers, marker version, and publisher policy version. [VERIFIED: existing authority-object pattern]
+**What:** Inside the protected job only, combine revalidated `CandidatePublicationEvidenceV1` with protected catalog repository ID/full name/base branch and individual-reviewer authority to build one immutable `PublicationIntentV1` containing deterministic head ref, target root, package digest, manifest digest, terminal/validation/review digests, reviewers, marker version, and publisher policy version; then derive an authority-bound admission digest over candidate evidence plus intent. Neither authority-dependent digest is accepted from or compared with the unprivileged job. After token minting, the first remote repository observation must equal the protected repository identity and base branch before any write. [VERIFIED: existing authority-object pattern and workflow trust-boundary analysis]
 
-**When to use:** As the identity and retry key for every attempt. [VERIFIED: current stage identity pattern]
+**When to use:** As the identity and retry key for every attempt, after protected candidate handoff equality and before token minting. [VERIFIED: current stage identity pattern]
 
 Recommended identities:
 
@@ -342,7 +344,7 @@ Do not expose GraphQL. The normal REST update endpoint changes title/body/state/
 
 **Why it happens:** One monolithic job performs build, validation, and publish with the same secrets. [VERIFIED: workflow threat analysis]
 
-**How to avoid:** Use an unprivileged admission job producing only bounded digests, then a small environment-protected publish job that re-verifies its inputs before minting the token. [CITED: https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments]
+**How to avoid:** Use an unprivileged job with no protected config that produces only the three canonical Phase 2/3 locators and seven candidate digests. In the environment-protected job, re-open/revalidate the artifacts, compare that candidate-only handoff, load protected catalog plus individual-reviewer authority, reject team config, and derive `PublicationIntentV1` plus authority-bound admission locally before invoking the token action. Never carry or compare an unprivileged intent/admission digest. [CITED: https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments]
 
 **Warning signs:** Repository-wide secrets, job-level broad permissions, or third-party actions after the App token is minted. [CITED: https://docs.github.com/en/actions/reference/security/secure-use]
 
@@ -484,7 +486,7 @@ All technical claims are verified from the codebase or cited to official GitHub/
 
 1. **What is the exact controlled catalog repository ID/full name and default target directory?**
    - What we know: Publisher must bind one configured central catalog and stable slug. [VERIFIED: `PUB-01`]
-   - Resolution: The repository identity is supplied only through protected `SKILLSCOUT_CATALOG_REPOSITORY_ID` and `SKILLSCOUT_CATALOG_FULL_NAME`; production cross-checks both against GitHub's repository response. The target directory is code-owned as `skills/{stable_slug}/` and is not configurable. Plan 10 checkpoint `04-10-01` records the numeric/full-name evidence before live enablement. Missing, mismatched, or unreviewed values block client construction/token release and leave live publication disabled. [VERIFIED: Plans 04-06 and 04-10]
+   - Resolution: The repository identity is supplied only through protected `SKILLSCOUT_CATALOG_REPOSITORY_ID`, `SKILLSCOUT_CATALOG_FULL_NAME`, and `SKILLSCOUT_CATALOG_BASE_BRANCH`; this makes pre-token intent construction complete. After token issuance, production cross-checks all three against GitHub's repository response before any write. The target directory is code-owned as `skills/{stable_slug}/` and is not configurable. Plan 10 checkpoint `04-10-01` records the numeric/full-name/base evidence before live enablement. Missing, mismatched, or unreviewed values block client construction/token release or the first post-token write gate and leave live publication disabled. [VERIFIED: Plans 04-06 and 04-10]
 
 2. **Which individual human logins can be requested safely and recovered deterministically?**
    - What we know: GET requested reviewers returns current users and teams, but a reviewer is removed from that set after reviewing and then appears in List reviews. Timeline event values include `review_requested` and `review_request_removed`, while documented `requested_reviewer` is a person; GitHub does not promise a durable team slug receipt. Timeline can be read by an installation token with Pull requests read, but that permission does not create the missing team identity contract. [CITED: https://docs.github.com/en/rest/pulls/review-requests] [CITED: https://docs.github.com/en/rest/using-the-rest-api/issue-event-types] [CITED: https://docs.github.com/en/rest/issues/timeline]
@@ -588,7 +590,7 @@ OWASP ASVS 5.0.0 is the current stable version; its chapter numbering differs fr
 | Error handling and logging | yes | Fixed safe error codes and structured field allowlist; never log headers, token, private key, arbitrary response body, or raw candidate content. [VERIFIED: existing `SafeFailure` pattern] [CITED: https://docs.github.com/en/actions/reference/security/secure-use] |
 | Files and resources | yes | Publish only exact manifest paths/modes/sizes/hashes under one slug-owned root; reject symlink/executable/path traversal. [VERIFIED: Phase 3 manifest contracts] |
 | API and web service | yes | Fixed API version, exact endpoint allowlist, bounded bodies, serial client, bounded retry, rate-limit classification, and no GraphQL. [VERIFIED: existing adapter pattern] [CITED: https://docs.github.com/en/rest/about-the-rest-api/api-versions] |
-| Configuration | yes | Protected environment, immutable action refs, minimal workflow/App permissions, active ruleset, explicit reviewers, and canary evidence. [CITED: https://docs.github.com/en/actions/reference/security/secure-use] |
+| Configuration | yes | Protected catalog ID/full name/base branch and individual reviewers, immutable action refs, minimal workflow/App permissions, active ruleset, and canary evidence; unprivileged job receives none of this authority. [CITED: https://docs.github.com/en/actions/reference/security/secure-use] |
 
 ### Known Threat Patterns for GitHub Publisher
 
@@ -597,6 +599,7 @@ OWASP ASVS 5.0.0 is the current stable version; its chapter numbering differs fr
 | Candidate-controlled branch/path/body injection | Tampering / Elevation | Derive branch/path from strict stable slug; render JSON/Markdown from bounded trusted fields; never generate shell source. [CITED: https://docs.github.com/en/actions/reference/security/secure-use] |
 | Token or private-key disclosure | Information Disclosure | Protected environment, per-job minting, secret masking, structured logs, no persisted headers, post-run secret scan. [CITED: https://docs.github.com/en/actions/reference/security/secure-use] |
 | Publishing bytes not reviewed | Tampering | Canonical Phase 3 bundle revalidation and exact manifest-to-blob mapping. [VERIFIED: Phase 3 artifact contracts] |
+| Unprivileged authority-digest spoof | Tampering / Elevation | Cross-job allowlist is candidate-only; protected job revalidates candidate evidence and derives intent/admission locally before token. [VERIFIED: workflow trust-boundary analysis] |
 | Force overwrite of human changes | Tampering / Repudiation | Machine commit marker, observed parent, `force: false`, manual intervention on mismatch. [CITED: https://docs.github.com/en/rest/git/refs] |
 | Duplicate PR after state loss | Repudiation / Denial of Service | Exact head/base pagination plus versioned marker and one-match rule. [CITED: https://docs.github.com/en/rest/pulls/pulls] |
 | Automation merges or changes rules | Elevation of Privilege | No routes/GraphQL/Admin permission; no ruleset bypass; platform canary. [CITED: https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps] |
