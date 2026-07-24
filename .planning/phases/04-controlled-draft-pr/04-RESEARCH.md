@@ -479,32 +479,27 @@ Exact action SHAs and the safe construction of `publication-intent.json` are Wav
 
 All technical claims are verified from the codebase or cited to official GitHub/OWASP sources. Configuration values that do not yet exist are recorded as open questions rather than assumptions. [VERIFIED: research audit]
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **What is the exact controlled catalog repository ID/full name and default target directory?**
    - What we know: Publisher must bind one configured central catalog and stable slug. [VERIFIED: `PUB-01`]
-   - What's unclear: No repository ID, owner/name, or catalog path is present in current project context. [VERIFIED: codebase grep]
-   - Recommendation: Make these protected environment variables plus a checked repository-ID allowlist; the first plan should fail closed until a human records them. [VERIFIED: security design]
+   - Resolution: The repository identity is supplied only through protected `SKILLSCOUT_CATALOG_REPOSITORY_ID` and `SKILLSCOUT_CATALOG_FULL_NAME`; production cross-checks both against GitHub's repository response. The target directory is code-owned as `skills/{stable_slug}/` and is not configurable. Plan 10 checkpoint `04-10-01` records the numeric/full-name evidence before live enablement. Missing, mismatched, or unreviewed values block client construction/token release and leave live publication disabled. [VERIFIED: Plans 04-06 and 04-10]
 
 2. **Which human users and/or team slugs must be requested?**
    - What we know: GitHub accepts user and team arrays and requires Pull requests write. [CITED: https://docs.github.com/en/rest/pulls/review-requests]
-   - What's unclear: The configured identities are not supplied. [VERIFIED: codebase grep]
-   - Recommendation: Require at least one reviewer target, validate bounded GitHub login/team-slug syntax, and verify returned requested reviewers. [VERIFIED: requirement-based design]
+   - Resolution: Protected `SKILLSCOUT_CATALOG_REVIEWERS` and `SKILLSCOUT_CATALOG_TEAM_REVIEWERS` hold bounded lists; at least one combined target is mandatory. Plan 10 checkpoint `04-10-01` verifies the configured identities exist and are authorized, and records requested/completed-review evidence. Missing, malformed, unauthorized, or unreviewed targets block publication; reconciliation combines current requests with completed review history so local-state loss cannot repeat notification. [VERIFIED: Plans 04-04, 04-05, 04-06, and 04-10]
 
 3. **Which exact ruleset ID/configuration and organization plan are available?**
    - What we know: Rulesets can restrict default-branch updates, require PR review, block force pushes, and define bypass actors; feature availability varies by plan/repository visibility. [CITED: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets]
-   - What's unclear: The real catalog policy and plan were not inspectable in this research session. [VERIFIED: environment audit]
-   - Recommendation: Add a human configuration checkpoint and an independent ruleset evidence export before enabling live writes. [VERIFIED: security design]
+   - Resolution: Plan 10 checkpoint `04-10-01` requires an independent export of the exact active ruleset ID, target/default branch, restrict-update/required-review/force-push rules, bypass actors, repository plan/feature availability, and digest before the canary. The App must have no Administration permission and no bypass. Missing/inactive/unsupported/mismatched evidence or any permitted forbidden probe blocks Phase 4 acceptance and production enablement. [VERIFIED: Plans 04-09 and 04-10]
 
 4. **What full commit SHA of `actions/create-github-app-token` is approved?**
    - What we know: GitHub officially recommends the action, while Actions security guidance requires full-SHA pinning for immutability. [CITED: https://docs.github.com/en/enterprise-cloud@latest/apps/creating-github-apps/authenticating-with-a-github-app/making-authenticated-api-requests-with-a-github-app-in-a-github-actions-workflow] [CITED: https://docs.github.com/en/actions/reference/security/secure-use]
-   - What's unclear: No approved SHA/lock exists for this action. [VERIFIED: codebase grep]
-   - Recommendation: Mirror Phase 3's Gate A/Gate B supply-chain process before committing the workflow. [VERIFIED: project pattern]
+   - Resolution: Plan 07 statically audits exact full commits for both `actions/checkout` and `actions/create-github-app-token`; Plan 08 checkpoint `04-08-01` is a non-auto-approvable human decision bound to repository IDs, full SHAs, trees/content hashes, behavior, and audit digest. Plan 09 may reference only the approved exact pair. Missing, rejected, stale, or mismatched approval blocks workflow creation. [VERIFIED: Plans 04-07, 04-08, and 04-09]
 
 5. **How will the merge canary isolate ruleset denial from Draft/check/conflict denial?**
    - What we know: Many independent conditions can block merge and several HTTP statuses overlap. [CITED: https://docs.github.com/en/rest/pulls/pulls]
-   - What's unclear: The catalog's exact required checks/reviews and availability of a disposable canary path. [VERIFIED: environment audit]
-   - Recommendation: Design the canary fixture with a human administrator, record the active rules/bypass evidence, and assert unchanged default SHA plus a specific classified denial. [VERIFIED: test-design recommendation]
+   - Resolution: Plan 09's isolated canary-only client requires an otherwise mergeable disposable PR, independently exported active rules/bypass evidence, same-installation attestation, bounded provider classification, and pre/post default SHA equality. It also probes approve, ready-for-review, ruleset access/mutation, unauthorized repository/resource access, and secret-resource access with before/after state. Plan 10 checkpoint `04-10-01` reviews causal prerequisites and all unchanged-state evidence. Ambiguous denial, unavailable causal setup, or any permitted forbidden operation blocks acceptance and requires an explicit architecture/roadmap-criterion revision; static production-surface absence cannot replace live evidence. [VERIFIED: Plans 04-09 and 04-10]
 
 ## Environment Availability
 

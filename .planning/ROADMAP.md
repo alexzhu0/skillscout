@@ -231,7 +231,7 @@ Plans:
 **Wave 1**
 
 - [ ] `04-01-PLAN.md` — Freeze canonical admission, deterministic Draft metadata, and negative-capability tests before implementation.
-- [ ] `04-02-PLAN.md` — Freeze bounded GitHub transport, crash-recovery, ambiguity, and opt-in live-canary fixtures/tests.
+- [ ] `04-02-PLAN.md` — Freeze bounded owned-subtree/review-history transport, crash-recovery, lineage, and full opt-in live-canary fixtures/tests.
 - [ ] `04-07-PLAN.md` — Audit exact checkout and GitHub App-token action commits without installing or executing them.
 
 **Wave 2** *(blocked on Wave 1 prerequisites)*
@@ -241,11 +241,11 @@ Plans:
 
 **Wave 3** *(blocked on publication domain and transport fixtures)*
 
-- [ ] `04-04-PLAN.md` — Implement the separate closed GitHub REMOTE_WRITE adapter and forbidden-surface proofs.
+- [ ] `04-04-PLAN.md` — Implement the separate closed GitHub REMOTE_WRITE adapter, complete owned-subtree/review-history reads, and forbidden-surface proofs.
 
 **Wave 4** *(blocked on domain and adapter)*
 
-- [ ] `04-05-PLAN.md` — Implement durable checkpoints, reconcile-first recovery, and idempotent Draft publication.
+- [ ] `04-05-PLAN.md` — Implement durable checkpoints, stable-identity lineage recovery, stale-file deletion, and notification-idempotent Draft publication.
 
 **Wave 5** *(blocked on recovery application)*
 
@@ -253,11 +253,11 @@ Plans:
 
 **Wave 6** *(blocked on CLI and action approval)*
 
-- [ ] `04-09-PLAN.md` — Add the protected pinned Actions workflow and causal live-canary probes.
+- [ ] `04-09-PLAN.md` — Add pre-token authoritative byte revalidation, the protected pinned workflow, and complete causal live-canary probes.
 
 **Wave 7** *(blocked on workflow)*
 
-- [ ] `04-10-PLAN.md` — Run the non-auto-approvable live ruleset/App permission canary and separate-authority cleanup.
+- [ ] `04-10-PLAN.md` — Run the non-auto-approvable live ruleset/App denial canary for all forbidden capabilities and separate-authority cleanup.
 
 **Wave 8** *(blocked on live evidence)*
 

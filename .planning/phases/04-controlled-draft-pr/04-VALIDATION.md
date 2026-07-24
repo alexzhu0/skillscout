@@ -23,6 +23,7 @@ All commands run from the repository root. Offline tests use injected transports
 | **Config file** | `pyproject.toml` |
 | **Quick run command** | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_domain.py tests/test_github_publish_adapter.py tests/test_publication_recovery.py tests/test_publication_security.py` |
 | **Full suite command** | `.tools/uv-0.11.29/bin/uv run --locked pytest -q` |
+| **Static quality command** | `.tools/uv-0.11.29/bin/uv run --locked ruff check .` |
 | **Network policy** | Offline by default; live canary requires explicit protected-environment configuration |
 | **Estimated runtime** | Focused checks target under 60 seconds; full suite measured during execution |
 
@@ -41,11 +42,11 @@ All commands run from the repository root. Offline tests use injected transports
 
 | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| PUB-01 | T-04-01, T-04-02 | Only configured catalog, allowed machine ref, frozen manifest bytes, Draft PR, and configured reviewer request are reachable | contract + transport integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_github_publish_adapter.py -x` | ❌ W0 | ⬜ pending |
+| PUB-01 | T-04-01, T-04-02 | Only configured catalog, allowed machine ref, exact frozen-manifest owned subtree, Draft PR, and configured reviewer request are reachable | contract + transport integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_github_publish_adapter.py -x` | ❌ W0 | ⬜ pending |
 | PUB-02 | T-04-03 | Canonical PR body contains every required provenance, evidence, review, and human-control field plus machine marker | unit + golden | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_domain.py -x` | ❌ W0 | ⬜ pending |
-| PUB-03 | T-04-04 | Production adapter exposes no merge, approve, ready, auto-merge, ruleset, default-ref, arbitrary-repository, or arbitrary-ref operation | static AST + negative transport | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_security.py -x` | ❌ W0 | ⬜ pending |
-| PUB-04 | T-04-05, T-04-06 | Short-lived App token and catalog ruleset permit the positive machine-branch/Draft flow while negative canaries remain denied | workflow static + opt-in live integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_live_canary.py -x` | ❌ W0 | ⬜ pending |
-| PUB-05 | T-04-07, T-04-08 | Same slug reuses one Draft PR; remote recovery is deterministic; ambiguity, non-Draft state, or human conflicts stop | crash/recovery matrix | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_recovery.py -x` | ❌ W0 | ⬜ pending |
+| PUB-03 | T-04-04 | Production adapter exposes no merge, review submission/approve, ready, auto-merge, ruleset, default-ref, arbitrary-repository, or arbitrary-ref operation; bounded completed-review GET is read-only | static AST + negative transport | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_security.py -x` | ❌ W0 | ⬜ pending |
+| PUB-04 | T-04-05, T-04-06 | Token action follows fixed authoritative byte/digest revalidation; same-identity canary permits only machine-branch/Draft flow and causally denies default write, merge, approve, ready, ruleset, unauthorized resource, and secret access | workflow static + opt-in live integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_live_canary.py -x` | ❌ W0 | ⬜ pending |
+| PUB-05 | T-04-07, T-04-08 | Stable publication identity accepts verified later revision lineage; same slug reuses one Draft PR, deletes stale owned files, recovers after local-state loss, and does not re-notify requested or completed reviewers | crash/recovery matrix | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_recovery.py -x` | ❌ W0 | ⬜ pending |
 | SEC-02 | T-04-09, T-04-10 | Minimal workflow permissions, protected environment, pinned action SHA, safe logging, and zero candidate-to-shell interpolation | workflow parser + AST/security | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_security.py -x` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
@@ -54,12 +55,13 @@ All commands run from the repository root. Offline tests use injected transports
 
 ## Required Test Matrices
 
-1. **Admission:** every mutation of canonical bytes, digest, path, mode, size, validation report, review verdict, confidence, or terminal eligibility fails before token or network access.
-2. **Provider responses:** success plus redirect, 401, 403, 404, 409, 422, 429, 5xx, oversized body, malformed JSON, wrong content type, missing request ID, pagination, and unknown fields.
+1. **Admission/identity:** every mutation of canonical bytes, digest, path, mode, size, validation report, review verdict, confidence, or terminal eligibility fails before token or network access; stable identity accepts a verified later revision but rejects malformed, spoofed, cross-catalog, or inconsistent machine lineage.
+2. **Provider responses:** success plus redirect, 401, 403, 404, 409, 422, 429, 5xx, oversized body, malformed JSON, wrong content type, missing request ID, pagination, unknown fields, and `truncated=true` tree.
 3. **Crash points:** after blob/tree/commit, ref create/update, PR create/update, reviewer request, remote verification, and remote success before local checkpoint.
-4. **Remote ambiguity:** duplicate PRs, non-Draft PR, wrong head/base, marker mismatch, human commit, force-updated ref, deleted/reopened/closed PR, changed default branch, and stale reviewer state.
-5. **Forbidden routes:** reject `PUT`, `DELETE`, GraphQL, `/merge`, `/reviews`, `/update-branch`, `/rulesets`, default-branch refs, arbitrary refs, and arbitrary repositories.
-6. **Live canary:** prove the positive machine-branch/Draft/reviewer path and negative default-ref/merge/ruleset paths with the same installation identity; separately authorized human/admin cleanup only.
+4. **Remote recovery/ambiguity:** complete owned-subtree enumeration and null-SHA stale deletion; duplicate PRs, non-Draft PR, wrong head/base, malformed/cross-catalog marker, inconsistent lineage, human commit, force-updated ref, deleted/reopened/closed PR, changed default branch, local-state loss, requested reviewers, and completed reviews.
+5. **Forbidden routes:** reject `PUT`, `DELETE`, GraphQL, `/merge`, review-submission/approval POST, `/update-branch`, `/rulesets`, default-branch refs, arbitrary refs, and arbitrary repositories; allow only the bounded read-only completed-review history needed for notification recovery.
+6. **Workflow handoff:** substitute each authoritative artifact/digest between jobs and prove fixed pre-token canonical re-read/equality failure prevents token action and publication network.
+7. **Live canary:** prove the positive machine-branch/Draft/reviewer path and causal negative default-ref/merge/approve/ready/ruleset/unauthorized-resource/secret-resource probes with the same installation identity and unchanged state; separately authorized human/admin cleanup only.
 
 ---
 
@@ -73,6 +75,18 @@ All commands run from the repository root. Offline tests use injected transports
 - [ ] `tests/test_publication_live_canary.py` — opt-in environment contract; skipped unless explicit protected canary variables exist.
 - [ ] Exact approved GitHub App-token action SHA and supply-chain evidence.
 - [ ] Independent catalog ruleset evidence and human/admin canary cleanup procedure.
+
+---
+
+## Revised Task Command Anchors
+
+| Task | Required automated command |
+|---|---|
+| `04-07-01` | `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_action_audit.py` |
+| `04-07-02` | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase4_action_audit.py && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_action_audit.py` |
+| `04-11-03` | `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_validation_map.py && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_action_audit.py && .tools/uv-0.11.29/bin/uv run --locked ruff check . && .tools/uv-0.11.29/bin/uv run --locked pytest -q && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_acceptance.py` |
+
+The locked project does not include mypy, so Phase 4 makes no mypy gate claim.
 
 ---
 
