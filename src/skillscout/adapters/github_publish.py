@@ -167,6 +167,13 @@ class GitHubPublishClient:
             _fail()
         return RefObservation(raw["ref"], _sha(raw["object"].get("sha")))
 
+    def get_base_ref(self) -> RefObservation:
+        """Read only the construction-bound default branch for a new parent."""
+        raw = self._json("GET", f"/repos/{self._repository}/git/ref/heads/{self._base}")
+        if not isinstance(raw, dict) or raw.get("ref") != f"refs/heads/{self._base}" or not isinstance(raw.get("object"), dict):
+            _fail()
+        return RefObservation(raw["ref"], _sha(raw["object"].get("sha")))
+
     def get_commit(self, sha: str) -> CommitObservation:
         raw = self._json("GET", f"/repos/{self._repository}/git/commits/{_sha(sha)}")
         if not isinstance(raw, dict) or raw.get("sha") != sha or not isinstance(raw.get("tree"), dict):
@@ -189,7 +196,11 @@ class GitHubPublishClient:
             if not isinstance(item, dict):
                 _fail()
             path, mode, kind = item.get("path"), item.get("mode"), item.get("type")
-            if type(path) is not str or not path.startswith(root) or "\\" in path or "/../" in f"/{path}" or kind != "blob" or mode != "100644":
+            if type(path) is not str or "\\" in path or "/../" in f"/{path}":
+                _fail()
+            if not path.startswith(root):
+                continue
+            if kind != "blob" or mode != "100644":
                 _fail()
             output.append(OwnedTreeEntry(path, _sha(item["sha"]) if item.get("sha") is not None else None, mode))
         if len({entry.path for entry in output}) != len(output):
