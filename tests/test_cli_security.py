@@ -142,6 +142,8 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "dry-run",
         "extract-repo",
         "inspect-run",
+        "publish-candidate",
+        "verify-publication-admission",
     }
     assert all(isinstance(child, cli.SafeArgumentParser) for child in subparsers.choices.values())
 
@@ -593,6 +595,21 @@ def test_build_candidate_help_has_no_publish_shell_install_or_execution_route(
         "workflow-fingerprint",
     ):
         assert prohibited not in help_text
+
+
+def test_publication_command_help_has_only_closed_locator_contracts(run_cli) -> None:
+    verifier = run_cli("verify-publication-admission", "--help")
+    publisher = run_cli("publish-candidate", "--help")
+
+    assert verifier.returncode == publisher.returncode == 0
+    assert verifier.stderr == publisher.stderr == ""
+    verifier_options = set(verifier.stdout.split())
+    publisher_options = set(publisher.stdout.split())
+    assert {"--candidate", "--phase2-state", "--phase3-state", "--compare-env"}.issubset(verifier_options)
+    assert {"--candidate", "--phase2-state", "--phase3-state", "--publication-state"}.issubset(publisher_options)
+    forbidden = {"--repository", "--branch", "--reviewer", "--merge", "--approve", "--ready", "--force", "--ruleset"}
+    assert forbidden.isdisjoint(verifier_options)
+    assert forbidden.isdisjoint(publisher_options)
 
 
 @pytest.mark.parametrize("unsafe_shape", ("nested-state", "nonempty-output"))

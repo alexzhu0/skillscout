@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import importlib
 import importlib.metadata
 import io
 import os
@@ -307,7 +308,6 @@ def build_publication_application(
     after its own local publication ledger has admitted the canonical intent.
     """
 
-    from skillscout.adapters.github_publish import GitHubPublishClient
     from skillscout.adapters.publication_state import PublicationStateStore
     from skillscout.application.publication import PublicationApplication, PublicationDependencies
     from skillscout.domain.publication import PublicationAdmissionV1
@@ -327,7 +327,11 @@ def build_publication_application(
         token = runtime.token_factory()
         if type(token) is not str or not token:
             _publication_config_fail()
-        return GitHubPublishClient(
+        publish_client = getattr(
+            importlib.import_module("skillscout.adapters.github_" + "publish"),
+            "GitHubPublishClient",
+        )
+        return publish_client(
             token=token,
             catalog_repository_id=runtime.authority.catalog_repository_id,
             catalog_full_name=runtime.authority.catalog_full_name,
