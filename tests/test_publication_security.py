@@ -204,19 +204,84 @@ def test_publication_models_and_rendering_do_not_echo_secrets_or_candidate_prose
         assert secret not in rendered
 
 
-def test_publish_workflow_has_exact_pins_minimum_permissions_and_no_candidate_shell_interpolation() -> None:
-    if not PUBLISH_WORKFLOW.is_file():
-        pytest.skip("publish workflow is owned by a later Phase 04 plan")
-    text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+_CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
+_APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
+_HANDOFF_FIELDS = (
+    "candidate_descriptor_locator",
+    "phase2_state_locator",
+    "phase3_state_locator",
+    "candidate_descriptor_digest",
+    "phase2_chain_digest",
+    "terminal_summary_digest",
+    "package_digest",
+    "manifest_digest",
+    "validation_report_digest",
+    "review_attestation_digest",
+)
+
+
+def _workflow() -> str:
+    assert PUBLISH_WORKFLOW.is_file(), "controlled publication workflow is required"
+    return PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+
+def _job_block(text: str, name: str) -> str:
+    match = re.search(
+        rf"^  {name}:\n(?P<body>.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match, f"missing {name} job"
+    return match.group("body")
+
+
+def test_publish_workflow_has_exact_approved_pins_dispatch_and_minimum_permissions() -> None:
+    text = _workflow()
+    assert re.search(r"^on:\n  workflow_dispatch:\n", text, re.MULTILINE)
+    assert not re.search(r"^  (schedule|pull_request|push):", text, re.MULTILINE)
+    assert re.search(r"^permissions:\n  contents: read\n", text, re.MULTILINE)
+    assert f"actions/checkout@{_CHECKOUT_SHA}" in text
+    assert f"actions/create-github-app-token@{_APP_TOKEN_SHA}" in text
     action_refs = re.findall(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", text, flags=re.MULTILINE)
-    assert action_refs
-    assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs)
-    assert re.search(r"^\s*permissions:\s*\n\s*contents:\s*write\s*$", text, re.MULTILINE)
-    assert re.search(r"^\s*environment:\s*controlled-publishing\s*$", text, re.MULTILINE)
-    assert "workflow_dispatch:" in text
-    assert "shell: bash" in text
-    assert "set -euo pipefail" in text
-    forbidden_expressions = ("github.event", "inputs.", "matrix.", "steps.")
+    assert action_refs == [_CHECKOUT_SHA, _CHECKOUT_SHA, _APP_TOKEN_SHA]
+    assert "@v" not in text
+    assert "contents: write" not in text
+    assert "pull-requests: write" not in text
+
+
+def test_publish_workflow_crosses_only_candidate_handoff_and_revalidates_before_token() -> None:
+    text = _workflow()
+    admit = _job_block(text, "admit")
+    publish = _job_block(text, "publish")
+    assert "environment:" not in admit
+    assert "secrets." not in admit
+    assert "SKILLSCOUT_CATALOG_" not in admit
+    assert re.search(r"^    outputs:\n", admit, re.MULTILINE)
+    for field in _HANDOFF_FIELDS:
+        assert f"{field}:" in admit
+        assert f"SKILLSCOUT_EXPECTED_{field.upper()}" in publish
+    assert "publication_intent_digest" not in admit
+    assert "admission_digest" not in admit
+    assert "publication_intent_digest" not in re.search(r"^    outputs:\n(?P<body>.*?)(?=^    [a-z]|^  [a-z]|\Z)", admit, re.MULTILINE | re.DOTALL).group("body")
+    assert "admission_digest" not in re.search(r"^    outputs:\n(?P<body>.*?)(?=^    [a-z]|^  [a-z]|\Z)", admit, re.MULTILINE | re.DOTALL).group("body")
+    assert re.search(r"^    needs: admit$", publish, re.MULTILINE)
+    assert re.search(r"^    environment: skillscout-catalog-publish$", publish, re.MULTILINE)
+    assert "verify-publication-admission --candidate \"$CANDIDATE_LOCATOR\" --phase2-state \"$PHASE2_STATE_LOCATOR\" --phase3-state \"$PHASE3_STATE_LOCATOR\" --compare-env" in publish
+    assert publish.index("verify-publication-admission") < publish.index("actions/create-github-app-token")
+    assert "SKILLSCOUT_CATALOG_TEAM_REVIEWERS" in publish
+    assert "permission-contents: write" in publish
+    assert "permission-pull-requests: write" in publish
+
+
+def test_publish_workflow_has_no_candidate_shell_interpolation_or_forbidden_publication_surface() -> None:
+    text = _workflow()
     run_blocks = re.findall(r"run:\s*\|\n((?:\s{8,}.*\n?)*)", text)
     assert run_blocks
-    assert not any(expression in block for block in run_blocks for expression in forbidden_expressions)
+    assert all("${{" not in block for block in run_blocks)
+    assert all(marker not in text for marker in ("/merge", "approve", "ready-for-review", "graphql", "rulesets", "gh pr"))
+    assert "--locked python -m skillscout.cli publish-candidate" in text
+    assert "--publication-state \"$PUBLICATION_STATE_LOCATOR\"" in text
+    token_index = text.index("actions/create-github-app-token")
+    assert "uses:" not in text[token_index + 1 :]
+    assert "actions/cache" not in text
+    assert "upload-artifact" not in text
