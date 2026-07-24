@@ -98,7 +98,8 @@ class PublicationStateStore:
         old = self._conn
         self._conn = candidate
         self._bytes = payload
-        old.close()
+        if old is not candidate:
+            old.close()
 
     def _transaction(self, mutate: object) -> object:
         if self._poisoned:

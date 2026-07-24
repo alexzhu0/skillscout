@@ -8,6 +8,8 @@ coupling while documenting every crash and ambiguity disposition.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -156,3 +158,47 @@ def test_stale_owned_catalog_files_are_deleted_only_inside_the_owned_subtree() -
     assert result.deleted_paths == ("skills/bounded-workflow/references/obsolete.md",)
     assert all(path.startswith("skills/bounded-workflow/") for path in result.deleted_paths)
     assert result.outside_owned_subtree_writes == 0
+
+
+def _state_intent() -> Any:
+    from skillscout.domain.publication import PublicationIntentV1
+
+    digest = "sha256:" + "a" * 64
+    return PublicationIntentV1.model_construct(
+        schema_version="publication-intent-v1", catalog_repository_id=202,
+        catalog_full_name="catalog-org/skills", base_branch="main", catalog_root="skills",
+        stable_slug="bounded-workflow", target_root="skills/bounded-workflow/",
+        head_branch="skillscout/bounded-workflow", reviewers=("alpha-reviewer",),
+        publication_key=digest, desired_revision="sha256:" + "b" * 64,
+        intent_digest="sha256:" + "c" * 64,
+    )
+
+
+def test_state_checkpoints_are_canonical_durable_and_terminal(tmp_path: Path) -> None:
+    from skillscout.adapters.publication_state import PublicationStateStore
+    from skillscout.domain.publication import PublicationRecordV1
+
+    state_dir = tmp_path / "state"; state_dir.mkdir(); os.chmod(state_dir, 0o700)
+    intent = _state_intent()
+    store = PublicationStateStore(state_dir / "publication-state.db")
+    assert store.find_pending(intent) is None
+    store.begin_attempt(intent)
+    checkpoint = store.append_checkpoint(intent, step="reconciled", status_class="read", request_id="REQ-1")
+    assert checkpoint.event_index == 0
+    record = PublicationRecordV1(schema_version="publication-record-v1", publication_key=intent.publication_key, desired_revision=intent.desired_revision, marker_digest="sha256:" + "d" * 64)
+    store.complete(intent, record); store.close()
+    reopened = PublicationStateStore(state_dir / "publication-state.db")
+    assert reopened.find_completed(intent) == record
+    reopened.close()
+
+
+def test_state_rejects_checkpoint_corruption_before_projection(tmp_path: Path) -> None:
+    from skillscout.adapters.publication_state import PublicationStateStore
+
+    state_dir = tmp_path / "state"; state_dir.mkdir(); os.chmod(state_dir, 0o700)
+    intent = _state_intent(); store = PublicationStateStore(state_dir / "publication-state.db")
+    store.begin_attempt(intent); store.append_checkpoint(intent, step="reconciled", status_class="read")
+    store._conn.execute("UPDATE publication_checkpoints SET checkpoint_json = ?", ("{}",))  # corruption simulates disk tampering before projection
+    with pytest.raises(Exception):
+        store.find_pending(intent)
+    store.close()
