@@ -1,0 +1,1 @@
+{"redirect":301,"unauthorized":401,"forbidden":403,"missing":404,"conflict":409,"unprocessable":422,"rate_limited":429,"server_error":500,"oversized":"body_limit","malformed":"invalid_json","wrong_content_type":"text/html","missing_request_id":"absent","pagination":"link_next","unknown_field":"ignored","truncated_tree":true}
