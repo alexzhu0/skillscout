@@ -16,6 +16,10 @@ from pydantic import Field, field_validator, model_validator
 
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.models import Digest, StrictFrozenModel
+from skillscout.domain.qualification import QualificationReportV1, qualification_report_bytes, qualification_report_digest
+from skillscout.domain.review import CandidateTerminalSummaryV1, ReviewAttestationV1, candidate_terminal_summary_bytes, review_attestation_bytes
+from skillscout.domain.skill_artifacts import FrozenSkillPackageV1, RenderedPackageManifestV1
+from skillscout.domain.validation import ValidationReportV1
 
 PUBLICATION_POLICY_VERSION: Final = "publication-policy-v1"
 PUBLICATION_MARKER_SCHEMA_VERSION: Final = "publication-marker-v1"
@@ -231,7 +235,31 @@ def admit_phase3_candidate(*, evidence: CandidatePublicationEvidenceV1 | None = 
         if type(evidence) is not CandidatePublicationEvidenceV1:
             raise TypeError("candidate evidence must be strict")
         return evidence
-    raise ValueError("terminal summary admission requires the complete canonical artifact matrix")
+    if type(terminal_summary_bytes) is not bytes or type(artifacts) is not dict:
+        raise TypeError("candidate admission requires canonical terminal bytes and artifact mapping")
+    if any(type(key) is not str or type(payload) is not bytes for key, payload in artifacts.items()):
+        raise TypeError("candidate artifacts must be an exact bytes mapping")
+    terminal = CandidateTerminalSummaryV1.model_validate(terminal_summary, strict=True)
+    if candidate_terminal_summary_bytes(terminal) != terminal_summary_bytes:
+        raise ValueError("terminal summary bytes are not canonical")
+    required = {"terminal_summary", "qualification_report", "rendered_package", "package_manifest", "validation_report", "review_attestation"}
+    if set(artifacts) != required or artifacts["terminal_summary"] != terminal_summary_bytes:
+        raise ValueError("candidate artifact matrix is not exact")
+    if not (terminal.outcome == "eligible_local_candidate" and terminal.eligible and terminal.qualification_passed and terminal.validation_error_count == 0 and terminal.review_disposition.status == "review_completed_eligible"):
+        raise ValueError("terminal candidate is not eligible for publication")
+    qualification = QualificationReportV1.model_validate_json(artifacts["qualification_report"], strict=True)
+    package = FrozenSkillPackageV1.model_validate_json(artifacts["rendered_package"], strict=True)
+    manifest = RenderedPackageManifestV1.model_validate_json(artifacts["package_manifest"], strict=True)
+    validation = ValidationReportV1.model_validate_json(artifacts["validation_report"], strict=True)
+    attestation = ReviewAttestationV1.model_validate_json(artifacts["review_attestation"], strict=True)
+    if qualification_report_bytes(qualification) != artifacts["qualification_report"] or review_attestation_bytes(attestation) != artifacts["review_attestation"]:
+        raise ValueError("candidate artifacts are not canonical")
+    if (qualification_report_digest(qualification) != terminal.qualification_report_digest or not qualification.passed or package.package_identity != terminal.package_identity or package.rendered_manifest != manifest or package.package_identity.rendered_manifest_digest != terminal.package_identity.rendered_manifest_digest or validation.report_digest != terminal.validation_report_digest or validation.error_count != 0 or not validation.passed or attestation.attestation_digest != terminal.review_attestation_digest or attestation.package_digest != terminal.package_digest or attestation.review_result.judgment is None or attestation.review_result.judgment.verdict != "YES"):
+        raise ValueError("candidate artifacts disagree with terminal evidence")
+    provenance = package.provenance
+    files = tuple(PublicationFileV1(path=item.path, content_hash=sha256_digest(item.content), mode=item.mode, size=len(item.content), content=item.content) for item in package.files)
+    raw = {"schema_version": "candidate-publication-evidence-v1", "stable_slug": package.stable_slug, "repository_id": provenance.repository_id, "repository_full_name": provenance.repository_url.removeprefix("https://github.com/"), "repository_url": provenance.repository_url, "exact_commit_sha": provenance.exact_commit_sha, "license_spdx": provenance.license_spdx, "workflow_fingerprint": provenance.selected_workflow_fingerprint, "package_digest": terminal.package_digest, "rendered_manifest_digest": terminal.package_identity.rendered_manifest_digest, "qualification_report_digest": terminal.qualification_report_digest, "validation_report_digest": terminal.validation_report_digest, "review_attestation_digest": terminal.review_attestation_digest, "qualification_passed": True, "validation_error_count": 0, "review_verdict": "YES", "review_confidence": attestation.review_result.judgment.confidence, "files": files}
+    return CandidatePublicationEvidenceV1.model_validate(raw)
 
 
 def render_pull_request_title(admission: PublicationAdmissionV1) -> str:
