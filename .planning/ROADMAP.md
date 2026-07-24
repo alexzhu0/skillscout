@@ -265,7 +265,7 @@ Plans:
 
 **Success Criteria:**
 
-1. 短期 GitHub App installation token 只可在配置的 catalog 创建/更新允许前缀的分支、提交已验证 manifest 中的文件、创建 Draft PR 和请求指定人类 reviewer/team。
+1. 短期 GitHub App installation token 只可在配置的 catalog 创建/更新允许前缀的分支、提交已验证 manifest 中的文件、创建 Draft PR 和请求配置的个人 GitHub reviewer。v1 因 GitHub REST 没有可依赖的 durable team receipt 而不支持 team target；`SKILLSCOUT_CATALOG_TEAM_REVIEWERS` 非空时必须在 token/network 前失败并转人工 catalog review。
 2. Draft PR 正文包含来源、精确 SHA、许可证、fingerprint、证据、资格、安全/格式检查、独立审核与明确人工审核提示。
 3. 重复发布同一 slug 会更新同一 Draft PR；在本地 publication state 缺失时，可通过远端 head 和机器 marker 恢复，而不创建重复 PR。
 4. 如果已有 PR 不是 Draft、head 出现不可安全覆盖的人类冲突，或目标文件不在验证 manifest 中，Publisher 停止并给出人工处理结果。
