@@ -1,0 +1,100 @@
+---
+phase: 4
+slug: controlled-draft-pr
+status: draft
+nyquist_compliant: false
+wave_0_complete: false
+created: 2026-07-24
+---
+
+# Phase 4 — Validation Strategy
+
+> Per-phase validation contract for controlled Draft PR publication.
+
+---
+
+## Test Infrastructure
+
+All commands run from the repository root. Offline tests use injected transports and fixtures. The live canary is opt-in, uses the same restricted GitHub App installation identity as production, and never supplies automated cleanup or merge authority.
+
+| Property | Value |
+|----------|-------|
+| **Framework** | pytest 9.1.x with `httpx.MockTransport` |
+| **Config file** | `pyproject.toml` |
+| **Quick run command** | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_domain.py tests/test_github_publish_adapter.py tests/test_publication_recovery.py tests/test_publication_security.py` |
+| **Full suite command** | `.tools/uv-0.11.29/bin/uv run --locked pytest -q` |
+| **Network policy** | Offline by default; live canary requires explicit protected-environment configuration |
+| **Estimated runtime** | Focused checks target under 60 seconds; full suite measured during execution |
+
+---
+
+## Sampling Rate
+
+- **After every task commit:** Run the narrow Phase 4 test file(s) touched by the task.
+- **After every plan wave:** Run the four offline Phase 4 suites plus affected regression tests.
+- **Before `$gsd-verify-work`:** Full suite, static workflow checks, and reviewed live-canary evidence must be green.
+- **Max feedback latency:** 60 seconds for focused offline checks.
+
+---
+
+## Per-Requirement Verification Map
+
+| Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
+|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
+| PUB-01 | T-04-01, T-04-02 | Only configured catalog, allowed machine ref, frozen manifest bytes, Draft PR, and configured reviewer request are reachable | contract + transport integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_github_publish_adapter.py -x` | ❌ W0 | ⬜ pending |
+| PUB-02 | T-04-03 | Canonical PR body contains every required provenance, evidence, review, and human-control field plus machine marker | unit + golden | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_domain.py -x` | ❌ W0 | ⬜ pending |
+| PUB-03 | T-04-04 | Production adapter exposes no merge, approve, ready, auto-merge, ruleset, default-ref, arbitrary-repository, or arbitrary-ref operation | static AST + negative transport | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_security.py -x` | ❌ W0 | ⬜ pending |
+| PUB-04 | T-04-05, T-04-06 | Short-lived App token and catalog ruleset permit the positive machine-branch/Draft flow while negative canaries remain denied | workflow static + opt-in live integration | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_live_canary.py -x` | ❌ W0 | ⬜ pending |
+| PUB-05 | T-04-07, T-04-08 | Same slug reuses one Draft PR; remote recovery is deterministic; ambiguity, non-Draft state, or human conflicts stop | crash/recovery matrix | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_recovery.py -x` | ❌ W0 | ⬜ pending |
+| SEC-02 | T-04-09, T-04-10 | Minimal workflow permissions, protected environment, pinned action SHA, safe logging, and zero candidate-to-shell interpolation | workflow parser + AST/security | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_publication_security.py -x` | ❌ W0 | ⬜ pending |
+
+*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+---
+
+## Required Test Matrices
+
+1. **Admission:** every mutation of canonical bytes, digest, path, mode, size, validation report, review verdict, confidence, or terminal eligibility fails before token or network access.
+2. **Provider responses:** success plus redirect, 401, 403, 404, 409, 422, 429, 5xx, oversized body, malformed JSON, wrong content type, missing request ID, pagination, and unknown fields.
+3. **Crash points:** after blob/tree/commit, ref create/update, PR create/update, reviewer request, remote verification, and remote success before local checkpoint.
+4. **Remote ambiguity:** duplicate PRs, non-Draft PR, wrong head/base, marker mismatch, human commit, force-updated ref, deleted/reopened/closed PR, changed default branch, and stale reviewer state.
+5. **Forbidden routes:** reject `PUT`, `DELETE`, GraphQL, `/merge`, `/reviews`, `/update-branch`, `/rulesets`, default-branch refs, arbitrary refs, and arbitrary repositories.
+6. **Live canary:** prove the positive machine-branch/Draft/reviewer path and negative default-ref/merge/ruleset paths with the same installation identity; separately authorized human/admin cleanup only.
+
+---
+
+## Wave 0 Requirements
+
+- [ ] `tests/fixtures/github_publish/` — bounded Git object, ref, pull, reviewer, pagination, conflict, and rate-limit fixtures.
+- [ ] `tests/test_publication_domain.py` — admission, identity, marker, PR-body, transition, and publication-record contracts.
+- [ ] `tests/test_github_publish_adapter.py` — exact repository/method/path/body allowlist and response parsing.
+- [ ] `tests/test_publication_recovery.py` — crash and remote-reconstruction matrix.
+- [ ] `tests/test_publication_security.py` — AST/import/route/workflow/logging forbidden-surface checks.
+- [ ] `tests/test_publication_live_canary.py` — opt-in environment contract; skipped unless explicit protected canary variables exist.
+- [ ] Exact approved GitHub App-token action SHA and supply-chain evidence.
+- [ ] Independent catalog ruleset evidence and human/admin canary cleanup procedure.
+
+---
+
+## Manual-Only Verifications
+
+| Behavior | Requirement | Why Manual | Test Instructions |
+|----------|-------------|------------|-------------------|
+| GitHub App action identity and exact SHA approval | SEC-02 | Third-party executable supply-chain identity cannot auto-approve itself | Review source, release provenance, permissions, exact full SHA, and resolved workflow diff before enabling the publishing job. |
+| Catalog ruleset and installation-permission canary | PUB-04 | Repository rules and installation permissions are external control-plane state | In the protected environment, run positive Draft flow and negative default-push/merge/ruleset probes; a human reviews evidence and performs cleanup with separate authority. |
+| Reviewer/team configuration | PUB-01 | Catalog governance decides the authorized human review destination | Confirm configured reviewer/team exists, is authorized, and receives the Draft PR request. |
+
+---
+
+## Validation Sign-Off
+
+- [ ] Every planned task has an automated verification command or explicit blocking human checkpoint.
+- [ ] All six Phase 4 requirement IDs map to plan tasks and validation evidence.
+- [ ] Sampling continuity has no three consecutive implementation tasks without automated verification.
+- [ ] Wave 0 covers every missing fixture and test file.
+- [ ] No watch-mode flags or implicit live-network dependency.
+- [ ] Offline feedback latency stays under 60 seconds.
+- [ ] Live canary evidence proves negative capabilities using the production installation identity.
+- [ ] `nyquist_compliant: true` is set only after execution verification.
+
+**Approval:** pending
