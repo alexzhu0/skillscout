@@ -245,8 +245,8 @@ def test_publish_workflow_has_exact_approved_pins_dispatch_and_minimum_permissio
     action_refs = re.findall(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", text, flags=re.MULTILINE)
     assert action_refs == [_CHECKOUT_SHA, _CHECKOUT_SHA, _APP_TOKEN_SHA]
     assert "@v" not in text
-    assert "contents: write" not in text
-    assert "pull-requests: write" not in text
+    assert not re.search(r"^\s*contents: write$", text, re.MULTILINE)
+    assert not re.search(r"^\s*pull-requests: write$", text, re.MULTILINE)
 
 
 def test_publish_workflow_crosses_only_candidate_handoff_and_revalidates_before_token() -> None:

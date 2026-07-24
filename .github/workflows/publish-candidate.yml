@@ -1,0 +1,158 @@
+name: Publish admitted candidate as Draft PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_descriptor:
+        description: Candidate descriptor locator beneath evidence/
+        required: true
+        type: string
+      phase2_state_locator:
+        description: Phase 2 state locator beneath state/
+        required: true
+        type: string
+      phase3_state_locator:
+        description: Phase 3 state locator beneath state/
+        required: true
+        type: string
+      publication_state_locator:
+        description: Dedicated publication-state locator beneath state/
+        required: true
+        type: string
+      live_canary:
+        description: Reserved for separately authorized canary evidence; never runs remotely here
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  admit:
+    runs-on: ubuntu-24.04
+    outputs:
+      candidate_descriptor_locator: ${{ steps.admission.outputs.candidate_descriptor_locator }}
+      phase2_state_locator: ${{ steps.admission.outputs.phase2_state_locator }}
+      phase3_state_locator: ${{ steps.admission.outputs.phase3_state_locator }}
+      candidate_descriptor_digest: ${{ steps.admission.outputs.candidate_descriptor_digest }}
+      phase2_chain_digest: ${{ steps.admission.outputs.phase2_chain_digest }}
+      terminal_summary_digest: ${{ steps.admission.outputs.terminal_summary_digest }}
+      package_digest: ${{ steps.admission.outputs.package_digest }}
+      manifest_digest: ${{ steps.admission.outputs.manifest_digest }}
+      validation_report_digest: ${{ steps.admission.outputs.validation_report_digest }}
+      review_attestation_digest: ${{ steps.admission.outputs.review_attestation_digest }}
+    env:
+      CANDIDATE_LOCATOR: ${{ inputs.candidate_descriptor }}
+      PHASE2_STATE_LOCATOR: ${{ inputs.phase2_state_locator }}
+      PHASE3_STATE_LOCATOR: ${{ inputs.phase3_state_locator }}
+    steps:
+      - name: Check out the fixed workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Re-read candidate evidence and emit only canonical handoff
+        id: admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          admission_output="$(mktemp)"
+          trap 'rm -f "$admission_output"' EXIT
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-publication-admission --candidate "$CANDIDATE_LOCATOR" --phase2-state "$PHASE2_STATE_LOCATOR" --phase3-state "$PHASE3_STATE_LOCATOR" > "$admission_output"
+          python - "$admission_output" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import re
+          import sys
+
+          fields = (
+              "candidate_descriptor_locator", "phase2_state_locator", "phase3_state_locator",
+              "candidate_descriptor_digest", "phase2_chain_digest", "terminal_summary_digest",
+              "package_digest", "manifest_digest", "validation_report_digest",
+              "review_attestation_digest",
+          )
+          locator_fields = set(fields[:3])
+          with open(sys.argv[1], encoding="utf-8") as source:
+              payload = json.load(source)
+          if set(payload) != set(fields):
+              raise SystemExit("unexpected candidate handoff")
+          for field in fields:
+              value = payload[field]
+              valid = (
+                  isinstance(value, str)
+                  and (bool(re.fullmatch(r"(?:evidence|state)/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+", value)) if field in locator_fields else bool(re.fullmatch(r"sha256:[0-9a-f]{64}", value)))
+              )
+              if not valid:
+                  raise SystemExit("invalid candidate handoff")
+          with open(sys.argv[2], "a", encoding="utf-8") as destination:
+              for field in fields:
+                  destination.write(f"{field}={payload[field]}\n")
+          PY
+
+  publish:
+    needs: admit
+    runs-on: ubuntu-24.04
+    environment: skillscout-catalog-publish
+    env:
+      CANDIDATE_LOCATOR: ${{ needs.admit.outputs.candidate_descriptor_locator }}
+      PHASE2_STATE_LOCATOR: ${{ needs.admit.outputs.phase2_state_locator }}
+      PHASE3_STATE_LOCATOR: ${{ needs.admit.outputs.phase3_state_locator }}
+      PUBLICATION_STATE_LOCATOR: ${{ inputs.publication_state_locator }}
+      SKILLSCOUT_EXPECTED_CANDIDATE_DESCRIPTOR_LOCATOR: ${{ needs.admit.outputs.candidate_descriptor_locator }}
+      SKILLSCOUT_EXPECTED_PHASE2_STATE_LOCATOR: ${{ needs.admit.outputs.phase2_state_locator }}
+      SKILLSCOUT_EXPECTED_PHASE3_STATE_LOCATOR: ${{ needs.admit.outputs.phase3_state_locator }}
+      SKILLSCOUT_EXPECTED_CANDIDATE_DESCRIPTOR_DIGEST: ${{ needs.admit.outputs.candidate_descriptor_digest }}
+      SKILLSCOUT_EXPECTED_PHASE2_CHAIN_DIGEST: ${{ needs.admit.outputs.phase2_chain_digest }}
+      SKILLSCOUT_EXPECTED_TERMINAL_SUMMARY_DIGEST: ${{ needs.admit.outputs.terminal_summary_digest }}
+      SKILLSCOUT_EXPECTED_PACKAGE_DIGEST: ${{ needs.admit.outputs.package_digest }}
+      SKILLSCOUT_EXPECTED_MANIFEST_DIGEST: ${{ needs.admit.outputs.manifest_digest }}
+      SKILLSCOUT_EXPECTED_VALIDATION_REPORT_DIGEST: ${{ needs.admit.outputs.validation_report_digest }}
+      SKILLSCOUT_EXPECTED_REVIEW_ATTESTATION_DIGEST: ${{ needs.admit.outputs.review_attestation_digest }}
+      SKILLSCOUT_CATALOG_REPOSITORY_ID: ${{ vars.SKILLSCOUT_CATALOG_REPOSITORY_ID }}
+      SKILLSCOUT_CATALOG_FULL_NAME: ${{ vars.SKILLSCOUT_CATALOG_FULL_NAME }}
+      SKILLSCOUT_CATALOG_BASE_BRANCH: ${{ vars.SKILLSCOUT_CATALOG_BASE_BRANCH }}
+      SKILLSCOUT_CATALOG_REVIEWERS: ${{ vars.SKILLSCOUT_CATALOG_REVIEWERS }}
+      SKILLSCOUT_CATALOG_TEAM_REVIEWERS: ${{ vars.SKILLSCOUT_CATALOG_TEAM_REVIEWERS }}
+      SKILLSCOUT_PUBLICATION_POLICY_VERSION: ${{ vars.SKILLSCOUT_PUBLICATION_POLICY_VERSION }}
+    steps:
+      - name: Check out the fixed workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Revalidate candidate and derive protected-local admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          protected_admission="$(mktemp)"
+          trap 'rm -f "$protected_admission"' EXIT
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-publication-admission --candidate "$CANDIDATE_LOCATOR" --phase2-state "$PHASE2_STATE_LOCATOR" --phase3-state "$PHASE3_STATE_LOCATOR" --compare-env > "$protected_admission"
+          python - "$protected_admission" "$GITHUB_ENV" <<'PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              protected = json.load(source)
+          for field in ("publication_intent_digest", "admission_digest"):
+              value = protected.get(field)
+              if not isinstance(value, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+                  raise SystemExit("invalid protected admission")
+              with open(sys.argv[2], "a", encoding="utf-8") as destination:
+                  destination.write(f"SKILLSCOUT_PROTECTED_{field.upper()}={value}\n")
+          PY
+      - name: Mint catalog-scoped installation token after protected admission
+        id: app-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c8cde82c3ff073ffe3b5
+        with:
+          app-id: ${{ secrets.SKILLSCOUT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.SKILLSCOUT_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ vars.SKILLSCOUT_CATALOG_OWNER }}
+          repositories: ${{ vars.SKILLSCOUT_CATALOG_REPOSITORY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Publish the independently rederived Draft only
+        shell: bash
+        env:
+          SKILLSCOUT_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli publish-candidate --candidate "$CANDIDATE_LOCATOR" --phase2-state "$PHASE2_STATE_LOCATOR" --phase3-state "$PHASE3_STATE_LOCATOR" --publication-state "$PUBLICATION_STATE_LOCATOR"
