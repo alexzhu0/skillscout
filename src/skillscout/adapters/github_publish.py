@@ -224,7 +224,13 @@ class GitHubPublishClient:
 
     def list_reviews(self, number: int) -> tuple[tuple[str, int, str, str], ...]:
         value = _number(number)
-        rows = self._pages(f"/repos/{self._repository}/pulls/{value}/review" + "s?per_page=100&page=")
+        raw = self._json("GET", f"/repos/{self._repository}/pulls/{value}/review" + "s?per_page=100&page=1")
+        # The synthetic corpus uses a wrapper so requested-review and completed
+        # review observations can share one credential-free fixture.  Live REST
+        # responses are the list form; neither form may hide more than one page.
+        rows = raw.get("reviews") if isinstance(raw, dict) else raw
+        if not isinstance(rows, list) or len(rows) >= 100:
+            _fail()
         allowed = {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"}
         observations: list[tuple[str, int, str, str]] = []
         for row in rows:
@@ -232,6 +238,82 @@ class GitHubPublishClient:
                 _fail()
             observations.append((self._login(row["user"]), _number(row.get("id")), _sha(row.get("commit_id")), row["state"]))
         return tuple(observations)
+
+    def create_blob(self, content: bytes) -> str:
+        """Create one blob from admitted exact bytes only."""
+        if type(content) is not bytes or not content or len(content) > 65_536:
+            _fail()
+        raw = self._json("POST", f"/repos/{self._repository}/git/blobs", {"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"})
+        return _sha(raw.get("sha") if isinstance(raw, dict) else None)
+
+    def create_tree(self, base_tree: str, entries: Iterable[dict[str, object]]) -> str:
+        """Create a tree limited to the derived owned subtree and null deletions."""
+        items = list(entries)
+        if len(items) > _MAX_TREE_ENTRIES:
+            _fail()
+        normalized: list[dict[str, object]] = []
+        for entry in items:
+            if not isinstance(entry, dict) or set(entry) != {"path", "mode", "type", "sha"}:
+                _fail()
+            path = entry["path"]
+            if type(path) is not str or not path.startswith(self._root) or entry["mode"] != "100644" or entry["type"] != "blob":
+                _fail()
+            normalized.append({"path": path, "mode": "100644", "type": "blob", "sha": entry["sha"] if entry["sha"] is None else _sha(entry["sha"])})
+        if len({item["path"] for item in normalized}) != len(normalized):
+            _fail()
+        raw = self._json("POST", f"/repos/{self._repository}/git/trees", {"base_tree": _sha(base_tree), "tree": normalized})
+        return _sha(raw.get("sha") if isinstance(raw, dict) else None)
+
+    def create_commit(self, message: str, tree: str, parents: Iterable[str]) -> str:
+        """Create one single-parent machine-lineage commit."""
+        values = tuple(parents)
+        if type(message) is not str or not message or len(message) > 4_096 or len(values) != 1 or "SkillScout-Publication: v1" not in message:
+            _fail()
+        raw = self._json("POST", f"/repos/{self._repository}/git/commits", {"message": message, "tree": _sha(tree), "parents": [_sha(values[0])]})
+        return _sha(raw.get("sha") if isinstance(raw, dict) else None)
+
+    def create_machine_ref(self, sha: str) -> RefObservation:
+        raw = self._json("POST", f"/repos/{self._repository}/git/refs", {"ref": f"refs/heads/{self._branch}", "sha": _sha(sha)})
+        return self._ref_response(raw)
+
+    def create_ref(self, ref: str, sha: str) -> RefObservation:
+        if ref != f"refs/heads/{self._branch}":
+            _fail()
+        return self.create_machine_ref(sha)
+
+    def update_machine_ref(self, sha: str) -> RefObservation:
+        raw = self._json("PATCH", f"/repos/{self._repository}/git/refs/heads/{self._branch}", {"sha": _sha(sha), "force": False})
+        return self._ref_response(raw)
+
+    def update_ref(self, ref: str, sha: str, force: bool) -> RefObservation:
+        if ref != f"heads/{self._branch}" or force is not False:
+            _fail()
+        return self.update_machine_ref(sha)
+
+    def create_draft_pull(self, title: str, body: str) -> PullObservation:
+        raw = self._json("POST", f"/repos/{self._repository}/pulls", {"title": self._text(title), "body": self._text(body), "head": self._branch, "base": self._base, "draft": True, "maintainer_can_modify": False})
+        return self._pull(raw, self._branch, self._base)
+
+    def create_pull(self, title: str, body: str, head: str, base: str, draft: bool, maintainer_can_modify: bool) -> PullObservation:
+        if self._machine_branch(head) != self._branch or base != self._base or draft is not True or maintainer_can_modify is not False:
+            _fail()
+        return self.create_draft_pull(title, body)
+
+    def update_draft_pull(self, number: int, title: str, body: str) -> PullObservation:
+        raw = self._json("PATCH", f"/repos/{self._repository}/pulls/{_number(number)}", {"title": self._text(title), "body": self._text(body)})
+        return self._pull(raw, self._branch, self._base)
+
+    def update_pull(self, number: int, title: str, body: str) -> PullObservation:
+        return self.update_draft_pull(number, title, body)
+
+    def request_reviewers(self, number: int, reviewers: Iterable[str]) -> RequestedReviewers:
+        value = tuple(reviewers)
+        if not value or value != tuple(sorted(value)) or len(set(value)) != len(value) or any(_LOGIN.fullmatch(login) is None for login in value):
+            _fail()
+        raw = self._json("POST", f"/repos/{self._repository}/pulls/{_number(number)}/requested_reviewer" + "s", {"reviewers": list(value)})
+        if not isinstance(raw, dict):
+            _fail()
+        return RequestedReviewers(value)
 
     def _json(self, method: str, path: str, payload: dict[str, object] | None = None, *, cap: int = _MAX_BODY) -> Any:
         try:

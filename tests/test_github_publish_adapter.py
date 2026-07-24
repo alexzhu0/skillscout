@@ -106,7 +106,7 @@ def test_named_operations_use_exact_paths_bodies_and_serial_calls() -> None:
         client.get_tree(TREE, recursive=True)
         client.create_blob(content=b"fixture")
         client.create_tree(base_tree=TREE, entries=[])
-        client.create_commit(message="fixture", tree=TREE, parents=[COMMIT])
+        client.create_commit(message="fixture\n\nSkillScout-Publication: v1", tree=TREE, parents=[COMMIT])
         client.create_ref(ref=f"refs/heads/{HEAD}", sha=COMMIT)
         client.update_ref(ref=f"heads/{HEAD}", sha=COMMIT, force=False)
         client.list_pulls(head=HEAD, base=BASE)
