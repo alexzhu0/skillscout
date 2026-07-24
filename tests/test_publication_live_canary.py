@@ -176,3 +176,54 @@ def test_live_canary_execution_is_explicit_and_never_performs_cleanup() -> None:
     assert result.draft is True
     assert result.pre_default_sha == result.post_default_sha
     assert result.cleanup_manifest
+
+
+def test_test_only_canary_uses_one_installation_identity_for_positive_and_negative_probes() -> None:
+    """The future opt-in transport runner must expose no production client seam."""
+
+    config = LiveCanaryConfig(
+        catalog_id=910001,
+        catalog_full_name="catalog-org/skills",
+        app_token="not-rendered",
+        ruleset_evidence_digest="sha256:" + "a" * 64,
+        reviewer="skill-maintainer",
+        slug="bounded-workflow-canary",
+        positive_pull_number=78,
+        otherwise_mergeable_pr=79,
+        default_update_sha="b" * 40,
+        unauthorized_repository="other-org/private",
+        unauthorized_resource="environments/controlled-publishing/secrets",
+    )
+    requests: list[tuple[str, str, str | None]] = []
+
+    def respond(request: object) -> object:
+        import httpx
+
+        assert isinstance(request, httpx.Request)
+        requests.append((request.method, request.url.path, request.headers.get("authorization")))
+        routes = {
+            ("GET", "/installation"): {"id": 4001},
+            ("GET", "/repos/catalog-org/skills"): {"id": 910001, "full_name": "catalog-org/skills", "default_branch": "main"},
+            ("GET", "/repos/catalog-org/skills/git/ref/heads/main"): {"ref": "refs/heads/main", "object": {"sha": "a" * 40}},
+            ("GET", "/repos/catalog-org/skills/pulls/78"): {"number": 78, "draft": True, "head": {"ref": "skillscout/bounded-workflow-canary"}},
+            ("GET", "/repos/catalog-org/skills/pulls/78/requested_reviewers"): {"users": [{"login": "skill-maintainer"}]},
+            ("GET", "/repos/catalog-org/skills/pulls/79"): {"number": 79, "draft": False, "mergeable": True},
+        }
+        payload = routes.get((request.method, request.url.path))
+        if payload is not None:
+            return httpx.Response(200, json=payload)
+        return httpx.Response(403, json={"message": "denied"})
+
+    import httpx
+
+    result = CanaryGitHubClient(config, transport=httpx.MockTransport(respond)).run()
+    assert result.installation_id == 4001
+    assert result.positive_pull_number == 78
+    assert result.positive_draft is True
+    assert result.requested_reviewers == ("skill-maintainer",)
+    assert result.remote_state_unchanged is True
+    assert result.probe_installation_ids == (4001,) * len(NEGATIVE_PROBES)
+    assert {name for name, _ in result.negative_classifications} == set(NEGATIVE_PROBES)
+    assert all(value == "denied" for _, value in result.negative_classifications)
+    assert all(header == "Bearer not-rendered" for _, _, header in requests)
+    assert not any(method == "DELETE" for method, _, _ in requests)
