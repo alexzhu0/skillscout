@@ -39,6 +39,9 @@ EXPECTED_OPENAI_IMPORTERS = frozenset(
     }
 )
 EXPECTED_SKILLS_REF_IMPORTERS = frozenset({"adapters/skills_ref.py"})
+EXPECTED_HTTPX_IMPORTERS = frozenset(
+    {"adapters/github.py", "adapters/github_publish.py"}
+)
 EXPECTED_CHECK_IDS = (
     "dependency_bootstrap_authority",
     "import_capability_isolation",
@@ -303,7 +306,7 @@ def _check_import_capability_isolation(repository_root: Path) -> tuple[str, ...]
         )
     _require(openai_importers == EXPECTED_OPENAI_IMPORTERS)
     _require(skills_ref_importers == EXPECTED_SKILLS_REF_IMPORTERS)
-    _require(httpx_importers == {"adapters/github.py"})
+    _require(httpx_importers == EXPECTED_HTTPX_IMPORTERS)
     _require(not forbidden)
 
     github = _read_source(
@@ -311,13 +314,34 @@ def _check_import_capability_isolation(repository_root: Path) -> tuple[str, ...]
     ).decode("utf-8")
     _require(".post(" not in github and ".put(" not in github)
     _require(".patch(" not in github and ".delete(" not in github)
+    publisher = _read_source(
+        repository_root, SOURCE_ROOT / "adapters/github_publish.py"
+    ).decode("utf-8")
+    _require("effect_scope = EffectScope.REMOTE_WRITE" in publisher)
+    for prohibited in (
+        "def request(",
+        "graphql",
+        "merge",
+        "submit_review",
+        "approve",
+        "ready_for_review",
+        "timeline",
+    ):
+        _require(prohibited not in publisher)
     cli = _read_source(repository_root, SOURCE_ROOT / "cli.py").decode("utf-8")
-    for prohibited in ("publish", "merge", "mark-ready", "install-dependencies"):
+    for prohibited in (
+        "--merge",
+        "--approve",
+        "--mark-ready",
+        "--ready-for-review",
+        "--ruleset",
+        "install-dependencies",
+    ):
         _require(prohibited not in cli)
     return (
         "exact three OpenAI importers",
         "sole skills_ref importer",
-        "closed local/static production capability surface",
+        "closed read plus catalog-bound Draft publication capability surface",
     )
 
 

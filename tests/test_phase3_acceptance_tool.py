@@ -183,6 +183,24 @@ def test_exact_openai_and_skills_ref_importer_sets_are_required(
 
 
 @pytest.mark.parametrize(
+    "relative",
+    ("adapters/github.py", "adapters/github_publish.py"),
+)
+def test_exact_httpx_importer_set_is_required(
+    acceptance_repository: Path, relative: str
+) -> None:
+    _replace_once(
+        acceptance_repository,
+        f"src/skillscout/{relative}",
+        "import httpx",
+        "import json",
+    )
+
+    with pytest.raises(inspector.AcceptanceError):
+        inspector.verify_phase3_acceptance(acceptance_repository)
+
+
+@pytest.mark.parametrize(
     ("relative", "old", "new"),
     (
         (

@@ -173,6 +173,7 @@ FORBIDDEN_QUALIFIED_CALLS = frozenset({"os.popen", "os.system"})
 IMPORT_CARVE_OUTS: dict[str, frozenset[str]] = {
     "bootstrap.py": frozenset({"importlib"}),
     "adapters/github.py": frozenset({"httpx"}),
+    "adapters/github_publish.py": frozenset({"httpx"}),
     "adapters/openai_extract.py": frozenset({"openai"}),
     "adapters/openai_generate.py": frozenset({"openai"}),
     "adapters/openai_review.py": frozenset({"openai"}),
