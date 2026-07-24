@@ -20,12 +20,28 @@ MAX_AUDIT_BYTES = 65_536
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED = (
-    ("actions/checkout", 197814629, "11bd71901bbe5b1630ceea73d27597364c9af683"),
-    (
-        "actions/create-github-app-token",
-        595047935,
-        "67018539274d69449ef7c8cde82c3ff073ffe3b5",
-    ),
+    {
+        "repository_full_name": "actions/checkout",
+        "repository_id": 197814629,
+        "candidate_commit_sha": "11bd71901bbe5b1630ceea73d27597364c9af683",
+        "tree_sha": "d0af3a2e48f72b25f2c8a4ce85f9a86058d7eaa7",
+        "evidence_digests": (
+            "bc93395a4a6f2a012c91c40c3bf642d4217b8e76e5a25d9310a8a4ed1fa53238",
+            "f1cb3bcd79e4c95fc8ce4e199621292aeaa5735f8d2e55223dd4213f8194cd85",
+            "9d22852010dc49a5c8f0a02c3c4b10a4bb3b5e9dce832cb1d1a77b2235bb879f",
+        ),
+    },
+    {
+        "repository_full_name": "actions/create-github-app-token",
+        "repository_id": 595047935,
+        "candidate_commit_sha": "67018539274d69449ef7c8cde82c3ff073ffe3b5",
+        "tree_sha": "eb5e5fc0e85f5c1c4d03aa0c0c51e6fb3e8e6ff8",
+        "evidence_digests": (
+            "71bb6500e20692e2f80c4af422513e6090f5b6d1c68c05b00be30d74272608a0",
+            "eafcab61783827354cc3fbaa6b1c14e1db4cb6a34b7fe5e99ca78325a5d30ea6",
+            "00c3762ec818e5f451b69c62a9d55d1ab0ace44bb177678b4ca1db4f5cbfc3a5",
+        ),
+    },
 )
 
 
@@ -60,24 +76,26 @@ def _sha(value: object) -> bool:
     return isinstance(value, str) and SHA1.fullmatch(value) is not None
 
 
-def _verify_action(action: object, expected: tuple[str, int, str]) -> None:
+def _verify_action(action: object, expected: dict[str, object]) -> None:
     _require(isinstance(action, dict))
-    repository, repository_id, candidate = expected
-    _require(action.get("repository_full_name") == repository)
-    _require(action.get("repository_id") == repository_id)
-    _require(action.get("candidate_commit_sha") == candidate)
-    _require(_sha(action.get("tree_sha")))
+    _require(action.get("repository_full_name") == expected["repository_full_name"])
+    _require(action.get("repository_id") == expected["repository_id"])
+    _require(action.get("candidate_commit_sha") == expected["candidate_commit_sha"])
+    _require(action.get("tree_sha") == expected["tree_sha"])
     tag = action.get("release_tag_metadata")
     _require(isinstance(tag, dict) and tag.get("non_authoritative") is True)
     _require(isinstance(tag.get("name"), str) and tag["name"].startswith("v"))
     _require(tag.get("authority") == "candidate_commit_sha_only")
     files = action.get("evidence_files")
     _require(isinstance(files, list) and len(files) >= 2)
+    observed_digests = []
     for evidence in files:
         _require(isinstance(evidence, dict))
         _require(isinstance(evidence.get("path"), str) and evidence["path"])
         _require(_digest(evidence.get("sha256")))
         _require(evidence.get("read_only") is True)
+        observed_digests.append(evidence["sha256"])
+    _require(tuple(observed_digests) == expected["evidence_digests"])
     _require(isinstance(action.get("runtime"), dict))
     _require(isinstance(action["runtime"].get("using"), str))
     _require(isinstance(action.get("permissions"), dict))
@@ -109,7 +127,7 @@ def verify_audit(path: Path = AUDIT_PATH) -> None:
     for action, expected in zip(actions, EXPECTED, strict=True):
         _verify_action(action, expected)
     candidates = audit.get("candidate_sha_set")
-    _require(candidates == [expected[2] for expected in EXPECTED])
+    _require(candidates == [expected["candidate_commit_sha"] for expected in EXPECTED])
 
 
 def main() -> int:
