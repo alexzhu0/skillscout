@@ -12,7 +12,6 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -453,16 +452,11 @@ class GitHubPublishClient:
             return None
         if len(next_urls) != 1:
             _fail()
-        parsed = urlsplit(next_urls[0])
-        if (
-            parsed.scheme != "https"
-            or parsed.netloc != "api.github.com"
-            or parsed.fragment
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
+        next_url = next_urls[0]
+        origin = "https://api.github.com"
+        if not next_url.startswith(f"{origin}/") or "#" in next_url:
             _fail()
-        return parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        return next_url[len(origin) :]
 
     def _machine_branch(self, value: str | None) -> str:
         branch = self._branch if value is None else value
