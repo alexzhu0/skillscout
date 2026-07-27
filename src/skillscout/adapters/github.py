@@ -35,7 +35,10 @@ MAX_RETRY_AFTER_SECONDS = 60
 _OWNER_REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 _HEX_PATTERN = re.compile(r"^[0-9a-f]{1,128}$")
-_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_MAX_REQUEST_ID_CHARS = 128
+_REQUEST_ID_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9._-]+|[0-9A-F]+(?::[0-9A-F]+)+)"
+)
 
 _BoundedName = Annotated[str, Field(min_length=1, max_length=200)]
 _HexSha = Annotated[str, Field(pattern=r"^[0-9a-f]{1,128}$")]
@@ -552,7 +555,12 @@ def _rate_limit_facts(headers: httpx.Headers) -> RateLimitFacts:
 
 def _search_request_id(headers: httpx.Headers) -> str:
     value = headers.get("x-github-request-id")
-    if type(value) is not str or _REQUEST_ID_PATTERN.fullmatch(value) is None:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > _MAX_REQUEST_ID_CHARS
+        or _REQUEST_ID_PATTERN.fullmatch(value) is None
+    ):
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
     return value
 

@@ -218,6 +218,75 @@ def test_page_one_projects_exact_request_page_rate_and_allowlisted_items() -> No
         assert canary not in recorder_summary
 
 
+def _recorded_search_with_request_id(request_id: str | None) -> RecordedTransport:
+    path = _search_path(1, 1)
+    recorded_response = recorded_search_fixture("page_one")
+    headers = dict(recorded_response.headers)
+    if request_id is None:
+        headers.pop("x-github-request-id")
+    else:
+        headers["x-github-request-id"] = request_id
+    live_response = type(recorded_response)(
+        status=recorded_response.status,
+        headers=headers,
+        body=recorded_response.body,
+    )
+    return RecordedTransport({("GET", path): live_response})
+
+
+def test_search_accepts_live_colon_delimited_github_request_id() -> None:
+    path = _search_path(1, 1)
+    live_request_id = "753C:748B6:2CB2070:2EA615C:6A679381"
+    recorded = _recorded_search_with_request_id(live_request_id)
+    with GitHubReadClient(
+        token=TOKEN_CANARY,
+        transport=recorded.transport(),
+        sleeper=lambda _seconds: None,
+    ) as client:
+        page, repositories = _invoke_search(
+            client,
+            query_ordinal=1,
+            page=1,
+        )
+
+    assert page.request_id == live_request_id
+    assert len(repositories) == 3
+    assert recorded.call_count("GET", path) == 1
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    (
+        None,
+        "",
+        "753C 748B6",
+        "753C:\t748B6",
+        "753C:\x00748B6",
+        ":753C",
+        "753C:",
+        "753C::748B6",
+        "753C:GG",
+        "753C:-748B6",
+        ("A" * 64) + ":" + ("B" * 64),
+    ),
+)
+def test_search_rejects_malformed_or_oversized_request_id(
+    request_id: str | None,
+) -> None:
+    path = _search_path(1, 1)
+    recorded = _recorded_search_with_request_id(request_id)
+    with GitHubReadClient(
+        token=TOKEN_CANARY,
+        transport=recorded.transport(),
+        sleeper=lambda _seconds: None,
+    ) as client:
+        with pytest.raises(SafeFailure) as failure:
+            _invoke_search(client, query_ordinal=1, page=1)
+
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert recorded.call_count("GET", path) == 1
+
+
 def test_page_multiple_requests_are_serial_and_follow_integer_cursor_only() -> None:
     first = _search_path(1, 1)
     second = _search_path(1, 2)
