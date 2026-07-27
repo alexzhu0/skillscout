@@ -1,0 +1,60 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-github-request-id": "REQ-SEARCH-PARTIAL",
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "27",
+    "x-ratelimit-used": "3",
+    "x-ratelimit-reset": "1785160800",
+    "x-ratelimit-resource": "search"
+  },
+  "body": {
+    "total_count": 9,
+    "incomplete_results": true,
+    "items": [
+      {
+        "id": 910004,
+        "name": "private-mismatch",
+        "full_name": "fixture-org/private-mismatch",
+        "owner": {
+          "login": "fixture-org"
+        },
+        "private": true,
+        "visibility": "private",
+        "fork": false,
+        "archived": false,
+        "disabled": false,
+        "default_branch": "main"
+      },
+      {
+        "id": 910005,
+        "name": "fork-mismatch",
+        "full_name": "fixture-org/fork-mismatch",
+        "owner": {
+          "login": "fixture-org"
+        },
+        "private": false,
+        "visibility": "public",
+        "fork": true,
+        "archived": false,
+        "disabled": false,
+        "default_branch": "main"
+      },
+      {
+        "id": 910006,
+        "name": "archived-mismatch",
+        "full_name": "fixture-org/archived-mismatch",
+        "owner": {
+          "login": "fixture-org"
+        },
+        "private": false,
+        "visibility": "public",
+        "fork": false,
+        "archived": true,
+        "disabled": false,
+        "default_branch": "main"
+      }
+    ]
+  }
+}

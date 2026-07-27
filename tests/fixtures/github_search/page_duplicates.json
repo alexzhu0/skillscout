@@ -1,0 +1,50 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-github-request-id": "REQ-SEARCH-DUP",
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "28",
+    "x-ratelimit-used": "2",
+    "x-ratelimit-reset": "1785160800",
+    "x-ratelimit-resource": "search"
+  },
+  "body": {
+    "total_count": 2,
+    "incomplete_results": false,
+    "items": [
+      {
+        "id": 910002,
+        "name": "workflow-beta-renamed",
+        "full_name": "new-owner/workflow-beta-renamed",
+        "owner": {
+          "login": "new-owner"
+        },
+        "private": false,
+        "visibility": "public",
+        "fork": false,
+        "archived": false,
+        "disabled": false,
+        "default_branch": "trunk",
+        "description": "CROSS_QUERY_RENAME_CANARY"
+      },
+      {
+        "id": 910003,
+        "name": "workflow-gamma",
+        "full_name": "fixture-org/workflow-gamma",
+        "owner": {
+          "login": "fixture-org"
+        },
+        "private": false,
+        "visibility": "public",
+        "fork": false,
+        "archived": false,
+        "disabled": false,
+        "default_branch": "main",
+        "topics": [
+          "DISCARDED_TOPIC_CANARY"
+        ]
+      }
+    ]
+  }
+}

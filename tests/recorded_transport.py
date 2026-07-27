@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 
 FIXTURES = Path(__file__).parent / "fixtures" / "github"
+GITHUB_SEARCH_FIXTURES = Path(__file__).parent / "fixtures" / "github_search"
 OPENAI_FIXTURES = Path(__file__).parent / "fixtures" / "openai"
 OPENAI_GENERATOR_FIXTURES = OPENAI_FIXTURES / "generator" / "cases.json"
 
@@ -39,6 +40,42 @@ def recorded_fixture(name: str) -> RecordedResponse:
     """Load one recorded GitHub response fixture without any network access."""
 
     return _load_fixture(FIXTURES, name)
+
+
+def recorded_search_fixture(name: str) -> RecordedResponse:
+    """Load one bounded GitHub Search response or named error case."""
+
+    direct = GITHUB_SEARCH_FIXTURES / f"{name}.json"
+    if direct.is_file():
+        return _load_fixture(GITHUB_SEARCH_FIXTURES, name)
+
+    cases = json.loads((GITHUB_SEARCH_FIXTURES / "error_matrix.json").read_bytes())
+    parsed = cases[name]
+    base = _load_fixture(
+        GITHUB_SEARCH_FIXTURES,
+        str(parsed.get("base_fixture", "page_one")),
+    )
+    headers = dict(base.headers)
+    headers.update(
+        {str(key): str(value) for key, value in parsed.get("headers", {}).items()}
+    )
+    for header in parsed.get("remove_headers", []):
+        headers.pop(str(header).lower(), None)
+
+    body = base.body
+    if "body_text" in parsed:
+        body = str(parsed["body_text"]).encode("utf-8")
+    if "repeat_byte" in parsed:
+        repeated = str(parsed["repeat_byte"]).encode("ascii")
+        if len(repeated) != 1:
+            raise ValueError("recorded Search repeat_byte must be one ASCII byte")
+        body = repeated * int(parsed["repeat_count"])
+
+    return RecordedResponse(
+        status=int(parsed.get("status", base.status)),
+        headers=headers,
+        body=body,
+    )
 
 
 def recorded_openai_fixture(name: str) -> RecordedResponse:
