@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -18,10 +20,6 @@ from skillscout.domain.discovery import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).parent / "fixtures" / "state_branch" / "valid_state.json"
-OPERATIONS_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="phase5-wave0-operations-store-missing",
-)
 EXPORT_XFAIL = pytest.mark.xfail(
     strict=True,
     reason="phase5-wave0-store-export-missing",
@@ -85,7 +83,6 @@ def test_operations_schema_ownership_is_disjoint_from_existing_stores() -> None:
             assert f"CREATE TABLE IF NOT EXISTS {table}" not in source
 
 
-@OPERATIONS_XFAIL
 def test_operations_store_has_closed_non_refundable_surface() -> None:
     store_type = getattr(_operations_module(), "OperationsStateStore")
     public = {
@@ -116,7 +113,6 @@ def test_operations_store_has_closed_non_refundable_surface() -> None:
         (DISCOVERY_MAX_SEMANTIC_CANDIDATES, DISCOVERY_MAX_SEMANTIC_CANDIDATES + 1),
     ),
 )
-@OPERATIONS_XFAIL
 def test_reservation_limits_are_literal_and_transactional(
     tmp_path: Path,
     limit: int,
@@ -126,17 +122,25 @@ def test_reservation_limits_are_literal_and_transactional(
     store = module.OperationsStateStore(tmp_path / "operations.sqlite3")
     try:
         policy = DiscoveryBudgetPolicyV1()
-        reservation = store.reserve_test_slot(
-            kind="discovery" if limit == 100 else "semantic",
-            run_id="discovery-wave0",
-            repository_id=900_000 + limit,
-            requested_ordinal=limit,
-            policy=policy,
+        kind = "discovery" if limit == 100 else "semantic"
+        reservations = tuple(
+            store.reserve_test_slot(
+                kind=kind,
+                run_id="discovery-wave0",
+                repository_id=900_000 + ordinal,
+                requested_ordinal=ordinal,
+                policy=policy,
+            )
+            for ordinal in range(1, limit + 1)
+        )
+        reservation = reservations[-1]
+        assert tuple(item.ordinal for item in reservations) == tuple(
+            range(1, limit + 1)
         )
         assert reservation.ordinal == limit
         assert (
             store.reserve_test_slot(
-                kind="discovery" if limit == 100 else "semantic",
+                kind=kind,
                 run_id="discovery-wave0",
                 repository_id=900_000 + limit,
                 requested_ordinal=limit,
@@ -146,7 +150,7 @@ def test_reservation_limits_are_literal_and_transactional(
         )
         with pytest.raises(module.BudgetExhausted):
             store.reserve_test_slot(
-                kind="discovery" if limit == 100 else "semantic",
+                kind=kind,
                 run_id="discovery-wave0",
                 repository_id=900_000 + denied,
                 requested_ordinal=denied,
@@ -154,10 +158,52 @@ def test_reservation_limits_are_literal_and_transactional(
             )
         assert store.reservation_count(
             "discovery-wave0",
-            kind="discovery" if limit == 100 else "semantic",
-        ) == 1
+            kind=kind,
+        ) == limit
     finally:
         store.close()
+
+
+def test_reservation_is_unique_under_repeated_concurrent_callers(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        policy = DiscoveryBudgetPolicyV1()
+
+        def reserve() -> object:
+            return store.reserve_test_slot(
+                kind="discovery",
+                run_id="discovery-concurrent",
+                repository_id=910000,
+                requested_ordinal=1,
+                policy=policy,
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            reservations = tuple(executor.map(lambda _index: reserve(), range(32)))
+
+        assert len(set(reservations)) == 1
+        assert store.reservation_count(
+            "discovery-concurrent",
+            kind="discovery",
+        ) == 1
+
+
+def test_reservation_ordinal_must_be_the_next_contiguous_value(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        with pytest.raises(module.OperationsIntegrityError):
+            store.reserve_test_slot(
+                kind="discovery",
+                run_id="discovery-gap",
+                repository_id=910000,
+                requested_ordinal=2,
+                policy=DiscoveryBudgetPolicyV1(),
+            )
+        assert store.reservation_count("discovery-gap", kind="discovery") == 0
 
 
 @pytest.mark.parametrize(
@@ -176,7 +222,6 @@ def test_reservation_limits_are_literal_and_transactional(
         "permanent_failure",
     ),
 )
-@OPERATIONS_XFAIL
 def test_every_terminal_retains_consumed_reservations(
     tmp_path: Path,
     terminal: str,
@@ -194,6 +239,31 @@ def test_every_terminal_retains_consumed_reservations(
             outcome=terminal,
         )
         assert store.reservation_projection("discovery-wave0") == before
+
+
+def test_tampered_reservation_ordinal_is_rejected_before_reuse(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    database = tmp_path / "operations.sqlite3"
+    with module.OperationsStateStore(database) as store:
+        store.seed_test_reservations(
+            run_id="discovery-tampered",
+            repository_id=910001,
+        )
+
+    connection = sqlite3.connect(":memory:")
+    connection.deserialize(database.read_bytes())
+    connection.execute(
+        """UPDATE operations_discovery_reservations
+           SET ordinal = 2 WHERE run_id = 'discovery-tampered'"""
+    )
+    connection.commit()
+    database.write_bytes(connection.serialize())
+    connection.close()
+
+    with pytest.raises(module.OperationsIntegrityError):
+        module.OperationsStateStore(database)
 
 
 @EXPORT_XFAIL
