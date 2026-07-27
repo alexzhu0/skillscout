@@ -2472,9 +2472,6 @@ class SQLiteStateStore:
         if self._manifest_anchor is not None:
             self._manifest_anchor.close()
             self._manifest_anchor = None
-        if self._phase3_artifact_anchor is not None:
-            self._phase3_artifact_anchor.close()
-            self._phase3_artifact_anchor = None
         try:
             if self._state_parent is not None:
                 self._state_parent.remove_child_directory(self._manifest_name, missing_ok=True)
@@ -4991,8 +4988,9 @@ class SQLiteStateStore:
         if self._manifest_anchor is not None:
             self._manifest_anchor.close()
             self._manifest_anchor = None
-        if self._phase3_artifact_anchor is not None:
-            self._phase3_artifact_anchor.close()
+        phase3_artifact_anchor = getattr(self, "_phase3_artifact_anchor", None)
+        if phase3_artifact_anchor is not None:
+            phase3_artifact_anchor.close()
             self._phase3_artifact_anchor = None
         if self._lock_descriptor >= 0:
             try:
