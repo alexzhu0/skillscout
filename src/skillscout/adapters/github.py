@@ -8,11 +8,19 @@ import os
 import re
 import time
 from typing import Annotated, Any, Callable, Literal, TypeVar
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.domain.canonical import sha256_digest
+from skillscout.domain.discovery import (
+    DiscoveryQuerySetV1,
+    SearchPageObservationV1,
+    SearchRateLimitFactsV1,
+    SearchRepositoryObservationV1,
+)
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.models import StrictFrozenModel
 
@@ -27,6 +35,7 @@ MAX_RETRY_AFTER_SECONDS = 60
 _OWNER_REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 _HEX_PATTERN = re.compile(r"^[0-9a-f]{1,128}$")
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 _BoundedName = Annotated[str, Field(min_length=1, max_length=200)]
 _HexSha = Annotated[str, Field(pattern=r"^[0-9a-f]{1,128}$")]
@@ -57,6 +66,25 @@ class _RawRepo(_LenientFrozenModel):
     visibility: Annotated[str, Field(min_length=1, max_length=32)]
     default_branch: Annotated[str, Field(min_length=1, max_length=200)] | None = None
     license: _RawLicenseRef | None = None
+
+
+class _RawSearchRepo(_LenientFrozenModel):
+    id: Annotated[int, Field(ge=1)]
+    name: _BoundedName
+    full_name: Annotated[str, Field(min_length=3, max_length=401)]
+    owner: _RawOwner
+    private: bool
+    visibility: Annotated[str, Field(min_length=1, max_length=32)]
+    fork: bool
+    archived: bool
+    disabled: bool
+    default_branch: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+
+
+class _RawSearchEnvelope(_LenientFrozenModel):
+    total_count: Annotated[int, Field(ge=0)]
+    incomplete_results: bool
+    items: Annotated[tuple[_RawSearchRepo, ...], Field(max_length=25)]
 
 
 class _RawCommit(_LenientFrozenModel):
@@ -234,6 +262,109 @@ class GitHubReadClient:
             },
         )
 
+    def search_repositories(
+        self,
+        *,
+        query_set: DiscoveryQuerySetV1,
+        discovery_run_authority_digest: str,
+        query_ordinal: int,
+        page: int,
+    ) -> tuple[
+        SearchPageObservationV1,
+        tuple[SearchRepositoryObservationV1, ...],
+    ]:
+        """Acquire one exact reviewed Search page and discard provider prose."""
+
+        if type(query_set) is not DiscoveryQuerySetV1:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        if type(query_ordinal) is not int or not 1 <= query_ordinal <= len(
+            query_set.queries
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        if (
+            type(page) is not int
+            or not 1 <= page <= query_set.max_pages_per_query
+            or query_set.query_set_digest is None
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+
+        query = query_set.queries[query_ordinal - 1]
+        params = httpx.QueryParams(
+            [
+                ("q", query.query_text),
+                ("sort", query_set.sort),
+                ("order", query_set.order),
+                ("per_page", str(query_set.per_page)),
+                ("page", str(page)),
+            ]
+        )
+        path = f"/search/repositories?{params}"
+        response = self._send(path)
+        try:
+            self._last_request_id = response.headers.get("x-github-request-id")
+            status = response.status_code
+            if status in (301, 302, 303, 307, 308):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            if status == 429 or (
+                status == 403
+                and response.headers.get("x-ratelimit-remaining") == "0"
+            ) or 500 <= status < 600:
+                self._sleep_for_rate_response(response.headers)
+                raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+            if not 200 <= status < 300:
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            if "application/json" not in response.headers.get("content-type", ""):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+
+            raw = _validate_json(
+                _RawSearchEnvelope,
+                self._read_capped(response, MAX_METADATA_BYTES),
+            )
+            request_id = _search_request_id(response.headers)
+            rate_limit = _search_rate_limit_facts(response.headers)
+            next_page = _search_next_page(
+                response.headers.get("link"),
+                query_set=query_set,
+                query_ordinal=query_ordinal,
+                current_page=page,
+            )
+            repositories = tuple(
+                _search_repository_observation(item) for item in raw.items
+            )
+            page_values = {
+                "schema_version": "search-page-observation-v1",
+                "discovery_run_authority_digest": discovery_run_authority_digest,
+                "query_set_version": query_set.query_set_version,
+                "query_set_digest": query_set.query_set_digest,
+                "query_id": query.query_id,
+                "query_ordinal": query_ordinal,
+                "query_text": query.query_text,
+                "sort": query_set.sort,
+                "order": query_set.order,
+                "page": page,
+                "per_page": query_set.per_page,
+                "next_page": next_page,
+                "total_count": raw.total_count,
+                "incomplete_results": raw.incomplete_results,
+                "item_count": len(repositories),
+                "request_id": request_id,
+                "rate_limit": rate_limit,
+            }
+            digest_values = {
+                **page_values,
+                "rate_limit": rate_limit.model_dump(mode="json", exclude_none=False),
+            }
+            observation = _validate(
+                SearchPageObservationV1,
+                {
+                    **page_values,
+                    "observation_digest": sha256_digest(digest_values),
+                },
+            )
+            return observation, repositories
+        finally:
+            response.close()
+
     def resolve_commit(self, owner: str, repo: str, ref: str) -> str:
         path = (
             f"/repos/{_require_segment(_OWNER_REPO_PATTERN, owner)}"
@@ -367,6 +498,13 @@ class GitHubReadClient:
         except httpx.HTTPError:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
 
+    def _sleep_for_rate_response(self, headers: httpx.Headers) -> None:
+        retry_after = _parse_non_negative_int(headers.get("retry-after"))
+        if retry_after is None:
+            reset = _parse_non_negative_int(headers.get("x-ratelimit-reset"))
+            retry_after = max(0, reset - int(time.time())) if reset is not None else 0
+        self._sleeper(float(min(retry_after, MAX_RETRY_AFTER_SECONDS)))
+
     def _read_capped(self, response: httpx.Response, cap: int) -> bytes:
         chunks: list[bytes] = []
         consumed = 0
@@ -400,6 +538,118 @@ def _rate_limit_facts(headers: httpx.Headers) -> RateLimitFacts:
             "limit": _parse_non_negative_int(headers.get("x-ratelimit-limit")),
             "remaining": _parse_non_negative_int(headers.get("x-ratelimit-remaining")),
             "reset": _parse_non_negative_int(headers.get("x-ratelimit-reset")),
+        },
+    )
+
+
+def _search_request_id(headers: httpx.Headers) -> str:
+    value = headers.get("x-github-request-id")
+    if type(value) is not str or _REQUEST_ID_PATTERN.fullmatch(value) is None:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    return value
+
+
+def _required_non_negative_header(headers: httpx.Headers, name: str) -> int:
+    value = headers.get(name)
+    if type(value) is not str or re.fullmatch(r"[0-9]+", value) is None:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    return int(value)
+
+
+def _search_rate_limit_facts(headers: httpx.Headers) -> SearchRateLimitFactsV1:
+    return _validate(
+        SearchRateLimitFactsV1,
+        {
+            "limit": _required_non_negative_header(headers, "x-ratelimit-limit"),
+            "remaining": _required_non_negative_header(
+                headers, "x-ratelimit-remaining"
+            ),
+            "used": _required_non_negative_header(headers, "x-ratelimit-used"),
+            "reset_epoch": _required_non_negative_header(
+                headers, "x-ratelimit-reset"
+            ),
+            "resource": headers.get("x-ratelimit-resource"),
+        },
+    )
+
+
+def _search_next_page(
+    link: str | None,
+    *,
+    query_set: DiscoveryQuerySetV1,
+    query_ordinal: int,
+    current_page: int,
+) -> int | None:
+    if link is None:
+        return None
+    if type(link) is not str or len(link) > 8_192:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    next_urls: list[str] = []
+    for item in link.split(","):
+        match = re.fullmatch(r'\s*<([^>]+)>\s*;\s*rel="([a-z]+)"\s*', item)
+        if match is None:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        if match.group(2) == "next":
+            next_urls.append(match.group(1))
+    if not next_urls:
+        return None
+    if len(next_urls) != 1:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+
+    target = urlsplit(next_urls[0])
+    if (
+        target.scheme != "https"
+        or target.hostname != "api.github.com"
+        or target.port is not None
+        or target.username is not None
+        or target.password is not None
+        or target.path != "/search/repositories"
+        or target.fragment
+    ):
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    query = query_set.queries[query_ordinal - 1]
+    expected_page = current_page + 1
+    expected = [
+        ("q", query.query_text),
+        ("sort", query_set.sort),
+        ("order", query_set.order),
+        ("per_page", str(query_set.per_page)),
+        ("page", str(expected_page)),
+    ]
+    try:
+        observed = parse_qsl(target.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+    if (
+        observed != expected
+        or expected_page > query_set.max_pages_per_query
+        or current_page >= query_set.max_pages_per_query
+    ):
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    return expected_page
+
+
+def _search_repository_observation(
+    raw: _RawSearchRepo,
+) -> SearchRepositoryObservationV1:
+    values = {
+        "schema_version": "search-repository-observation-v1",
+        "repository_id": raw.id,
+        "owner": raw.owner.login,
+        "name": raw.name,
+        "full_name": raw.full_name,
+        "private": raw.private,
+        "visibility": raw.visibility,
+        "fork": raw.fork,
+        "archived": raw.archived,
+        "disabled": raw.disabled,
+        "default_branch": raw.default_branch,
+    }
+    return _validate(
+        SearchRepositoryObservationV1,
+        {
+            **values,
+            "observation_digest": sha256_digest(values),
         },
     )
 

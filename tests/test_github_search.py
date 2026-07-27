@@ -171,7 +171,6 @@ def test_incomplete_fixture_retains_query_mismatch_facts_for_later_filtering() -
     assert body["items"][2]["archived"] is True
 
 
-@WAVE0_XFAIL
 def test_page_one_projects_exact_request_page_rate_and_allowlisted_items() -> None:
     path = _search_path(1, 1)
     recorded = RecordedTransport(
@@ -225,7 +224,6 @@ def test_page_one_projects_exact_request_page_rate_and_allowlisted_items() -> No
         assert canary not in recorder_summary
 
 
-@WAVE0_XFAIL
 def test_page_multiple_requests_are_serial_and_follow_integer_cursor_only() -> None:
     first = _search_path(1, 1)
     second = _search_path(1, 2)
@@ -257,7 +255,6 @@ def test_page_multiple_requests_are_serial_and_follow_integer_cursor_only() -> N
     assert recorded.call_count("GET", second) == 1
 
 
-@WAVE0_XFAIL
 def test_duplicate_and_rename_projection_preserves_stable_numeric_identity() -> None:
     first = _search_path(1, 1)
     cross_query = _search_path(2, 1)
@@ -293,7 +290,6 @@ def test_duplicate_and_rename_projection_preserves_stable_numeric_identity() -> 
     assert duplicate_items[0].full_name == "new-owner/workflow-beta-renamed"
 
 
-@WAVE0_XFAIL
 def test_incomplete_page_is_truthful_and_does_not_treat_query_as_admission() -> None:
     path = _search_path(3, 1)
     recorded = RecordedTransport(
@@ -384,7 +380,6 @@ def _recorded_failure(
         "duplicate_next_link",
     ),
 )
-@WAVE0_XFAIL
 def test_hostile_link_is_rejected_without_following_arbitrary_url(name: str) -> None:
     failure, recorded, sleeps = _recorded_failure(name)
     assert failure.code is ErrorCode.STAGE_PERMANENT_FAILURE
