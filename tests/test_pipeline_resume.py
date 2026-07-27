@@ -26,6 +26,7 @@ from skillscout.application.pipeline import (
     PipelineRunner,
     RetryPolicy,
     SemanticDurabilityGuard,
+    SemanticReservationReceipt,
 )
 from skillscout.application.ports import (
     ERROR_SUMMARIES,
@@ -2028,6 +2029,7 @@ def _semantic_guard(
     barrier: _RecordingBarrier,
     *,
     provider: str = "openai",
+    reservation_hook=None,
 ) -> SemanticDurabilityGuard:
     return SemanticDurabilityGuard(
         barrier=barrier,
@@ -2038,6 +2040,7 @@ def _semantic_guard(
         provider=provider,  # type: ignore[arg-type]
         expected_prior_state_head="a" * 40,
         expected_prior_root_digest=sha256_digest({"prior": 101}),
+        reservation_hook=reservation_hook,
     )
 
 
@@ -2047,6 +2050,70 @@ def _repository_subject() -> RepositorySubject:
         subject_id="repo:example/semantic",
         repository="https://github.com/example/semantic",
     )
+
+
+def test_extractor_reservation_is_remotely_durable_before_provider_request(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    processor = _SemanticPhaseTwoProcessor([])
+    original_process = processor.process
+
+    def process(stage_input: StageInput, context) -> StageOutcome:
+        if stage_input.stage is PipelineStage.EXTRACTOR:
+            events.append("provider")
+        return original_process(stage_input, context)
+
+    processor.process = process  # type: ignore[method-assign]
+
+    def reserve(*, pipeline_store, run_id: str):
+        del pipeline_store, run_id
+        events.append("reserve")
+        return SemanticReservationReceipt(
+            reservation_digest=sha256_digest({"reservation": 101}),
+            verified_state_head="b" * 40,
+            state_root_digest=sha256_digest({"root": "reserved"}),
+        )
+
+    store = SQLiteStateStore(tmp_path / "extractor-reservation.sqlite3")
+    try:
+        runner = PipelineRunner(
+            store,
+            processor,
+            semantic_durability=_semantic_guard(
+                _RecordingBarrier(),
+                reservation_hook=reserve,
+            ),
+        )
+        runner.run(_repository_subject(), tmp_path / "out")
+    finally:
+        store.close()
+
+    assert events == ["reserve", "provider"]
+
+
+def test_failed_extractor_reservation_blocks_provider_request(tmp_path: Path) -> None:
+    processor = _SemanticPhaseTwoProcessor([])
+
+    def reserve(**_kwargs):
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+
+    store = SQLiteStateStore(tmp_path / "extractor-reservation-fail.sqlite3")
+    try:
+        with pytest.raises(SafeFailure) as failure:
+            PipelineRunner(
+                store,
+                processor,
+                semantic_durability=_semantic_guard(
+                    _RecordingBarrier(),
+                    reservation_hook=reserve,
+                ),
+            ).run(_repository_subject(), tmp_path / "out")
+    finally:
+        store.close()
+
+    assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    assert processor.extractor_requests == 0
 
 
 def test_extractor_confirmed_retry_is_remotely_durable_before_next_request(
