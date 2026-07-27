@@ -108,6 +108,11 @@ class PhaseTwoProcessor:
                 return self._extractor(stage_input, context)
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
 
+    def semantic_request_required(self, context: StageContext) -> bool:
+        """Return whether Extractor will issue a provider request."""
+
+        return _upstream_skip(context) is None
+
     def _scout(self, stage_input: StageInput, context: StageContext) -> StageOutcome:
         started = time.monotonic()
         subject = context.subject

@@ -7,7 +7,10 @@ existing Phase 3 application, then stops at a content-addressed state handoff.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+from datetime import UTC, datetime
+import json
 import re
 from typing import Callable, Literal, Protocol
 
@@ -18,6 +21,11 @@ from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.discovery import (
     DISCOVERY_MAX_CANDIDATES,
     DISCOVERY_MAX_SEMANTIC_CANDIDATES,
+    DiscoveredCandidateV1,
+    DiscoveryQuerySetV1,
+    DiscoveryCandidateTerminalV1,
+    DiscoveryRunAuthorityV1,
+    DiscoveryRunSummaryV1,
 )
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -107,6 +115,8 @@ class DiscoveryDependencies:
     durability_barrier: _DurabilityPort
     phase2_factory: Callable[..., PipelineRunner]
     phase3_factory: Callable[..., PhaseThreeApplication]
+    query_set: DiscoveryQuerySetV1 | None = None
+    initial_state_root_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +177,25 @@ class DiscoveryApplicationResult:
             raise ValueError("invalid discovery application result")
 
 
+@dataclass(frozen=True)
+class DiscoveryCandidateExecution:
+    """Complete Phase 2/3 result returned by the existing factory graph."""
+
+    terminal: DiscoveryCandidateTerminalV1
+    eligible_candidates: tuple[EligibleCandidateLocator, ...]
+    state_commit_sha: str
+    state_root_digest: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.terminal) is not DiscoveryCandidateTerminalV1
+            or _STATE_SHA.fullmatch(self.state_commit_sha) is None
+            or _DIGEST.fullmatch(self.state_root_digest) is None
+            or len(self.eligible_candidates) > 3
+        ):
+            raise ValueError("invalid discovery candidate execution")
+
+
 class DiscoveryApplication:
     """Thin dependency boundary for the production composition in Plan 05-08.
 
@@ -184,22 +213,28 @@ class DiscoveryApplication:
     def run(self, authority: object | None = None) -> DiscoveryApplicationResult:
         """Restore exact state and execute the owner-provided bounded controller."""
 
+        operations: object | None = None
         try:
             restored = self._dependencies.state_restore()
             operations = self._dependencies.operations_store_factory()
             run_discovery = getattr(operations, "run_discovery", None)
-            if not callable(run_discovery):
-                raise TypeError("operations controller is unavailable")
-            result = run_discovery(
-                authority=authority,
-                restored_state=restored,
-                search_factory=self._dependencies.search_factory,
-                durability_barrier=self._dependencies.durability_barrier,
-                phase2_factory=self._dependencies.phase2_factory,
-                phase3_factory=self._dependencies.phase3_factory,
-                max_candidates=DISCOVERY_MAX_CANDIDATES,
-                max_semantic_candidates=DISCOVERY_MAX_SEMANTIC_CANDIDATES,
-            )
+            if callable(run_discovery):
+                result = run_discovery(
+                    authority=authority,
+                    restored_state=restored,
+                    search_factory=self._dependencies.search_factory,
+                    durability_barrier=self._dependencies.durability_barrier,
+                    phase2_factory=self._dependencies.phase2_factory,
+                    phase3_factory=self._dependencies.phase3_factory,
+                    max_candidates=DISCOVERY_MAX_CANDIDATES,
+                    max_semantic_candidates=DISCOVERY_MAX_SEMANTIC_CANDIDATES,
+                )
+            else:
+                result = self._run_operations_store(
+                    operations=operations,
+                    restored=restored,
+                    authority=authority,
+                )
             if type(result) is not DiscoveryApplicationResult:
                 raise TypeError("invalid discovery result")
             return result
@@ -207,6 +242,404 @@ class DiscoveryApplication:
             raise
         except Exception:
             raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED) from None
+        finally:
+            close = getattr(operations, "close", None)
+            if callable(close):
+                close()
+
+    def _run_operations_store(
+        self,
+        *,
+        operations: object,
+        restored: object,
+        authority: object,
+    ) -> DiscoveryApplicationResult:
+        """Run the concrete operations-owned empty/business funnel safely.
+
+        Candidate semantic processing remains delegated to the existing Phase
+        2/3 factories. This method owns Search acquisition, deterministic
+        deduplication, durable page checkpoints, and the terminal state handoff.
+        """
+
+        query_set = self._dependencies.query_set
+        expected_root = self._dependencies.initial_state_root_digest
+        if (
+            type(authority) is not DiscoveryRunAuthorityV1
+            or type(query_set) is not DiscoveryQuerySetV1
+            or expected_root != authority.initial_state_root_digest
+            or getattr(restored, "status", None) != "verified"
+            or getattr(restored, "observed_head", None) is None
+            or getattr(getattr(restored, "bundle", None), "root", None) is None
+            or not all(
+                callable(getattr(operations, name, None))
+                for name in (
+                    "create_run",
+                    "find_run_authority_digest",
+                    "record_search_page",
+                    "reserve_discovery_candidate",
+                    "record_run_summary",
+                    "close",
+                )
+            )
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+        existing_authority = operations.find_run_authority_digest(
+            authority.run_id
+        )
+        if (
+            existing_authority is None
+            and restored.bundle.root.root_digest != expected_root
+        ) or (
+            existing_authority is not None
+            and existing_authority != authority.authority_digest
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        if existing_authority is not None:
+            completed = _completed_result_from_bundle(
+                restored=restored,
+                authority=authority,
+            )
+            if completed is not None:
+                return completed
+        now = _timestamp()
+        operations.create_run(authority, now)
+        observed_head = restored.observed_head
+        root_digest = restored.bundle.root.root_digest
+        selected: list[DiscoveredCandidateV1] = []
+        seen: dict[int, tuple[int, int, int]] = {}
+        search = self._dependencies.search_factory()
+        try:
+            active_pages = {
+                ordinal: 1
+                for ordinal in range(1, len(query_set.queries) + 1)
+            }
+            while active_pages and len(selected) < DISCOVERY_MAX_CANDIDATES:
+                for query_ordinal in tuple(sorted(active_pages)):
+                    page_number = active_pages[query_ordinal]
+                    page, repositories = search.search_repositories(
+                        query_set=query_set,
+                        discovery_run_authority_digest=authority.authority_digest,
+                        query_ordinal=query_ordinal,
+                        page=page_number,
+                    )
+                    candidates: list[DiscoveredCandidateV1] = []
+                    for item_ordinal, repository in enumerate(
+                        repositories, start=1
+                    ):
+                        first = seen.get(repository.repository_id)
+                        if first is None and len(selected) < DISCOVERY_MAX_CANDIDATES:
+                            first = (query_ordinal, page_number, item_ordinal)
+                            seen[repository.repository_id] = first
+                            disposition = "first_seen"
+                            discovery_ordinal = len(selected) + 1
+                        else:
+                            disposition = "duplicate"
+                            discovery_ordinal = None
+                            if first is None:
+                                # The hard ceiling is already full. No further
+                                # candidate may cross the durable boundary.
+                                continue
+                        values = {
+                            "schema_version": "discovered-candidate-v1",
+                            "discovery_run_authority_digest": authority.authority_digest,
+                            "repository": repository,
+                            "source_page_digest": page.observation_digest,
+                            "query_ordinal": query_ordinal,
+                            "page": page_number,
+                            "item_ordinal": item_ordinal,
+                            "dedup_disposition": disposition,
+                            "discovery_ordinal": discovery_ordinal,
+                            "first_seen_query_ordinal": first[0],
+                            "first_seen_page": first[1],
+                            "first_seen_item_ordinal": first[2],
+                        }
+                        candidate = DiscoveredCandidateV1(
+                            **values,
+                            candidate_digest=sha256_digest(
+                                {
+                                    key: (
+                                        value.model_dump(
+                                            mode="json", exclude_none=False
+                                        )
+                                        if hasattr(value, "model_dump")
+                                        else value
+                                    )
+                                    for key, value in values.items()
+                                }
+                            ),
+                        )
+                        candidates.append(candidate)
+                        if disposition == "first_seen":
+                            selected.append(candidate)
+                    operations.record_search_page(
+                        authority.run_id, page, tuple(candidates)
+                    )
+                    synchronized = self._sync(
+                        operations=operations,
+                        observed_head=observed_head,
+                        root_digest=root_digest,
+                    )
+                    observed_head = synchronized.commit_sha
+                    root_digest = synchronized.root_digest
+                    if page.next_page is None:
+                        active_pages.pop(query_ordinal)
+                    else:
+                        active_pages[query_ordinal] = page.next_page
+                    if len(selected) >= DISCOVERY_MAX_CANDIDATES:
+                        break
+        finally:
+            close = getattr(search, "close", None)
+            if callable(close):
+                close()
+
+        eligible: list[EligibleCandidateLocator] = []
+        terminals: list[DiscoveryCandidateTerminalV1] = []
+        for candidate in selected:
+            reservation = operations.reserve_discovery_candidate(
+                authority.run_id,
+                candidate,
+                _timestamp(),
+            )
+            synchronized = self._sync(
+                operations=operations,
+                observed_head=observed_head,
+                root_digest=root_digest,
+            )
+            observed_head = synchronized.commit_sha
+            root_digest = synchronized.root_digest
+            execution = self._dependencies.phase2_factory(
+                candidate=candidate,
+                discovery_reservation=reservation,
+                discovery_authority=authority,
+                operations_store=operations,
+                durability_barrier=self._dependencies.durability_barrier,
+                observed_head=observed_head,
+                prior_root_digest=root_digest,
+                phase3_factory=self._dependencies.phase3_factory,
+            )
+            if type(execution) is not DiscoveryCandidateExecution:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            operations.record_candidate_terminal(
+                authority.run_id, execution.terminal
+            )
+            observed_head = execution.state_commit_sha
+            root_digest = execution.state_root_digest
+            synchronized = self._sync(
+                operations=operations,
+                observed_head=observed_head,
+                root_digest=root_digest,
+            )
+            observed_head = synchronized.commit_sha
+            root_digest = synchronized.root_digest
+            terminals.append(execution.terminal)
+            eligible.extend(execution.eligible_candidates)
+
+        summary_values: dict[str, object] = {
+            "schema_version": "discovery-run-summary-v1",
+            "discovery_run_authority_digest": authority.authority_digest,
+            "status": "completed",
+            "selected_candidate_count": len(selected),
+            "semantic_reservation_count": sum(
+                terminal.semantic_reservation_digest is not None
+                for terminal in terminals
+            ),
+            "business_terminal_count": sum(
+                terminal.outcome in _BUSINESS_OUTCOMES for terminal in terminals
+            ),
+            "quarantined_candidate_count": sum(
+                terminal.outcome == "semantic_outcome_unknown"
+                for terminal in terminals
+            ),
+            "confirmed_retryable_count": sum(
+                terminal.outcome == "confirmed_retryable"
+                for terminal in terminals
+            ),
+            "integrity_conflict_count": sum(
+                terminal.outcome == "state_integrity_conflict"
+                for terminal in terminals
+            ),
+            "permanent_failure_count": sum(
+                terminal.outcome == "permanent_failure"
+                for terminal in terminals
+            ),
+            "terminal_digests": tuple(
+                terminal.terminal_digest
+                for terminal in sorted(
+                    terminals, key=lambda item: item.repository_id
+                )
+            ),
+            "completed_at": _timestamp(),
+        }
+        if any(
+            terminal.outcome == "state_integrity_conflict"
+            for terminal in terminals
+        ):
+            summary_values["status"] = "integrity_conflict"
+        elif any(
+            terminal.outcome == "permanent_failure" for terminal in terminals
+        ):
+            summary_values["status"] = "permanent_failure"
+        elif any(
+            terminal.outcome == "semantic_outcome_unknown"
+            for terminal in terminals
+        ):
+            summary_values["status"] = "completed_degraded"
+        elif any(
+            terminal.outcome == "confirmed_retryable" for terminal in terminals
+        ):
+            summary_values["status"] = "confirmed_retryable"
+        summary = DiscoveryRunSummaryV1(
+            **summary_values,
+            summary_digest=sha256_digest(summary_values),
+        )
+        operations.record_run_summary(authority.run_id, summary)
+        synchronized = self._sync(
+            operations=operations,
+            observed_head=observed_head,
+            root_digest=root_digest,
+        )
+        return DiscoveryApplicationResult(
+            run_id=authority.run_id,
+            state_root_digest=synchronized.root_digest,
+            state_commit_sha=synchronized.commit_sha,
+            eligible_candidates=tuple(eligible),
+        )
+
+    def _sync(
+        self,
+        *,
+        operations: object,
+        observed_head: str,
+        root_digest: str,
+    ) -> object:
+        synchronize = getattr(
+            self._dependencies.durability_barrier,
+            "sync_discovery",
+            None,
+        )
+        if not callable(synchronize):
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        return synchronize(
+            operations_store=operations,
+            observed_head=observed_head,
+            prior_root_digest=root_digest,
+            created_at=_timestamp(),
+        )
+
+
+def _timestamp() -> str:
+    return (
+        datetime.now(UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _completed_result_from_bundle(
+    *,
+    restored: object,
+    authority: DiscoveryRunAuthorityV1,
+) -> DiscoveryApplicationResult | None:
+    """Reconstruct an immutable completed handoff without replaying Search."""
+
+    from skillscout.domain.canonical import canonical_json_bytes
+    from skillscout.domain.review import (
+        CandidateTerminalSummaryV1,
+        candidate_terminal_summary_bytes,
+    )
+
+    files = restored.bundle.content_by_path()
+    decoded: list[tuple[str, dict[str, object]]] = []
+    try:
+        for item in restored.bundle.root.objects:
+            payload = files[item.locator]
+            value = json.loads(payload)
+            if type(value) is dict:
+                decoded.append((item.object_digest, value))
+        summaries = [
+            value["value"]
+            for _digest, value in decoded
+            if value.get("schema_version") == "operations-rebuild-row-v1"
+            and value.get("kind") == "run_summary"
+            and type(value.get("value")) is dict
+            and value["value"].get("discovery_run_authority_digest")
+            == authority.authority_digest
+        ]
+        if not summaries:
+            return None
+        if len(summaries) != 1:
+            raise ValueError
+        summary = DiscoveryRunSummaryV1.model_validate(summaries[0], strict=True)
+        terminals = [
+            value["value"]
+            for _digest, value in decoded
+            if value.get("schema_version") == "operations-rebuild-row-v1"
+            and value.get("kind") == "candidate_terminal"
+            and type(value.get("value")) is dict
+            and value["value"].get("discovery_run_authority_digest")
+            == authority.authority_digest
+        ]
+        eligible_authorities = {
+            workflow
+            for terminal in terminals
+            if terminal.get("outcome") == "eligible_local_candidate"
+            for workflow in terminal.get("workflow_authority_digests", ())
+        }
+        eligible: list[EligibleCandidateLocator] = []
+        for workflow_authority in sorted(eligible_authorities):
+            matches: list[str] = []
+            for digest, value in decoded:
+                if (
+                    value.get("schema_version") != "pipeline-rebuild-file-v1"
+                    or value.get("kind") != "phase3_artifact"
+                    or type(value.get("content_base64")) is not str
+                ):
+                    continue
+                content = base64.b64decode(
+                    value["content_base64"], validate=True
+                )
+                try:
+                    terminal_summary = (
+                        CandidateTerminalSummaryV1.model_validate_json(
+                            content, strict=True
+                        )
+                    )
+                except Exception:
+                    continue
+                if (
+                    candidate_terminal_summary_bytes(terminal_summary) == content
+                    and terminal_summary.outcome == "eligible_local_candidate"
+                    and terminal_summary.candidate_execution_authority.authority_digest
+                    == workflow_authority
+                    and canonical_json_bytes(value)
+                    == files[
+                        next(
+                            item.locator
+                            for item in restored.bundle.root.objects
+                            if item.object_digest == digest
+                        )
+                    ]
+                ):
+                    matches.append(digest)
+            if len(matches) != 1:
+                raise ValueError
+            eligible.append(
+                eligible_candidate_locator(
+                    authority_digest=matches[0],
+                    workflow_identity_digest=workflow_authority,
+                )
+            )
+        if len(eligible) > summary.semantic_reservation_count * 3:
+            raise ValueError
+        return DiscoveryApplicationResult(
+            run_id=authority.run_id,
+            state_root_digest=restored.bundle.root.root_digest,
+            state_commit_sha=restored.observed_head,
+            eligible_candidates=tuple(eligible),
+        )
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
 @dataclass(frozen=True)

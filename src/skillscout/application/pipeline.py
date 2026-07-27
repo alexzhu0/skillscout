@@ -342,6 +342,14 @@ class SemanticDurabilityGuard:
         self._expected_prior_root_digest = receipt.state_root_digest
         return receipt
 
+    @property
+    def verified_state_head(self) -> str:
+        return self._expected_prior_state_head
+
+    @property
+    def state_root_digest(self) -> str:
+        return self._expected_prior_root_digest
+
     def confirm(
         self,
         *,
@@ -546,6 +554,20 @@ class PipelineRunner:
                 and profile.uses_context
                 and stage is PipelineStage.EXTRACTOR
             )
+            if semantic_stage:
+                requires_request = getattr(
+                    self.processor, "semantic_request_required", None
+                )
+                if callable(requires_request):
+                    semantic_stage = bool(
+                        requires_request(
+                            StageContext(
+                                subject=subject,
+                                prior_payloads=dict(prior_payloads),
+                                scratch={},
+                            )
+                        )
+                    )
             if semantic_stage:
                 prior_attempt = self._latest_attempt(run_id, stage)
                 if prior_attempt is not None:
@@ -1153,6 +1175,8 @@ def build_dry_run_runtime(
 def build_phase_two_runtime(
     state: SQLiteStateStore,
     processor: PhaseTwoProcessor,
+    *,
+    semantic_durability: SemanticDurabilityGuard | None = None,
 ) -> PhaseTwoRuntime:
     """Construct the closed phase-two runtime under its remote-read ceiling."""
 
@@ -1200,5 +1224,6 @@ def build_phase_two_runtime(
         clock=resolved_clock,
         ids=resolved_ids,
         extraction_writer=extraction_writer,
+        semantic_durability=semantic_durability,
     )
     return PhaseTwoRuntime(runner=runner, registrations=validated, policy=resolved_policy)

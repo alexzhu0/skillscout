@@ -13,6 +13,7 @@ import stat
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Mapping, NoReturn
 
@@ -37,6 +38,14 @@ _DISCOVERY_DATABASE_LOCATORS = (
     "state/databases/publication.sqlite3",
 )
 _DISCOVERY_DIGEST_BYTES = 65_536
+
+
+def _discovery_timestamp() -> str:
+    return (
+        datetime.now(UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 class PhaseThreeGateError(RuntimeError):
@@ -213,6 +222,51 @@ def _required_credential(
     return value
 
 
+def discovery_run_authority(config: DiscoveryRuntimeConfig) -> object:
+    """Derive one stable run identity from the complete non-secret authority."""
+
+    if type(config) is not DiscoveryRuntimeConfig:
+        raise ValueError("discovery runtime configuration rejected")
+    from skillscout.domain.canonical import sha256_digest
+    from skillscout.domain.discovery import (
+        DiscoveryBudgetPolicyV1,
+        DiscoveryRunAuthorityV1,
+    )
+
+    budget = DiscoveryBudgetPolicyV1()
+    run_identity = sha256_digest(
+        {
+            "schema_version": "discovery-run-id-v1",
+            "query_set_digest": config.query_set_digest,
+            "budget_policy_digest": budget.budget_policy_digest,
+            "phase2_profile_version": config.phase2_profile_version,
+            "phase3_profile_version": config.phase3_profile_version,
+            "semantic_provider": config.semantic_provider,
+            "extractor_model_id": config.extractor_model_id,
+            "generator_model_id": config.generator_model_id,
+            "reviewer_model_id": config.reviewer_model_id,
+            "initial_state_root_digest": config.initial_state_root_digest,
+        }
+    )
+    values = {
+        "schema_version": "discovery-run-authority-v1",
+        "run_id": f"discovery-{run_identity.removeprefix('sha256:')[:32]}",
+        "query_set_digest": config.query_set_digest,
+        "budget_policy_digest": budget.budget_policy_digest,
+        "phase2_profile_version": config.phase2_profile_version,
+        "phase3_profile_version": config.phase3_profile_version,
+        "semantic_provider": config.semantic_provider,
+        "extractor_model_id": config.extractor_model_id,
+        "generator_model_id": config.generator_model_id,
+        "reviewer_model_id": config.reviewer_model_id,
+        "initial_state_root_digest": config.initial_state_root_digest,
+    }
+    return DiscoveryRunAuthorityV1(
+        **values,
+        authority_digest=sha256_digest(values),
+    )
+
+
 class _LateStateDurabilityBarrier:
     """Open the state writer only for one exact durability confirmation."""
 
@@ -250,6 +304,69 @@ class _LateStateDurabilityBarrier:
             return barrier.confirm(**arguments)
         finally:
             client.close()
+
+    def sync_discovery(
+        self,
+        *,
+        operations_store: object,
+        observed_head: str,
+        prior_root_digest: str,
+        created_at: str,
+        pipeline_store: object | None = None,
+    ) -> object:
+        """Synchronize one non-semantic discovery checkpoint and reread it."""
+
+        from skillscout.adapters.operations_state import assemble_three_store_bundle
+        from skillscout.adapters.publication_state import PublicationStateStore
+        from skillscout.adapters.state import SQLiteStateStore
+        from skillscout.adapters.state_branch import (
+            StateBranchClient,
+            StateBranchStore,
+        )
+        from skillscout.domain.discovery import DiscoveryBudgetPolicyV1
+
+        pipeline = (
+            pipeline_store
+            if pipeline_store is not None
+            else SQLiteStateStore(self._config.pipeline_state)
+        )
+        owns_pipeline = pipeline_store is None
+        publication = PublicationStateStore(self._config.publication_state)
+        client = StateBranchClient(
+            token=_required_credential(
+                self._source, "SKILLSCOUT_STATE_GITHUB_TOKEN"
+            ),
+            repository_id=self._config.state_repository_id,
+            repository_full_name=self._config.state_repository_full_name,
+        )
+        try:
+            bundle = assemble_three_store_bundle(
+                pipeline_store=pipeline,
+                operations_store=operations_store,
+                publication_store=publication,
+                prior_root_digest=prior_root_digest,
+                state_parent_commit_sha=observed_head,
+                query_set_digest=self._config.query_set_digest,
+                budget_policy_digest=(
+                    DiscoveryBudgetPolicyV1().budget_policy_digest or ""
+                ),
+                created_at=created_at,
+            )
+            store = StateBranchStore(client)
+            synchronized = store.sync(bundle, observed_head)
+            reread = store.restore()
+            if (
+                reread.status != "verified"
+                or reread.observed_head != synchronized.commit_sha
+                or reread.bundle != bundle
+            ):
+                raise ValueError("discovery state synchronization rejected")
+            return synchronized
+        finally:
+            client.close()
+            publication.close()
+            if owns_pipeline:
+                pipeline.close()
 
 
 def build_discovery_application(
@@ -289,7 +406,24 @@ def build_discovery_application(
             repository_full_name=config.state_repository_full_name,
         )
         try:
-            return StateBranchStore(client).restore()
+            observation = StateBranchStore(client).restore()
+            bundle = getattr(observation, "bundle", None)
+            if bundle is not None:
+                if getattr(bundle, "root", None) is None:
+                    raise ValueError("discovery initial state rejected")
+                from skillscout.adapters.operations_state import (
+                    restore_three_store_bundle,
+                )
+                from skillscout.adapters.state_branch import VerifiedStateBundle
+
+                if type(bundle) is VerifiedStateBundle:
+                    restore_three_store_bundle(
+                        bundle,
+                        pipeline_path=config.pipeline_state,
+                        operations_path=config.operations_state,
+                        publication_path=config.publication_state,
+                    )
+            return observation
         finally:
             client.close()
 
@@ -301,10 +435,469 @@ def build_discovery_application(
 
         operations_store_factory = default_operations_store_factory
     if phase2_factory is None:
-        from skillscout.application.pipeline import build_phase_two_runtime
+        def default_phase2_factory(**arguments: object) -> object:
+            """Execute one selected repository through the existing Phase 2/3 graph."""
 
-        def default_phase2_factory(state: object, processor: object) -> object:
-            return build_phase_two_runtime(state, processor).runner  # type: ignore[arg-type]
+            import json
+
+            from skillscout.adapters.github import GitHubReadClient
+            from skillscout.adapters.openai_extract import OpenAIExtractionClient
+            from skillscout.adapters.openai_generate import OpenAIGenerationClient
+            from skillscout.adapters.openai_review import OpenAIReviewClient
+            from skillscout.adapters.operations_state import OperationsStateStore
+            from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
+            from skillscout.adapters.publication_state import PublicationStateStore
+            from skillscout.adapters.semantic_provider import (
+                SemanticProvider,
+                SemanticProviderFailure,
+                SemanticTransportDisposition,
+                resolve_semantic_provider,
+            )
+            from skillscout.adapters.state import (
+                DescriptorAnchoredCompletedCandidateProjector,
+                SQLiteStateStore,
+            )
+            from skillscout.application.candidate_source import (
+                derive_candidate_subject_descriptors,
+                load_candidate_subject,
+            )
+            from skillscout.application.discovery import (
+                DiscoveryCandidateExecution,
+                eligible_candidate_locator,
+            )
+            from skillscout.application.phase3 import (
+                PhaseThreeDependencies,
+                PhaseThreeRuntimeProfile,
+                _execution_authority,
+            )
+            from skillscout.application.pipeline import (
+                SemanticDurabilityGuard,
+                SemanticReservationReceipt,
+                build_phase_two_runtime,
+            )
+            from skillscout.application.processors import PhaseTwoProcessor
+            from skillscout.application.ports import ErrorCode, SafeFailure
+            from skillscout.cli import (
+                CandidateValidationAdapter,
+                LocalCandidateArtifactProjector,
+            )
+            from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
+            from skillscout.domain.discovery import (
+                DiscoveredCandidateV1,
+                DiscoveryCandidateTerminalV1,
+                DiscoveryRunAuthorityV1,
+            )
+            from skillscout.domain.review import candidate_terminal_summary_bytes
+            from skillscout.domain.subjects import RepositorySubject
+
+            candidate = arguments.get("candidate")
+            discovery_authority = arguments.get("discovery_authority")
+            operations = arguments.get("operations_store")
+            barrier = arguments.get("durability_barrier")
+            phase3_builder = arguments.get("phase3_factory")
+            observed_head = arguments.get("observed_head")
+            prior_root = arguments.get("prior_root_digest")
+            if (
+                type(candidate) is not DiscoveredCandidateV1
+                or type(discovery_authority) is not DiscoveryRunAuthorityV1
+                or type(operations) is not OperationsStateStore
+                or not callable(phase3_builder)
+                or type(observed_head) is not str
+                or type(prior_root) is not str
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            provider = resolve_semantic_provider(source)
+            if (
+                provider.provider.value != config.semantic_provider
+                or provider.extract_model != config.extractor_model_id
+                or provider.generator_model != config.generator_model_id
+                or provider.reviewer_model != config.reviewer_model_id
+            ):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            phase2_authority_digest = sha256_digest(
+                {
+                    "schema_version": "discovery-phase2-run-authority-v1",
+                    "discovery_run_authority_digest": (
+                        discovery_authority.authority_digest
+                    ),
+                    "candidate_digest": candidate.candidate_digest,
+                    "phase2_profile_version": config.phase2_profile_version,
+                    "extractor_model_id": config.extractor_model_id,
+                }
+            )
+            state_head = observed_head
+            state_root = prior_root
+            semantic_reservation = None
+
+            def reserve_before_extractor(
+                *,
+                pipeline_store: object,
+                run_id: str,
+            ) -> SemanticReservationReceipt:
+                del run_id
+                nonlocal semantic_reservation, state_head, state_root
+                semantic_reservation = operations.reserve_semantic_candidate(
+                    discovery_authority.run_id,
+                    candidate.repository.repository_id,
+                    phase2_authority_digest,
+                    _discovery_timestamp(),
+                )
+                synchronized = barrier.sync_discovery(
+                    operations_store=operations,
+                    observed_head=state_head,
+                    prior_root_digest=state_root,
+                    created_at=_discovery_timestamp(),
+                    pipeline_store=pipeline_store,
+                )
+                state_head = synchronized.commit_sha
+                state_root = synchronized.root_digest
+                return SemanticReservationReceipt(
+                    reservation_digest=semantic_reservation.reservation_digest,
+                    verified_state_head=state_head,
+                    state_root_digest=state_root,
+                )
+
+            publication = PublicationStateStore(config.publication_state)
+            phase2_state = SQLiteStateStore(config.pipeline_state)
+            github = GitHubReadClient(
+                token=_required_credential(
+                    source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
+                )
+            )
+            extractor = (
+                OpenAIExtractionClient()
+                if provider.provider is SemanticProvider.OPENAI
+                else OpenAIExtractionClient(
+                    model=provider.extract_model,
+                    provider_settings=provider,
+                )
+            )
+            phase2_guard = SemanticDurabilityGuard(
+                barrier=barrier,
+                operations_store=operations,
+                publication_store=publication,
+                repository_id=candidate.repository.repository_id,
+                workflow_authority_digest=phase2_authority_digest,
+                provider=provider.provider.value,
+                expected_prior_state_head=state_head,
+                expected_prior_root_digest=state_root,
+                reservation_hook=reserve_before_extractor,
+            )
+            try:
+                runtime = build_phase_two_runtime(
+                    phase2_state,
+                    PhaseTwoProcessor(github, extractor),
+                    semantic_durability=phase2_guard,
+                )
+                subject = RepositorySubject(
+                    schema_version="1",
+                    subject_id=f"repo:{candidate.repository.full_name}",
+                    repository=(
+                        f"https://github.com/{candidate.repository.full_name}"
+                    ),
+                )
+                with tempfile.TemporaryDirectory(
+                    prefix="skillscout-discovery-phase2-"
+                ) as phase2_output:
+                    phase2_summary = runtime.runner.run(
+                        subject, Path(phase2_output)
+                    )
+                chain = phase2_state.verify_run_chain(phase2_summary.run_id)
+                state_head = phase2_guard.verified_state_head
+                state_root = phase2_guard.state_root_digest
+            except SemanticProviderFailure as failure:
+                state_head = phase2_guard.verified_state_head
+                state_root = phase2_guard.state_root_digest
+                if (
+                    failure.disposition
+                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                ):
+                    outcome = "semantic_outcome_unknown"
+                else:
+                    outcome = "permanent_failure"
+                terminal_values = {
+                    "schema_version": "discovery-candidate-terminal-v1",
+                    "discovery_run_authority_digest": (
+                        discovery_authority.authority_digest
+                    ),
+                    "repository_id": candidate.repository.repository_id,
+                    "semantic_reservation_digest": (
+                        semantic_reservation.reservation_digest
+                        if semantic_reservation is not None
+                        else None
+                    ),
+                    "outcome": outcome,
+                    "workflow_authority_digests": (),
+                    "recorded_at": _discovery_timestamp(),
+                }
+                terminal = DiscoveryCandidateTerminalV1(
+                    **terminal_values,
+                    terminal_digest=sha256_digest(terminal_values),
+                )
+                return DiscoveryCandidateExecution(
+                    terminal=terminal,
+                    eligible_candidates=(),
+                    state_commit_sha=state_head,
+                    state_root_digest=state_root,
+                )
+            except SafeFailure as failure:
+                state_head = phase2_guard.verified_state_head
+                state_root = phase2_guard.state_root_digest
+                outcome = (
+                    "confirmed_retryable"
+                    if failure.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+                    else "state_integrity_conflict"
+                    if failure.code
+                    in {
+                        ErrorCode.STATE_INTEGRITY_ERROR,
+                        ErrorCode.STATE_OPERATION_FAILED,
+                    }
+                    else "permanent_failure"
+                )
+                terminal_values = {
+                    "schema_version": "discovery-candidate-terminal-v1",
+                    "discovery_run_authority_digest": (
+                        discovery_authority.authority_digest
+                    ),
+                    "repository_id": candidate.repository.repository_id,
+                    "semantic_reservation_digest": (
+                        semantic_reservation.reservation_digest
+                        if semantic_reservation is not None
+                        else None
+                    ),
+                    "outcome": outcome,
+                    "workflow_authority_digests": (),
+                    "recorded_at": _discovery_timestamp(),
+                }
+                terminal = DiscoveryCandidateTerminalV1(
+                    **terminal_values,
+                    terminal_digest=sha256_digest(terminal_values),
+                )
+                return DiscoveryCandidateExecution(
+                    terminal=terminal,
+                    eligible_candidates=(),
+                    state_commit_sha=state_head,
+                    state_root_digest=state_root,
+                )
+            finally:
+                extractor.close()
+                github.close()
+                publication.close()
+                phase2_state.close()
+
+            candidate_source = SQLitePhaseTwoCandidateSource(config.pipeline_state)
+            descriptors = derive_candidate_subject_descriptors(
+                candidate_source,
+                phase2_run_id=phase2_summary.run_id,
+            )
+            if not descriptors:
+                filter_result = next(
+                    result
+                    for result in chain.results
+                    if result.stage.value == "filter"
+                )
+                outcome = (
+                    "filter_rejected"
+                    if filter_result.payload.get("outcome") == "rejected"
+                    else "no_workflow"
+                )
+                workflow_authorities: list[str] = []
+                eligible = []
+            else:
+                profile = PhaseThreeRuntimeProfile.from_configured_models(
+                    generator_model_id=provider.generator_model,
+                    reviewer_model_id=provider.reviewer_model,
+                )
+                workflow_authorities = []
+                eligible = []
+                workflow_outcomes: list[str] = []
+                for descriptor in descriptors:
+                    with tempfile.TemporaryDirectory(
+                        prefix="skillscout-discovery-phase3-"
+                    ) as directory:
+                        descriptor_path = Path(directory) / "candidate.json"
+                        descriptor_path.write_bytes(canonical_json_bytes(descriptor))
+                        descriptor_path.chmod(0o600)
+                        resolved = load_candidate_subject(
+                            descriptor_path, candidate_source
+                        )
+                        workflow_authority = _execution_authority(
+                            source=resolved, profile=profile
+                        )
+                        workflow_authorities.append(
+                            workflow_authority.authority_digest
+                        )
+                        phase3_publication = PublicationStateStore(
+                            config.publication_state
+                        )
+                        phase3_guard = SemanticDurabilityGuard(
+                            barrier=barrier,
+                            operations_store=operations,
+                            publication_store=phase3_publication,
+                            repository_id=candidate.repository.repository_id,
+                            workflow_authority_digest=(
+                                workflow_authority.authority_digest
+                            ),
+                            provider=provider.provider.value,
+                            expected_prior_state_head=state_head,
+                            expected_prior_root_digest=state_root,
+                        )
+                        clients: list[object] = []
+
+                        def generator_factory() -> object:
+                            client = (
+                                OpenAIGenerationClient(
+                                    model=profile.configured_generator_model_id,
+                                    max_output_tokens=(
+                                        profile.max_generator_output_tokens
+                                    ),
+                                )
+                                if provider.provider is SemanticProvider.OPENAI
+                                else OpenAIGenerationClient(
+                                    model=profile.configured_generator_model_id,
+                                    max_output_tokens=(
+                                        profile.max_generator_output_tokens
+                                    ),
+                                    provider_settings=provider,
+                                )
+                            )
+                            clients.append(client)
+                            return client
+
+                        def reviewer_factory() -> object:
+                            client = (
+                                OpenAIReviewClient(
+                                    model=profile.configured_reviewer_model_id,
+                                    max_output_tokens=(
+                                        profile.max_reviewer_output_tokens
+                                    ),
+                                )
+                                if provider.provider is SemanticProvider.OPENAI
+                                else OpenAIReviewClient(
+                                    model=profile.configured_reviewer_model_id,
+                                    max_output_tokens=(
+                                        profile.max_reviewer_output_tokens
+                                    ),
+                                    provider_settings=provider,
+                                )
+                            )
+                            clients.append(client)
+                            return client
+
+                        try:
+                            application = phase3_builder(
+                                source=candidate_source,
+                                profile=profile,
+                                dependencies=PhaseThreeDependencies(
+                                    completed_projector_factory=lambda: (
+                                        DescriptorAnchoredCompletedCandidateProjector(
+                                            config.pipeline_state
+                                        )
+                                    ),
+                                    mutable_state_factory=lambda: SQLiteStateStore(
+                                        config.pipeline_state
+                                    ),
+                                    generator_factory=generator_factory,
+                                    validator_factory=CandidateValidationAdapter,
+                                    reviewer_factory=reviewer_factory,
+                                    artifact_projector_factory=(
+                                        LocalCandidateArtifactProjector
+                                    ),
+                                    semantic_durability=phase3_guard,
+                                ),
+                            )
+                            result = application.run(
+                                descriptor_path,
+                                output_directory=Path(directory) / "output",
+                            )
+                        finally:
+                            for client in clients:
+                                close = getattr(client, "close", None)
+                                if callable(close):
+                                    close()
+                            phase3_publication.close()
+                        state_head = phase3_guard.verified_state_head
+                        state_root = phase3_guard.state_root_digest
+                        workflow_outcomes.append(result.outcome)
+                        terminal_summary = (
+                            result.terminal_summary
+                            or getattr(
+                                result.completed_projection,
+                                "terminal_summary",
+                                None,
+                            )
+                        )
+                        if (
+                            result.outcome == "eligible_local_candidate"
+                            and terminal_summary is not None
+                        ):
+                            terminal_bytes = candidate_terminal_summary_bytes(
+                                terminal_summary
+                            )
+                            pipeline = SQLiteStateStore(config.pipeline_state)
+                            try:
+                                matching = []
+                                for fact in pipeline.export_owned_state().facts:
+                                    if fact.kind != "phase3_artifact":
+                                        continue
+                                    payload = json.loads(fact.payload_json)
+                                    if (
+                                        base64.b64decode(
+                                            payload["content_base64"],
+                                            validate=True,
+                                        )
+                                        == terminal_bytes
+                                    ):
+                                        matching.append(fact)
+                            finally:
+                                pipeline.close()
+                            if len(matching) != 1:
+                                raise SafeFailure(
+                                    ErrorCode.STATE_INTEGRITY_ERROR
+                                )
+                            eligible.append(
+                                eligible_candidate_locator(
+                                    authority_digest=matching[0].object_digest,
+                                    workflow_identity_digest=(
+                                        workflow_authority.authority_digest
+                                    ),
+                                )
+                            )
+                if eligible:
+                    outcome = "eligible_local_candidate"
+                elif "review_rejected" in workflow_outcomes:
+                    outcome = "review_rejected"
+                elif "validation_rejected" in workflow_outcomes:
+                    outcome = "validation_rejected"
+                else:
+                    outcome = "qualification_rejected"
+
+            terminal_values = {
+                "schema_version": "discovery-candidate-terminal-v1",
+                "discovery_run_authority_digest": (
+                    discovery_authority.authority_digest
+                ),
+                "repository_id": candidate.repository.repository_id,
+                "semantic_reservation_digest": (
+                    semantic_reservation.reservation_digest
+                    if semantic_reservation is not None
+                    else None
+                ),
+                "outcome": outcome,
+                "workflow_authority_digests": tuple(workflow_authorities),
+                "recorded_at": _discovery_timestamp(),
+            }
+            terminal = DiscoveryCandidateTerminalV1(
+                **terminal_values,
+                terminal_digest=sha256_digest(terminal_values),
+            )
+            return DiscoveryCandidateExecution(
+                terminal=terminal,
+                eligible_candidates=tuple(eligible),
+                state_commit_sha=state_head,
+                state_root_digest=state_root,
+            )
 
         phase2_factory = default_phase2_factory
     if phase3_factory is None:
@@ -328,6 +921,8 @@ def build_discovery_application(
             durability_barrier=_LateStateDurabilityBarrier(config, source),
             phase2_factory=phase2_factory,
             phase3_factory=phase3_factory,
+            query_set=config.query_set,  # type: ignore[arg-type]
+            initial_state_root_digest=config.initial_state_root_digest,
         )
     )
 
@@ -556,22 +1151,21 @@ def derive_discovery_publication_admissions(
 ) -> tuple[object, ...]:
     """Resolve every candidate from the reread bundle and derive Phase 4 locally."""
 
-    from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
-    from skillscout.adapters.semantic_provider import resolve_semantic_provider
+    import json
+
     from skillscout.adapters.state import DescriptorAnchoredCompletedCandidateProjector
-    from skillscout.application.candidate_source import load_candidate_subject
     from skillscout.application.discovery import DiscoveryApplicationResult
-    from skillscout.application.phase3 import (
-        PhaseThreeRuntimeProfile,
-        _execution_authority,
-    )
-    from skillscout.domain.canonical import sha256_digest
+    from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
     from skillscout.domain.publication import (
         CatalogAuthorityV1,
         ReviewerTargetsV1,
         admit_phase3_candidate,
         bind_publication_admission,
         derive_publication_intent,
+    )
+    from skillscout.domain.review import (
+        CandidateTerminalSummaryV1,
+        candidate_terminal_summary_bytes,
     )
 
     if type(handoff) is not DiscoveryApplicationResult:
@@ -598,11 +1192,6 @@ def derive_discovery_publication_admissions(
         raise ValueError("protected discovery locator rejected")
 
     values = os.environ if environ is None else environ
-    provider = resolve_semantic_provider(values)
-    profile = PhaseThreeRuntimeProfile.from_configured_models(
-        generator_model_id=provider.generator_model,
-        reviewer_model_id=provider.reviewer_model,
-    )
     protected_authority = load_publication_authority_config(values)
     catalog = CatalogAuthorityV1(
         schema_version="catalog-authority-v1",
@@ -616,55 +1205,65 @@ def derive_discovery_publication_admissions(
         reviewers=protected_authority.catalog_reviewers,
     )
     admissions: list[object] = []
-    with tempfile.TemporaryDirectory(prefix="skillscout-admission-") as directory:
-        root_path = Path(directory)
-        root_path.chmod(0o700)
-        for ordinal, candidate in enumerate(
-            handoff.eligible_candidates, start=1
-        ):
-            descriptor = root_path / f"candidate-{ordinal}.json"
-            descriptor.write_bytes(files[candidate.locator])
-            descriptor.chmod(0o600)
-            resolved = load_candidate_subject(
-                descriptor,
-                SQLitePhaseTwoCandidateSource(pipeline_state),
+    del pipeline_state
+    for candidate in handoff.eligible_candidates:
+        try:
+            wrapper = json.loads(files[candidate.locator])
+            if (
+                type(wrapper) is not dict
+                or wrapper.get("schema_version") != "pipeline-rebuild-file-v1"
+                or wrapper.get("kind") != "phase3_artifact"
+                or type(wrapper.get("content_base64")) is not str
+            ):
+                raise ValueError
+            terminal_bytes = base64.b64decode(
+                wrapper["content_base64"], validate=True
             )
-            candidate_authority = _execution_authority(
-                source=resolved, profile=profile
+            terminal = CandidateTerminalSummaryV1.model_validate_json(
+                terminal_bytes, strict=True
             )
             if (
-                candidate_authority.authority_digest
+                canonical_json_bytes(wrapper) != files[candidate.locator]
+                or candidate_terminal_summary_bytes(terminal) != terminal_bytes
+                or terminal.outcome != "eligible_local_candidate"
+                or terminal.candidate_execution_authority.authority_digest
                 != candidate.workflow_identity_digest
             ):
-                raise ValueError("protected discovery authority mismatch")
-            projector = DescriptorAnchoredCompletedCandidateProjector(
-                phase3_state
+                raise ValueError
+        except Exception:
+            raise ValueError("protected discovery authority mismatch") from None
+        projector = DescriptorAnchoredCompletedCandidateProjector(
+            phase3_state
+        )
+        try:
+            completed = projector.find_completed_candidate(
+                terminal.candidate_execution_authority
             )
-            try:
-                completed = projector.find_completed_candidate(
-                    candidate_authority
-                )
-            finally:
-                projector.close()
-            if completed is None:
-                raise ValueError("protected discovery admission unavailable")
-            evidence = admit_phase3_candidate(
-                terminal_summary=completed.terminal_summary,
-                terminal_summary_bytes=completed.terminal_summary_bytes,
-                artifacts=dict(completed.artifacts),
-            )
-            intent = derive_publication_intent(
+        finally:
+            projector.close()
+        if (
+            completed is None
+            or completed.terminal_summary != terminal
+            or completed.terminal_summary_bytes != terminal_bytes
+        ):
+            raise ValueError("protected discovery admission unavailable")
+        evidence = admit_phase3_candidate(
+            terminal_summary=completed.terminal_summary,
+            terminal_summary_bytes=completed.terminal_summary_bytes,
+            artifacts=dict(completed.artifacts),
+        )
+        intent = derive_publication_intent(
+            evidence=evidence,
+            catalog_authority=catalog,
+            reviewer_targets=reviewer_targets,
+        )
+        admissions.append(
+            bind_publication_admission(
                 evidence=evidence,
+                intent=intent,
                 catalog_authority=catalog,
-                reviewer_targets=reviewer_targets,
             )
-            admissions.append(
-                bind_publication_admission(
-                    evidence=evidence,
-                    intent=intent,
-                    catalog_authority=catalog,
-                )
-            )
+        )
     return tuple(admissions)
 
 

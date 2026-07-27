@@ -1029,6 +1029,20 @@ class OperationsStateStore:
 
         return self._snapshot_transaction(mutate)
 
+    def find_run_authority_digest(self, run_id: str) -> str | None:
+        """Return one existing run authority without creating mutable state."""
+
+        if type(run_id) is not str or not run_id:
+            raise ValueError("invalid discovery run id")
+        with self._thread_lock:
+            if self._connection is None:
+                raise OperationsIntegrityError("operations state is closed")
+            row = self._connection.execute(
+                "SELECT authority_digest FROM operations_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return None if row is None else str(row["authority_digest"])
+
     def record_search_page(
         self,
         run_id: str,

@@ -16,6 +16,7 @@ from skillscout.bootstrap import (
     build_discovery_application,
     build_publication_application,
     derive_discovery_publication_admissions,
+    discovery_run_authority,
     load_discovery_runtime_config,
     load_publication_authority_config,
     read_exact_discovery_state,
@@ -621,7 +622,9 @@ def _run_discover(arguments: argparse.Namespace) -> dict[str, object]:
         reviewer_model_id=provider.reviewer_model,
         initial_state_root_digest=arguments.initial_state_root_digest,
     )
-    result = build_discovery_application(config).run()
+    result = build_discovery_application(config).run(
+        discovery_run_authority(config)
+    )
     return {
         "run_id": result.run_id,
         "state_root_digest": result.state_root_digest,

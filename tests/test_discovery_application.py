@@ -7,10 +7,12 @@ import importlib
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.domain.canonical import sha256_digest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -402,3 +404,133 @@ def test_bootstrap_keeps_source_and_state_credentials_lazy(
         "state:restore",
         "state:close",
     ]
+
+
+def test_real_bootstrap_and_operations_store_complete_empty_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    discovery = importlib.import_module("skillscout.domain.discovery")
+    monkeypatch.chdir(tmp_path)
+    config = _runtime_config(bootstrap, tmp_path)
+    calls: list[str] = []
+
+    class Search:
+        def __init__(self, *, token: str) -> None:
+            assert token == "source-token"
+
+        def search_repositories(
+            self,
+            *,
+            query_set,
+            discovery_run_authority_digest: str,
+            query_ordinal: int,
+            page: int,
+        ):
+            calls.append(f"search:{query_ordinal}:{page}")
+            query = query_set.queries[query_ordinal - 1]
+            values = {
+                "schema_version": "search-page-observation-v1",
+                "discovery_run_authority_digest": discovery_run_authority_digest,
+                "query_set_version": query_set.query_set_version,
+                "query_set_digest": query_set.query_set_digest,
+                "query_id": query.query_id,
+                "query_ordinal": query_ordinal,
+                "query_text": query.query_text,
+                "sort": query_set.sort,
+                "order": query_set.order,
+                "page": page,
+                "per_page": query_set.per_page,
+                "next_page": None,
+                "total_count": 0,
+                "incomplete_results": False,
+                "item_count": 0,
+                "request_id": f"request-{query_ordinal}",
+                "rate_limit": {
+                    "limit": 10,
+                    "remaining": 9,
+                    "used": 1,
+                    "reset_epoch": 1,
+                    "resource": "search",
+                },
+            }
+            return (
+                discovery.SearchPageObservationV1(
+                    **values,
+                    observation_digest=sha256_digest(values),
+                ),
+                (),
+            )
+
+        def close(self) -> None:
+            calls.append("search:close")
+
+    class StateClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class StateStore:
+        def __init__(self, _remote: object) -> None:
+            pass
+
+        def restore(self):
+            return SimpleNamespace(
+                status="verified",
+                observed_head="b" * 40,
+                bundle=SimpleNamespace(
+                    root=SimpleNamespace(
+                        root_digest=config.initial_state_root_digest
+                    )
+                ),
+            )
+
+    monkeypatch.setattr("skillscout.adapters.github.GitHubReadClient", Search)
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchClient", StateClient
+    )
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchStore", StateStore
+    )
+
+    def sync_discovery(self, **_kwargs: object):
+        calls.append("state:sync")
+        return SimpleNamespace(
+            commit_sha="c" * 40,
+            root_digest="sha256:" + ("d" * 64),
+        )
+
+    monkeypatch.setattr(
+        bootstrap._LateStateDurabilityBarrier,
+        "sync_discovery",
+        sync_discovery,
+        raising=False,
+    )
+    application = bootstrap.build_discovery_application(
+        config,
+        environ={
+            "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "source-token",
+            "SKILLSCOUT_STATE_GITHUB_TOKEN": "state-token",
+        },
+    )
+    result = application.run(bootstrap.discovery_run_authority(config))
+
+    assert result.eligible_candidates == ()
+    assert result.state_commit_sha == "c" * 40
+    assert result.state_root_digest == "sha256:" + ("d" * 64)
+    assert calls == [
+        "search:1:1",
+        "state:sync",
+        "search:2:1",
+        "state:sync",
+        "search:3:1",
+        "state:sync",
+        "search:4:1",
+        "state:sync",
+        "search:close",
+        "state:sync",
+    ]
+    assert Path("state/databases/operations.sqlite3").is_file()
