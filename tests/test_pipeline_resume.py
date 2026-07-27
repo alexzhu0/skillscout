@@ -17,6 +17,12 @@ import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.localfs import AnchoredDirectory
+from skillscout.adapters.operations_state import (
+    OperationsStateStore,
+    assemble_three_store_bundle,
+    restore_three_store_bundle,
+)
+from skillscout.adapters.publication_state import PublicationStateStore
 from skillscout.adapters.semantic_provider import (
     SemanticProviderFailure,
     SemanticTransportDisposition,
@@ -1428,6 +1434,102 @@ def test_indeterminate_failure_closure_is_reconciled_on_next_open(
         )
         assert reopened.connection.execute("SELECT COUNT(*) FROM stage_results").fetchone()[0] == 0
         assert reopened.connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+    finally:
+        reopened.close()
+
+
+def test_three_store_restore_verifies_orphan_before_startup_reconciliation(
+    tmp_path: Path,
+) -> None:
+    subject = load_fixture(APPROVED_FIXTURE)
+    pipeline = SQLiteStateStore(tmp_path / "pipeline.sqlite3")
+    operations = OperationsStateStore(tmp_path / "operations.sqlite3")
+    publication = PublicationStateStore(tmp_path / "publication.sqlite3")
+    run_id = "restore-orphan"
+    identity = RunIdentity(
+        schema_version="2",
+        subject_id=subject.subject_id,
+        fixture_hash=sha256_digest(
+            subject.model_dump(mode="json", exclude_none=False)
+        ),
+        producer_version="fixture-v1",
+        retry_policy_version="retry-v1",
+    )
+    pipeline.create_run(run_id, identity, "2026-07-17T00:00:00.000000Z")
+    stage_input = StageInput(
+        schema_version="2",
+        execution_mode=ExecutionMode.DRY_RUN,
+        subject_id=subject.subject_id,
+        stage=PipelineStage.SCOUT,
+        previous_output_hash=None,
+        fixture_hash=identity.fixture_hash,
+    )
+    input_hash = stage_input_hash(stage_input)
+    pipeline.start_attempt(
+        StageAttempt(
+            attempt_id=f"{run_id}:scout:1",
+            run_id=run_id,
+            subject_id=subject.subject_id,
+            stage=PipelineStage.SCOUT,
+            stage_index=0,
+            attempt_no=1,
+            status=AttemptStatus.RUNNING,
+            input_hash=input_hash,
+            producer_version=identity.producer_version,
+            retry_policy_version=identity.retry_policy_version,
+            reusable_key_digest=reusable_key_digest(
+                subject_id=subject.subject_id,
+                stage=PipelineStage.SCOUT,
+                input_hash=input_hash,
+                producer_version=identity.producer_version,
+                retry_policy_version=identity.retry_policy_version,
+            ),
+            started_at="2026-07-17T00:00:00.000000Z",
+            finished_at=None,
+            prompt_version=None,
+            policy_version=None,
+            model_id=None,
+            request_id=None,
+            latency_ms=None,
+            token_usage=None,
+            error_code=None,
+            error_summary=None,
+            retryable=False,
+        )
+    )
+    try:
+        bundle = assemble_three_store_bundle(
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=None,
+            state_parent_commit_sha="0" * 40,
+            query_set_digest="sha256:" + ("a" * 64),
+            budget_policy_digest="sha256:" + ("b" * 64),
+            created_at="2026-07-17T00:00:00.000000Z",
+        )
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+    restored = tmp_path / "restored"
+    restored.mkdir(mode=0o700)
+    restore_three_store_bundle(
+        bundle,
+        pipeline_path=restored / "pipeline.sqlite3",
+        operations_path=restored / "operations.sqlite3",
+        publication_path=restored / "publication.sqlite3",
+    )
+
+    reopened = SQLiteStateStore(restored / "pipeline.sqlite3")
+    try:
+        attempt = reopened.connection.execute(
+            "SELECT status FROM stage_attempts WHERE attempt_id = ?",
+            (f"{run_id}:scout:1",),
+        ).fetchone()
+        assert attempt is not None
+        assert attempt[0] == "abandoned"
     finally:
         reopened.close()
 
