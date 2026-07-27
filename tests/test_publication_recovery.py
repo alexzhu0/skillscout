@@ -433,6 +433,41 @@ def test_transient_ref_read_failure_propagates_with_zero_remote_writes(
     assert remote.close_calls == 1
 
 
+def test_state_store_closes_when_remote_construction_fails(tmp_path: Path) -> None:
+    admission = _admission()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    state_path = state_dir / "publication.db"
+    created: list[Any] = []
+
+    class TrackingStore(PublicationStateStore):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+            super().close()
+
+    def state_factory() -> TrackingStore:
+        store = TrackingStore(state_path)
+        created.append(store)
+        return store
+
+    def remote_factory() -> object:
+        raise RuntimeError("remote construction failed")
+
+    application = PublicationApplication(
+        PublicationDependencies(
+            state_factory=state_factory,
+            remote_factory=remote_factory,
+        )
+    )
+    with pytest.raises(RuntimeError, match="remote construction failed"):
+        application.run(admission)
+
+    assert len(created) == 1
+    assert created[0].closed is True
+
+
 def test_mutation_response_is_not_enough_to_record_success(tmp_path: Path) -> None:
     admission = _admission()
     remote = StatefulRemote()

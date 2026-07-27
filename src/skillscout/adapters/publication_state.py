@@ -182,3 +182,9 @@ class PublicationStateStore:
     def close(self) -> None:
         self._conn.close()
         self._parent.close()
+
+    def __enter__(self) -> "PublicationStateStore":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
