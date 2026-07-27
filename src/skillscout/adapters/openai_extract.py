@@ -12,6 +12,7 @@ from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.adapters.semantic_provider import (
     SemanticProvider,
     SemanticProviderSettings,
+    classify_semantic_provider_failure,
     create_semantic_client,
     request_deepseek_json,
     resolve_semantic_provider,
@@ -141,15 +142,8 @@ class OpenAIExtractionClient:
             )
         except ValidationError:
             return self._result("schema_invalid", started)
-        except (
-            openai.RateLimitError,
-            openai.InternalServerError,
-            openai.APITimeoutError,
-            openai.APIConnectionError,
-        ):
-            raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE) from None
-        except openai.APIError:
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+        except openai.APIError as error:
+            raise classify_semantic_provider_failure(error, sdk=openai) from None
 
         if response.status == "incomplete":
             details = response.incomplete_details
@@ -226,9 +220,9 @@ class OpenAIExtractionClient:
                 usage=usage,
                 latency_ms=max(0, int((time.monotonic() - started) * 1000)),
             )
-        except ValidationError:
+        except ValidationError as error:
             # Provider-controlled telemetry violates the closed result shape.
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+            raise classify_semantic_provider_failure(error, sdk=openai) from None
 
 
 def _first_refusal(response: Any) -> str | None:

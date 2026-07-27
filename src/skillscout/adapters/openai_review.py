@@ -13,6 +13,7 @@ from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.adapters.semantic_provider import (
     SemanticProvider,
     SemanticProviderSettings,
+    classify_semantic_provider_failure,
     create_semantic_client,
     request_deepseek_json,
     resolve_semantic_provider,
@@ -177,15 +178,8 @@ class OpenAIReviewClient:
             )
         except ValidationError:
             return self._result("schema_invalid", started)
-        except (
-            openai.RateLimitError,
-            openai.InternalServerError,
-            openai.APITimeoutError,
-            openai.APIConnectionError,
-        ):
-            raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE) from None
-        except openai.APIError:
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+        except openai.APIError as error:
+            raise classify_semantic_provider_failure(error, sdk=openai) from None
 
         if response.status == "incomplete":
             details = response.incomplete_details
@@ -254,8 +248,8 @@ class OpenAIReviewClient:
                 usage=usage,
                 latency_ms=max(0, int((time.monotonic() - started) * 1_000)),
             )
-        except ValidationError:
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+        except ValidationError as error:
+            raise classify_semantic_provider_failure(error, sdk=openai) from None
 
 
 def _review_sections(

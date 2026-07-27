@@ -28,7 +28,6 @@ from skillscout.adapters.semantic_provider import (
     SemanticTransportDisposition,
     resolve_semantic_provider,
 )
-from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import workflow_spec_authority
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.extraction import WorkflowSpec

@@ -25,7 +25,6 @@ from skillscout.adapters.semantic_provider import (
     SemanticTransportDisposition,
     resolve_semantic_provider,
 )
-from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import (
     CANDIDATE_EXECUTION_AUTHORITY_SCHEMA_VERSION,
     LINEAGE_RESOLUTION_SCHEMA_VERSION,
