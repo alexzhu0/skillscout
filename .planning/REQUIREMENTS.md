@@ -8,9 +8,9 @@
 
 ### Discovery
 
-- [ ] **DISC-01**: 系统支持一组版本化的 GitHub Search 查询，并可通过每日定时任务或人工触发启动发现运行。
-- [ ] **DISC-02**: 每次运行最多接收 100 个去重后的候选仓库，其中最多 20 个进入 LLM 分析；预算不得在运行中静默扩大。
-- [ ] **DISC-03**: 每次发现输出结构化记录，包括查询版本、查询文本、分页位置、候选来源、GitHub rate-limit 信息和去重结果。
+- [x] **DISC-01**: 系统支持一组版本化的 GitHub Search 查询，并可通过每日定时任务或人工触发启动发现运行。
+- [x] **DISC-02**: 每次运行最多接收 100 个去重后的候选仓库，其中最多 20 个进入 LLM 分析；预算不得在运行中静默扩大。
+- [x] **DISC-03**: 每次发现输出结构化记录，包括查询版本、查询文本、分页位置、候选来源、GitHub rate-limit 信息和去重结果。
 
 ### Deterministic Filtering
 
@@ -70,8 +70,8 @@
 ### State, Recovery, and Audit
 
 - [x] **OPS-01**: 每个阶段均输出带 `schema_version`、稳定 ID、时间戳、input/output hash 以及 prompt/policy/model 版本的结构化数据，并通过 `StageAttempt` 记录重试、错误、请求 ID、延迟和 token 用量。
-- [ ] **OPS-02**: v1 使用 SQLite 保存可查询事务状态，并用专用 `skillscout-state` 分支中的版本化 JSON manifests 提供审计与重建能力；定时和手动生产运行通过单 concurrency group 串行化。
-- [ ] **OPS-03**: 持久状态、日志、Actions artifacts 和 Draft PR 不得保存完整第三方仓库正文、授权头、API 密钥或其他不必要的秘密数据。
+- [x] **OPS-02**: v1 使用 SQLite 保存可查询事务状态，并用专用 `skillscout-state` 分支中的版本化 JSON manifests 提供审计与重建能力；定时和手动生产运行通过单 concurrency group 串行化。
+- [x] **OPS-03**: 持久状态、日志、Actions artifacts 和 Draft PR 不得保存完整第三方仓库正文、授权头、API 密钥或其他不必要的秘密数据。
 - [x] **OPS-04**: 系统支持暂时性故障的有限重试、从最近成功阶段恢复，以及完成发布计划但不产生远程写入的 dry-run。
 
 ### Security Controls
@@ -137,9 +137,9 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 
 | Requirement | Phase | Status |
 |---|---|---|
-| DISC-01 | Phase 5 | Pending |
-| DISC-02 | Phase 5 | Pending |
-| DISC-03 | Phase 5 | Pending |
+| DISC-01 | Phase 5 | Complete |
+| DISC-02 | Phase 5 | Complete |
+| DISC-03 | Phase 5 | Complete |
 | FILT-01 | Phase 2 | Complete |
 | FILT-02 | Phase 2 | Complete |
 | FILT-03 | Phase 2 | Complete |
@@ -172,8 +172,8 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | PUB-04 | Phase 4 | Complete |
 | PUB-05 | Phase 4 | Complete |
 | OPS-01 | Phase 1 | Complete |
-| OPS-02 | Phase 5 | Pending |
-| OPS-03 | Phase 5 | Pending |
+| OPS-02 | Phase 5 | Complete |
+| OPS-03 | Phase 5 | Complete |
 | OPS-04 | Phase 1 | Complete |
 | SEC-01 | Phase 2 | Complete |
 | SEC-02 | Phase 4 | Complete |

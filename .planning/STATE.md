@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Automated Discovery Operations
 status: executing
-stopped_at: Phase 03 verified
-last_updated: "2026-07-27T12:53:40.837Z"
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-07-27T13:05:58.192Z"
 last_activity: 2026-07-27
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 47
-  completed_plans: 47
+  total_plans: 61
+  completed_plans: 48
   percent: 67
 ---
 
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 5 — Automated Discovery Operations
-**Plan:** Not started
+**Plan:** 2 of 14
 **Verification:** 13/13 requirements verified; clean Round-4 code review; exact release gate passed 1247 tests
 **Next command:** `$gsd-plan-phase 4`
 
@@ -115,8 +115,8 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 ## Session Continuity
 
 **Last activity:** 2026-07-27
-**Last session:** 2026-07-23T16:35:28.520Z
-**Stopped at:** Phase 03 verified
+**Last session:** 2026-07-27T13:05:22.569Z
+**Stopped at:** Completed 05-01-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -171,6 +171,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 | Phase 03 P12 | 29min | 3 tasks | 4 files |
 | Phase 03 P13 | 16min | 2 tasks | 3 files |
 | Phase 03 P14 | 17min | 2 tasks | 5 files |
+| Phase 05 P01 | 9min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -269,3 +270,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 - [Phase 03]: After a verified completed miss, mutable execution requires an absent or empty private output directory.
 - [Phase 03]: Keep Phase 3 acceptance and validation-map gates standard-library-only, read-only, and independent of project imports. — These gates must fail closed before application or dependency imports.
 - [Phase 03]: Bind release credit to checker-owned task commands, exact requirement inverse coverage, and a terminal Gate B3 postflight. — Agreement between mutable plans and the map alone is not independent evidence.
+- [Phase 05]: Keep query text, ordering, pagination and 100/20 ceilings as code-owned literal policy. — Runtime input cannot widen discovery or semantic cost authority.
+- [Phase 05]: Use numeric repository ID as discovery deduplication authority. — Owner and repository names are mutable provenance, not stable identity.
+- [Phase 05]: Quarantine outcome-unknown semantic attempts separately from confirmed retryable outcomes. — Automatic replay cannot be proven duplicate-free after an indeterminate provider request.
+- [Phase 05]: Bind one prior-root-linked state root to digest-derived objects and exactly three owner-specific SQLite paths with no pruning surface. — Audit and rebuild authority stays complete, path-closed and retention-preserving.
