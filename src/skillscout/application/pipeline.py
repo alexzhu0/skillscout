@@ -296,9 +296,10 @@ class SemanticDurabilityGuard:
         expected_prior_state_head: str,
         expected_prior_root_digest: str,
         reservation_hook: Callable[..., SemanticReservationReceipt] | None = None,
+        operations_run_id: str | None = None,
     ) -> None:
         if (
-            not isinstance(barrier, ThreeStoreDurabilityBarrier)
+            not callable(getattr(barrier, "confirm", None))
             or not hasattr(operations_store, "record_semantic_attempt")
             or not hasattr(operations_store, "export_owned_state")
             or not hasattr(publication_store, "export_owned_state")
@@ -316,6 +317,7 @@ class SemanticDurabilityGuard:
         self._expected_prior_state_head = expected_prior_state_head
         self._expected_prior_root_digest = expected_prior_root_digest
         self._reservation_hook = reservation_hook
+        self._operations_run_id = operations_run_id
 
     def reserve_before_extractor(
         self,
@@ -350,6 +352,10 @@ class SemanticDurabilityGuard:
     def state_root_digest(self) -> str:
         return self._expected_prior_root_digest
 
+    @property
+    def operations_run_id(self) -> str | None:
+        return self._operations_run_id
+
     def confirm(
         self,
         *,
@@ -368,8 +374,9 @@ class SemanticDurabilityGuard:
         """Persist one owner fact and return only an exact barrier receipt."""
 
         try:
+            operations_run_id = self._operations_run_id or run_id
             record = self._operations_store.record_semantic_attempt(
-                run_id=run_id,
+                run_id=operations_run_id,
                 repository_id=self._repository_id,
                 workflow_authority_digest=self._workflow_authority_digest,
                 stage=stage,
@@ -382,6 +389,7 @@ class SemanticDurabilityGuard:
             publication = self._publication_store.export_owned_state()
             transition = SemanticDurabilityTransition.create(
                 run_id=run_id,
+                operations_run_id=operations_run_id,
                 repository_id=self._repository_id,
                 workflow_authority_digest=self._workflow_authority_digest,
                 provider=self._provider,
@@ -1177,13 +1185,29 @@ def build_phase_two_runtime(
     processor: PhaseTwoProcessor,
     *,
     semantic_durability: SemanticDurabilityGuard | None = None,
+    _allow_lazy_dependencies: bool = False,
 ) -> PhaseTwoRuntime:
     """Construct the closed phase-two runtime under its remote-read ceiling."""
 
-    if type(processor) is not PhaseTwoProcessor or type(state) is not SQLiteStateStore:
+    if (
+        type(processor) is not PhaseTwoProcessor
+        or type(state) is not SQLiteStateStore
+        or type(_allow_lazy_dependencies) is not bool
+    ):
         raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
     openai_client = processor.openai
-    if type(openai_client) is not OpenAIExtractionClient:
+    if (
+        not _allow_lazy_dependencies
+        and type(openai_client) is not OpenAIExtractionClient
+    ) or (
+        _allow_lazy_dependencies
+        and (
+            getattr(processor.github, "effect_scope", None)
+            is not EffectScope.REMOTE_READ
+            or getattr(openai_client, "effect_scope", None)
+            is not EffectScope.REMOTE_READ
+        )
+    ):
         raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
     resolved_clock = SystemClock()
     resolved_ids = UUIDIdProvider()
@@ -1212,7 +1236,7 @@ def build_phase_two_runtime(
         UUIDIdProvider,
         _ExtractionSummaryWriter,
     )
-    if any(
+    if not _allow_lazy_dependencies and any(
         type(registration.adapter) is not expected
         for registration, expected in zip(validated, expected_types, strict=True)
     ):

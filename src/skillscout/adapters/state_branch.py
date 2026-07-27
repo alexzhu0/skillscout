@@ -854,7 +854,7 @@ class StateBranchDurabilityBarrier:
                 value.get("attempt_no"),
             )
             expected_identity = (
-                transition.run_id,
+                transition.operations_run_id,
                 transition.repository_id,
                 transition.workflow_authority_digest,
                 transition.stage,

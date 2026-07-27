@@ -77,6 +77,7 @@ class SemanticDurabilityTransition:
 
     schema_version: Literal["semantic-durability-transition-v1"]
     run_id: str
+    operations_run_id: str
     repository_id: int
     workflow_authority_digest: str
     provider: Literal["openai", "deepseek"]
@@ -100,6 +101,7 @@ class SemanticDurabilityTransition:
         if self.schema_version != "semantic-durability-transition-v1":
             raise ValueError("invalid semantic durability schema")
         _require_durability_id(self.run_id, "run id")
+        _require_durability_id(self.operations_run_id, "operations run id")
         if type(self.repository_id) is not int or self.repository_id <= 0:
             raise ValueError("invalid repository id")
         _require_digest(self.workflow_authority_digest, "workflow authority")
@@ -138,6 +140,7 @@ class SemanticDurabilityTransition:
         cls,
         *,
         run_id: str,
+        operations_run_id: str | None = None,
         repository_id: int,
         workflow_authority_digest: str,
         provider: Literal["openai", "deepseek"],
@@ -159,6 +162,9 @@ class SemanticDurabilityTransition:
         values: dict[str, object] = {
             "schema_version": "semantic-durability-transition-v1",
             "run_id": run_id,
+            "operations_run_id": (
+                run_id if operations_run_id is None else operations_run_id
+            ),
             "repository_id": repository_id,
             "workflow_authority_digest": workflow_authority_digest,
             "provider": provider,

@@ -369,6 +369,36 @@ class _LateStateDurabilityBarrier:
                 pipeline.close()
 
 
+class _LazyDiscoveryCapability:
+    """Construct one capability only at its first actual method call."""
+
+    def __init__(self, factory: Callable[[], object], effect_scope: object) -> None:
+        self._factory = factory
+        self._effect_scope = effect_scope
+        self._instance: object | None = None
+
+    @property
+    def effect_scope(self) -> object:
+        return self._effect_scope
+
+    def _resolve(self) -> object:
+        if self._instance is None:
+            self._instance = self._factory()
+        return self._instance
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._resolve(), name)
+
+    def export_owned_state(self) -> object:
+        return getattr(self._resolve(), "export_owned_state")()
+
+    def close(self) -> None:
+        if self._instance is not None:
+            close = getattr(self._instance, "close", None)
+            if callable(close):
+                close()
+
+
 def build_discovery_application(
     config: DiscoveryRuntimeConfig,
     *,
@@ -463,6 +493,7 @@ def build_discovery_application(
             )
             from skillscout.application.discovery import (
                 DiscoveryCandidateExecution,
+                DiscoveryWorkflowExecution,
                 eligible_candidate_locator,
             )
             from skillscout.application.phase3 import (
@@ -489,6 +520,7 @@ def build_discovery_application(
             )
             from skillscout.domain.review import candidate_terminal_summary_bytes
             from skillscout.domain.subjects import RepositorySubject
+            from skillscout.domain.enums import EffectScope
 
             candidate = arguments.get("candidate")
             discovery_authority = arguments.get("discovery_authority")
@@ -558,20 +590,29 @@ def build_discovery_application(
                     state_root_digest=state_root,
                 )
 
-            publication = PublicationStateStore(config.publication_state)
-            phase2_state = SQLiteStateStore(config.pipeline_state)
-            github = GitHubReadClient(
-                token=_required_credential(
-                    source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
-                )
+            publication = _LazyDiscoveryCapability(
+                lambda: PublicationStateStore(config.publication_state),
+                EffectScope.LOCAL_STATE,
             )
-            extractor = (
-                OpenAIExtractionClient()
-                if provider.provider is SemanticProvider.OPENAI
-                else OpenAIExtractionClient(
-                    model=provider.extract_model,
-                    provider_settings=provider,
-                )
+            phase2_state = SQLiteStateStore(config.pipeline_state)
+            github = _LazyDiscoveryCapability(
+                lambda: GitHubReadClient(
+                    token=_required_credential(
+                        source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
+                    )
+                ),
+                EffectScope.REMOTE_READ,
+            )
+            extractor = _LazyDiscoveryCapability(
+                lambda: (
+                    OpenAIExtractionClient()
+                    if provider.provider is SemanticProvider.OPENAI
+                    else OpenAIExtractionClient(
+                        model=provider.extract_model,
+                        provider_settings=provider,
+                    )
+                ),
+                EffectScope.REMOTE_READ,
             )
             phase2_guard = SemanticDurabilityGuard(
                 barrier=barrier,
@@ -583,12 +624,14 @@ def build_discovery_application(
                 expected_prior_state_head=state_head,
                 expected_prior_root_digest=state_root,
                 reservation_hook=reserve_before_extractor,
+                operations_run_id=discovery_authority.run_id,
             )
             try:
                 runtime = build_phase_two_runtime(
                     phase2_state,
                     PhaseTwoProcessor(github, extractor),
                     semantic_durability=phase2_guard,
+                    _allow_lazy_dependencies=True,
                 )
                 subject = RepositorySubject(
                     schema_version="1",
@@ -691,6 +734,7 @@ def build_discovery_application(
                 candidate_source,
                 phase2_run_id=phase2_summary.run_id,
             )
+            workflow_executions: list[DiscoveryWorkflowExecution] = []
             if not descriptors:
                 filter_result = next(
                     result
@@ -712,6 +756,7 @@ def build_discovery_application(
                 workflow_authorities = []
                 eligible = []
                 workflow_outcomes: list[str] = []
+                fatal_outcome: str | None = None
                 for descriptor in descriptors:
                     with tempfile.TemporaryDirectory(
                         prefix="skillscout-discovery-phase3-"
@@ -728,8 +773,11 @@ def build_discovery_application(
                         workflow_authorities.append(
                             workflow_authority.authority_digest
                         )
-                        phase3_publication = PublicationStateStore(
-                            config.publication_state
+                        phase3_publication = _LazyDiscoveryCapability(
+                            lambda: PublicationStateStore(
+                                config.publication_state
+                            ),
+                            EffectScope.LOCAL_STATE,
                         )
                         phase3_guard = SemanticDurabilityGuard(
                             barrier=barrier,
@@ -742,6 +790,7 @@ def build_discovery_application(
                             provider=provider.provider.value,
                             expected_prior_state_head=state_head,
                             expected_prior_root_digest=state_root,
+                            operations_run_id=discovery_authority.run_id,
                         )
                         clients: list[object] = []
 
@@ -807,10 +856,69 @@ def build_discovery_application(
                                     semantic_durability=phase3_guard,
                                 ),
                             )
-                            result = application.run(
-                                descriptor_path,
-                                output_directory=Path(directory) / "output",
-                            )
+                            try:
+                                result = application.run(
+                                    descriptor_path,
+                                    output_directory=Path(directory) / "output",
+                                )
+                            except SemanticProviderFailure as failure:
+                                if (
+                                    failure.disposition
+                                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                                ):
+                                    workflow_outcomes.append(
+                                        "semantic_outcome_unknown"
+                                    )
+                                    workflow_executions.append(
+                                        DiscoveryWorkflowExecution(
+                                            workflow_authority_digest=(
+                                                workflow_authority.authority_digest
+                                            ),
+                                            outcome="semantic_outcome_unknown",
+                                        )
+                                    )
+                                    state_head = (
+                                        phase3_guard.verified_state_head
+                                    )
+                                    state_root = (
+                                        phase3_guard.state_root_digest
+                                    )
+                                    continue
+                                workflow_outcomes.append("permanent_failure")
+                                workflow_executions.append(
+                                    DiscoveryWorkflowExecution(
+                                        workflow_authority_digest=(
+                                            workflow_authority.authority_digest
+                                        ),
+                                        outcome="permanent_failure",
+                                    )
+                                )
+                                fatal_outcome = "permanent_failure"
+                                state_head = phase3_guard.verified_state_head
+                                state_root = phase3_guard.state_root_digest
+                                break
+                            except SafeFailure as failure:
+                                workflow_outcomes.append("permanent_failure")
+                                workflow_executions.append(
+                                    DiscoveryWorkflowExecution(
+                                        workflow_authority_digest=(
+                                            workflow_authority.authority_digest
+                                        ),
+                                        outcome="permanent_failure",
+                                    )
+                                )
+                                fatal_outcome = (
+                                    "state_integrity_conflict"
+                                    if failure.code
+                                    in {
+                                        ErrorCode.STATE_INTEGRITY_ERROR,
+                                        ErrorCode.STATE_OPERATION_FAILED,
+                                    }
+                                    else "permanent_failure"
+                                )
+                                state_head = phase3_guard.verified_state_head
+                                state_root = phase3_guard.state_root_digest
+                                break
                         finally:
                             for client in clients:
                                 close = getattr(client, "close", None)
@@ -856,15 +964,36 @@ def build_discovery_application(
                                 raise SafeFailure(
                                     ErrorCode.STATE_INTEGRITY_ERROR
                                 )
-                            eligible.append(
-                                eligible_candidate_locator(
-                                    authority_digest=matching[0].object_digest,
-                                    workflow_identity_digest=(
+                            locator = eligible_candidate_locator(
+                                authority_digest=matching[0].object_digest,
+                                workflow_identity_digest=(
+                                    workflow_authority.authority_digest
+                                ),
+                            )
+                            eligible.append(locator)
+                            workflow_executions.append(
+                                DiscoveryWorkflowExecution(
+                                    workflow_authority_digest=(
                                         workflow_authority.authority_digest
                                     ),
+                                    outcome="eligible",
+                                    locator=locator,
                                 )
                             )
-                if eligible:
+                        else:
+                            workflow_executions.append(
+                                DiscoveryWorkflowExecution(
+                                    workflow_authority_digest=(
+                                        workflow_authority.authority_digest
+                                    ),
+                                    outcome=result.outcome,
+                                )
+                            )
+                if fatal_outcome is not None:
+                    outcome = fatal_outcome
+                elif "semantic_outcome_unknown" in workflow_outcomes:
+                    outcome = "semantic_outcome_unknown"
+                elif eligible:
                     outcome = "eligible_local_candidate"
                 elif "review_rejected" in workflow_outcomes:
                     outcome = "review_rejected"
@@ -897,6 +1026,7 @@ def build_discovery_application(
                 eligible_candidates=tuple(eligible),
                 state_commit_sha=state_head,
                 state_root_digest=state_root,
+                workflows=tuple(workflow_executions),
             )
 
         phase2_factory = default_phase2_factory
@@ -1190,6 +1320,48 @@ def derive_discovery_publication_admissions(
         for item in handoff.eligible_candidates
     ):
         raise ValueError("protected discovery locator rejected")
+
+    persisted_eligible: list[tuple[str, str, str]] = []
+    for state_object in root.objects:
+        try:
+            fact = json.loads(files[state_object.locator])
+        except (TypeError, ValueError):
+            continue
+        if (
+            type(fact) is not dict
+            or fact.get("schema_version") != "operations-rebuild-row-v1"
+            or fact.get("kind") != "workflow_terminal"
+            or type(fact.get("value")) is not dict
+        ):
+            continue
+        value = fact["value"]
+        if (
+            value.get("run_id") == handoff.run_id
+            and value.get("outcome") == "eligible_local_candidate"
+            and type(value.get("eligible_locator")) is str
+            and type(value.get("eligible_object_digest")) is str
+            and type(value.get("workflow_authority_digest")) is str
+        ):
+            persisted_eligible.append(
+                (
+                    value["eligible_locator"],
+                    value["eligible_object_digest"],
+                    value["workflow_authority_digest"],
+                )
+            )
+    supplied_eligible = [
+        (
+            item.locator,
+            item.authority_digest,
+            item.workflow_identity_digest,
+        )
+        for item in handoff.eligible_candidates
+    ]
+    if (
+        sorted(persisted_eligible) != sorted(supplied_eligible)
+        or len(persisted_eligible) != len(set(persisted_eligible))
+    ):
+        raise ValueError("protected discovery eligible set rejected")
 
     values = os.environ if environ is None else environ
     protected_authority = load_publication_authority_config(values)

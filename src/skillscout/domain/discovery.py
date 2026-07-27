@@ -290,7 +290,9 @@ class DiscoveredCandidateV1(StrictFrozenModel):
     query_ordinal: Annotated[int, Field(ge=1, le=4)]
     page: Annotated[int, Field(ge=1, le=4)]
     item_ordinal: Annotated[int, Field(ge=1, le=25)]
-    dedup_disposition: Literal["first_seen", "duplicate"]
+    dedup_disposition: Literal[
+        "first_seen", "duplicate", "budget_excluded"
+    ]
     discovery_ordinal: Annotated[int, Field(ge=1, le=100)] | None
     first_seen_query_ordinal: Annotated[int, Field(ge=1, le=4)]
     first_seen_page: Annotated[int, Field(ge=1, le=4)]
@@ -307,8 +309,10 @@ class DiscoveredCandidateV1(StrictFrozenModel):
         )
         if self.dedup_disposition == "first_seen":
             valid_shape = self.discovery_ordinal is not None and current == first_seen
-        else:
+        elif self.dedup_disposition == "duplicate":
             valid_shape = self.discovery_ordinal is None and current != first_seen
+        else:
+            valid_shape = self.discovery_ordinal is None and current == first_seen
         if not valid_shape:
             raise ValueError("candidate dedup provenance is incoherent")
         if self.candidate_digest != _self_digest(self, "candidate_digest"):
@@ -518,6 +522,9 @@ class DiscoveryStateRebuildProjectionV1(StrictFrozenModel):
     semantic_reservation_digests: Annotated[
         tuple[Digest, ...], Field(max_length=20)
     ]
+    workflow_terminal_digests: Annotated[
+        tuple[Digest, ...], Field(max_length=60)
+    ]
     candidate_terminal_digests: Annotated[
         tuple[Digest, ...], Field(max_length=100)
     ]
@@ -534,6 +541,7 @@ class DiscoveryStateRebuildProjectionV1(StrictFrozenModel):
                 "candidate_digests",
                 "discovery_reservation_digests",
                 "semantic_reservation_digests",
+                "workflow_terminal_digests",
                 "candidate_terminal_digests",
                 "run_summary_digests",
             ):
@@ -549,6 +557,7 @@ class DiscoveryStateRebuildProjectionV1(StrictFrozenModel):
             self.candidate_digests,
             self.discovery_reservation_digests,
             self.semantic_reservation_digests,
+            self.workflow_terminal_digests,
             self.candidate_terminal_digests,
             self.run_summary_digests,
         )

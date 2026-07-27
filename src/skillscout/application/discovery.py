@@ -7,10 +7,8 @@ existing Phase 3 application, then stops at a content-addressed state handoff.
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
 import re
 from typing import Callable, Literal, Protocol
 
@@ -185,6 +183,7 @@ class DiscoveryCandidateExecution:
     eligible_candidates: tuple[EligibleCandidateLocator, ...]
     state_commit_sha: str
     state_root_digest: str
+    workflows: tuple[DiscoveryWorkflowExecution, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -192,8 +191,38 @@ class DiscoveryCandidateExecution:
             or _STATE_SHA.fullmatch(self.state_commit_sha) is None
             or _DIGEST.fullmatch(self.state_root_digest) is None
             or len(self.eligible_candidates) > 3
+            or tuple(
+                workflow.locator
+                for workflow in self.workflows
+                if workflow.locator is not None
+            )
+            != tuple(item for item in self.eligible_candidates)
         ):
             raise ValueError("invalid discovery candidate execution")
+
+
+@dataclass(frozen=True)
+class DiscoveryWorkflowExecution:
+    """One independently terminal sibling workflow."""
+
+    workflow_authority_digest: str
+    outcome: WorkflowOutcome | Literal[
+        "completed_reuse", "permanent_failure"
+    ]
+    locator: EligibleCandidateLocator | None = None
+
+    def __post_init__(self) -> None:
+        eligible = self.outcome == "eligible"
+        if (
+            _DIGEST.fullmatch(self.workflow_authority_digest) is None
+            or eligible is (self.locator is None)
+            or (
+                self.locator is not None
+                and self.locator.workflow_identity_digest
+                != self.workflow_authority_digest
+            )
+        ):
+            raise ValueError("invalid discovery workflow execution")
 
 
 class DiscoveryApplication:
@@ -275,6 +304,7 @@ class DiscoveryApplication:
                 for name in (
                     "create_run",
                     "find_run_authority_digest",
+                    "snapshot_run",
                     "record_search_page",
                     "reserve_discovery_candidate",
                     "record_run_summary",
@@ -296,9 +326,9 @@ class DiscoveryApplication:
         ):
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         if existing_authority is not None:
-            completed = _completed_result_from_bundle(
-                restored=restored,
-                authority=authority,
+            snapshot = operations.snapshot_run(authority.run_id)
+            completed = _completed_result_from_snapshot(
+                restored=restored, authority=authority, snapshot=snapshot
             )
             if completed is not None:
                 return completed
@@ -306,14 +336,44 @@ class DiscoveryApplication:
         operations.create_run(authority, now)
         observed_head = restored.observed_head
         root_digest = restored.bundle.root.root_digest
-        selected: list[DiscoveredCandidateV1] = []
-        seen: dict[int, tuple[int, int, int]] = {}
+        snapshot = operations.snapshot_run(authority.run_id)
+        selected = sorted(
+            (
+                candidate
+                for candidate in snapshot.candidates
+                if candidate.dedup_disposition == "first_seen"
+            ),
+            key=lambda item: item.discovery_ordinal or 0,
+        )
+        seen = {
+            candidate.repository.repository_id: (
+                candidate.first_seen_query_ordinal,
+                candidate.first_seen_page,
+                candidate.first_seen_item_ordinal,
+            )
+            for candidate in snapshot.candidates
+            if candidate.dedup_disposition
+            in {"first_seen", "duplicate"}
+        }
         search = self._dependencies.search_factory()
         try:
-            active_pages = {
-                ordinal: 1
+            page_by_query = {
+                ordinal: sorted(
+                    (
+                        page
+                        for page in snapshot.search_pages
+                        if page.query_ordinal == ordinal
+                    ),
+                    key=lambda item: item.page,
+                )
                 for ordinal in range(1, len(query_set.queries) + 1)
             }
+            active_pages = {}
+            for ordinal, pages in page_by_query.items():
+                if not pages:
+                    active_pages[ordinal] = 1
+                elif pages[-1].next_page is not None:
+                    active_pages[ordinal] = pages[-1].next_page
             while active_pages and len(selected) < DISCOVERY_MAX_CANDIDATES:
                 for query_ordinal in tuple(sorted(active_pages)):
                     page_number = active_pages[query_ordinal]
@@ -334,12 +394,18 @@ class DiscoveryApplication:
                             disposition = "first_seen"
                             discovery_ordinal = len(selected) + 1
                         else:
-                            disposition = "duplicate"
+                            disposition = (
+                                "duplicate"
+                                if first is not None
+                                else "budget_excluded"
+                            )
                             discovery_ordinal = None
                             if first is None:
-                                # The hard ceiling is already full. No further
-                                # candidate may cross the durable boundary.
-                                continue
+                                first = (
+                                    query_ordinal,
+                                    page_number,
+                                    item_ordinal,
+                                )
                         values = {
                             "schema_version": "discovered-candidate-v1",
                             "discovery_run_authority_digest": authority.authority_digest,
@@ -394,8 +460,13 @@ class DiscoveryApplication:
                 close()
 
         eligible: list[EligibleCandidateLocator] = []
-        terminals: list[DiscoveryCandidateTerminalV1] = []
+        terminals = list(snapshot.candidate_terminals)
+        terminal_repository_ids = {
+            terminal.repository_id for terminal in terminals
+        }
         for candidate in selected:
+            if candidate.repository.repository_id in terminal_repository_ids:
+                continue
             reservation = operations.reserve_discovery_candidate(
                 authority.run_id,
                 candidate,
@@ -420,6 +491,30 @@ class DiscoveryApplication:
             )
             if type(execution) is not DiscoveryCandidateExecution:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            for workflow in execution.workflows:
+                operations.record_workflow_terminal(
+                    run_id=authority.run_id,
+                    repository_id=candidate.repository.repository_id,
+                    workflow_authority_digest=(
+                        workflow.workflow_authority_digest
+                    ),
+                    outcome=(
+                        "eligible_local_candidate"
+                        if workflow.outcome == "eligible"
+                        else workflow.outcome
+                    ),
+                    eligible_locator=(
+                        workflow.locator.locator
+                        if workflow.locator is not None
+                        else None
+                    ),
+                    eligible_object_digest=(
+                        workflow.locator.authority_digest
+                        if workflow.locator is not None
+                        else None
+                    ),
+                    recorded_at=_timestamp(),
+                )
             operations.record_candidate_terminal(
                 authority.run_id, execution.terminal
             )
@@ -434,6 +529,8 @@ class DiscoveryApplication:
             root_digest = synchronized.root_digest
             terminals.append(execution.terminal)
             eligible.extend(execution.eligible_candidates)
+            if execution.terminal.outcome in _FATAL_OUTCOMES:
+                break
 
         summary_values: dict[str, object] = {
             "schema_version": "discovery-run-summary-v1",
@@ -536,100 +633,45 @@ def _timestamp() -> str:
     )
 
 
-def _completed_result_from_bundle(
+def _completed_result_from_snapshot(
     *,
     restored: object,
     authority: DiscoveryRunAuthorityV1,
+    snapshot: object,
 ) -> DiscoveryApplicationResult | None:
     """Reconstruct an immutable completed handoff without replaying Search."""
 
-    from skillscout.domain.canonical import canonical_json_bytes
-    from skillscout.domain.review import (
-        CandidateTerminalSummaryV1,
-        candidate_terminal_summary_bytes,
-    )
-
-    files = restored.bundle.content_by_path()
-    decoded: list[tuple[str, dict[str, object]]] = []
     try:
-        for item in restored.bundle.root.objects:
-            payload = files[item.locator]
-            value = json.loads(payload)
-            if type(value) is dict:
-                decoded.append((item.object_digest, value))
-        summaries = [
-            value["value"]
-            for _digest, value in decoded
-            if value.get("schema_version") == "operations-rebuild-row-v1"
-            and value.get("kind") == "run_summary"
-            and type(value.get("value")) is dict
-            and value["value"].get("discovery_run_authority_digest")
-            == authority.authority_digest
-        ]
-        if not summaries:
+        summary = snapshot.summary
+        if summary is None:
             return None
-        if len(summaries) != 1:
+        files = restored.bundle.content_by_path()
+        if (
+            summary.discovery_run_authority_digest
+            != authority.authority_digest
+        ):
             raise ValueError
-        summary = DiscoveryRunSummaryV1.model_validate(summaries[0], strict=True)
-        terminals = [
-            value["value"]
-            for _digest, value in decoded
-            if value.get("schema_version") == "operations-rebuild-row-v1"
-            and value.get("kind") == "candidate_terminal"
-            and type(value.get("value")) is dict
-            and value["value"].get("discovery_run_authority_digest")
-            == authority.authority_digest
-        ]
-        eligible_authorities = {
-            workflow
-            for terminal in terminals
-            if terminal.get("outcome") == "eligible_local_candidate"
-            for workflow in terminal.get("workflow_authority_digests", ())
-        }
         eligible: list[EligibleCandidateLocator] = []
-        for workflow_authority in sorted(eligible_authorities):
-            matches: list[str] = []
-            for digest, value in decoded:
-                if (
-                    value.get("schema_version") != "pipeline-rebuild-file-v1"
-                    or value.get("kind") != "phase3_artifact"
-                    or type(value.get("content_base64")) is not str
-                ):
-                    continue
-                content = base64.b64decode(
-                    value["content_base64"], validate=True
-                )
-                try:
-                    terminal_summary = (
-                        CandidateTerminalSummaryV1.model_validate_json(
-                            content, strict=True
-                        )
-                    )
-                except Exception:
-                    continue
-                if (
-                    candidate_terminal_summary_bytes(terminal_summary) == content
-                    and terminal_summary.outcome == "eligible_local_candidate"
-                    and terminal_summary.candidate_execution_authority.authority_digest
-                    == workflow_authority
-                    and canonical_json_bytes(value)
-                    == files[
-                        next(
-                            item.locator
-                            for item in restored.bundle.root.objects
-                            if item.object_digest == digest
-                        )
-                    ]
-                ):
-                    matches.append(digest)
-            if len(matches) != 1:
-                raise ValueError
-            eligible.append(
-                eligible_candidate_locator(
-                    authority_digest=matches[0],
-                    workflow_identity_digest=workflow_authority,
-                )
+        root_objects = {
+            item.locator: item.object_digest
+            for item in restored.bundle.root.objects
+        }
+        for workflow in snapshot.workflow_terminals:
+            if workflow.outcome != "eligible_local_candidate":
+                continue
+            locator = eligible_candidate_locator(
+                authority_digest=workflow.eligible_object_digest,
+                workflow_identity_digest=workflow.workflow_authority_digest,
             )
+            if (
+                workflow.eligible_locator != locator.locator
+                or root_objects.get(locator.locator)
+                != locator.authority_digest
+                or sha256_digest(files[locator.locator])
+                != locator.authority_digest
+            ):
+                raise ValueError
+            eligible.append(locator)
         if len(eligible) > summary.semantic_reservation_count * 3:
             raise ValueError
         return DiscoveryApplicationResult(

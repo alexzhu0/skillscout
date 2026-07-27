@@ -55,6 +55,12 @@ from skillscout.domain.models import Digest, StrictFrozenModel
 OPERATIONS_SCHEMA_VERSION: Final = 1
 MAX_OPERATIONS_DB_BYTES: Final = 67_108_864
 _DIGEST_PATTERN: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
+_STATE_OBJECT_LOCATOR: Final = re.compile(
+    r"^state/objects/sha256/[0-9a-f]{2}/[0-9a-f]{64}\.json$"
+)
+_TIMESTAMP_PATTERN: Final = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
+)
 _TEST_RUN_SCHEMA: Final = "operations-test-run-v1"
 _TEST_RESERVATION_SCHEMA: Final = "operations-test-reservation-v1"
 _TEST_TERMINAL_SCHEMA: Final = "operations-test-terminal-v1"
@@ -112,6 +118,42 @@ class SemanticAttemptRecord:
     attempt_digest: str
 
 
+@dataclass(frozen=True)
+class WorkflowTerminalRecord:
+    """Exact per-workflow outcome and optional eligible artifact handoff."""
+
+    run_id: str
+    repository_id: int
+    workflow_authority_digest: str
+    outcome: Literal[
+        "qualification_rejected",
+        "validation_rejected",
+        "review_rejected",
+        "completed_reuse",
+        "eligible_local_candidate",
+        "semantic_outcome_unknown",
+        "permanent_failure",
+    ]
+    eligible_locator: str | None
+    eligible_object_digest: str | None
+    recorded_at: str
+    terminal_digest: str
+
+
+@dataclass(frozen=True)
+class DiscoveryRunSnapshot:
+    """Typed persisted prefix used as the sole discovery resume authority."""
+
+    search_pages: tuple[SearchPageObservationV1, ...]
+    candidates: tuple[DiscoveredCandidateV1, ...]
+    discovery_reservations: tuple[DiscoveryReservationV1, ...]
+    semantic_reservations: tuple[SemanticReservationV1, ...]
+    semantic_attempts: tuple[SemanticAttemptRecord, ...]
+    workflow_terminals: tuple[WorkflowTerminalRecord, ...]
+    candidate_terminals: tuple[DiscoveryCandidateTerminalV1, ...]
+    summary: DiscoveryRunSummaryV1 | None
+
+
 _FactKind = Literal[
     "run",
     "search_page",
@@ -119,6 +161,7 @@ _FactKind = Literal[
     "discovery_reservation",
     "semantic_reservation",
     "semantic_attempt",
+    "workflow_terminal",
     "candidate_terminal",
     "run_summary",
     "root_checkpoint",
@@ -281,6 +324,23 @@ def _schema_statements() -> tuple[str, ...]:
                 stage, attempt_no
             )
         )""",
+        """CREATE TABLE operations_workflow_terminals (
+            terminal_digest TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES operations_runs(run_id),
+            repository_id INTEGER NOT NULL CHECK (repository_id > 0),
+            workflow_authority_digest TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (
+                outcome IN ('qualification_rejected', 'validation_rejected',
+                            'review_rejected', 'completed_reuse',
+                            'eligible_local_candidate',
+                            'semantic_outcome_unknown', 'permanent_failure')
+            ),
+            eligible_locator TEXT,
+            eligible_object_digest TEXT,
+            recorded_at TEXT NOT NULL,
+            terminal_json TEXT NOT NULL,
+            UNIQUE (run_id, repository_id, workflow_authority_digest)
+        )""",
         """CREATE TABLE operations_candidate_terminals (
             terminal_digest TEXT PRIMARY KEY,
             run_id TEXT NOT NULL REFERENCES operations_runs(run_id),
@@ -410,6 +470,22 @@ _FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str,
         ),
     ),
     (
+        "workflow_terminal",
+        "operations_workflow_terminals",
+        "terminal_json",
+        ("run_id", "repository_id", "workflow_authority_digest"),
+        (
+            "terminal_digest",
+            "run_id",
+            "repository_id",
+            "workflow_authority_digest",
+            "outcome",
+            "eligible_locator",
+            "eligible_object_digest",
+            "recorded_at",
+        ),
+    ),
+    (
         "candidate_terminal",
         "operations_candidate_terminals",
         "terminal_json",
@@ -490,6 +566,7 @@ def _projection_from_facts(
         "candidate_digests": [],
         "discovery_reservation_digests": [],
         "semantic_reservation_digests": [],
+        "workflow_terminal_digests": [],
         "candidate_terminal_digests": [],
         "run_summary_digests": [],
     }
@@ -504,6 +581,7 @@ def _projection_from_facts(
             "semantic_reservation_digests",
             "reservation_digest",
         ),
+        "workflow_terminal": ("workflow_terminal_digests", "terminal_digest"),
         "candidate_terminal": ("candidate_terminal_digests", "terminal_digest"),
         "run_summary": ("run_summary_digests", "summary_digest"),
     }
@@ -793,12 +871,24 @@ class OperationsStateStore:
                 terminal_digest = str(expected["terminal_digest"])
             else:
                 terminal = DiscoveryCandidateTerminalV1.model_validate(raw, strict=True)
+                workflow_authorities = tuple(
+                    str(item[0])
+                    for item in connection.execute(
+                        """SELECT workflow_authority_digest
+                           FROM operations_workflow_terminals
+                           WHERE run_id = ? AND repository_id = ?
+                           ORDER BY workflow_authority_digest""",
+                        (row["run_id"], row["repository_id"]),
+                    ).fetchall()
+                )
                 if (
                     terminal.discovery_run_authority_digest
                     != run_authorities.get(str(row["run_id"]))
                     or terminal.repository_id != row["repository_id"]
                     or terminal.outcome != row["outcome"]
                     or terminal.semantic_reservation_digest != row["semantic_reservation_digest"]
+                    or tuple(sorted(terminal.workflow_authority_digests))
+                    != workflow_authorities
                 ):
                     raise OperationsIntegrityError("candidate terminal mismatch")
                 terminal_digest = terminal.terminal_digest
@@ -829,6 +919,31 @@ class OperationsStateStore:
             expected = {**expected_fields, "attempt_digest": digest}
             if raw != expected or row["attempt_digest"] != digest:
                 raise OperationsIntegrityError("semantic attempt digest mismatch")
+
+        for row in connection.execute(
+            """SELECT * FROM operations_workflow_terminals
+               ORDER BY run_id, repository_id, workflow_authority_digest"""
+        ).fetchall():
+            raw = _decoded_json(row["terminal_json"])
+            if not isinstance(raw, dict):
+                raise OperationsIntegrityError("invalid workflow terminal")
+            expected_fields = {
+                "schema_version": "operations-workflow-terminal-v1",
+                "run_id": row["run_id"],
+                "repository_id": row["repository_id"],
+                "workflow_authority_digest": row[
+                    "workflow_authority_digest"
+                ],
+                "outcome": row["outcome"],
+                "eligible_locator": row["eligible_locator"],
+                "eligible_object_digest": row["eligible_object_digest"],
+                "recorded_at": row["recorded_at"],
+            }
+            digest = sha256_digest(expected_fields)
+            if raw != {**expected_fields, "terminal_digest": digest} or row[
+                "terminal_digest"
+            ] != digest:
+                raise OperationsIntegrityError("workflow terminal mismatch")
 
         for row in connection.execute(
             "SELECT * FROM operations_run_summaries ORDER BY run_id"
@@ -1297,6 +1412,20 @@ class OperationsStateStore:
                     or reservation["reservation_digest"] != terminal.semantic_reservation_digest
                 ):
                     raise OperationsIntegrityError("terminal reservation mismatch")
+            workflow_authorities = tuple(
+                str(item[0])
+                for item in connection.execute(
+                    """SELECT workflow_authority_digest
+                       FROM operations_workflow_terminals
+                       WHERE run_id = ? AND repository_id = ?
+                       ORDER BY workflow_authority_digest""",
+                    (run_id, terminal.repository_id),
+                ).fetchall()
+            )
+            if tuple(sorted(terminal.workflow_authority_digests)) != workflow_authorities:
+                raise OperationsIntegrityError(
+                    "candidate terminal workflow set mismatch"
+                )
             connection.execute(
                 """INSERT INTO operations_candidate_terminals
                    (terminal_digest, run_id, repository_id,
@@ -1314,6 +1443,243 @@ class OperationsStateStore:
             return terminal
 
         return self._snapshot_transaction(mutate)
+
+    def record_workflow_terminal(
+        self,
+        *,
+        run_id: str,
+        repository_id: int,
+        workflow_authority_digest: str,
+        outcome: Literal[
+            "qualification_rejected",
+            "validation_rejected",
+            "review_rejected",
+            "completed_reuse",
+            "eligible_local_candidate",
+            "semantic_outcome_unknown",
+            "permanent_failure",
+        ],
+        eligible_locator: str | None,
+        eligible_object_digest: str | None,
+        recorded_at: str,
+    ) -> WorkflowTerminalRecord:
+        eligible = outcome == "eligible_local_candidate"
+        if (
+            type(repository_id) is not int
+            or repository_id <= 0
+            or _DIGEST_PATTERN.fullmatch(workflow_authority_digest) is None
+            or _TIMESTAMP_PATTERN.fullmatch(recorded_at) is None
+            or (
+                eligible
+                and (
+                    type(eligible_locator) is not str
+                    or _STATE_OBJECT_LOCATOR.fullmatch(eligible_locator) is None
+                    or _DIGEST_PATTERN.fullmatch(
+                        eligible_object_digest or ""
+                    )
+                    is None
+                    or not eligible_locator.endswith(
+                        eligible_object_digest.removeprefix("sha256:")
+                        + ".json"
+                    )
+                )
+            )
+            or (
+                not eligible
+                and (
+                    eligible_locator is not None
+                    or eligible_object_digest is not None
+                )
+            )
+        ):
+            raise ValueError("invalid workflow terminal")
+
+        def mutate(connection: sqlite3.Connection) -> WorkflowTerminalRecord:
+            if (
+                connection.execute(
+                    """SELECT 1 FROM operations_discovery_reservations
+                       WHERE run_id = ? AND repository_id = ?""",
+                    (run_id, repository_id),
+                ).fetchone()
+                is None
+            ):
+                raise OperationsIntegrityError(
+                    "workflow terminal discovery reservation is missing"
+                )
+            values: dict[str, object] = {
+                "schema_version": "operations-workflow-terminal-v1",
+                "run_id": run_id,
+                "repository_id": repository_id,
+                "workflow_authority_digest": workflow_authority_digest,
+                "outcome": outcome,
+                "eligible_locator": eligible_locator,
+                "eligible_object_digest": eligible_object_digest,
+                "recorded_at": recorded_at,
+            }
+            values["terminal_digest"] = sha256_digest(values)
+            existing = connection.execute(
+                """SELECT terminal_json FROM operations_workflow_terminals
+                   WHERE run_id = ? AND repository_id = ?
+                     AND workflow_authority_digest = ?""",
+                (run_id, repository_id, workflow_authority_digest),
+            ).fetchone()
+            payload = _json_text(values)
+            if existing is not None:
+                if existing["terminal_json"] != payload:
+                    raise OperationsIntegrityError(
+                        "workflow terminal conflict"
+                    )
+            else:
+                connection.execute(
+                    """INSERT INTO operations_workflow_terminals
+                       (terminal_digest, run_id, repository_id,
+                        workflow_authority_digest, outcome, eligible_locator,
+                        eligible_object_digest, recorded_at, terminal_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        values["terminal_digest"],
+                        run_id,
+                        repository_id,
+                        workflow_authority_digest,
+                        outcome,
+                        eligible_locator,
+                        eligible_object_digest,
+                        recorded_at,
+                        payload,
+                    ),
+                )
+            return WorkflowTerminalRecord(
+                run_id=run_id,
+                repository_id=repository_id,
+                workflow_authority_digest=workflow_authority_digest,
+                outcome=outcome,
+                eligible_locator=eligible_locator,
+                eligible_object_digest=eligible_object_digest,
+                recorded_at=recorded_at,
+                terminal_digest=str(values["terminal_digest"]),
+            )
+
+        return self._snapshot_transaction(mutate)
+
+    def snapshot_run(self, run_id: str) -> DiscoveryRunSnapshot:
+        """Return the complete typed persisted prefix for one discovery run."""
+
+        with self._thread_lock:
+            connection = self._connection
+            if connection is None:
+                raise OperationsIntegrityError("operations state is closed")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM operations_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                is None
+            ):
+                raise OperationsIntegrityError("discovery run is missing")
+
+            def models(table: str, column: str, model: object, order: str):
+                return tuple(
+                    model.model_validate_json(row[column], strict=True)
+                    for row in connection.execute(
+                        f"SELECT {column} FROM {table} "
+                        f"WHERE run_id = ? ORDER BY {order}",
+                        (run_id,),
+                    ).fetchall()
+                )
+
+            attempts: list[SemanticAttemptRecord] = []
+            for row in connection.execute(
+                """SELECT * FROM operations_semantic_attempts
+                   WHERE run_id = ?
+                   ORDER BY repository_id, workflow_authority_digest,
+                            stage, attempt_no""",
+                (run_id,),
+            ).fetchall():
+                raw = _decoded_json(row["attempt_json"])
+                assert isinstance(raw, dict)
+                attempts.append(
+                    SemanticAttemptRecord(
+                        run_id=run_id,
+                        repository_id=int(row["repository_id"]),
+                        workflow_authority_digest=str(
+                            row["workflow_authority_digest"]
+                        ),
+                        stage=str(row["stage"]),  # type: ignore[arg-type]
+                        attempt_no=int(row["attempt_no"]),
+                        status=str(row["status"]),  # type: ignore[arg-type]
+                        recorded_at=str(raw["recorded_at"]),
+                        attempt_digest=str(row["attempt_digest"]),
+                    )
+                )
+            workflows: list[WorkflowTerminalRecord] = []
+            for row in connection.execute(
+                """SELECT * FROM operations_workflow_terminals
+                   WHERE run_id = ?
+                   ORDER BY repository_id, workflow_authority_digest""",
+                (run_id,),
+            ).fetchall():
+                workflows.append(
+                    WorkflowTerminalRecord(
+                        run_id=run_id,
+                        repository_id=int(row["repository_id"]),
+                        workflow_authority_digest=str(
+                            row["workflow_authority_digest"]
+                        ),
+                        outcome=str(row["outcome"]),  # type: ignore[arg-type]
+                        eligible_locator=row["eligible_locator"],
+                        eligible_object_digest=row[
+                            "eligible_object_digest"
+                        ],
+                        recorded_at=str(row["recorded_at"]),
+                        terminal_digest=str(row["terminal_digest"]),
+                    )
+                )
+            summary_row = connection.execute(
+                """SELECT summary_json FROM operations_run_summaries
+                   WHERE run_id = ?""",
+                (run_id,),
+            ).fetchone()
+            return DiscoveryRunSnapshot(
+                search_pages=models(
+                    "operations_search_pages",
+                    "observation_json",
+                    SearchPageObservationV1,
+                    "query_ordinal, page",
+                ),
+                candidates=models(
+                    "operations_candidates",
+                    "candidate_json",
+                    DiscoveredCandidateV1,
+                    "query_ordinal, page, item_ordinal",
+                ),
+                discovery_reservations=models(
+                    "operations_discovery_reservations",
+                    "reservation_json",
+                    DiscoveryReservationV1,
+                    "ordinal",
+                ),
+                semantic_reservations=models(
+                    "operations_semantic_reservations",
+                    "reservation_json",
+                    SemanticReservationV1,
+                    "ordinal",
+                ),
+                semantic_attempts=tuple(attempts),
+                workflow_terminals=tuple(workflows),
+                candidate_terminals=models(
+                    "operations_candidate_terminals",
+                    "terminal_json",
+                    DiscoveryCandidateTerminalV1,
+                    "repository_id",
+                ),
+                summary=(
+                    None
+                    if summary_row is None
+                    else DiscoveryRunSummaryV1.model_validate_json(
+                        summary_row["summary_json"], strict=True
+                    )
+                ),
+            )
 
     def record_semantic_attempt(
         self,

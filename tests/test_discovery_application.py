@@ -534,3 +534,330 @@ def test_real_bootstrap_and_operations_store_complete_empty_discovery(
         "state:sync",
     ]
     assert Path("state/databases/operations.sqlite3").is_file()
+
+
+def test_real_operations_resume_advances_from_persisted_search_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    application = _module()
+    operations_module = importlib.import_module(
+        "skillscout.adapters.operations_state"
+    )
+    discovery = importlib.import_module("skillscout.domain.discovery")
+    monkeypatch.chdir(tmp_path)
+    config = _runtime_config(bootstrap, tmp_path)
+    authority = bootstrap.discovery_run_authority(config)
+    query = config.query_set.queries[0]
+    page_values = {
+        "schema_version": "search-page-observation-v1",
+        "discovery_run_authority_digest": authority.authority_digest,
+        "query_set_version": config.query_set.query_set_version,
+        "query_set_digest": config.query_set.query_set_digest,
+        "query_id": query.query_id,
+        "query_ordinal": 1,
+        "query_text": query.query_text,
+        "sort": config.query_set.sort,
+        "order": config.query_set.order,
+        "page": 1,
+        "per_page": config.query_set.per_page,
+        "next_page": None,
+        "total_count": 0,
+        "incomplete_results": False,
+        "item_count": 0,
+        "request_id": "persisted-page",
+        "rate_limit": {
+            "limit": 10,
+            "remaining": 9,
+            "used": 1,
+            "reset_epoch": 1,
+            "resource": "search",
+        },
+    }
+    persisted_page = discovery.SearchPageObservationV1(
+        **page_values,
+        observation_digest=sha256_digest(page_values),
+    )
+    with operations_module.OperationsStateStore(
+        config.operations_state
+    ) as store:
+        store.create_run(authority, "2026-07-27T12:00:00.000000Z")
+        store.record_search_page(authority.run_id, persisted_page, ())
+
+    calls: list[int] = []
+
+    class Search:
+        def search_repositories(
+            self,
+            *,
+            query_set,
+            discovery_run_authority_digest: str,
+            query_ordinal: int,
+            page: int,
+        ):
+            calls.append(query_ordinal)
+            selected_query = query_set.queries[query_ordinal - 1]
+            values = {
+                **page_values,
+                "query_id": selected_query.query_id,
+                "query_ordinal": query_ordinal,
+                "query_text": selected_query.query_text,
+                "page": page,
+                "request_id": f"resume-{query_ordinal}",
+            }
+            return (
+                discovery.SearchPageObservationV1(
+                    **values,
+                    observation_digest=sha256_digest(values),
+                ),
+                (),
+            )
+
+        def close(self) -> None:
+            pass
+
+    class Barrier:
+        def sync_discovery(self, **_kwargs):
+            return SimpleNamespace(
+                commit_sha="c" * 40,
+                root_digest="sha256:" + ("d" * 64),
+            )
+
+    result = application.DiscoveryApplication(
+        application.DiscoveryDependencies(
+            search_factory=Search,
+            operations_store_factory=lambda: (
+                operations_module.OperationsStateStore(
+                    config.operations_state
+                )
+            ),
+            state_restore=lambda: SimpleNamespace(
+                status="verified",
+                observed_head="b" * 40,
+                bundle=SimpleNamespace(
+                    root=SimpleNamespace(
+                        root_digest="sha256:" + ("e" * 64)
+                    )
+                ),
+            ),
+            durability_barrier=Barrier(),
+            phase2_factory=lambda **_kwargs: pytest.fail(
+                "empty resume must not enter Phase 2"
+            ),
+            phase3_factory=lambda **_kwargs: pytest.fail(
+                "empty resume must not enter Phase 3"
+            ),
+            query_set=config.query_set,
+            initial_state_root_digest=config.initial_state_root_digest,
+        )
+    ).run(authority)
+
+    assert calls == [2, 3, 4]
+    assert result.run_id == authority.run_id
+
+
+def test_lazy_discovery_capability_does_not_resolve_extractor_on_skip() -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    processors = importlib.import_module("skillscout.application.processors")
+    ports = importlib.import_module("skillscout.application.ports")
+    enums = importlib.import_module("skillscout.domain.enums")
+    subjects = importlib.import_module("skillscout.domain.subjects")
+    effects: list[str] = []
+
+    lazy = bootstrap._LazyDiscoveryCapability(
+        lambda: effects.append("extractor") or object(),
+        enums.EffectScope.REMOTE_READ,
+    )
+    processor = processors.PhaseTwoProcessor(object(), lazy)
+    outcome = processor.process(
+        importlib.import_module("skillscout.domain.models").StageInput(
+            schema_version="2",
+            execution_mode=enums.ExecutionMode.DRY_RUN,
+            subject_id="repo:example/rejected",
+            stage=enums.PipelineStage.EXTRACTOR,
+            previous_output_hash=None,
+            fixture_hash=None,
+        ),
+        ports.StageContext(
+            subject=subjects.RepositorySubject(
+                schema_version="1",
+                subject_id="repo:example/rejected",
+                repository="https://github.com/example/rejected",
+            ),
+            prior_payloads={
+                "scout": {"outcome": "accepted"},
+                "filter": {
+                    "outcome": "rejected",
+                    "rejection_reason": "license_not_allowed",
+                },
+            },
+            scratch={},
+        ),
+    )
+
+    assert outcome.payload["outcome"] == "skipped"
+    assert effects == []
+
+
+def test_mixed_workflow_outcomes_persist_exact_handoff_and_degrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    module = _module()
+    operations_module = importlib.import_module(
+        "skillscout.adapters.operations_state"
+    )
+    discovery = importlib.import_module("skillscout.domain.discovery")
+    monkeypatch.chdir(tmp_path)
+    config = _runtime_config(bootstrap, tmp_path)
+    authority = bootstrap.discovery_run_authority(config)
+    repository_values = {
+        "schema_version": "search-repository-observation-v1",
+        "repository_id": 910001,
+        "owner": "example",
+        "name": "mixed",
+        "full_name": "example/mixed",
+        "private": False,
+        "visibility": "public",
+        "fork": False,
+        "archived": False,
+        "disabled": False,
+        "default_branch": "main",
+    }
+    repository = discovery.SearchRepositoryObservationV1(
+        **repository_values,
+        observation_digest=sha256_digest(repository_values),
+    )
+
+    class Search:
+        def search_repositories(
+            self,
+            *,
+            query_set,
+            discovery_run_authority_digest: str,
+            query_ordinal: int,
+            page: int,
+        ):
+            query = query_set.queries[query_ordinal - 1]
+            repositories = (repository,) if query_ordinal == 1 else ()
+            values = {
+                "schema_version": "search-page-observation-v1",
+                "discovery_run_authority_digest": discovery_run_authority_digest,
+                "query_set_version": query_set.query_set_version,
+                "query_set_digest": query_set.query_set_digest,
+                "query_id": query.query_id,
+                "query_ordinal": query_ordinal,
+                "query_text": query.query_text,
+                "sort": query_set.sort,
+                "order": query_set.order,
+                "page": page,
+                "per_page": query_set.per_page,
+                "next_page": None,
+                "total_count": len(repositories),
+                "incomplete_results": False,
+                "item_count": len(repositories),
+                "request_id": f"mixed-{query_ordinal}",
+                "rate_limit": {
+                    "limit": 10,
+                    "remaining": 9,
+                    "used": 1,
+                    "reset_epoch": 1,
+                    "resource": "search",
+                },
+            }
+            return (
+                discovery.SearchPageObservationV1(
+                    **values,
+                    observation_digest=sha256_digest(values),
+                ),
+                repositories,
+            )
+
+        def close(self) -> None:
+            pass
+
+    eligible_authority = "sha256:" + ("a" * 64)
+    unknown_authority = "sha256:" + ("b" * 64)
+    locator = module.eligible_candidate_locator(
+        authority_digest="sha256:" + ("c" * 64),
+        workflow_identity_digest=eligible_authority,
+    )
+
+    def phase2_factory(**arguments):
+        candidate = arguments["candidate"]
+        terminal_values = {
+            "schema_version": "discovery-candidate-terminal-v1",
+            "discovery_run_authority_digest": authority.authority_digest,
+            "repository_id": candidate.repository.repository_id,
+            "semantic_reservation_digest": None,
+            "outcome": "semantic_outcome_unknown",
+            "workflow_authority_digests": (
+                eligible_authority,
+                unknown_authority,
+            ),
+            "recorded_at": "2026-07-27T12:00:00.000000Z",
+        }
+        return module.DiscoveryCandidateExecution(
+            terminal=discovery.DiscoveryCandidateTerminalV1(
+                **terminal_values,
+                terminal_digest=sha256_digest(terminal_values),
+            ),
+            eligible_candidates=(locator,),
+            state_commit_sha=arguments["observed_head"],
+            state_root_digest=arguments["prior_root_digest"],
+            workflows=(
+                module.DiscoveryWorkflowExecution(
+                    workflow_authority_digest=eligible_authority,
+                    outcome="eligible",
+                    locator=locator,
+                ),
+                module.DiscoveryWorkflowExecution(
+                    workflow_authority_digest=unknown_authority,
+                    outcome="semantic_outcome_unknown",
+                ),
+            ),
+        )
+
+    class Barrier:
+        def sync_discovery(self, **_kwargs):
+            return SimpleNamespace(
+                commit_sha="c" * 40,
+                root_digest="sha256:" + ("d" * 64),
+            )
+
+    result = module.DiscoveryApplication(
+        module.DiscoveryDependencies(
+            search_factory=Search,
+            operations_store_factory=lambda: (
+                operations_module.OperationsStateStore(
+                    config.operations_state
+                )
+            ),
+            state_restore=lambda: SimpleNamespace(
+                status="verified",
+                observed_head="b" * 40,
+                bundle=SimpleNamespace(
+                    root=SimpleNamespace(
+                        root_digest=config.initial_state_root_digest
+                    )
+                ),
+            ),
+            durability_barrier=Barrier(),
+            phase2_factory=phase2_factory,
+            phase3_factory=lambda **_kwargs: object(),
+            query_set=config.query_set,
+            initial_state_root_digest=config.initial_state_root_digest,
+        )
+    ).run(authority)
+
+    with operations_module.OperationsStateStore(
+        config.operations_state
+    ) as store:
+        snapshot = store.snapshot_run(authority.run_id)
+    assert result.eligible_candidates == (locator,)
+    assert tuple(
+        item.outcome for item in snapshot.workflow_terminals
+    ) == ("eligible_local_candidate", "semantic_outcome_unknown")
+    assert snapshot.summary.status == "completed_degraded"
