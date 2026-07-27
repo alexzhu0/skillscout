@@ -322,6 +322,7 @@ class _LateStateDurabilityBarrier:
         from skillscout.adapters.state_branch import (
             StateBranchClient,
             StateBranchStore,
+            StateSyncObservation,
         )
         from skillscout.domain.discovery import DiscoveryBudgetPolicyV1
 
@@ -354,14 +355,21 @@ class _LateStateDurabilityBarrier:
             )
             store = StateBranchStore(client)
             synchronized = store.sync(bundle, observed_head)
-            reread = store.restore()
             if (
-                reread.status != "verified"
-                or reread.observed_head != synchronized.commit_sha
-                or reread.bundle is None
-                or reread.bundle.root != bundle.root
-                or len(reread.bundle.files) != len(bundle.files)
-                or reread.bundle.content_by_path() != bundle.content_by_path()
+                type(synchronized) is not StateSyncObservation
+                or synchronized.status != "verified"
+                or synchronized.previous_head != observed_head
+                or synchronized.root_digest != bundle.root.root_digest
+                or len(synchronized.commit_sha) != 40
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in synchronized.commit_sha
+                )
+                or len(synchronized.tree_sha) != 40
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in synchronized.tree_sha
+                )
             ):
                 raise ValueError("discovery state synchronization rejected")
             return synchronized

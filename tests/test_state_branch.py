@@ -689,7 +689,7 @@ def test_sync_reuses_unchanged_parent_blobs_below_content_creation_limit() -> No
     parent_bundle = _bundle(
         module,
         parent="4" * 40,
-        object_count=83,
+        object_count=109,
     )
     parent = module.StateBranchStore(remote).sync(
         parent_bundle,
@@ -698,7 +698,7 @@ def test_sync_reuses_unchanged_parent_blobs_below_content_creation_limit() -> No
     child_bundle = _bundle(
         module,
         parent=parent.commit_sha,
-        object_count=109,
+        object_count=135,
         prior_root_digest=parent_bundle.root.root_digest,
     )
     remote.blob_creation_count = 0

@@ -539,16 +539,16 @@ def test_real_bootstrap_and_operations_store_complete_empty_discovery(
 @pytest.mark.parametrize(
     "mutation",
     (
-        "order_only",
+        "valid",
+        "type",
         "status",
-        "head",
-        "missing_bundle",
+        "previous_head",
+        "commit",
+        "tree",
         "root",
-        "missing_file",
-        "content",
     ),
 )
-def test_late_discovery_barrier_accepts_state_branch_file_order(
+def test_late_discovery_barrier_accepts_strict_sync_receipt_without_second_restore(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
@@ -557,9 +557,13 @@ def test_late_discovery_barrier_accepts_state_branch_file_order(
     operations_module = importlib.import_module(
         "skillscout.adapters.operations_state"
     )
+    state_branch = importlib.import_module(
+        "skillscout.adapters.state_branch"
+    )
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
     sync_calls = 0
+    restore_calls = 0
 
     class StateClient:
         def __init__(self, **_kwargs: object) -> None:
@@ -577,66 +581,29 @@ def test_late_discovery_barrier_accepts_state_branch_file_order(
             sync_calls += 1
             assert observed_head == "a" * 40
             self.bundle = bundle
-            return SimpleNamespace(
-                commit_sha="b" * 40,
-                root_digest=bundle.root.root_digest,
-            )
-
-        def restore(self):
-            assert self.bundle is not None
-            root_file = next(
-                item
-                for item in self.bundle.files
-                if item.path == "state/root.json"
-            )
-            restored_files = (
-                root_file,
-                *sorted(
-                    (
-                        item
-                        for item in self.bundle.files
-                        if item.path != "state/root.json"
-                    ),
-                    key=lambda item: item.path,
+            receipt = state_branch.StateSyncObservation(
+                status="absent" if mutation == "status" else "verified",
+                previous_head=(
+                    "c" * 40
+                    if mutation == "previous_head"
+                    else observed_head
+                ),
+                commit_sha=("z" if mutation == "commit" else "b") * 40,
+                tree_sha=("z" if mutation == "tree" else "c") * 40,
+                root_digest=(
+                    "sha256:" + ("f" * 64)
+                    if mutation == "root"
+                    else bundle.root.root_digest
                 ),
             )
-            restored_bundle = type(self.bundle)(
-                self.bundle.root,
-                restored_files,
-            )
-            assert restored_bundle != self.bundle
-            assert (
-                restored_bundle.content_by_path()
-                == self.bundle.content_by_path()
-            )
-            if mutation == "root":
-                restored_bundle = type(restored_bundle)(
-                    restored_bundle.root.model_copy(
-                        update={"root_digest": "sha256:" + ("f" * 64)}
-                    ),
-                    restored_bundle.files,
-                )
-            elif mutation == "missing_file":
-                restored_bundle = type(restored_bundle)(
-                    restored_bundle.root,
-                    restored_bundle.files[:-1],
-                )
-            elif mutation == "content":
-                changed_files = list(restored_bundle.files)
-                changed = changed_files[-1]
-                changed_files[-1] = type(changed)(
-                    changed.path,
-                    changed.content + b"x",
-                )
-                restored_bundle = type(restored_bundle)(
-                    restored_bundle.root,
-                    tuple(changed_files),
-                )
-            return SimpleNamespace(
-                status="absent" if mutation == "status" else "verified",
-                observed_head=("c" if mutation == "head" else "b") * 40,
-                bundle=None if mutation == "missing_bundle" else restored_bundle,
-            )
+            if mutation == "type":
+                return SimpleNamespace(**receipt.__dict__)
+            return receipt
+
+        def restore(self):
+            nonlocal restore_calls
+            restore_calls += 1
+            pytest.fail("verified sync receipt must not trigger a second restore")
 
     monkeypatch.setattr(
         "skillscout.adapters.state_branch.StateBranchClient",
@@ -658,7 +625,7 @@ def test_late_discovery_barrier_accepts_state_branch_file_order(
             "prior_root_digest": config.initial_state_root_digest,
             "created_at": "2026-07-28T03:40:00.000000Z",
         }
-        if mutation == "order_only":
+        if mutation == "valid":
             synchronized = barrier.sync_discovery(**arguments)
             assert synchronized.commit_sha == "b" * 40
         else:
@@ -671,6 +638,7 @@ def test_late_discovery_barrier_accepts_state_branch_file_order(
         operations.close()
 
     assert sync_calls == 1
+    assert restore_calls == 0
 
 
 def test_real_operations_resume_advances_from_persisted_search_cursor(
@@ -792,6 +760,261 @@ def test_real_operations_resume_advances_from_persisted_search_cursor(
 
     assert calls == [2, 3, 4]
     assert result.run_id == authority.run_id
+
+
+def test_real_operations_crosses_candidate_budget_on_next_query_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    application = _module()
+    operations_module = importlib.import_module(
+        "skillscout.adapters.operations_state"
+    )
+    discovery = importlib.import_module("skillscout.domain.discovery")
+    monkeypatch.chdir(tmp_path)
+    config = _runtime_config(bootstrap, tmp_path)
+    authority = bootstrap.discovery_run_authority(config)
+
+    def repository(repository_id: int):
+        values = {
+            "schema_version": "search-repository-observation-v1",
+            "repository_id": repository_id,
+            "owner": "typed",
+            "name": f"repo-{repository_id}",
+            "full_name": f"typed/repo-{repository_id}",
+            "private": False,
+            "visibility": "public",
+            "fork": False,
+            "archived": False,
+            "disabled": False,
+            "default_branch": "main",
+        }
+        return discovery.SearchRepositoryObservationV1(
+            **values,
+            observation_digest=sha256_digest(values),
+        )
+
+    planned_repositories = {
+        (1, 1): tuple(repository(item) for item in range(1, 26)),
+        (1, 2): (
+            repository(1),
+            *(repository(item) for item in range(26, 50)),
+        ),
+        (2, 1): tuple(repository(item) for item in range(71, 96)),
+        (1, 3): (
+            *(repository(item) for item in range(2, 6)),
+            *(repository(item) for item in range(50, 71)),
+        ),
+        (2, 2): tuple(repository(item) for item in range(96, 121)),
+    }
+    next_pages = {
+        (1, 1): 2,
+        (1, 2): 3,
+        (2, 1): 2,
+        (1, 3): 4,
+        (2, 2): 3,
+    }
+
+    class Search:
+        def __init__(self, expected: tuple[tuple[int, int], ...]) -> None:
+            self.expected = list(expected)
+            self.calls: list[tuple[int, int]] = []
+
+        def search_repositories(
+            self,
+            *,
+            query_set,
+            discovery_run_authority_digest: str,
+            query_ordinal: int,
+            page: int,
+        ):
+            coordinate = (query_ordinal, page)
+            self.calls.append(coordinate)
+            assert self.expected.pop(0) == coordinate
+            repositories = planned_repositories[coordinate]
+            query = query_set.queries[query_ordinal - 1]
+            values = {
+                "schema_version": "search-page-observation-v1",
+                "discovery_run_authority_digest": (
+                    discovery_run_authority_digest
+                ),
+                "query_set_version": query_set.query_set_version,
+                "query_set_digest": query_set.query_set_digest,
+                "query_id": query.query_id,
+                "query_ordinal": query_ordinal,
+                "query_text": query.query_text,
+                "sort": query_set.sort,
+                "order": query_set.order,
+                "page": page,
+                "per_page": query_set.per_page,
+                "next_page": next_pages[coordinate],
+                "total_count": 200,
+                "incomplete_results": False,
+                "item_count": len(repositories),
+                "request_id": f"budget-{query_ordinal}-{page}",
+                "rate_limit": {
+                    "limit": 30,
+                    "remaining": 29,
+                    "used": 1,
+                    "reset_epoch": 1,
+                    "resource": "search",
+                },
+            }
+            return (
+                discovery.SearchPageObservationV1(
+                    **values,
+                    observation_digest=sha256_digest(values),
+                ),
+                repositories,
+            )
+
+        def close(self) -> None:
+            pass
+
+    class ProbeStop(Exception):
+        pass
+
+    class Barrier:
+        def __init__(self, stop_after: int) -> None:
+            self.stop_after = stop_after
+            self.calls = 0
+
+        def sync_discovery(self, **_kwargs):
+            self.calls += 1
+            if self.calls == self.stop_after:
+                raise ProbeStop
+            return SimpleNamespace(
+                commit_sha=f"{self.calls:040x}",
+                root_digest="sha256:" + f"{self.calls:064x}",
+            )
+
+    def run_until_barrier(
+        coordinates: tuple[tuple[int, int], ...],
+        *,
+        stop_after: int,
+    ) -> tuple[Search, Barrier]:
+        search = Search(coordinates)
+        barrier = Barrier(stop_after)
+        with pytest.raises(SafeFailure) as failure:
+            application.DiscoveryApplication(
+                application.DiscoveryDependencies(
+                    search_factory=lambda: search,
+                    operations_store_factory=lambda: (
+                        operations_module.OperationsStateStore(
+                            config.operations_state
+                        )
+                    ),
+                    state_restore=lambda: SimpleNamespace(
+                        status="verified",
+                        observed_head="b" * 40,
+                        bundle=SimpleNamespace(
+                            root=SimpleNamespace(
+                                root_digest=(
+                                    config.initial_state_root_digest
+                                )
+                            )
+                        ),
+                    ),
+                    durability_barrier=barrier,
+                    phase2_factory=lambda **_kwargs: pytest.fail(
+                        "probe must stop before Phase 2"
+                    ),
+                    phase3_factory=lambda **_kwargs: pytest.fail(
+                        "probe must stop before Phase 3"
+                    ),
+                    query_set=config.query_set,
+                    initial_state_root_digest=(
+                        config.initial_state_root_digest
+                    ),
+                )
+            ).run(authority)
+        assert failure.value.code is ErrorCode.PIPELINE_INTERRUPTED
+        assert not search.expected
+        return search, barrier
+
+    first_search, first_barrier = run_until_barrier(
+        ((1, 1),),
+        stop_after=1,
+    )
+    assert first_search.calls == [(1, 1)]
+    assert first_barrier.calls == 1
+    second_search, second_barrier = run_until_barrier(
+        ((1, 2), (2, 1)),
+        stop_after=2,
+    )
+    assert second_search.calls == [(1, 2), (2, 1)]
+    assert second_barrier.calls == 2
+    with operations_module.OperationsStateStore(
+        config.operations_state
+    ) as store:
+        prefix = store.snapshot_run(authority.run_id)
+    assert len(prefix.candidates) == 75
+    assert sum(
+        item.dedup_disposition == "first_seen"
+        for item in prefix.candidates
+    ) == 74
+
+    final_search, final_barrier = run_until_barrier(
+        ((1, 3), (2, 2)),
+        stop_after=2,
+    )
+    assert final_search.calls == [(1, 3), (2, 2)]
+    assert final_barrier.calls == 2
+    with operations_module.OperationsStateStore(
+        config.operations_state
+    ) as store:
+        snapshot = store.snapshot_run(authority.run_id)
+    final_page = tuple(
+        item
+        for item in snapshot.candidates
+        if (item.query_ordinal, item.page) == (2, 2)
+    )
+    assert len(snapshot.search_pages) == 5
+    assert len(snapshot.candidates) == 125
+    assert sum(
+        item.dedup_disposition == "first_seen"
+        for item in snapshot.candidates
+    ) == 100
+    assert sum(
+        item.dedup_disposition == "budget_excluded"
+        for item in snapshot.candidates
+    ) == 20
+    assert tuple(
+        item.dedup_disposition for item in final_page
+    ) == ("first_seen",) * 5 + ("budget_excluded",) * 20
+
+    state_module = importlib.import_module("skillscout.adapters.state")
+    publication_module = importlib.import_module(
+        "skillscout.adapters.publication_state"
+    )
+    pipeline = state_module.SQLiteStateStore(config.pipeline_state)
+    operations = operations_module.OperationsStateStore(
+        config.operations_state
+    )
+    publication = publication_module.PublicationStateStore(
+        config.publication_state
+    )
+    try:
+        bundle = operations_module.assemble_three_store_bundle(
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=config.initial_state_root_digest,
+            state_parent_commit_sha="b" * 40,
+            query_set_digest=config.query_set_digest,
+            budget_policy_digest=(
+                discovery.DiscoveryBudgetPolicyV1().budget_policy_digest
+                or ""
+            ),
+            created_at="2026-07-27T12:00:00.000000Z",
+        )
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+    assert len(bundle.root.objects) == 135
+    assert len(bundle.files) == 139
 
 
 def test_lazy_discovery_capability_does_not_resolve_extractor_on_skip() -> None:
