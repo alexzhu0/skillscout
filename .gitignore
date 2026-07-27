@@ -1,5 +1,7 @@
 .tools/
 .env
+*.pem
+*.private-key
 .venv/
 dist/
 .tmp/

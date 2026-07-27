@@ -1,0 +1,23 @@
+{
+  "schema_version": "github-app-pem-auth-evidence-v1",
+  "execution_started_at_utc": "2026-07-27T08:44:24Z",
+  "confirmed_at_utc": "2026-07-27T08:44:25Z",
+  "execution_finished_at_utc": "2026-07-27T08:44:25Z",
+  "endpoints": {
+    "app": {
+      "method": "GET",
+      "url": "https://api.github.com/app",
+      "status": 200
+    },
+    "installation": {
+      "method": "GET",
+      "url": "https://api.github.com/app/installations/149272172",
+      "status": 200
+    }
+  },
+  "app_id": 4382801,
+  "installation_id": 149272172,
+  "pem_basename": "skillscout-catalog-test.2026-07-24.private-key.pem",
+  "public_key_spki_sha256": "f6bac9ac7ac6e8e6bd264aa543a99f7e1e64426c538b51153609d6beaada347e",
+  "result": "succeeded"
+}
