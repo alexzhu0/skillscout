@@ -377,6 +377,57 @@ def test_page_multiple_requests_are_serial_and_follow_integer_cursor_only() -> N
     assert recorded.call_count("GET", second) == 1
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ("valid", "hostile_url", "malformed_query", "duplicate_next"),
+)
+def test_max_page_validates_provider_next_link_before_local_terminalization(
+    mutation: str,
+) -> None:
+    current_path = _search_path(1, 4)
+    next_url = f"https://api.github.com{_search_path(1, 5)}"
+    if mutation == "hostile_url":
+        next_url = next_url.replace("api.github.com", "example.invalid")
+    elif mutation == "malformed_query":
+        next_url += "&broken"
+    link = f'<{next_url}>; rel="next"'
+    if mutation == "duplicate_next":
+        link = f"{link}, {link}"
+
+    response = recorded_search_fixture("page_one")
+    headers = dict(response.headers)
+    headers["link"] = link
+    recorded = RecordedTransport(
+        {
+            ("GET", current_path): type(response)(
+                status=response.status,
+                headers=headers,
+                body=response.body,
+            )
+        }
+    )
+    with GitHubReadClient(
+        token=TOKEN_CANARY,
+        transport=recorded.transport(),
+        sleeper=lambda _seconds: None,
+    ) as client:
+        if mutation == "valid":
+            page, repositories = _invoke_search(
+                client,
+                query_ordinal=1,
+                page=4,
+            )
+            assert page.next_page is None
+            assert len(repositories) == 3
+        else:
+            with pytest.raises(SafeFailure) as failure:
+                _invoke_search(client, query_ordinal=1, page=4)
+            assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+    assert recorded.call_count("GET", current_path) == 1
+    assert len(recorded.requests) == 1
+
+
 def test_duplicate_and_rename_projection_preserves_stable_numeric_identity() -> None:
     first = _search_path(1, 1)
     cross_query = _search_path(2, 1)
