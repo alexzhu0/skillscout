@@ -13,6 +13,9 @@ from recorded_transport import RecordedResponse, RecordedTransport
 from skillscout.adapters.semantic_provider import (
     DEEPSEEK_MODEL,
     SemanticProvider,
+    SemanticProviderFailure,
+    SemanticTransportDisposition,
+    classify_semantic_provider_failure,
     create_semantic_client,
     request_deepseek_json,
     resolve_semantic_provider,
@@ -28,6 +31,118 @@ CANARY_BASE_URL = "https://api.deepseek.com"
 
 class _Answer(StrictFrozenModel):
     value: str
+
+
+def _status_error(
+    error_type: type[openai.APIStatusError],
+    status: int,
+    *,
+    request_id: str = "req_semantic_123",
+) -> openai.APIStatusError:
+    request = httpx.Request("POST", "https://provider.invalid/semantic")
+    response = httpx.Response(
+        status,
+        request=request,
+        headers={"x-request-id": request_id},
+    )
+    return error_type(
+        "RAW-PROVIDER-DETAIL-MUST-STAY-CLOSED",
+        response=response,
+        body={"secret": "RAW-BODY-MUST-STAY-CLOSED"},
+    )
+
+
+def test_semantic_transport_disposition_is_one_closed_four_way_vocabulary() -> None:
+    assert {item.value for item in SemanticTransportDisposition} == {
+        "confirmed_retryable",
+        "semantic_outcome_unknown",
+        "permanent",
+        "decided",
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "expected", "code"),
+    (
+        (
+            _status_error(openai.RateLimitError, 429),
+            SemanticTransportDisposition.CONFIRMED_RETRYABLE,
+            "semantic_rate_limited",
+        ),
+        (
+            _status_error(openai.InternalServerError, 500),
+            SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+            "semantic_provider_outcome_unknown",
+        ),
+        (
+            openai.APITimeoutError(
+                httpx.Request("POST", "https://provider.invalid/semantic")
+            ),
+            SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+            "semantic_provider_outcome_unknown",
+        ),
+        (
+            openai.APIConnectionError(
+                message="RAW-CONNECTION-DETAIL-MUST-STAY-CLOSED",
+                request=httpx.Request("POST", "https://provider.invalid/semantic"),
+            ),
+            SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+            "semantic_provider_outcome_unknown",
+        ),
+        (
+            _status_error(openai.BadRequestError, 400),
+            SemanticTransportDisposition.PERMANENT,
+            "semantic_request_rejected",
+        ),
+        (
+            _status_error(openai.AuthenticationError, 401),
+            SemanticTransportDisposition.PERMANENT,
+            "semantic_request_rejected",
+        ),
+        (
+            _status_error(openai.PermissionDeniedError, 403),
+            SemanticTransportDisposition.PERMANENT,
+            "semantic_request_rejected",
+        ),
+    ),
+)
+def test_typed_provider_failures_have_one_fail_closed_disposition(
+    error: openai.APIError,
+    expected: SemanticTransportDisposition,
+    code: str,
+) -> None:
+    failure = classify_semantic_provider_failure(error, sdk=openai)
+
+    assert type(failure) is SemanticProviderFailure
+    assert failure.disposition is expected
+    assert failure.code == code
+    assert failure.request_id == (
+        "req_semantic_123" if isinstance(error, openai.APIStatusError) else None
+    )
+    rendered = f"{failure!r} {failure}"
+    assert "RAW-" not in rendered
+    assert "secret" not in rendered
+
+
+def test_unrecognized_or_malformed_provider_evidence_defaults_to_unknown() -> None:
+    malformed_request_id = "credential-bearing request id"
+    failure = classify_semantic_provider_failure(
+        _status_error(
+            openai.InternalServerError,
+            503,
+            request_id=malformed_request_id,
+        ),
+        sdk=openai,
+    )
+    unknown = classify_semantic_provider_failure(
+        RuntimeError("RAW-UNEXPECTED-DETAIL"),
+        sdk=openai,
+    )
+
+    assert failure.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+    assert failure.request_id is None
+    assert unknown.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+    assert "RAW-" not in str(unknown)
 
 
 def _chat_response(
