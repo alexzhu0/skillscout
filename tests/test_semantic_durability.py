@@ -6,6 +6,7 @@ from dataclasses import fields
 import hashlib
 import importlib
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -253,3 +254,371 @@ def test_receipt_digest_detects_forged_remote_confirmation() -> None:
     with pytest.raises(ValueError, match="receipt digest"):
         module.DurabilityReceipt.from_dict(raw)
     assert hashlib.sha256(receipt.receipt_digest.encode("ascii")).digest()
+
+
+def _state_branch():
+    return importlib.import_module("skillscout.adapters.state_branch")
+
+
+class _Remote:
+    def __init__(self, module, *, head: str = PRIOR_HEAD, fail_at: str | None = None):
+        self.module = module
+        self.head = head
+        self.fail_at = fail_at
+        self.blobs: dict[str, bytes] = {}
+        self.trees: dict[str, tuple[object, ...]] = {}
+        self.commits: dict[str, object] = {}
+        self.counter = 100
+        self.force_values: list[bool] = []
+        self.provider_requests = 0
+        self.retry_or_terminal = 0
+        self._rereading = False
+
+    def _sha(self) -> str:
+        self.counter += 1
+        return f"{self.counter:040x}"
+
+    def get_state_ref(self):
+        if self.fail_at == "reread" and self._rereading:
+            raise RuntimeError("SECRET remote reread payload")
+        return self.module.StateRefObservation(self.module.STATE_REF, self.head)
+
+    def create_blob(self, content: bytes) -> str:
+        if self.fail_at == "blob":
+            raise RuntimeError("SECRET pipeline export")
+        sha = self.module._git_blob_id(content)
+        self.blobs[sha] = content
+        return sha
+
+    def create_tree(self, entries):
+        sha = self._sha()
+        self.trees[sha] = tuple(
+            self.module.StateTreeEntry(
+                path=str(entry["path"]),
+                sha=str(entry["sha"]),
+                mode="100644",
+                size=len(self.blobs[str(entry["sha"])]),
+            )
+            for entry in entries
+        )
+        return sha
+
+    def create_commit(self, message: str, tree: str, parents: tuple[str, ...]):
+        sha = self._sha()
+        self.commits[sha] = self.module.StateCommitObservation(
+            sha=sha,
+            tree_sha=tree,
+            parents=parents,
+            message=message,
+        )
+        return sha
+
+    def update_state_ref(self, sha: str, *, force: bool):
+        self.force_values.append(force)
+        if self.fail_at == "cas":
+            raise self.module.StateBranchConflict
+        self.head = sha
+        self._rereading = True
+        return self.module.StateRefObservation(self.module.STATE_REF, sha)
+
+    def create_state_ref(self, sha: str):
+        raise AssertionError("semantic durability never bootstraps an absent branch")
+
+    def get_commit(self, sha: str):
+        return self.commits[sha]
+
+    def get_tree(self, sha: str):
+        return self.trees[sha]
+
+    def get_blob(self, sha: str) -> bytes:
+        content = self.blobs[sha]
+        if self.fail_at == "projection" and self._rereading:
+            return content + b"x"
+        return content
+
+
+class _ExportFailure:
+    def __init__(self, wrapped, *, fail: bool):
+        self.wrapped = wrapped
+        self.fail = fail
+
+    def export_owned_state(self):
+        if self.fail:
+            raise RuntimeError("SECRET export failure")
+        return self.wrapped.export_owned_state()
+
+
+def _owned_stores(
+    tmp_path: Path,
+    *,
+    stage: str,
+    transition: str,
+):
+    state_module = importlib.import_module("skillscout.adapters.state")
+    operations_module = importlib.import_module(
+        "skillscout.adapters.operations_state"
+    )
+    publication_module = importlib.import_module(
+        "skillscout.adapters.publication_state"
+    )
+    pipeline = state_module.SQLiteStateStore(tmp_path / "pipeline.sqlite3")
+    operations = operations_module.OperationsStateStore(
+        tmp_path / "operations.sqlite3"
+    )
+    publication = publication_module.PublicationStateStore(
+        tmp_path / "publication.sqlite3"
+    )
+    operations.seed_test_reservations(
+        run_id="discovery-run-1",
+        repository_id=101,
+    )
+    operations.record_semantic_attempt(
+        run_id="discovery-run-1",
+        repository_id=101,
+        stage=stage,
+        attempt_no=1,
+        status="started",
+        recorded_at="2026-07-27T12:00:00.000000Z",
+    )
+    status = {
+        "attempt_started": "started",
+        "result_decided": "decided",
+        "result_confirmed_retryable": "confirmed_retryable",
+        "result_outcome_unknown": "semantic_outcome_unknown",
+    }[transition]
+    if status != "started":
+        operations.record_semantic_attempt(
+            run_id="discovery-run-1",
+            repository_id=101,
+            stage=stage,
+            attempt_no=1,
+            status=status,
+            recorded_at="2026-07-27T12:00:01.000000Z",
+        )
+    exports = (
+        pipeline.export_owned_state(),
+        operations.export_owned_state(),
+        publication.export_owned_state(),
+    )
+    request = _ports().SemanticDurabilityTransition.create(
+        run_id="discovery-run-1",
+        repository_id=101,
+        workflow_authority_digest=DIGEST_A,
+        provider="openai",
+        stage=stage,
+        attempt_no=1,
+        transition=transition,
+        expected_prior_state_head=PRIOR_HEAD,
+        expected_prior_root_digest=DIGEST_B,
+        pipeline_export_digest=exports[0].export_digest,
+        operations_export_digest=exports[1].export_digest,
+        publication_export_digest=exports[2].export_digest,
+    )
+    return pipeline, operations, publication, request
+
+
+def _barrier(remote):
+    module = _state_branch()
+    return module.StateBranchDurabilityBarrier(
+        state_store=module.StateBranchStore(remote),
+        query_set_digest="sha256:" + ("7" * 64),
+        budget_policy_digest="sha256:" + ("8" * 64),
+        clock=lambda: "2026-07-27T12:00:02.000000Z",
+    )
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("stage", STAGES)
+@pytest.mark.parametrize("transition", TRANSITIONS)
+def test_two_provider_three_stage_transition_matrix_is_remote_confirmed_and_idempotent(
+    tmp_path: Path,
+    provider: str,
+    stage: str,
+    transition: str,
+) -> None:
+    pipeline, operations, publication, base = _owned_stores(
+        tmp_path,
+        stage=stage,
+        transition=transition,
+    )
+    request_values = base.as_dict()
+    request_values.pop("schema_version")
+    request_values.pop("transition_authority_digest")
+    request_values["provider"] = provider
+    request = _ports().SemanticDurabilityTransition.create(**request_values)
+    remote = _Remote(_state_branch())
+    barrier = _barrier(remote)
+    try:
+        receipt = barrier.confirm(
+            transition=request,
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+        )
+        assert receipt.authorizes(request)
+        first_head = remote.head
+        repeated = barrier.confirm(
+            transition=request,
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+        )
+        assert repeated == receipt
+        assert remote.head == first_head
+        assert remote.force_values == [False]
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+
+@pytest.mark.parametrize(
+    "seam",
+    (
+        "pipeline_export",
+        "operations_export",
+        "publication_export",
+        "cas",
+        "reread",
+        "projection",
+    ),
+)
+def test_every_export_cas_reread_and_verification_failure_blocks_guarded_effect(
+    tmp_path: Path,
+    seam: str,
+) -> None:
+    pipeline, operations, publication, request = _owned_stores(
+        tmp_path,
+        stage="extractor",
+        transition="attempt_started",
+    )
+    remote = _Remote(
+        _state_branch(),
+        fail_at=seam if seam in {"cas", "reread", "projection"} else None,
+    )
+    stores = {
+        "pipeline_store": _ExportFailure(
+            pipeline, fail=seam == "pipeline_export"
+        ),
+        "operations_store": _ExportFailure(
+            operations, fail=seam == "operations_export"
+        ),
+        "publication_store": _ExportFailure(
+            publication, fail=seam == "publication_export"
+        ),
+    }
+    try:
+        with pytest.raises(_ports().SafeFailure) as failure:
+            _barrier(remote).confirm(transition=request, **stores)
+        assert failure.value.as_dict() == {
+            "code": "state_operation_failed",
+            "summary": "Local state operation failed.",
+        }
+        assert remote.provider_requests == 0
+        assert remote.retry_or_terminal == 0
+        assert remote.force_values in ([], [False])
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+
+def test_stale_export_and_missing_attempt_transition_fail_before_remote_write(
+    tmp_path: Path,
+) -> None:
+    pipeline, operations, publication, request = _owned_stores(
+        tmp_path,
+        stage="reviewer",
+        transition="attempt_started",
+    )
+    operations.record_semantic_attempt(
+        run_id="discovery-run-1",
+        repository_id=101,
+        stage="reviewer",
+        attempt_no=1,
+        status="decided",
+        recorded_at="2026-07-27T12:00:03.000000Z",
+    )
+    remote = _Remote(_state_branch())
+    try:
+        with pytest.raises(_ports().SafeFailure):
+            _barrier(remote).confirm(
+                transition=request,
+                pipeline_store=pipeline,
+                operations_store=operations,
+                publication_store=publication,
+            )
+        assert remote.blobs == {}
+        assert remote.head == PRIOR_HEAD
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("stage", STAGES)
+@pytest.mark.parametrize(
+    "crash_seam",
+    (
+        "before_attempt_started_barrier",
+        "after_attempt_started_barrier",
+        "before_result_barrier",
+        "after_result_barrier",
+    ),
+)
+def test_crash_restart_matrix_never_replays_ambiguous_semantic_effect(
+    tmp_path: Path,
+    provider: str,
+    stage: str,
+    crash_seam: str,
+) -> None:
+    transition = (
+        "attempt_started"
+        if "attempt_started" in crash_seam
+        else "result_outcome_unknown"
+    )
+    pipeline, operations, publication, base = _owned_stores(
+        tmp_path,
+        stage=stage,
+        transition=transition,
+    )
+    values = base.as_dict()
+    values.pop("schema_version")
+    values.pop("transition_authority_digest")
+    values["provider"] = provider
+    request = _ports().SemanticDurabilityTransition.create(**values)
+    remote = _Remote(_state_branch())
+    barrier = _barrier(remote)
+    provider_requests = 0 if "attempt_started" in crash_seam else 1
+    guarded_followups = 0
+    try:
+        receipt = None
+        if crash_seam.startswith("after"):
+            receipt = barrier.confirm(
+                transition=request,
+                pipeline_store=pipeline,
+                operations_store=operations,
+                publication_store=publication,
+            )
+
+        # Restart: an already-confirmed transition is reread idempotently; an
+        # unconfirmed transition is persisted once. Neither path infers that an
+        # outcome-unknown provider request is safe to replay.
+        receipt = barrier.confirm(
+            transition=request,
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+        )
+        if transition == "attempt_started" and receipt.authorizes(request):
+            provider_requests += 1
+        elif transition == "result_outcome_unknown":
+            guarded_followups += 0
+        assert provider_requests == 1
+        assert guarded_followups == 0
+        assert remote.force_values == [False]
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
