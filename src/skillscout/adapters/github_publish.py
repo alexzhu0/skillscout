@@ -362,6 +362,13 @@ class GitHubPublishClient:
         try:
             self._last_request_id = response.headers.get("x-github-request-id")
             self._last_link = response.headers.get("link")
+            if (
+                type(self._last_request_id) is not str
+                or not self._last_request_id
+                or len(self._last_request_id) > 128
+                or re.fullmatch(r"[A-Za-z0-9._-]+", self._last_request_id) is None
+            ):
+                _fail()
             if response.status_code in {301, 302, 303, 307, 308}:
                 _fail()
             if response.status_code == 429 or response.status_code >= 500:

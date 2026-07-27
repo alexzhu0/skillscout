@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from recorded_transport import RecordedResponse, RecordedTransport
@@ -240,6 +241,115 @@ def test_paginated_pulls_and_reviews_follow_only_canonical_same_origin_links() -
 
 @pytest.mark.parametrize("field", tuple(_fixture("error_matrix")), ids=lambda value: value)
 def test_provider_error_matrix_is_closed_and_safe(field: str) -> None:
+    from skillscout.application.ports import ErrorCode, SafeFailure
+
+    matrix = _fixture("error_matrix")
+    assert field in matrix
+    if field == "pagination":
+        pull = _fixture("pull_draft")
+        prefix = (
+            f"{REPOSITORY}/pulls?state=open&head=catalog-org%3A{HEAD}"
+            f"&base={BASE}&per_page=100&page="
+        )
+        routes = github_publish_routes()
+        routes[("GET", prefix + "1")] = RecordedResponse(
+            200,
+            {
+                "content-type": "application/json",
+                "x-github-request-id": "REQ-MATRIX-1",
+                "link": (
+                    "<https://api.github.com" + prefix + '2>; rel="next"'
+                ),
+            },
+            json.dumps([{**pull, "number": number} for number in range(1, 101)]).encode(),
+        )
+        routes[("GET", prefix + "2")] = RecordedResponse(
+            200,
+            {
+                "content-type": "application/json",
+                "x-github-request-id": "REQ-MATRIX-2",
+            },
+            json.dumps([{**pull, "number": 101}]).encode(),
+        )
+        recorded = RecordedTransport(routes)
+        with _adapter(recorded) as client:
+            assert len(client.list_open_pulls()) == 101
+        assert len(recorded.requests) == 2
+        return
+
+    operation = "catalog"
+    status = matrix[field] if isinstance(matrix[field], int) else 200
+    headers = {
+        "content-type": "application/json",
+        "x-github-request-id": "REQ-MATRIX",
+    }
+    body = json.dumps(_fixture("repository")).encode()
+    if field == "oversized":
+        body = b"{" + b" " * 1_048_576 + b"}"
+    elif field == "malformed":
+        body = b"{"
+    elif field == "wrong_content_type":
+        headers["content-type"] = "text/html"
+    elif field == "missing_request_id":
+        headers.pop("x-github-request-id")
+    elif field == "unknown_field":
+        body = json.dumps({**_fixture("repository"), "provider_extra": "ignored"}).encode()
+    elif field == "truncated_tree":
+        operation = "tree"
+        tree = {**_fixture("tree"), "truncated": True}
+        body = json.dumps(tree).encode()
+    elif status >= 300:
+        body = b'{"message":"provider-secret-canary"}'
+
+    recorded_response = RecordedResponse(status, headers, body)
+
+    class TrackingStream(httpx.SyncByteStream):
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+            self.closed = False
+
+        def __iter__(self) -> Any:
+            yield self.payload
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = TrackingStream(recorded_response.body)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            recorded_response.status,
+            headers=recorded_response.headers,
+            stream=stream,
+            request=request,
+        )
+
     from skillscout.adapters.github_publish import GitHubPublishClient
-    assert field in _fixture("error_matrix")
-    assert GitHubPublishClient
+
+    client = GitHubPublishClient(
+        token="fixture-token-only",
+        catalog_repository_id=910001,
+        catalog_full_name="catalog-org/skills",
+        transport=httpx.MockTransport(handler),
+    )
+    should_succeed = field == "unknown_field"
+    if should_succeed:
+        assert client.get_catalog().repository_id == 910001
+    else:
+        with pytest.raises(SafeFailure) as captured:
+            if operation == "tree":
+                client.get_tree(TREE)
+            else:
+                client.get_catalog()
+        expected_code = (
+            ErrorCode.STAGE_TRANSIENT_FAILURE
+            if field in {"rate_limited", "server_error"}
+            else ErrorCode.STAGE_PERMANENT_FAILURE
+        )
+        assert captured.value.code is expected_code
+        assert "provider-secret-canary" not in str(captured.value)
+    client.close()
+    assert len(requests) == 1
+    assert stream.closed is True
