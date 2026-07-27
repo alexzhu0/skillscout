@@ -1,28 +1,28 @@
 ---
 phase: 04-controlled-draft-pr
-fixed_at: 2026-07-27T11:04:17Z
+fixed_at: 2026-07-27T11:20:49Z
 review_path: .planning/phases/04-controlled-draft-pr/04-REVIEW.md
-iteration: 1
-findings_in_scope: 13
-fixed: 13
+iteration: 2
+findings_in_scope: 14
+fixed: 14
 skipped: 0
 status: all_fixed
 ---
 
 # Phase 04: Code Review Fix Report
 
-**Fixed at:** 2026-07-27T11:04:17Z  
+**Fixed at:** 2026-07-27T11:20:49Z
 **Source review:** `.planning/phases/04-controlled-draft-pr/04-REVIEW.md`  
-**Iteration:** 1
+**Iteration:** 2
 
 **Summary:**
 
-- Findings in scope: 13
-- Fixed: 13
+- Findings in scope: 14
+- Fixed: 14
 - Skipped: 0
-- Full regression: `1406 passed, 2 skipped`
+- Full regression: `1410 passed, 2 skipped`
 - Static checks: Ruff passed
-- Phase validators: validation map and action audit passed
+- Phase validators: validation map, action audit, and acceptance passed
 
 ## Fixed Issues
 
@@ -75,6 +75,13 @@ status: all_fixed
 **Status:** fixed: requires human verification  
 **Applied fix:** Exercised bounded chained machine lineage across multiple revisions while rejecting human commits and default-branch drift.
 
+### CR-08: A completed reviewer causes a later revision to mutate remotely and then fail
+
+**Files modified:** `src/skillscout/application/publication.py`, `tests/test_publication_recovery.py`
+**Commit:** `586fd11`
+**Status:** fixed: requires human verification
+**Applied fix:** Counted strictly validated completed-review evidence for the configured individual independently of its historical commit SHA. Added a stateful revision N to N+1 regression proving successful publication with zero reviewer re-notification, plus fail-closed cases for malformed rows, duplicate review IDs, and outsider-only evidence.
+
 ### WR-01: Pagination is rejected rather than consumed
 
 **Files modified:** `src/skillscout/adapters/github_publish.py`, `tests/test_github_publish_adapter.py`  
@@ -123,14 +130,13 @@ None.
 
 ## Remaining External Gate
 
-The protected workflow changed during remediation, so the previous Gate B4
-attestation no longer matches the workflow hash. `verify_phase4_acceptance.py`
-therefore fails closed as designed. A fresh separately authorized live canary
-and human-reviewed Gate B4 evidence are still required before production
-acceptance.
+The validation and acceptance verifiers pass against the reapproved protected
+workflow hash. This remediation did not perform a live GitHub operation; final
+production acceptance remains subject to the separately authorized live canary
+and human-controlled release gate recorded by the project.
 
 ---
 
-_Fixed: 2026-07-27T11:04:17Z_  
+_Fixed: 2026-07-27T11:20:49Z_
 _Fixer: the agent (gsd-code-fixer)_  
-_Iteration: 1_
+_Iteration: 2_
