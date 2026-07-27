@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import secrets
 import time
 from typing import Any, Final, Literal
@@ -11,6 +10,13 @@ import openai
 from pydantic import ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.adapters.semantic_provider import (
+    SemanticProvider,
+    SemanticProviderSettings,
+    create_semantic_client,
+    request_deepseek_json,
+    resolve_semantic_provider,
+)
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.extraction import WorkflowSpec
@@ -65,18 +71,30 @@ class OpenAIReviewClient:
         *,
         api_key: str | None = None,
         http_client: Any = None,
-        model: str = DEFAULT_REVIEWER_MODEL,
+        model: str | None = None,
         max_output_tokens: int = MAX_REVIEWER_OUTPUT_TOKENS,
+        provider_settings: SemanticProviderSettings | None = None,
     ) -> None:
-        resolved_key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY")
-        if not resolved_key or not model or max_output_tokens < 1:
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-        self._client = openai.OpenAI(
-            api_key=resolved_key,
-            http_client=http_client,
-            max_retries=0,
+        settings = provider_settings or resolve_semantic_provider(
+            {"SKILLSCOUT_LLM_PROVIDER": "openai"}
         )
-        self._model = model
+        selected_model = model or settings.reviewer_model
+        if (
+            not selected_model
+            or max_output_tokens < 1
+            or (
+                settings.provider is SemanticProvider.DEEPSEEK
+                and selected_model != settings.reviewer_model
+            )
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        self._client = create_semantic_client(
+            settings,
+            api_key=api_key,
+            http_client=http_client,
+        )
+        self._provider = settings.provider
+        self._model = selected_model
         self._max_output_tokens = max_output_tokens
 
     @property
@@ -126,6 +144,24 @@ class OpenAIReviewClient:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
 
         started = time.monotonic()
+        if self._provider is SemanticProvider.DEEPSEEK:
+            deepseek = request_deepseek_json(
+                self._client,
+                model=self._model,
+                instructions=REVIEWER_INSTRUCTIONS_V1,
+                user_payload=envelope,
+                response_model=ReviewerJudgment,
+                max_tokens=self._max_output_tokens,
+            )
+            return self._result(
+                deepseek.status,
+                started,
+                response=deepseek,
+                judgment=deepseek.parsed,
+                incomplete_reason=(
+                    "max_tokens" if deepseek.status == "incomplete" else None
+                ),
+            )
         try:
             response = self._client.responses.parse(
                 model=self._model,
@@ -186,9 +222,19 @@ class OpenAIReviewClient:
         try:
             usage = None
             if response is not None and response.usage is not None:
+                prompt_tokens = getattr(
+                    response.usage,
+                    "input_tokens",
+                    getattr(response.usage, "prompt_tokens", None),
+                )
+                completion_tokens = getattr(
+                    response.usage,
+                    "output_tokens",
+                    getattr(response.usage, "completion_tokens", None),
+                )
                 usage = TokenUsage(
-                    prompt_tokens=response.usage.input_tokens,
-                    completion_tokens=response.usage.output_tokens,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                     total_tokens=response.usage.total_tokens,
                 )
             return ReviewResult(
@@ -196,8 +242,13 @@ class OpenAIReviewClient:
                 judgment=judgment,
                 refusal_text=refusal_text,
                 incomplete_reason=incomplete_reason,
-                request_id=response.id if response is not None else None,
-                model=response.model if response is not None else None,
+                request_id=(
+                    getattr(response, "id", None)
+                    or getattr(response, "request_id", None)
+                    if response is not None
+                    else None
+                ),
+                model=(getattr(response, "model", None) if response is not None else None),
                 usage=usage,
                 latency_ms=max(0, int((time.monotonic() - started) * 1_000)),
             )

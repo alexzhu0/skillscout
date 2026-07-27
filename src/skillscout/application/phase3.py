@@ -135,6 +135,20 @@ class PhaseThreeRuntimeProfile(StrictFrozenModel):
         int, Field(ge=1, le=MAX_REVIEWER_OUTPUT_TOKENS)
     ] = MAX_REVIEWER_OUTPUT_TOKENS
 
+    @classmethod
+    def from_configured_models(
+        cls,
+        *,
+        generator_model_id: str,
+        reviewer_model_id: str,
+    ) -> PhaseThreeRuntimeProfile:
+        """Bind one resolved non-secret provider identity into Phase 3 authority."""
+
+        return cls(
+            configured_generator_model_id=generator_model_id,
+            configured_reviewer_model_id=reviewer_model_id,
+        )
+
     @property
     def profile_digest(self) -> str:
         """Bind every immutable runtime and cost-policy field."""

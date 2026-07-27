@@ -27,6 +27,7 @@ from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.adapters.openai_extract import OpenAIExtractionClient
 from skillscout.adapters.openai_generate import OpenAIGenerationClient
 from skillscout.adapters.openai_review import OpenAIReviewClient
+from skillscout.adapters.semantic_provider import resolve_semantic_provider
 from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
 from skillscout.adapters.skills_ref import validate_with_official_validator
 from skillscout.adapters.state import (
@@ -373,12 +374,17 @@ def _require_mutable_output_ready(path: Path) -> None:
 def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     _validate_candidate_paths(arguments)
     clients: list[object] = []
-    profile = PhaseThreeRuntimeProfile()
+    provider = resolve_semantic_provider()
+    profile = PhaseThreeRuntimeProfile.from_configured_models(
+        generator_model_id=provider.generator_model,
+        reviewer_model_id=provider.reviewer_model,
+    )
 
     def generator_factory() -> object:
         client = OpenAIGenerationClient(
             model=profile.configured_generator_model_id,
             max_output_tokens=profile.max_generator_output_tokens,
+            provider_settings=provider,
         )
         clients.append(client)
         return client
@@ -387,6 +393,7 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
         client = OpenAIReviewClient(
             model=profile.configured_reviewer_model_id,
             max_output_tokens=profile.max_reviewer_output_tokens,
+            provider_settings=provider,
         )
         clients.append(client)
         return client
@@ -562,11 +569,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "publish-candidate":
             payload = _run_publish_candidate(arguments)
         elif arguments.command == "extract-repo":
+            provider = resolve_semantic_provider()
             subject = load_subject(arguments.subject)
             state = SQLiteStateStore(arguments.state)
             runtime = build_phase_two_runtime(
                 state,
-                PhaseTwoProcessor(GitHubReadClient(), OpenAIExtractionClient()),
+                PhaseTwoProcessor(
+                    GitHubReadClient(),
+                    OpenAIExtractionClient(
+                        model=provider.extract_model,
+                        provider_settings=provider,
+                    ),
+                ),
             )
             payload = runtime.runner.run(
                 subject,

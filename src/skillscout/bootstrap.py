@@ -180,11 +180,16 @@ def _closed_publication_locator(path: Path, *, root: str) -> str:
 
 
 def _publication_projection(
-    *, candidate: Path, phase2_state: Path, phase3_state: Path
+    *,
+    candidate: Path,
+    phase2_state: Path,
+    phase3_state: Path,
+    environ: dict[str, str] | None = None,
 ) -> tuple[object, object]:
     """Resolve Phase 2 and project only an exact completed Phase 3 candidate."""
 
     from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
+    from skillscout.adapters.semantic_provider import resolve_semantic_provider
     from skillscout.adapters.state import DescriptorAnchoredCompletedCandidateProjector
     from skillscout.application.candidate_source import load_candidate_subject
     from skillscout.application.phase3 import PhaseThreeRuntimeProfile, _execution_authority
@@ -192,7 +197,12 @@ def _publication_projection(
 
     try:
         resolved = load_candidate_subject(candidate, SQLitePhaseTwoCandidateSource(phase2_state))
-        authority = _execution_authority(source=resolved, profile=PhaseThreeRuntimeProfile())
+        provider = resolve_semantic_provider(environ)
+        profile = PhaseThreeRuntimeProfile.from_configured_models(
+            generator_model_id=provider.generator_model,
+            reviewer_model_id=provider.reviewer_model,
+        )
+        authority = _execution_authority(source=resolved, profile=profile)
         projector = DescriptorAnchoredCompletedCandidateProjector(phase3_state)
         try:
             completed = projector.find_completed_candidate(authority)
@@ -228,6 +238,7 @@ def verify_publication_admission_handoff(
         candidate=Path(candidate_locator),
         phase2_state=Path(phase2_locator),
         phase3_state=Path(phase3_locator),
+        environ=environ,
     )
     from skillscout.domain.canonical import sha256_digest
     from skillscout.domain.publication import admit_phase3_candidate

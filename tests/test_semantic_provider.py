@@ -17,6 +17,7 @@ from skillscout.adapters.semantic_provider import (
     resolve_semantic_provider,
 )
 from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.application.phase3 import PhaseThreeRuntimeProfile
 from skillscout.domain.models import StrictFrozenModel
 
 CHAT_COMPLETIONS = ("POST", "/chat/completions")
@@ -164,6 +165,69 @@ def test_deepseek_chat_request_is_one_toolless_strict_json_call() -> None:
     assert "tool_choice" not in body
     assert CANARY_KEY.encode() not in request.content
     assert CANARY_BASE_URL.encode() not in request.content
+
+
+def test_deepseek_missing_secret_fails_closed_and_profile_stays_nonsecret() -> None:
+    settings = resolve_semantic_provider(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": CANARY_BASE_URL,
+        }
+    )
+    with pytest.raises(SafeFailure) as failure:
+        create_semantic_client(settings, environ={})
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+    profile = PhaseThreeRuntimeProfile.from_configured_models(
+        generator_model_id=settings.generator_model,
+        reviewer_model_id=settings.reviewer_model,
+    )
+    projection = profile.model_dump(mode="json")
+    assert projection["configured_generator_model_id"] == DEEPSEEK_MODEL
+    assert projection["configured_reviewer_model_id"] == DEEPSEEK_MODEL
+    assert CANARY_BASE_URL not in json.dumps(projection)
+    assert settings.api_key_env not in json.dumps(projection)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    ((429, ErrorCode.STAGE_TRANSIENT_FAILURE), (500, ErrorCode.STAGE_TRANSIENT_FAILURE),
+     (400, ErrorCode.STAGE_PERMANENT_FAILURE)),
+)
+def test_deepseek_provider_errors_are_closed_without_hidden_retry(
+    status: int, expected: ErrorCode
+) -> None:
+    response = RecordedResponse(
+        status=status,
+        headers={"content-type": "application/json"},
+        body=b'{"error":{"message":"provider detail must stay closed","type":"error"}}',
+    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: response})
+    settings = resolve_semantic_provider(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": CANARY_BASE_URL,
+        }
+    )
+    client = create_semantic_client(
+        settings,
+        api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+    )
+
+    with pytest.raises(SafeFailure) as failure:
+        request_deepseek_json(
+            client,
+            model=DEEPSEEK_MODEL,
+            instructions="trusted",
+            user_payload="untrusted",
+            response_model=_Answer,
+            max_tokens=32,
+        )
+
+    assert failure.value.code is expected
+    assert "provider detail" not in str(failure.value)
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
 
 
 @pytest.mark.parametrize(
