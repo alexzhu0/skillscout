@@ -301,11 +301,16 @@ class StateBranchClient:
             or raw["size"] > _MAX_DATABASE_BYTES
         ):
             _safe_failure()
+        encoded = raw["content"].replace("\r", "").replace("\n", "")
         try:
-            content = base64.b64decode(raw["content"], validate=True)
+            content = base64.b64decode(encoded, validate=True)
         except (ValueError, TypeError):
             _safe_failure()
-        if len(content) != raw["size"] or _git_blob_id(content) != _sha(sha):
+        if (
+            base64.b64encode(content).decode("ascii") != encoded
+            or len(content) != raw["size"]
+            or _git_blob_id(content) != _sha(sha)
+        ):
             _safe_failure()
         return content
 

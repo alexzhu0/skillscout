@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import inspect
 import json
@@ -197,6 +198,123 @@ def test_state_client_rejects_malformed_or_oversized_request_id(
     try:
         with pytest.raises(module.SafeFailure):
             client.get_state_ref()
+    finally:
+        client.close()
+
+
+def _state_blob_client(
+    module: object,
+    *,
+    encoded: str,
+    declared_size: int,
+    requested_sha: str,
+) -> object:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == (
+            f"/repos/source-org/source/git/blobs/{requested_sha}"
+        )
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/json",
+                "x-github-request-id": "STATE-BLOB-1",
+            },
+            json={
+                "encoding": "base64",
+                "content": encoded,
+                "size": declared_size,
+            },
+        )
+
+    return module.StateBranchClient(
+        token="test-token",
+        repository_id=101,
+        repository_full_name="source-org/source",
+        transport=httpx.MockTransport(handler),
+    )
+
+
+@pytest.mark.parametrize("separator", ("", "\n", "\r", "\r\n"))
+def test_state_client_accepts_only_cr_lf_folded_canonical_blob_content(
+    separator: str,
+) -> None:
+    module = _state_module()
+    content = bytes(range(97))
+    canonical = base64.b64encode(content).decode("ascii")
+    encoded = separator.join(
+        canonical[index : index + 60]
+        for index in range(0, len(canonical), 60)
+    )
+    requested_sha = module._git_blob_id(content)
+    client = _state_blob_client(
+        module,
+        encoded=encoded,
+        declared_size=len(content),
+        requested_sha=requested_sha,
+    )
+    try:
+        assert client.get_blob(requested_sha) == content
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    (
+        pytest.param("/w ==", id="space"),
+        pytest.param("/w==\t", id="tab"),
+        pytest.param("/w==\x00", id="nul"),
+        pytest.param("/w==\x0b", id="vertical-tab"),
+        pytest.param("/w==\x7f", id="delete-control"),
+        pytest.param("/w=", id="missing-padding"),
+        pytest.param("/w===", id="excess-padding"),
+        pytest.param("/=w=", id="interior-padding"),
+        pytest.param("/x==", id="noncanonical-pad-bits-x"),
+        pytest.param("/y==", id="noncanonical-pad-bits-y"),
+        pytest.param("/z==", id="noncanonical-pad-bits-z"),
+    ),
+)
+def test_state_client_rejects_noncanonical_blob_wire_mutations(
+    encoded: str,
+) -> None:
+    module = _state_module()
+    content = b"\xff"
+    requested_sha = module._git_blob_id(content)
+    client = _state_blob_client(
+        module,
+        encoded=encoded,
+        declared_size=len(content),
+        requested_sha=requested_sha,
+    )
+    try:
+        with pytest.raises(module.SafeFailure):
+            client.get_blob(requested_sha)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("mutation", ("declared_size", "git_blob_id"))
+def test_state_client_retains_blob_size_and_identity_verification(
+    mutation: str,
+) -> None:
+    module = _state_module()
+    content = b"state-branch-integrity"
+    requested_sha = module._git_blob_id(content)
+    declared_size = len(content)
+    if mutation == "declared_size":
+        declared_size += 1
+    else:
+        requested_sha = "0" * 40
+    client = _state_blob_client(
+        module,
+        encoded=base64.b64encode(content).decode("ascii"),
+        declared_size=declared_size,
+        requested_sha=requested_sha,
+    )
+    try:
+        with pytest.raises(module.SafeFailure):
+            client.get_blob(requested_sha)
     finally:
         client.close()
 
