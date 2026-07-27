@@ -17,6 +17,7 @@ PUBLISH_WORKFLOW_SHA256 = (
 )
 CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
+SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 
 
 def _workflow() -> str:
@@ -53,16 +54,34 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
         re.MULTILINE,
     )
     assert "@v" not in text
-    refs = re.findall(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", text, re.MULTILINE)
-    assert refs
-    assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in refs)
-    assert CHECKOUT_SHA in refs
-    assert APP_TOKEN_SHA in refs
+    actions = re.findall(
+        r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", text, re.MULTILINE
+    )
+    assert actions == [
+        ("actions/checkout", CHECKOUT_SHA),
+        ("astral-sh/setup-uv", SETUP_UV_SHA),
+        ("actions/checkout", CHECKOUT_SHA),
+        ("astral-sh/setup-uv", SETUP_UV_SHA),
+        ("actions/create-github-app-token", APP_TOKEN_SHA),
+    ]
+    assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for _, ref in actions)
     assert re.search(r"^permissions:\n  contents: read$", text, re.MULTILINE)
     discovery = _job(text, "discovery")
     publication = _job(text, "protected_publication")
     assert re.search(r"^    permissions:\n      contents: write$", discovery, re.MULTILINE)
     assert re.search(r"^    permissions:\n      contents: read$", publication, re.MULTILINE)
+    setup = (
+        f"uses: astral-sh/setup-uv@{SETUP_UV_SHA} # v9.0.0\n"
+        "        with:\n"
+        "          version: 0.11.29\n"
+        "          enable-cache: false"
+    )
+    assert discovery.count(setup) == 1
+    assert publication.count(setup) == 1
+    assert discovery.index(setup) < discovery.index("uv run --locked")
+    assert publication.index(setup) < publication.index("uv run --locked")
+    assert text.count("uv run --locked") == 3
+    assert ".tools/uv-" not in text
 
 
 def _assert_separate_authority_zones(text: str) -> None:
