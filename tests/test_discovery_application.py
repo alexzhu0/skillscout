@@ -1416,6 +1416,9 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     publication_module = importlib.import_module(
         "skillscout.adapters.publication_state"
     )
+    state_branch_module = importlib.import_module(
+        "skillscout.adapters.state_branch"
+    )
     subjects = importlib.import_module("skillscout.domain.subjects")
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
@@ -1612,6 +1615,142 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
         publication.close()
     assert original_provider_calls == 1
 
+    phase2_state = state_module.SQLiteStateStore(config.pipeline_state)
+    publication = publication_module.PublicationStateStore(
+        config.publication_state
+    )
+    try:
+        parent_bundle = operations_module.assemble_three_store_bundle(
+            pipeline_store=phase2_state,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=reserved_root,
+            state_parent_commit_sha=reserved_head,
+            query_set_digest=config.query_set_digest,
+            budget_policy_digest=(
+                discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest
+                or ""
+            ),
+            created_at=timestamp,
+        )
+    finally:
+        phase2_state.close()
+        publication.close()
+    started_root = parent_bundle.root.root_digest
+
+    class InstrumentedRemote:
+        def __init__(self) -> None:
+            self.head = started_head
+            self.operations: list[str] = []
+            self.force_values: list[bool] = []
+            self.blobs = {
+                state_branch_module._git_blob_id(item.content): item.content
+                for item in parent_bundle.files
+            }
+            parent_tree_sha = "1" * 40
+            self.trees = {
+                parent_tree_sha: tuple(
+                    state_branch_module.StateTreeEntry(
+                        path=item.path,
+                        sha=state_branch_module._git_blob_id(item.content),
+                        mode="100644",
+                        size=len(item.content),
+                    )
+                    for item in parent_bundle.files
+                )
+            }
+            self.commits = {
+                started_head: state_branch_module.StateCommitObservation(
+                    sha=started_head,
+                    tree_sha=parent_tree_sha,
+                    parents=(reserved_head,),
+                    message=state_branch_module._state_commit_message(
+                        started_root
+                    ),
+                )
+            }
+            self.counter = 20
+
+        def _sha(self) -> str:
+            self.counter += 1
+            return f"{self.counter:040x}"
+
+        def get_state_ref(self):
+            self.operations.append("get_state_ref")
+            return state_branch_module.StateRefObservation(
+                state_branch_module.STATE_REF,
+                self.head,
+            )
+
+        def get_commit(self, sha: str):
+            self.operations.append("get_commit")
+            return self.commits[sha]
+
+        def get_tree(self, sha: str):
+            self.operations.append("get_tree")
+            return self.trees[sha]
+
+        def get_blob(self, sha: str) -> bytes:
+            self.operations.append("get_blob")
+            return self.blobs[sha]
+
+        def create_blob(self, content: bytes) -> str:
+            self.operations.append("create_blob")
+            sha = state_branch_module._git_blob_id(content)
+            self.blobs[sha] = content
+            return sha
+
+        def create_tree(self, entries) -> str:
+            self.operations.append("create_tree")
+            sha = self._sha()
+            self.trees[sha] = tuple(
+                state_branch_module.StateTreeEntry(
+                    path=str(entry["path"]),
+                    sha=str(entry["sha"]),
+                    mode="100644",
+                    size=len(self.blobs[str(entry["sha"])]),
+                )
+                for entry in entries
+            )
+            return sha
+
+        def create_commit(
+            self,
+            message: str,
+            tree: str,
+            parents,
+        ) -> str:
+            self.operations.append("create_commit")
+            sha = self._sha()
+            self.commits[sha] = state_branch_module.StateCommitObservation(
+                sha=sha,
+                tree_sha=tree,
+                parents=tuple(parents),
+                message=message,
+            )
+            return sha
+
+        def update_state_ref(self, sha: str, *, force: bool):
+            self.operations.append("update_state_ref")
+            self.force_values.append(force)
+            assert force is False
+            self.head = sha
+            return state_branch_module.StateRefObservation(
+                state_branch_module.STATE_REF,
+                sha,
+            )
+
+    remote = InstrumentedRemote()
+    state_branch_store = state_branch_module.StateBranchStore(remote)
+    real_recovery_barrier = state_branch_module.StateBranchDurabilityBarrier(
+        state_store=state_branch_store,
+        query_set_digest=config.query_set_digest,
+        budget_policy_digest=(
+            discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest
+            or ""
+        ),
+    )
+
     provider_constructions = 0
 
     class ForbiddenProvider:
@@ -1629,22 +1768,23 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     discovery_syncs: list[str] = []
 
     class RecoveryBarrier:
-        def confirm(self, *, transition, **_kwargs):
+        def confirm(self, *, transition, **kwargs):
             transitions.append(transition.transition)
             assert transition.transition == "result_outcome_unknown"
-            return ports.DurabilityReceipt.from_remote_verification(
+            return real_recovery_barrier.confirm(
                 transition=transition,
-                verified_state_head="f" * 40,
-                state_root_digest="sha256:" + ("b" * 64),
-                pipeline_database_digest="sha256:" + ("c" * 64),
-                operations_database_digest="sha256:" + ("d" * 64),
-                publication_database_digest="sha256:" + ("e" * 64),
-                pipeline_projection_digest="sha256:" + ("f" * 64),
-                operations_projection_digest="sha256:" + ("0" * 64),
-                publication_projection_digest="sha256:" + ("1" * 64),
+                **kwargs,
             )
 
-        def sync_discovery(self, *, operations_store, **_kwargs):
+        def sync_discovery(
+            self,
+            *,
+            operations_store,
+            observed_head,
+            prior_root_digest,
+            created_at,
+            pipeline_store=None,
+        ):
             snapshot = operations_store.snapshot_run(authority.run_id)
             if not snapshot.candidate_terminals:
                 raise AssertionError(
@@ -1652,11 +1792,35 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
                 )
             kind = "summary" if snapshot.summary is not None else "terminal"
             discovery_syncs.append(kind)
-            ordinal = len(discovery_syncs)
-            return SimpleNamespace(
-                commit_sha=f"{ordinal + 6:040x}",
-                root_digest="sha256:" + f"{ordinal + 6:064x}",
+            pipeline = (
+                pipeline_store
+                if pipeline_store is not None
+                else state_module.SQLiteStateStore(config.pipeline_state)
             )
+            owns_pipeline = pipeline_store is None
+            publication_store = publication_module.PublicationStateStore(
+                config.publication_state
+            )
+            try:
+                bundle = operations_module.assemble_three_store_bundle(
+                    pipeline_store=pipeline,
+                    operations_store=operations_store,
+                    publication_store=publication_store,
+                    prior_root_digest=prior_root_digest,
+                    state_parent_commit_sha=observed_head,
+                    query_set_digest=config.query_set_digest,
+                    budget_policy_digest=(
+                        discovery_domain.DiscoveryBudgetPolicyV1()
+                        .budget_policy_digest
+                        or ""
+                    ),
+                    created_at=created_at,
+                )
+                return state_branch_store.sync(bundle, observed_head)
+            finally:
+                publication_store.close()
+                if owns_pipeline:
+                    pipeline.close()
 
     class Search:
         def search_repositories(self, **_kwargs):
@@ -1718,6 +1882,17 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
         real_snapshot_run,
     )
 
+    def restore_state():
+        restored = state_branch_store.restore()
+        assert restored.bundle is not None
+        operations_module.restore_three_store_bundle(
+            restored.bundle,
+            pipeline_path=config.pipeline_state,
+            operations_path=config.operations_state,
+            publication_path=config.publication_state,
+        )
+        return restored
+
     application = discovery_application.DiscoveryApplication(
         discovery_application.DiscoveryDependencies(
             search_factory=Search,
@@ -1726,13 +1901,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
                     config.operations_state
                 )
             ),
-            state_restore=lambda: SimpleNamespace(
-                status="verified",
-                observed_head=started_head,
-                bundle=SimpleNamespace(
-                    root=SimpleNamespace(root_digest=started_root)
-                ),
-            ),
+            state_restore=restore_state,
             durability_barrier=RecoveryBarrier(),
             phase2_factory=built._dependencies.phase2_factory,
             phase3_factory=built._dependencies.phase3_factory,
@@ -1740,7 +1909,19 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
             initial_state_root_digest=config.initial_state_root_digest,
         )
     )
-    result = application.run(authority)
+    try:
+        result = application.run(authority)
+    except Exception as failure:
+        pytest.fail(
+            "real recovery probe failed: "
+            f"type={type(failure).__name__} "
+            f"code={getattr(failure, 'code', None)} "
+            f"last_remote_operation="
+            f"{remote.operations[-1] if remote.operations else None} "
+            f"update_state_ref_reached="
+            f"{'update_state_ref' in remote.operations} "
+            f"provider_constructions={provider_constructions}"
+        )
 
     with operations_module.OperationsStateStore(
         config.operations_state
@@ -1757,3 +1938,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     )
     assert snapshot.summary.status == "completed_degraded"
     assert result.eligible_candidates == ()
+    assert remote.force_values == [False, False, False]
+    assert remote.operations.count("update_state_ref") == 3
+    assert len(remote.operations) == 119
+    assert remote.operations[-1] == "get_tree"
