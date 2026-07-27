@@ -131,6 +131,11 @@ class PublicationStateStore:
                 raise RuntimeError("publication checkpoint continuity failure")
             prior = checkpoint.checkpoint_hash
         record = PublicationRecordV1.model_validate_json(row[1], strict=True) if row[1] else None
+        if record is not None and (
+            record.publication_key != intent.publication_key
+            or record.desired_revision != intent.desired_revision
+        ):
+            raise RuntimeError("publication terminal record disagrees with stored intent")
         return PublicationAttempt(intent, checkpoints, record)
 
     def find_completed(self, intent: PublicationIntentV1) -> PublicationRecordV1 | None:
@@ -164,7 +169,10 @@ class PublicationStateStore:
         return checkpoint
 
     def complete(self, intent: PublicationIntentV1, record: PublicationRecordV1) -> None:
-        if type(record) is not PublicationRecordV1 or record.publication_key != intent.publication_key:
+        if type(record) is not PublicationRecordV1 or (
+            record.publication_key != intent.publication_key
+            or record.desired_revision != intent.desired_revision
+        ):
             raise ValueError("publication terminal record disagrees with intent")
         if self.find_pending(intent) is None:
             raise RuntimeError("publication attempt is not pending")
