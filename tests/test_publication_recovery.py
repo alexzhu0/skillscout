@@ -336,6 +336,10 @@ def test_completed_intent_is_remotely_revalidated_without_reopening_ledger(
     assert reused.record == created.record
     assert len(remote.writes) == write_count
     assert remote.close_calls == 2
+    store = PublicationStateStore(tmp_path / "state" / "publication.db")
+    assert store.find_completed(admission.intent) == created.record
+    assert store.find_pending(admission.intent) is None
+    store.close()
 
 
 def test_local_state_loss_reconstructs_exact_remote_completion_without_writes(
