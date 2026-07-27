@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from skillscout.application.ports import ErrorCode, SafeFailure
+
 
 ROOT = Path(__file__).resolve().parents[1]
 APPLICATION_XFAIL = pytest.mark.xfail(
@@ -198,3 +200,79 @@ def test_integrity_and_permanent_failures_stop_the_run(outcome: str) -> None:
     )
     assert result.processed_repository_ids == (910001,)
     assert result.run_status in {"integrity_conflict", "permanent_failure"}
+
+
+def test_unknown_outcome_consumes_once_without_automatic_replay() -> None:
+    module = _module()
+    result = module.evaluate_discovery_scenario(
+        module.DiscoveryScenario(
+            repository_id=910001,
+            workflows=(module.WorkflowScenario("semantic_outcome_unknown"),),
+            later_repository_id=910002,
+        )
+    )
+    assert result.semantic_reservation_count == 1
+    assert result.provider_request_count == 1
+    assert result.automatic_replay_count == 0
+    assert result.processed_repository_ids == (910001, 910002)
+    assert result.run_status == "completed_degraded"
+
+
+def test_eligible_handoff_locator_is_bounded_and_non_authorizing() -> None:
+    module = _module()
+    authority = "sha256:" + ("a" * 64)
+    identity = "sha256:" + ("b" * 64)
+    locator = module.eligible_candidate_locator(
+        authority_digest=authority,
+        workflow_identity_digest=identity,
+    )
+    assert locator.locator == (
+        "state/objects/sha256/aa/" + ("a" * 64) + ".json"
+    )
+    assert set(locator.__annotations__) == {
+        "locator",
+        "authority_digest",
+        "workflow_identity_digest",
+    }
+
+
+def test_forbidden_publication_factory_cannot_be_offered_to_dependencies() -> None:
+    module = _module()
+    calls: list[str] = []
+
+    def forbidden() -> object:
+        calls.append("publication_construct")
+        return object()
+
+    with pytest.raises(TypeError):
+        module.DiscoveryDependencies(  # type: ignore[call-arg]
+            search_factory=lambda: object(),
+            operations_store_factory=lambda: object(),
+            state_restore=lambda: object(),
+            durability_barrier=object(),
+            phase2_factory=lambda: object(),
+            phase3_factory=lambda: object(),
+            publication_factory=forbidden,
+        )
+    assert calls == []
+
+
+def test_unexpected_health_failure_collapses_without_raw_exception() -> None:
+    module = _module()
+
+    class Operations:
+        def run_discovery(self, **_kwargs: object) -> object:
+            raise RuntimeError("SECRET_EXCEPTION_CANARY")
+
+    dependencies = module.DiscoveryDependencies(
+        search_factory=lambda: object(),
+        operations_store_factory=Operations,
+        state_restore=lambda: object(),
+        durability_barrier=object(),
+        phase2_factory=lambda: object(),
+        phase3_factory=lambda: object(),
+    )
+    with pytest.raises(SafeFailure) as failure:
+        module.DiscoveryApplication(dependencies).run()
+    assert failure.value.code is ErrorCode.PIPELINE_INTERRUPTED
+    assert "SECRET_EXCEPTION_CANARY" not in str(failure.value)

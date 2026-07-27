@@ -74,7 +74,6 @@ def test_state_fixture_and_wave0_test_surfaces_contain_no_secret_canaries() -> N
         assert canary.encode() not in payload
 
 
-@APPLICATION_XFAIL
 def test_discovery_module_has_no_publication_import_or_credential_lookup() -> None:
     module = importlib.import_module("skillscout.application.discovery")
     source_path = Path(inspect.getsourcefile(module) or "")
