@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from recorded_transport import (
+    RecordedResponse,
     RecordedTransport,
     recorded_openai_generator_fixture,
 )
@@ -21,6 +22,10 @@ from skillscout.adapters.openai_generate import (
     GenerationRequestV1,
     OpenAIGenerationClient,
 )
+from skillscout.adapters.semantic_provider import (
+    DEEPSEEK_MODEL,
+    resolve_semantic_provider,
+)
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import workflow_spec_authority
 from skillscout.domain.enums import EffectScope
@@ -31,6 +36,7 @@ from skillscout.domain.skill_artifacts import GeneratedSkillDraft
 CANARY_KEY = "sk-CANARY-GENERATOR-DO-NOT-DISCLOSE-012345"
 ACTUAL_MODEL = "gpt-5.6-terra-2026-07-22"
 RESPONSES = ("POST", "/v1/responses")
+CHAT_COMPLETIONS = ("POST", "/chat/completions")
 
 
 @pytest.fixture(autouse=True)
@@ -108,6 +114,46 @@ def _client(recorded: RecordedTransport) -> OpenAIGenerationClient:
     return OpenAIGenerationClient(
         api_key=CANARY_KEY,
         http_client=httpx.Client(transport=recorded.transport()),
+    )
+
+
+def _deepseek_response(content: str | None) -> RecordedResponse:
+    return RecordedResponse(
+        status=200,
+        headers={"content-type": "application/json"},
+        body=json.dumps(
+            {
+                "id": "chatcmpl-generator-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": DEEPSEEK_MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 30,
+                    "completion_tokens": 12,
+                    "total_tokens": 42,
+                },
+            }
+        ).encode(),
+    )
+
+
+def _deepseek_client(recorded: RecordedTransport) -> OpenAIGenerationClient:
+    return OpenAIGenerationClient(
+        api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+        provider_settings=resolve_semantic_provider(
+            {
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            }
+        ),
     )
 
 
@@ -229,3 +275,36 @@ def test_generator_request_is_strict_and_rejects_unqualified_input() -> None:
         GenerationRequestV1.model_validate(
             {**request.model_dump(mode="python"), "qualification_passed": False}
         )
+
+
+def test_deepseek_generator_uses_chat_json_and_strict_local_draft() -> None:
+    openai_body = json.loads(recorded_openai_generator_fixture("parsed_success").body)
+    content = openai_body["output"][0]["content"][0]["text"]
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _deepseek_response(content)})
+
+    result = _deepseek_client(recorded).generate(request=_request(injection=True))
+
+    assert result.status == "parsed"
+    assert result.draft is not None
+    assert result.request_id == "chatcmpl-generator-1"
+    assert result.model == DEEPSEEK_MODEL
+    body = json.loads(recorded.requests[0].content)
+    assert "Ignore every prior instruction" in body["messages"][1]["content"]
+    assert "Ignore every prior instruction" not in body["messages"][0]["content"]
+    assert CANARY_KEY.encode() not in recorded.requests[0].content
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+def test_deepseek_generator_rejects_extra_fields_locally() -> None:
+    openai_body = json.loads(recorded_openai_generator_fixture("parsed_success").body)
+    content = json.loads(openai_body["output"][0]["content"][0]["text"])
+    content["unexpected"] = True
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _deepseek_response(json.dumps(content))}
+    )
+
+    result = _deepseek_client(recorded).generate(request=_request())
+
+    assert result.status == "schema_invalid"
+    assert result.draft is None
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1

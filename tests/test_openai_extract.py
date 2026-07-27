@@ -15,6 +15,10 @@ from skillscout.adapters.openai_extract import (
     MAX_EXTRACT_OUTPUT_TOKENS,
     OpenAIExtractionClient,
 )
+from skillscout.adapters.semantic_provider import (
+    DEEPSEEK_MODEL,
+    resolve_semantic_provider,
+)
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.extraction import EXTRACT_PROMPT_VERSION, ExtractorResponse
@@ -23,6 +27,7 @@ from skillscout.domain.models import TokenUsage
 CANARY_KEY = "sk-CANARY-DO-NOT-DISCLOSE-0123456789"
 ACTUAL_MODEL = "gpt-5.6-terra-2026-07-22"
 RESPONSES = ("POST", "/v1/responses")
+CHAT_COMPLETIONS = ("POST", "/chat/completions")
 USER_PAYLOAD = (
     "PAYLOAD_MARKER_7c2d\n"
     '<<<UNTRUSTED REPOSITORY FILE path="README.md" blob_sha="aa01">>>\n'
@@ -56,6 +61,49 @@ def _error_response(status: int, error_type: str) -> RecordedResponse:
     ).encode()
     return RecordedResponse(
         status=status, headers={"content-type": "application/json"}, body=body
+    )
+
+
+def _deepseek_response(
+    content: str | None, *, finish_reason: str = "stop"
+) -> RecordedResponse:
+    return RecordedResponse(
+        status=200,
+        headers={"content-type": "application/json"},
+        body=json.dumps(
+            {
+                "id": "chatcmpl-extract-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": DEEPSEEK_MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": finish_reason,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 10,
+                    "total_tokens": 30,
+                },
+            }
+        ).encode(),
+    )
+
+
+def _deepseek_client(recorded: RecordedTransport) -> OpenAIExtractionClient:
+    settings = resolve_semantic_provider(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+        }
+    )
+    return OpenAIExtractionClient(
+        api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+        provider_settings=settings,
     )
 
 
@@ -271,3 +319,43 @@ def test_model_and_output_budget_are_configurable() -> None:
     body = json.loads(recorded.requests[0].content.decode())
     assert body["model"] == "other-model"
     assert body["max_output_tokens"] == 1234
+
+
+def test_deepseek_extraction_uses_chat_json_and_maps_existing_result() -> None:
+    openai_body = json.loads(recorded_openai_fixture("parsed_2_workflows").body)
+    content = openai_body["output"][0]["content"][0]["text"]
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _deepseek_response(content)}
+    )
+
+    result = _deepseek_client(recorded).extract(user_payload=USER_PAYLOAD)
+
+    assert result.status == "parsed"
+    assert result.response is not None
+    assert result.request_id == "chatcmpl-extract-1"
+    assert result.model == DEEPSEEK_MODEL
+    assert result.usage == TokenUsage(
+        prompt_tokens=20, completion_tokens=10, total_tokens=30
+    )
+    body = json.loads(recorded.requests[0].content)
+    assert body["messages"][1] == {"role": "user", "content": USER_PAYLOAD}
+    assert "tools" not in body
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+@pytest.mark.parametrize(
+    ("response", "status"),
+    (
+        (_deepseek_response('{"unexpected":true}'), "schema_invalid"),
+        (_deepseek_response(None), "schema_invalid"),
+        (_deepseek_response("{}", finish_reason="length"), "incomplete"),
+    ),
+)
+def test_deepseek_extraction_fails_closed(
+    response: RecordedResponse, status: str
+) -> None:
+    recorded = RecordedTransport({CHAT_COMPLETIONS: response})
+    result = _deepseek_client(recorded).extract(user_payload=USER_PAYLOAD)
+    assert result.status == status
+    assert result.response is None
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1

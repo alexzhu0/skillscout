@@ -19,6 +19,10 @@ from skillscout.adapters.openai_review import (
     OpenAIReviewClient,
     review_input_size_bytes,
 )
+from skillscout.adapters.semantic_provider import (
+    DEEPSEEK_MODEL,
+    resolve_semantic_provider,
+)
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import (
     CANDIDATE_EXECUTION_AUTHORITY_SCHEMA_VERSION,
@@ -73,6 +77,7 @@ REVIEW_FIXTURES = (
     Path(__file__).parent / "fixtures" / "openai" / "reviewer" / "cases.json"
 )
 RESPONSES = ("POST", "/v1/responses")
+CHAT_COMPLETIONS = ("POST", "/chat/completions")
 CANARY_KEY = "sk-CANARY-REVIEWER-DO-NOT-DISCLOSE-012345"
 WORKFLOW_CANARY = "WORKFLOW-CANARY-ONLY-IN-USER"
 ARTIFACT_CANARY = "ARTIFACT-CANARY-ONLY-IN-USER"
@@ -241,6 +246,46 @@ def _client(recorded: RecordedTransport) -> OpenAIReviewClient:
     return OpenAIReviewClient(
         api_key=CANARY_KEY,
         http_client=httpx.Client(transport=recorded.transport()),
+    )
+
+
+def _deepseek_response(content: str | None) -> RecordedResponse:
+    return RecordedResponse(
+        status=200,
+        headers={"content-type": "application/json"},
+        body=json.dumps(
+            {
+                "id": "chatcmpl-reviewer-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": DEEPSEEK_MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 8,
+                    "total_tokens": 48,
+                },
+            }
+        ).encode(),
+    )
+
+
+def _deepseek_client(recorded: RecordedTransport) -> OpenAIReviewClient:
+    return OpenAIReviewClient(
+        api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+        provider_settings=resolve_semantic_provider(
+            {
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            }
+        ),
     )
 
 
@@ -594,6 +639,43 @@ def test_adapter_is_remote_read_and_keeps_credentials_header_only() -> None:
     sent = recorded.requests[0]
     assert sent.headers["authorization"] == f"Bearer {CANARY_KEY}"
     assert CANARY_KEY.encode() not in sent.content
+
+
+def test_deepseek_reviewer_uses_chat_json_and_preserves_user_boundary() -> None:
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _deepseek_response(_judgment().model_dump_json())}
+    )
+
+    result = _deepseek_client(recorded).review(
+        workflow_spec=_workflow(injection=True),
+        package=_package(injection=True),
+        validation_report=_adapter_report(injection=True),
+    )
+
+    assert result.status == "parsed"
+    assert result.judgment == _judgment()
+    assert result.request_id == "chatcmpl-reviewer-1"
+    assert result.model == DEEPSEEK_MODEL
+    body = json.loads(recorded.requests[0].content)
+    assert WORKFLOW_CANARY in body["messages"][1]["content"]
+    assert WORKFLOW_CANARY not in body["messages"][0]["content"]
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+def test_deepseek_reviewer_rejects_invalid_schema_locally() -> None:
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _deepseek_response('{"verdict":"YES"}')}
+    )
+
+    result = _deepseek_client(recorded).review(
+        workflow_spec=_workflow(),
+        package=_package(),
+        validation_report=_adapter_report(),
+    )
+
+    assert result.status == "schema_invalid"
+    assert result.judgment is None
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
 
 
 TERMINAL_OUTCOMES = (
