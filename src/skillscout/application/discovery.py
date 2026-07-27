@@ -464,21 +464,41 @@ class DiscoveryApplication:
         terminal_repository_ids = {
             terminal.repository_id for terminal in terminals
         }
+        durable_discovery_reservations = {
+            reservation.repository_id: reservation
+            for reservation in snapshot.discovery_reservations
+        }
         for candidate in selected:
             if candidate.repository.repository_id in terminal_repository_ids:
                 continue
+            durable_reservation = durable_discovery_reservations.get(
+                candidate.repository.repository_id
+            )
             reservation = operations.reserve_discovery_candidate(
                 authority.run_id,
                 candidate,
                 _timestamp(),
             )
-            synchronized = self._sync(
-                operations=operations,
-                observed_head=observed_head,
-                root_digest=root_digest,
-            )
-            observed_head = synchronized.commit_sha
-            root_digest = synchronized.root_digest
+            if durable_reservation is not None:
+                if (
+                    reservation != durable_reservation
+                    or reservation.discovery_run_authority_digest
+                    != authority.authority_digest
+                    or reservation.repository_id
+                    != candidate.repository.repository_id
+                    or reservation.candidate_digest
+                    != candidate.candidate_digest
+                    or reservation.ordinal != candidate.discovery_ordinal
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            else:
+                synchronized = self._sync(
+                    operations=operations,
+                    observed_head=observed_head,
+                    root_digest=root_digest,
+                )
+                observed_head = synchronized.commit_sha
+                root_digest = synchronized.root_digest
             execution = self._dependencies.phase2_factory(
                 candidate=candidate,
                 discovery_reservation=reservation,

@@ -540,6 +540,7 @@ def build_discovery_application(
                 DiscoveredCandidateV1,
                 DiscoveryCandidateTerminalV1,
                 DiscoveryRunAuthorityV1,
+                SemanticReservationV1,
             )
             from skillscout.domain.review import candidate_terminal_summary_bytes
             from skillscout.domain.subjects import RepositorySubject
@@ -583,7 +584,40 @@ def build_discovery_application(
             )
             state_head = observed_head
             state_root = prior_root
-            semantic_reservation = None
+            restored_snapshot = operations.snapshot_run(
+                discovery_authority.run_id
+            )
+            restored_discovery_reservation = next(
+                (
+                    item
+                    for item in restored_snapshot.discovery_reservations
+                    if item.repository_id
+                    == candidate.repository.repository_id
+                ),
+                None,
+            )
+            semantic_reservation = next(
+                (
+                    item
+                    for item in restored_snapshot.semantic_reservations
+                    if item.repository_id
+                    == candidate.repository.repository_id
+                ),
+                None,
+            )
+            if semantic_reservation is not None and (
+                type(semantic_reservation) is not SemanticReservationV1
+                or restored_discovery_reservation is None
+                or semantic_reservation.discovery_run_authority_digest
+                != discovery_authority.authority_digest
+                or semantic_reservation.repository_id
+                != candidate.repository.repository_id
+                or semantic_reservation.discovery_reservation_digest
+                != restored_discovery_reservation.reservation_digest
+                or semantic_reservation.phase2_run_authority_digest
+                != phase2_authority_digest
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
             def reserve_before_extractor(
                 *,

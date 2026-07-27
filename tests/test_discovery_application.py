@@ -1362,6 +1362,7 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
     operations = operations_module.OperationsStateStore(
         config.operations_state
     )
+    operations.create_run(authority, "2026-07-28T00:00:00.000000Z")
     try:
         arguments = {
             "candidate": candidate,
@@ -1390,3 +1391,369 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
         "publication",
         "phase2_state",
     }
+
+
+def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    discovery_domain = importlib.import_module(
+        "skillscout.domain.discovery"
+    )
+    discovery_application = importlib.import_module(
+        "skillscout.application.discovery"
+    )
+    operations_module = importlib.import_module(
+        "skillscout.adapters.operations_state"
+    )
+    pipeline_module = importlib.import_module(
+        "skillscout.application.pipeline"
+    )
+    ports = importlib.import_module("skillscout.application.ports")
+    enums = importlib.import_module("skillscout.domain.enums")
+    state_module = importlib.import_module("skillscout.adapters.state")
+    publication_module = importlib.import_module(
+        "skillscout.adapters.publication_state"
+    )
+    subjects = importlib.import_module("skillscout.domain.subjects")
+    monkeypatch.chdir(tmp_path)
+    config = _runtime_config(bootstrap, tmp_path)
+    authority = bootstrap.discovery_run_authority(config)
+    timestamp = "2026-07-28T00:00:00.000000Z"
+
+    repository_values = {
+        "schema_version": "search-repository-observation-v1",
+        "repository_id": 101,
+        "owner": "example",
+        "name": "orphan",
+        "full_name": "example/orphan",
+        "private": False,
+        "visibility": "public",
+        "fork": False,
+        "archived": False,
+        "disabled": False,
+        "default_branch": "main",
+    }
+    repository = discovery_domain.SearchRepositoryObservationV1(
+        **repository_values,
+        observation_digest=sha256_digest(repository_values),
+    )
+    operations = operations_module.OperationsStateStore(
+        config.operations_state
+    )
+    operations.create_run(authority, timestamp)
+    candidate = None
+    for query_ordinal, query in enumerate(config.query_set.queries, start=1):
+        page_values = {
+            "schema_version": "search-page-observation-v1",
+            "discovery_run_authority_digest": authority.authority_digest,
+            "query_set_version": config.query_set.query_set_version,
+            "query_set_digest": config.query_set.query_set_digest,
+            "query_id": query.query_id,
+            "query_ordinal": query_ordinal,
+            "query_text": query.query_text,
+            "sort": config.query_set.sort,
+            "order": config.query_set.order,
+            "page": 1,
+            "per_page": config.query_set.per_page,
+            "next_page": None,
+            "total_count": 1 if query_ordinal == 1 else 0,
+            "incomplete_results": False,
+            "item_count": 1 if query_ordinal == 1 else 0,
+            "request_id": f"restart-{query_ordinal}",
+            "rate_limit": {
+                "limit": 10,
+                "remaining": 9,
+                "used": 1,
+                "reset_epoch": 1,
+                "resource": "search",
+            },
+        }
+        page = discovery_domain.SearchPageObservationV1(
+            **page_values,
+            observation_digest=sha256_digest(page_values),
+        )
+        candidates = ()
+        if query_ordinal == 1:
+            candidate_values = {
+                "schema_version": "discovered-candidate-v1",
+                "discovery_run_authority_digest": authority.authority_digest,
+                "repository": repository,
+                "source_page_digest": page.observation_digest,
+                "query_ordinal": 1,
+                "page": 1,
+                "item_ordinal": 1,
+                "dedup_disposition": "first_seen",
+                "discovery_ordinal": 1,
+                "first_seen_query_ordinal": 1,
+                "first_seen_page": 1,
+                "first_seen_item_ordinal": 1,
+            }
+            candidate = discovery_domain.DiscoveredCandidateV1(
+                **candidate_values,
+                candidate_digest=sha256_digest(
+                    {
+                        key: (
+                            value.model_dump(mode="json", exclude_none=False)
+                            if hasattr(value, "model_dump")
+                            else value
+                        )
+                        for key, value in candidate_values.items()
+                    }
+                ),
+            )
+            candidates = (candidate,)
+        operations.record_search_page(authority.run_id, page, candidates)
+    assert candidate is not None
+    operations.reserve_discovery_candidate(
+        authority.run_id,
+        candidate,
+        timestamp,
+    )
+
+    phase2_authority_digest = sha256_digest(
+        {
+            "schema_version": "discovery-phase2-run-authority-v1",
+            "discovery_run_authority_digest": authority.authority_digest,
+            "candidate_digest": candidate.candidate_digest,
+            "phase2_profile_version": config.phase2_profile_version,
+            "extractor_model_id": config.extractor_model_id,
+        }
+    )
+    reserved_head = "d" * 40
+    started_head = "e" * 40
+    reserved_root = "sha256:" + ("3" * 64)
+    started_root = "sha256:" + ("4" * 64)
+
+    def reserve_before_extractor(*, pipeline_store, run_id: str):
+        del pipeline_store, run_id
+        reservation = operations.reserve_semantic_candidate(
+            authority.run_id,
+            candidate.repository.repository_id,
+            phase2_authority_digest,
+            timestamp,
+        )
+        return pipeline_module.SemanticReservationReceipt(
+            reservation_digest=reservation.reservation_digest,
+            verified_state_head=reserved_head,
+            state_root_digest=reserved_root,
+        )
+
+    class SetupBarrier:
+        def confirm(self, *, transition, **_kwargs):
+            return ports.DurabilityReceipt.from_remote_verification(
+                transition=transition,
+                verified_state_head=started_head,
+                state_root_digest=started_root,
+                pipeline_database_digest="sha256:" + ("5" * 64),
+                operations_database_digest="sha256:" + ("6" * 64),
+                publication_database_digest="sha256:" + ("7" * 64),
+                pipeline_projection_digest="sha256:" + ("8" * 64),
+                operations_projection_digest="sha256:" + ("9" * 64),
+                publication_projection_digest="sha256:" + ("a" * 64),
+            )
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    original_provider_calls = 0
+
+    class CrashAfterStarted:
+        producer_version = "phase2-v1"
+
+        def semantic_request_required(self, _context) -> bool:
+            return True
+
+        def process(self, stage_input, _context):
+            nonlocal original_provider_calls
+            if stage_input.stage is enums.PipelineStage.EXTRACTOR:
+                original_provider_calls += 1
+                raise SimulatedProcessCrash
+            return pipeline_module.StageOutcome(
+                payload={"outcome": "accepted"},
+                telemetry=None,
+            )
+
+    publication = publication_module.PublicationStateStore(
+        config.publication_state
+    )
+    phase2_state = state_module.SQLiteStateStore(config.pipeline_state)
+    try:
+        guard = pipeline_module.SemanticDurabilityGuard(
+            barrier=SetupBarrier(),
+            operations_store=operations,
+            publication_store=publication,
+            repository_id=candidate.repository.repository_id,
+            workflow_authority_digest=phase2_authority_digest,
+            provider="openai",
+            expected_prior_state_head="c" * 40,
+            expected_prior_root_digest=config.initial_state_root_digest,
+            reservation_hook=reserve_before_extractor,
+            operations_run_id=authority.run_id,
+        )
+        with pytest.raises(SimulatedProcessCrash):
+            pipeline_module.PipelineRunner(
+                phase2_state,
+                CrashAfterStarted(),
+                semantic_durability=guard,
+            ).run(
+                subjects.RepositorySubject(
+                    schema_version="1",
+                    subject_id=f"repo:{candidate.repository.full_name}",
+                    repository=(
+                        f"https://github.com/{candidate.repository.full_name}"
+                    ),
+                ),
+                tmp_path / "crashed-output",
+            )
+    finally:
+        phase2_state.close()
+        publication.close()
+    assert original_provider_calls == 1
+
+    provider_constructions = 0
+
+    class ForbiddenProvider:
+        def __init__(self, **_kwargs) -> None:
+            nonlocal provider_constructions
+            provider_constructions += 1
+            raise AssertionError("orphan semantic request must not be replayed")
+
+    monkeypatch.setattr(
+        "skillscout.adapters.openai_extract.OpenAIExtractionClient",
+        ForbiddenProvider,
+    )
+
+    transitions: list[str] = []
+    discovery_syncs: list[str] = []
+
+    class RecoveryBarrier:
+        def confirm(self, *, transition, **_kwargs):
+            transitions.append(transition.transition)
+            assert transition.transition == "result_outcome_unknown"
+            return ports.DurabilityReceipt.from_remote_verification(
+                transition=transition,
+                verified_state_head="f" * 40,
+                state_root_digest="sha256:" + ("b" * 64),
+                pipeline_database_digest="sha256:" + ("c" * 64),
+                operations_database_digest="sha256:" + ("d" * 64),
+                publication_database_digest="sha256:" + ("e" * 64),
+                pipeline_projection_digest="sha256:" + ("f" * 64),
+                operations_projection_digest="sha256:" + ("0" * 64),
+                publication_projection_digest="sha256:" + ("1" * 64),
+            )
+
+        def sync_discovery(self, *, operations_store, **_kwargs):
+            snapshot = operations_store.snapshot_run(authority.run_id)
+            if not snapshot.candidate_terminals:
+                raise AssertionError(
+                    "durable discovery reservation must not be resynchronized"
+                )
+            kind = "summary" if snapshot.summary is not None else "terminal"
+            discovery_syncs.append(kind)
+            ordinal = len(discovery_syncs)
+            return SimpleNamespace(
+                commit_sha=f"{ordinal + 6:040x}",
+                root_digest="sha256:" + f"{ordinal + 6:064x}",
+            )
+
+    class Search:
+        def search_repositories(self, **_kwargs):
+            raise AssertionError("restored terminal pages must not be replayed")
+
+        def close(self) -> None:
+            pass
+
+    built = bootstrap.build_discovery_application(config, environ={})
+    real_snapshot_run = operations_module.OperationsStateStore.snapshot_run
+
+    def mismatched_snapshot(store, run_id):
+        snapshot = real_snapshot_run(store, run_id)
+        semantic = snapshot.semantic_reservations[0].model_copy(
+            update={
+                "phase2_run_authority_digest": "sha256:" + ("2" * 64)
+            }
+        )
+        return type(snapshot)(
+            search_pages=snapshot.search_pages,
+            candidates=snapshot.candidates,
+            discovery_reservations=snapshot.discovery_reservations,
+            semantic_reservations=(semantic,),
+            semantic_attempts=snapshot.semantic_attempts,
+            workflow_terminals=snapshot.workflow_terminals,
+            candidate_terminals=snapshot.candidate_terminals,
+            summary=snapshot.summary,
+        )
+
+    monkeypatch.setattr(
+        operations_module.OperationsStateStore,
+        "snapshot_run",
+        mismatched_snapshot,
+    )
+    operations.close()
+    mismatched_operations = operations_module.OperationsStateStore(
+        config.operations_state
+    )
+    try:
+        with pytest.raises(SafeFailure) as mismatch:
+            built._dependencies.phase2_factory(
+                candidate=candidate,
+                discovery_authority=authority,
+                operations_store=mismatched_operations,
+                durability_barrier=RecoveryBarrier(),
+                observed_head=started_head,
+                prior_root_digest=started_root,
+                phase3_factory=built._dependencies.phase3_factory,
+            )
+        assert mismatch.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    finally:
+        mismatched_operations.close()
+    assert provider_constructions == 0
+    assert transitions == []
+    assert discovery_syncs == []
+    monkeypatch.setattr(
+        operations_module.OperationsStateStore,
+        "snapshot_run",
+        real_snapshot_run,
+    )
+
+    application = discovery_application.DiscoveryApplication(
+        discovery_application.DiscoveryDependencies(
+            search_factory=Search,
+            operations_store_factory=lambda: (
+                operations_module.OperationsStateStore(
+                    config.operations_state
+                )
+            ),
+            state_restore=lambda: SimpleNamespace(
+                status="verified",
+                observed_head=started_head,
+                bundle=SimpleNamespace(
+                    root=SimpleNamespace(root_digest=started_root)
+                ),
+            ),
+            durability_barrier=RecoveryBarrier(),
+            phase2_factory=built._dependencies.phase2_factory,
+            phase3_factory=built._dependencies.phase3_factory,
+            query_set=config.query_set,
+            initial_state_root_digest=config.initial_state_root_digest,
+        )
+    )
+    result = application.run(authority)
+
+    with operations_module.OperationsStateStore(
+        config.operations_state
+    ) as restored_operations:
+        snapshot = restored_operations.snapshot_run(authority.run_id)
+    assert provider_constructions == 0
+    assert transitions == ["result_outcome_unknown"]
+    assert discovery_syncs == ["terminal", "summary"]
+    assert tuple(item.status for item in snapshot.semantic_attempts) == (
+        "semantic_outcome_unknown",
+    )
+    assert tuple(item.outcome for item in snapshot.candidate_terminals) == (
+        "semantic_outcome_unknown",
+    )
+    assert snapshot.summary.status == "completed_degraded"
+    assert result.eligible_candidates == ()
