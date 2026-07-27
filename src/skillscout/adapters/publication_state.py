@@ -83,6 +83,22 @@ class PublicationStateProjectionV1(StrictFrozenModel):
     terminal_record_digests: tuple[Digest, ...]
     projection_digest: Digest
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_sequences(cls, value: object) -> object:
+        if isinstance(value, dict):
+            payload = dict(value)
+            for field in (
+                "intent_digests",
+                "publication_keys",
+                "desired_revisions",
+                "terminal_record_digests",
+            ):
+                if isinstance(payload.get(field), list):
+                    payload[field] = tuple(payload[field])
+            return payload
+        return value
+
     @model_validator(mode="after")
     def validate_projection(self) -> "PublicationStateProjectionV1":
         sequences = (

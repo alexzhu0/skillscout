@@ -15,6 +15,23 @@ from typing import Annotated, Callable, Final, Literal, TypeVar
 from pydantic import Field, model_validator
 
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
+from skillscout.adapters.publication_state import (
+    PublicationOwnedFactV1,
+    PublicationOwnedStateV1,
+    PublicationStateProjectionV1,
+    PublicationStateStore,
+)
+from skillscout.adapters.state import (
+    PipelineOwnedFactV1,
+    PipelineOwnedStateV1,
+    PipelineStateProjectionV1,
+    SQLiteStateStore,
+)
+from skillscout.adapters.state_branch import (
+    StateOwnedFile,
+    VerifiedStateBundle,
+    _validate_bundle,
+)
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.discovery import (
     DISCOVERY_MAX_CANDIDATES,
@@ -28,6 +45,9 @@ from skillscout.domain.discovery import (
     SearchPageObservationV1,
     SemanticReservationV1,
     DiscoveryStateRebuildProjectionV1,
+    DiscoveryStateDatabaseV1,
+    DiscoveryStateObjectV1,
+    DiscoveryStateRootV1,
 )
 from skillscout.domain.models import Digest, StrictFrozenModel
 
@@ -38,6 +58,11 @@ _DIGEST_PATTERN: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TEST_RUN_SCHEMA: Final = "operations-test-run-v1"
 _TEST_RESERVATION_SCHEMA: Final = "operations-test-reservation-v1"
 _TEST_TERMINAL_SCHEMA: Final = "operations-test-terminal-v1"
+_THREE_STORE_DATABASE_PATHS: Final = {
+    "pipeline": "state/databases/pipeline.sqlite3",
+    "operations": "state/databases/operations.sqlite3",
+    "publication": "state/databases/publication.sqlite3",
+}
 _T = TypeVar("_T")
 
 
@@ -159,6 +184,26 @@ class OperationsOwnedStateV1(StrictFrozenModel):
             projection=self.projection,
         ):
             raise ValueError("operations export digest mismatch")
+        return self
+
+
+class ThreeStoreProjectionV1(StrictFrozenModel):
+    """Exact owner projections and export digests bound into one root object."""
+
+    schema_version: Literal["three-store-projection-v1"]
+    pipeline: PipelineStateProjectionV1
+    operations: DiscoveryStateRebuildProjectionV1
+    publication: PublicationStateProjectionV1
+    pipeline_export_digest: Digest
+    operations_export_digest: Digest
+    publication_export_digest: Digest
+    projection_digest: Digest
+
+    @model_validator(mode="after")
+    def validate_three_store_projection(self) -> ThreeStoreProjectionV1:
+        values = self.model_dump(mode="json", exclude={"projection_digest"})
+        if self.projection_digest != sha256_digest(values):
+            raise ValueError("three-store projection digest mismatch")
         return self
 
 
@@ -1897,3 +1942,368 @@ class OperationsStateStore:
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+def _three_store_projection(
+    pipeline: PipelineOwnedStateV1,
+    operations: OperationsOwnedStateV1,
+    publication: PublicationOwnedStateV1,
+) -> ThreeStoreProjectionV1:
+    values: dict[str, object] = {
+        "schema_version": "three-store-projection-v1",
+        "pipeline": pipeline.projection,
+        "operations": operations.projection,
+        "publication": publication.projection,
+        "pipeline_export_digest": pipeline.export_digest,
+        "operations_export_digest": operations.export_digest,
+        "publication_export_digest": publication.export_digest,
+    }
+    return ThreeStoreProjectionV1(
+        **values,
+        projection_digest=sha256_digest(
+            {
+                key: (
+                    value.model_dump(mode="json", exclude_none=False)
+                    if hasattr(value, "model_dump")
+                    else value
+                )
+                for key, value in values.items()
+            }
+        ),
+    )
+
+
+def _object_locator(digest: str) -> str:
+    if _DIGEST_PATTERN.fullmatch(digest) is None:
+        raise OperationsIntegrityError("invalid state object digest")
+    hex_digest = digest.removeprefix("sha256:")
+    return f"state/objects/sha256/{hex_digest[:2]}/{hex_digest}.json"
+
+
+def _owned_envelope(
+    exported: object,
+) -> bytes:
+    owner = str(getattr(exported, "owner"))
+    return canonical_json_bytes(
+        {
+            "schema_version": "three-store-owned-envelope-v1",
+            "owner": owner,
+            "database_locator": getattr(exported, "database_locator"),
+            "schema_fingerprint": getattr(exported, "schema_fingerprint"),
+            "database_digest": getattr(exported, "database_digest"),
+            "fact_digests": tuple(
+                fact.object_digest for fact in getattr(exported, "facts")
+            ),
+            "projection": getattr(exported, "projection").model_dump(
+                mode="json", exclude_none=False
+            ),
+            "projection_digest": getattr(exported, "projection_digest"),
+            "export_digest": getattr(exported, "export_digest"),
+        }
+    )
+
+
+def _bundle_from_exports(
+    *,
+    pipeline: PipelineOwnedStateV1,
+    operations: OperationsOwnedStateV1,
+    publication: PublicationOwnedStateV1,
+    prior_root_digest: str | None,
+    state_parent_commit_sha: str,
+    query_set_digest: str,
+    budget_policy_digest: str,
+    created_at: str,
+) -> tuple[VerifiedStateBundle, ThreeStoreProjectionV1]:
+    if (
+        type(pipeline) is not PipelineOwnedStateV1
+        or type(operations) is not OperationsOwnedStateV1
+        or type(publication) is not PublicationOwnedStateV1
+    ):
+        raise OperationsIntegrityError("three-store exports are not canonical")
+    projection = _three_store_projection(pipeline, operations, publication)
+    object_bytes: dict[str, bytes] = {}
+    for exported in (pipeline, operations, publication):
+        for fact in exported.facts:
+            payload = fact.payload_json.encode("utf-8")
+            if sha256_digest(payload) != fact.object_digest:
+                raise OperationsIntegrityError("owned fact digest mismatch")
+            existing = object_bytes.setdefault(fact.object_digest, payload)
+            if existing != payload:
+                raise OperationsIntegrityError("state object digest collision")
+        envelope = _owned_envelope(exported)
+        envelope_digest = sha256_digest(envelope)
+        existing = object_bytes.setdefault(envelope_digest, envelope)
+        if existing != envelope:
+            raise OperationsIntegrityError("state envelope digest collision")
+    projection_bytes = canonical_json_bytes(projection)
+    object_bytes[sha256_digest(projection_bytes)] = projection_bytes
+
+    objects = tuple(
+        DiscoveryStateObjectV1(
+            object_digest=digest,
+            locator=_object_locator(digest),
+            size_bytes=len(content),
+        )
+        for digest, content in sorted(object_bytes.items())
+    )
+    databases = tuple(
+        DiscoveryStateDatabaseV1(
+            owner=exported.owner,
+            locator=exported.database_locator,
+            content_digest=exported.database_digest,
+            size_bytes=len(exported.database_bytes),
+            schema_fingerprint=exported.schema_fingerprint,
+        )
+        for exported in (pipeline, operations, publication)
+    )
+    root_values: dict[str, object] = {
+        "schema_version": "discovery-state-root-v1",
+        "root_locator": "state/root.json",
+        "prior_root_digest": prior_root_digest,
+        "state_parent_commit_sha": state_parent_commit_sha,
+        "query_set_digest": query_set_digest,
+        "budget_policy_digest": budget_policy_digest,
+        "objects": objects,
+        "databases": databases,
+        "rebuild_projection": operations.projection,
+        "created_at": created_at,
+    }
+    root = DiscoveryStateRootV1(
+        **root_values,
+        root_digest=sha256_digest(
+            {
+                key: (
+                    tuple(
+                        item.model_dump(mode="json", exclude_none=False)
+                        for item in value
+                    )
+                    if key in {"objects", "databases"}
+                    else value.model_dump(mode="json", exclude_none=False)
+                    if hasattr(value, "model_dump")
+                    else value
+                )
+                for key, value in root_values.items()
+            }
+        ),
+    )
+    files = [
+        StateOwnedFile(
+            "state/root.json",
+            canonical_json_bytes(root.model_dump(mode="json", exclude_none=False)),
+        ),
+        *(
+            StateOwnedFile(_object_locator(digest), content)
+            for digest, content in sorted(object_bytes.items())
+        ),
+        StateOwnedFile(pipeline.database_locator, pipeline.database_bytes),
+        StateOwnedFile(operations.database_locator, operations.database_bytes),
+        StateOwnedFile(publication.database_locator, publication.database_bytes),
+    ]
+    bundle = VerifiedStateBundle(root, tuple(files))
+    _validate_bundle(bundle, expected_parent=state_parent_commit_sha)
+    return bundle, projection
+
+
+def assemble_three_store_bundle(
+    *,
+    pipeline_store: SQLiteStateStore,
+    operations_store: OperationsStateStore,
+    publication_store: PublicationStateStore,
+    prior_root_digest: str | None,
+    state_parent_commit_sha: str,
+    query_set_digest: str,
+    budget_policy_digest: str,
+    created_at: str,
+) -> VerifiedStateBundle:
+    """Assemble exactly three store-owned snapshots without reading private schemas."""
+
+    pipeline = pipeline_store.export_owned_state()
+    operations = operations_store.export_owned_state()
+    publication = publication_store.export_owned_state()
+    bundle, _projection = _bundle_from_exports(
+        pipeline=pipeline,
+        operations=operations,
+        publication=publication,
+        prior_root_digest=prior_root_digest,
+        state_parent_commit_sha=state_parent_commit_sha,
+        query_set_digest=query_set_digest,
+        budget_policy_digest=budget_policy_digest,
+        created_at=created_at,
+    )
+    return bundle
+
+
+def _parse_bundle_exports(
+    bundle: VerifiedStateBundle,
+) -> tuple[
+    PipelineOwnedStateV1,
+    OperationsOwnedStateV1,
+    PublicationOwnedStateV1,
+    ThreeStoreProjectionV1,
+]:
+    try:
+        files = _validate_bundle(
+            bundle,
+            expected_parent=bundle.root.state_parent_commit_sha,
+        )
+        objects: dict[str, tuple[dict[str, object], bytes]] = {}
+        for state_object in bundle.root.objects:
+            content = files[state_object.locator]
+            decoded = json.loads(content)
+            if type(decoded) is not dict:
+                raise OperationsIntegrityError("state object is not an object")
+            objects[state_object.object_digest] = (decoded, content)
+        envelopes = [
+            decoded
+            for decoded, _content in objects.values()
+            if decoded.get("schema_version") == "three-store-owned-envelope-v1"
+        ]
+        if (
+            len(envelopes) != 3
+            or {item.get("owner") for item in envelopes}
+            != {"pipeline", "operations", "publication"}
+        ):
+            raise OperationsIntegrityError("owned state envelopes are not exact")
+        projection_objects = [
+            decoded
+            for decoded, _content in objects.values()
+            if decoded.get("schema_version") == "three-store-projection-v1"
+        ]
+        if len(projection_objects) != 1:
+            raise OperationsIntegrityError("three-store projection is not exact")
+        projection = ThreeStoreProjectionV1.model_validate(
+            projection_objects[0], strict=True
+        )
+        envelope_by_owner = {str(item["owner"]): item for item in envelopes}
+
+        def facts_for(owner: str) -> tuple[object, ...]:
+            envelope = envelope_by_owner[owner]
+            digests = envelope.get("fact_digests")
+            if not isinstance(digests, list) or len(digests) != len(set(digests)):
+                raise OperationsIntegrityError("owned fact index is invalid")
+            fact_type = {
+                "pipeline": PipelineOwnedFactV1,
+                "operations": OperationsOwnedFactV1,
+                "publication": PublicationOwnedFactV1,
+            }[owner]
+            schema_version = {
+                "pipeline": "pipeline-owned-fact-v1",
+                "operations": "operations-owned-fact-v1",
+                "publication": "publication-owned-fact-v1",
+            }[owner]
+            output = []
+            for sequence, digest in enumerate(digests):
+                if type(digest) is not str or digest not in objects:
+                    raise OperationsIntegrityError("owned fact object is missing")
+                decoded, content = objects[digest]
+                kind = decoded.get("kind")
+                output.append(
+                    fact_type.model_validate(
+                        {
+                            "schema_version": schema_version,
+                            "kind": kind,
+                            "sequence": sequence,
+                            "payload_json": content.decode("utf-8"),
+                            "object_digest": digest,
+                        },
+                        strict=True,
+                    )
+                )
+            return tuple(output)
+
+        database_bytes = {
+            owner: files[path]
+            for owner, path in _THREE_STORE_DATABASE_PATHS.items()
+        }
+
+        def export_values(owner: str, facts: tuple[object, ...]) -> dict[str, object]:
+            envelope = envelope_by_owner[owner]
+            if set(envelope) != {
+                "schema_version",
+                "owner",
+                "database_locator",
+                "schema_fingerprint",
+                "database_digest",
+                "fact_digests",
+                "projection",
+                "projection_digest",
+                "export_digest",
+            }:
+                raise OperationsIntegrityError("owned envelope fields are not exact")
+            return {
+                "schema_version": f"{owner}-owned-state-v1",
+                "owner": owner,
+                "database_locator": envelope["database_locator"],
+                "schema_fingerprint": envelope["schema_fingerprint"],
+                "database_bytes": database_bytes[owner],
+                "database_digest": envelope["database_digest"],
+                "facts": facts,
+                "projection": envelope["projection"],
+                "projection_digest": envelope["projection_digest"],
+                "export_digest": envelope["export_digest"],
+            }
+
+        pipeline = PipelineOwnedStateV1.model_validate(
+            export_values("pipeline", facts_for("pipeline")), strict=True
+        )
+        operations = OperationsOwnedStateV1.model_validate(
+            export_values("operations", facts_for("operations")), strict=True
+        )
+        publication = PublicationOwnedStateV1.model_validate(
+            export_values("publication", facts_for("publication")), strict=True
+        )
+        expected_projection = _three_store_projection(
+            pipeline, operations, publication
+        )
+        if projection != expected_projection:
+            raise OperationsIntegrityError("three-store projection mismatch")
+        return pipeline, operations, publication, projection
+    except OperationsIntegrityError:
+        raise
+    except Exception:
+        raise OperationsIntegrityError("invalid three-store state bundle") from None
+
+
+def restore_three_store_bundle(
+    bundle: VerifiedStateBundle,
+    *,
+    pipeline_path: Path,
+    operations_path: Path,
+    publication_path: Path,
+) -> ThreeStoreProjectionV1:
+    """Validate the complete root first, then invoke each owning rebuild seam."""
+
+    pipeline, operations, publication, projection = _parse_bundle_exports(bundle)
+    prospective, expected_projection = _bundle_from_exports(
+        pipeline=pipeline,
+        operations=operations,
+        publication=publication,
+        prior_root_digest=bundle.root.prior_root_digest,
+        state_parent_commit_sha=bundle.root.state_parent_commit_sha,
+        query_set_digest=bundle.root.query_set_digest,
+        budget_policy_digest=bundle.root.budget_policy_digest,
+        created_at=bundle.root.created_at,
+    )
+    if prospective != bundle or expected_projection != projection:
+        raise OperationsIntegrityError("bundle projection equality failed")
+
+    SQLiteStateStore.rebuild_owned_state(pipeline_path, pipeline)
+    OperationsStateStore.rebuild_owned_state(operations_path, operations)
+    PublicationStateStore.rebuild_owned_state(publication_path, publication)
+
+    pipeline_store = SQLiteStateStore(pipeline_path)
+    operations_store = OperationsStateStore(operations_path)
+    publication_store = PublicationStateStore(publication_path)
+    try:
+        fresh = _three_store_projection(
+            pipeline_store.export_owned_state(),
+            operations_store.export_owned_state(),
+            publication_store.export_owned_state(),
+        )
+    finally:
+        publication_store.close()
+        operations_store.close()
+        pipeline_store.close()
+    if fresh != projection:
+        raise OperationsIntegrityError("restored cross-store projection mismatch")
+    return fresh

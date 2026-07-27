@@ -650,6 +650,15 @@ def test_failed_owned_snapshot_exposes_previous_complete_database(
             repository_id=910001,
         )
     store.close()
+    assert database.read_bytes() == before
+    with module.OperationsStateStore(database) as reopened:
+        assert (
+            reopened.reservation_count(
+                "discovery-killed",
+                kind="discovery",
+            )
+            == 0
+        )
 
 
 def test_three_store_bundle_has_exact_paths_and_round_trips_owner_projections(
@@ -769,12 +778,3 @@ def test_three_store_restore_rejects_bundle_mismatch_before_reuse(
             publication_path=tmp_path / "rejected" / "publication.sqlite3",
         )
     assert not (tmp_path / "rejected").exists()
-    assert database.read_bytes() == before
-    with module.OperationsStateStore(database) as reopened:
-        assert (
-            reopened.reservation_count(
-                "discovery-killed",
-                kind="discovery",
-            )
-            == 0
-        )

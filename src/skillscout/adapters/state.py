@@ -726,6 +726,22 @@ class PipelineStateProjectionV1(StrictFrozenModel):
     phase3_terminal_summary_digests: tuple[str, ...]
     projection_digest: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_sequences(cls, value: object) -> object:
+        if isinstance(value, dict):
+            payload = dict(value)
+            for field in (
+                "phase1_run_ids",
+                "phase3_run_ids",
+                "phase3_authority_digests",
+                "phase3_terminal_summary_digests",
+            ):
+                if isinstance(payload.get(field), list):
+                    payload[field] = tuple(payload[field])
+            return payload
+        return value
+
     @model_validator(mode="after")
     def validate_projection(self) -> PipelineStateProjectionV1:
         values = self.model_dump(mode="json", exclude={"projection_digest"})
@@ -4856,7 +4872,36 @@ class SQLiteStateStore:
     @classmethod
     def rebuild_owned_state(cls, path: Path, exported: object) -> None:
         candidate, authority = cls._pipeline_candidate_from_export(exported)
-        store = cls(path)
+        try:
+            store = cls(path)
+        except SafeFailure as failure:
+            if failure.code is not ErrorCode.STATE_SCHEMA_INCOMPATIBLE:
+                candidate.close()
+                raise
+            store = cls.__new__(cls)
+            store.path = Path(os.path.abspath(os.fspath(path)))
+            store.manifest_root = store.path.with_suffix(".manifests")
+            store.phase3_artifact_root = store.path.with_suffix(".phase3-artifacts")
+            store._state_name = AnchoredDirectory.validate_child_name(store.path.name)
+            store._manifest_name = AnchoredDirectory.validate_child_name(
+                store.manifest_root.name
+            )
+            store._phase3_artifact_name = AnchoredDirectory.validate_child_name(
+                store.phase3_artifact_root.name
+            )
+            store._filesystem_seam = None
+            store._state_parent = AnchoredDirectory.open(store.path.parent, create=True)
+            store._manifest_anchor = None
+            store._manifest_stage_anchors = {}
+            store._phase3_artifact_anchor = None
+            store._lock_descriptor = -1
+            store._durable_bytes = store._state_parent.read_bytes(
+                store._state_name,
+                max_bytes=MAX_STATE_DB_BYTES,
+            )
+            store._poisoned = False
+            store.connection = cls._new_memory_connection()
+            store._acquire_lock()
         try:
             store._install_pipeline_candidate(candidate, authority)
             restored = store.export_owned_state()
@@ -4946,6 +4991,9 @@ class SQLiteStateStore:
         if self._manifest_anchor is not None:
             self._manifest_anchor.close()
             self._manifest_anchor = None
+        if self._phase3_artifact_anchor is not None:
+            self._phase3_artifact_anchor.close()
+            self._phase3_artifact_anchor = None
         if self._lock_descriptor >= 0:
             try:
                 os.close(self._lock_descriptor)
