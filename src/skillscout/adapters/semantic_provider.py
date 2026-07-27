@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Generic, Literal, Mapping, TypeVar
@@ -17,6 +18,119 @@ DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEEPSEEK_OFFICIAL_BASE_URL = "https://api.deepseek.com"
 
 _ResponseModel = TypeVar("_ResponseModel", bound=BaseModel)
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+
+
+class SemanticTransportDisposition(str, Enum):
+    """Closed retry authority for one semantic provider invocation."""
+
+    CONFIRMED_RETRYABLE = "confirmed_retryable"
+    SEMANTIC_OUTCOME_UNKNOWN = "semantic_outcome_unknown"
+    PERMANENT = "permanent"
+    DECIDED = "decided"
+
+
+class SemanticProviderFailure(Exception):
+    """Sanitized provider failure that never retains the originating exception."""
+
+    __slots__ = ("code", "disposition", "request_id")
+
+    def __init__(
+        self,
+        *,
+        disposition: SemanticTransportDisposition,
+        code: Literal[
+            "semantic_rate_limited",
+            "semantic_provider_outcome_unknown",
+            "semantic_request_rejected",
+        ],
+        request_id: str | None = None,
+    ) -> None:
+        if type(disposition) is not SemanticTransportDisposition:
+            raise TypeError("invalid semantic transport disposition")
+        expected_codes = {
+            SemanticTransportDisposition.CONFIRMED_RETRYABLE: {
+                "semantic_rate_limited"
+            },
+            SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN: {
+                "semantic_provider_outcome_unknown"
+            },
+            SemanticTransportDisposition.PERMANENT: {"semantic_request_rejected"},
+        }
+        if (
+            disposition is SemanticTransportDisposition.DECIDED
+            or code not in expected_codes[disposition]
+            or (
+                request_id is not None
+                and (
+                    type(request_id) is not str
+                    or _SAFE_REQUEST_ID.fullmatch(request_id) is None
+                )
+            )
+        ):
+            raise TypeError("invalid semantic provider failure")
+        self.disposition = disposition
+        self.code = code
+        self.request_id = request_id
+        super().__init__(code)
+
+    def __repr__(self) -> str:
+        return (
+            "SemanticProviderFailure("
+            f"disposition={self.disposition.value!r}, "
+            f"code={self.code!r}, "
+            f"request_id={self.request_id!r})"
+        )
+
+
+def classify_semantic_provider_failure(
+    error: BaseException,
+    *,
+    sdk: Any,
+) -> SemanticProviderFailure:
+    """Classify typed SDK evidence, defaulting every ambiguity to unknown."""
+
+    request_id = _safe_provider_request_id(error)
+    if isinstance(error, sdk.RateLimitError):
+        return SemanticProviderFailure(
+            disposition=SemanticTransportDisposition.CONFIRMED_RETRYABLE,
+            code="semantic_rate_limited",
+            request_id=request_id,
+        )
+    if isinstance(error, (sdk.APITimeoutError, sdk.APIConnectionError)):
+        return SemanticProviderFailure(
+            disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+            code="semantic_provider_outcome_unknown",
+            request_id=request_id,
+        )
+    if isinstance(error, sdk.APIStatusError):
+        status_code = getattr(error, "status_code", None)
+        if type(status_code) is int and 400 <= status_code < 500:
+            if status_code == 408:
+                return SemanticProviderFailure(
+                    disposition=(
+                        SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                    ),
+                    code="semantic_provider_outcome_unknown",
+                    request_id=request_id,
+                )
+            return SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.PERMANENT,
+                code="semantic_request_rejected",
+                request_id=request_id,
+            )
+    return SemanticProviderFailure(
+        disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+        code="semantic_provider_outcome_unknown",
+        request_id=request_id,
+    )
+
+
+def _safe_provider_request_id(error: BaseException) -> str | None:
+    candidate = getattr(error, "request_id", None)
+    if type(candidate) is not str or _SAFE_REQUEST_ID.fullmatch(candidate) is None:
+        return None
+    return candidate
 
 
 class SemanticProvider(str, Enum):
@@ -159,15 +273,8 @@ def request_deepseek_json(
             stream=False,
             extra_body={"thinking": {"type": "disabled"}},
         )
-    except (
-        sdk.RateLimitError,
-        sdk.InternalServerError,
-        sdk.APITimeoutError,
-        sdk.APIConnectionError,
-    ):
-        raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE) from None
-    except sdk.APIError:
-        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+    except sdk.APIError as error:
+        raise classify_semantic_provider_failure(error, sdk=sdk) from None
 
     choices = response.choices
     if len(choices) != 1:

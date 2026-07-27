@@ -309,11 +309,14 @@ def test_deepseek_missing_secret_fails_closed_and_profile_stays_nonsecret() -> N
 
 @pytest.mark.parametrize(
     ("status", "expected"),
-    ((429, ErrorCode.STAGE_TRANSIENT_FAILURE), (500, ErrorCode.STAGE_TRANSIENT_FAILURE),
-     (400, ErrorCode.STAGE_PERMANENT_FAILURE)),
+    (
+        (429, SemanticTransportDisposition.CONFIRMED_RETRYABLE),
+        (500, SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
+        (400, SemanticTransportDisposition.PERMANENT),
+    ),
 )
 def test_deepseek_provider_errors_are_closed_without_hidden_retry(
-    status: int, expected: ErrorCode
+    status: int, expected: SemanticTransportDisposition
 ) -> None:
     response = RecordedResponse(
         status=status,
@@ -334,7 +337,7 @@ def test_deepseek_provider_errors_are_closed_without_hidden_retry(
         http_client=httpx.Client(transport=recorded.transport()),
     )
 
-    with pytest.raises(SafeFailure) as failure:
+    with pytest.raises(SemanticProviderFailure) as failure:
         request_deepseek_json(
             client,
             sdk=openai,
@@ -345,7 +348,7 @@ def test_deepseek_provider_errors_are_closed_without_hidden_retry(
             max_tokens=32,
         )
 
-    assert failure.value.code is expected
+    assert failure.value.disposition is expected
     assert "provider detail" not in str(failure.value)
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
 
