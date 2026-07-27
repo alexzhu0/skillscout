@@ -8,6 +8,7 @@ remote object chosen by title/number.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Callable, Iterable, Literal
 
 from skillscout.adapters.publication_state import PublicationStateStore
@@ -51,6 +52,15 @@ class RejectingPublicationDependencies:
     """A test guard proving validation cannot mint a token or open a client."""
     token_calls = 0
     network_calls = 0
+
+
+def _git_blob_object_id(content: bytes) -> str:
+    if type(content) is not bytes:
+        raise TypeError("git blob identity requires exact bytes")
+    return hashlib.sha1(
+        b"blob " + str(len(content)).encode("ascii") + b"\0" + content,
+        usedforsecurity=False,
+    ).hexdigest()
 
 
 class PublicationApplication:
@@ -114,7 +124,12 @@ class PublicationApplication:
         if any(login not in requested and login not in completed for login in admission.intent.reviewers):
             return PublicationApplicationResult("manual_intervention_required", "reviewer_evidence_missing")
         tree = remote.get_tree(commit.tree_sha, recursive=True)
-        desired = {f"skills/{admission.evidence.stable_slug}/{file.path}": file.content_hash.removeprefix("sha256:") for file in admission.evidence.files}
+        desired = {
+            f"skills/{admission.evidence.stable_slug}/{file.path}": _git_blob_object_id(
+                file.content
+            )
+            for file in admission.evidence.files
+        }
         observed = {entry.path: entry.sha for entry in tree}
         if marker.desired_revision == admission.desired_revision and observed == desired:
             record = PublicationRecordV1(schema_version="publication-record-v1", publication_key=admission.publication_key, desired_revision=admission.desired_revision, marker_digest=marker.marker_digest)

@@ -41,6 +41,15 @@ def _publication() -> Any:
     return publication
 
 
+def test_remote_tree_reconciliation_uses_git_blob_object_ids() -> None:
+    from skillscout.application.publication import _git_blob_object_id
+
+    assert _git_blob_object_id(b"test content\n") == (
+        "d670460b4b4aece5915caf5c68d12f560a9fe3e4"
+    )
+    assert len(_git_blob_object_id(b"candidate bytes")) == 40
+
+
 def _reconcile(case: RemoteRecoveryCase) -> Any:
     """Call the eventual test-only recovery seam with bounded fake facts."""
     return _publication().reconcile_publication_fixture(
