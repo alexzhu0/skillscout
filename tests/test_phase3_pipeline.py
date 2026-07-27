@@ -13,7 +13,12 @@ from pydantic import BaseModel, ValidationError
 
 import skillscout.adapters.state as state_module
 import skillscout.application.phase3 as phase3_module
+from skillscout.adapters.semantic_provider import (
+    SemanticProviderFailure,
+    SemanticTransportDisposition,
+)
 from skillscout.adapters.state import SQLiteStateStore
+from skillscout.application.pipeline import SemanticDurabilityGuard
 from skillscout.application.phase3 import (
     PHASE_THREE_STAGE_SEQUENCE as APPLICATION_PHASE_THREE_STAGE_SEQUENCE,
     PhaseThreeApplication,
@@ -21,7 +26,7 @@ from skillscout.application.phase3 import (
     PhaseThreeRuntimeProfile,
     run_phase_three_batch,
 )
-from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.application.ports import DurabilityReceipt, ErrorCode, SafeFailure
 from skillscout.domain.candidate_authority import (
     CandidateExecutionAuthorityV1,
     LINEAGE_RESOLUTION_SCHEMA_VERSION,
@@ -3505,3 +3510,183 @@ def test_resume_budgets_429_500_one_request_per_runner_attempt(
     )
     assert len(raw_requests) == len(generator_attempts) == 3
     assert generator_attempts[-1].attempt_no == 3
+
+
+class _PhaseThreeSemanticOwner:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, int, str, int, str, str]] = []
+
+    def record_semantic_attempt(
+        self,
+        *,
+        run_id: str,
+        repository_id: int,
+        stage: str,
+        attempt_no: int,
+        status: str,
+        recorded_at: str,
+    ):
+        key = (run_id, repository_id, stage, attempt_no)
+        existing = next((item for item in self.records if item[:4] == key), None)
+        if existing is not None:
+            if existing[4] == status:
+                recorded_at = existing[5]
+            else:
+                self.records.remove(existing)
+        value = (*key, status, recorded_at)
+        if value not in self.records:
+            self.records.append(value)
+        return SimpleNamespace(recorded_at=recorded_at)
+
+    def export_owned_state(self):
+        return SimpleNamespace(
+            export_digest=sha256_digest({"semantic-records": self.records})
+        )
+
+
+class _PhaseThreeStaticOwner:
+    def export_owned_state(self):
+        return SimpleNamespace(export_digest=sha256_digest({"publication": True}))
+
+
+class _PhaseThreeBarrier:
+    def __init__(self) -> None:
+        self.transitions = []
+
+    def confirm(self, *, transition, pipeline_store, operations_store, publication_store):
+        del pipeline_store, operations_store, publication_store
+        self.transitions.append(transition)
+        ordinal = len(self.transitions)
+        return DurabilityReceipt.from_remote_verification(
+            transition=transition,
+            verified_state_head=f"{ordinal:040x}",
+            state_root_digest=sha256_digest({"phase3-root": ordinal}),
+            pipeline_database_digest=sha256_digest({"pipeline": ordinal}),
+            operations_database_digest=sha256_digest({"operations": ordinal}),
+            publication_database_digest=sha256_digest({"publication": ordinal}),
+            pipeline_projection_digest=sha256_digest({"pipeline-view": ordinal}),
+            operations_projection_digest=sha256_digest({"operations-view": ordinal}),
+            publication_projection_digest=sha256_digest(
+                {"publication-view": ordinal}
+            ),
+        )
+
+
+def _phase_three_guard(barrier: _PhaseThreeBarrier) -> SemanticDurabilityGuard:
+    return SemanticDurabilityGuard(
+        barrier=barrier,
+        operations_store=_PhaseThreeSemanticOwner(),
+        publication_store=_PhaseThreeStaticOwner(),
+        repository_id=123,
+        workflow_authority_digest=_digest("2"),
+        provider="deepseek",
+        expected_prior_state_head="b" * 40,
+        expected_prior_root_digest=_digest("c"),
+    )
+
+
+def test_generator_confirmed_retry_crosses_barriers_before_second_request(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class ConfirmedThenRefusal(_CascadeGenerator):
+        def generate(self, *, request):
+            self.calls.append("generator")
+            if self.calls.count("generator") == 1:
+                raise SemanticProviderFailure(
+                    disposition=SemanticTransportDisposition.CONFIRMED_RETRYABLE,
+                    code="semantic_rate_limited",
+                )
+            self.calls.pop()
+            return super().generate(request=request)
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    barrier = _PhaseThreeBarrier()
+    result = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: SQLiteStateStore(
+                tmp_path / "generator-classified.sqlite3"
+            ),
+            generator_factory=lambda: ConfirmedThenRefusal("refused", calls),
+            validator_factory=lambda: pytest.fail("validator must not run"),
+            reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+            artifact_projector_factory=lambda: pytest.fail("output must not run"),
+            run_id_factory=lambda: "generator-classified",
+            semantic_durability=_phase_three_guard(barrier),
+        ),
+    ).run(_write_composition_descriptor(tmp_path))
+
+    assert result.outcome == "generator_refusal"
+    assert calls.count("generator") == 2
+    assert [item.transition for item in barrier.transitions] == [
+        "attempt_started",
+        "result_confirmed_retryable",
+        "attempt_started",
+        "result_decided",
+    ]
+
+
+@pytest.mark.parametrize("semantic_stage", ("generator", "reviewer"))
+def test_phase_three_unknown_is_terminally_quarantined_across_restart(
+    tmp_path: Path,
+    semantic_stage: str,
+) -> None:
+    calls: list[str] = []
+
+    class UnknownGenerator(_CascadeGenerator):
+        def generate(self, *, request):
+            self.calls.append("generator")
+            raise SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+                code="semantic_provider_outcome_unknown",
+            )
+
+    class UnknownReviewer(_CascadeReviewer):
+        def review(self, **kwargs):
+            self.calls.append("reviewer")
+            raise SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+                code="semantic_provider_outcome_unknown",
+            )
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    barrier = _PhaseThreeBarrier()
+    state_path = tmp_path / f"{semantic_stage}-unknown.sqlite3"
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: SQLiteStateStore(state_path),
+        generator_factory=(
+            (lambda: UnknownGenerator("unused", calls))
+            if semantic_stage == "generator"
+            else (lambda: _CascadeGenerator("parsed", calls))
+        ),
+        validator_factory=lambda: _CascadeValidator(False, calls),
+        reviewer_factory=lambda: UnknownReviewer("unused", calls),
+        artifact_projector_factory=lambda: object(),
+        run_id_factory=lambda: f"{semantic_stage}-unknown",
+        semantic_durability=_phase_three_guard(barrier),
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    for _ in range(2):
+        with pytest.raises(SemanticProviderFailure) as unknown:
+            application.run(descriptor)
+        assert unknown.value.disposition is (
+            SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+        )
+    assert calls.count(semantic_stage) == 1
