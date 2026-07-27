@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Automated Discovery Operations
 status: executing
-stopped_at: Completed 05-11-PLAN.md
-last_updated: "2026-07-27T14:56:01.245Z"
+stopped_at: Completed 05-12-PLAN.md
+last_updated: "2026-07-27T15:19:11.364Z"
 last_activity: 2026-07-27
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 61
-  completed_plans: 54
+  completed_plans: 55
   percent: 67
 ---
 
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 5 — Automated Discovery Operations
-**Plan:** 7 of 14
+**Plan:** 8 of 14
 **Verification:** 13/13 requirements verified; clean Round-4 code review; exact release gate passed 1247 tests
 **Next command:** `$gsd-plan-phase 4`
 
@@ -115,8 +115,8 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 ## Session Continuity
 
 **Last activity:** 2026-07-27
-**Last session:** 2026-07-27T14:55:50.454Z
-**Stopped at:** Completed 05-11-PLAN.md
+**Last session:** 2026-07-27T15:19:11.359Z
+**Stopped at:** Completed 05-12-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -178,6 +178,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 | Phase 05 P05 | 16min | 2 tasks | 3 files |
 | Phase 05 P06 | 9min | 2 tasks | 2 files |
 | Phase 05 P11 | 8min | 2 tasks | 8 files |
+| Phase 05 P12 | 20min | 2 tasks | 7 files |
 
 ## Decisions
 
@@ -297,3 +298,6 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 - [Phase 05]: Accept state synchronization only after observed-parent force-false mutation and exact ref, commit, tree and blob reread. — Prevent lost updates and mutation-response lies from authorizing durable state.
 - [Phase 05]: Only exact 429 provider rejection grants confirmed semantic retry authority; timeout, connection loss, 408, 5xx and unrecognized failures are outcome-unknown. — Ambiguous replay could duplicate a paid semantic effect.
 - [Phase 05]: Keep refusal, incomplete and strict-schema failures as decided semantic results while treating post-send telemetry projection failures as outcome-unknown. — Business outcomes do not retry, and ambiguous local completion cannot safely replay.
+- [Phase 05]: Each existing store remains the sole owner of its schema, canonical facts, replay, and full-chain verification. — Prevents the discovery coordinator from bypassing private transition and integrity validators.
+- [Phase 05]: Bind compact owner envelopes, digest-addressed facts, and exactly three fixed database snapshots without private SQL duplication. — Keeps the state tree path-closed, content-addressed, and ownership preserving.
+- [Phase 05]: Validate prospective bundle equality before writes and fresh three-store projection equality after rebuild. — No partial, swapped, stale, or cross-store-mismatched bundle can grant reuse authority.
