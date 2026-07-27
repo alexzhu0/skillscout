@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from skillscout.adapters.publication_state import PublicationStateStore
+from skillscout.adapters.state import SQLiteStateStore
 from skillscout.domain.discovery import (
     DISCOVERY_MAX_CANDIDATES,
     DISCOVERY_MAX_SEMANTIC_CANDIDATES,
@@ -648,6 +650,125 @@ def test_failed_owned_snapshot_exposes_previous_complete_database(
             repository_id=910001,
         )
     store.close()
+
+
+def test_three_store_bundle_has_exact_paths_and_round_trips_owner_projections(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    pipeline = SQLiteStateStore(tmp_path / "pipeline.sqlite3")
+    operations = module.OperationsStateStore(tmp_path / "operations.sqlite3")
+    publication = PublicationStateStore(tmp_path / "publication.sqlite3")
+    try:
+        bundle = module.assemble_three_store_bundle(
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=None,
+            state_parent_commit_sha="0" * 40,
+            query_set_digest=DIGEST_A,
+            budget_policy_digest=DIGEST_B,
+            created_at=TIMESTAMP,
+        )
+        original = (
+            pipeline.export_owned_state().projection,
+            operations.export_owned_state().projection,
+            publication.export_owned_state().projection,
+        )
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+    paths = {item.path for item in bundle.files}
+    assert {
+        "state/root.json",
+        "state/databases/pipeline.sqlite3",
+        "state/databases/operations.sqlite3",
+        "state/databases/publication.sqlite3",
+    } < paths
+    assert all(
+        path in {
+            "state/root.json",
+            "state/databases/pipeline.sqlite3",
+            "state/databases/operations.sqlite3",
+            "state/databases/publication.sqlite3",
+        }
+        or path.startswith("state/objects/sha256/")
+        for path in paths
+    )
+
+    restored = tmp_path / "restored"
+    restored.mkdir(mode=0o700)
+    projection = module.restore_three_store_bundle(
+        bundle,
+        pipeline_path=restored / "pipeline.sqlite3",
+        operations_path=restored / "operations.sqlite3",
+        publication_path=restored / "publication.sqlite3",
+    )
+    assert (
+        projection.pipeline,
+        projection.operations,
+        projection.publication,
+    ) == original
+
+
+@pytest.mark.parametrize("damage", ("swapped_database", "object", "partial"))
+def test_three_store_restore_rejects_bundle_mismatch_before_reuse(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    module = _operations_module()
+    pipeline = SQLiteStateStore(tmp_path / "pipeline.sqlite3")
+    operations = module.OperationsStateStore(tmp_path / "operations.sqlite3")
+    publication = PublicationStateStore(tmp_path / "publication.sqlite3")
+    try:
+        bundle = module.assemble_three_store_bundle(
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=None,
+            state_parent_commit_sha="0" * 40,
+            query_set_digest=DIGEST_A,
+            budget_policy_digest=DIGEST_B,
+            created_at=TIMESTAMP,
+        )
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+    files = list(bundle.files)
+    if damage == "swapped_database":
+        by_path = {item.path: item for item in files}
+        first = by_path["state/databases/pipeline.sqlite3"]
+        second = by_path["state/databases/publication.sqlite3"]
+        files[files.index(first)] = type(first)(first.path, second.content)
+        files[files.index(second)] = type(second)(second.path, first.content)
+    elif damage == "object":
+        index = next(
+            index
+            for index, item in enumerate(files)
+            if item.path.startswith("state/objects/")
+        )
+        files[index] = type(files[index])(files[index].path, b"{}")
+    else:
+        files.pop(
+            next(
+                index
+                for index, item in enumerate(files)
+                if item.path == "state/databases/operations.sqlite3"
+            )
+        )
+    damaged = type(bundle)(bundle.root, tuple(files))
+    with pytest.raises(Exception):
+        module.restore_three_store_bundle(
+            damaged,
+            pipeline_path=tmp_path / "rejected" / "pipeline.sqlite3",
+            operations_path=tmp_path / "rejected" / "operations.sqlite3",
+            publication_path=tmp_path / "rejected" / "publication.sqlite3",
+        )
+    assert not (tmp_path / "rejected").exists()
     assert database.read_bytes() == before
     with module.OperationsStateStore(database) as reopened:
         assert (

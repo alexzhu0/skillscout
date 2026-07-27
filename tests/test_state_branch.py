@@ -39,6 +39,26 @@ def test_valid_state_fixture_parses_strict_root_and_exact_paths() -> None:
     assert root.state_parent_commit_sha == fixture["observed_head"]
 
 
+def test_three_store_bundle_coordinator_is_schema_owner_agnostic() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "skillscout"
+        / "adapters"
+        / "operations_state.py"
+    ).read_text()
+    for private_table in (
+        "CREATE TABLE runs",
+        "CREATE TABLE phase3_runs",
+        "CREATE TABLE publication_attempts",
+        "CREATE TABLE publication_checkpoints",
+    ):
+        assert private_table not in source
+    assert "state/databases/pipeline.sqlite3" in source
+    assert "state/databases/operations.sqlite3" in source
+    assert "state/databases/publication.sqlite3" in source
+
+
 def test_conflict_fixture_is_closed_and_forbids_followup_writes() -> None:
     matrix = json.loads((FIXTURES / "conflict_matrix.json").read_bytes())
     assert matrix["schema_version"] == "state-branch-conflict-matrix-v1"
