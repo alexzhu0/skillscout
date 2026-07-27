@@ -3742,3 +3742,39 @@ def test_generator_decided_result_barrier_recovers_without_second_request(
         "result_decided",
         "result_decided",
     ]
+
+
+def test_generator_pre_request_barrier_failure_remains_zero_request_on_restart(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    barrier = _PhaseThreeBarrier(fail_on={1})
+    state_path = tmp_path / "generator-pre-barrier.sqlite3"
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: SQLiteStateStore(state_path),
+        generator_factory=lambda: _CascadeGenerator("refused", calls),
+        validator_factory=lambda: pytest.fail("validator must not run"),
+        reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+        artifact_projector_factory=lambda: object(),
+        run_id_factory=lambda: "generator-pre-barrier",
+        semantic_durability=_phase_three_guard(barrier),
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    with pytest.raises(SafeFailure) as blocked:
+        application.run(descriptor)
+    assert blocked.value.code is ErrorCode.STATE_OPERATION_FAILED
+    with pytest.raises(SemanticProviderFailure):
+        application.run(descriptor)
+    assert calls.count("generator") == 0

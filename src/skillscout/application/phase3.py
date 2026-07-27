@@ -1030,11 +1030,7 @@ class PhaseThreeRunner:
         if durable_attempts and durable_attempts[-1].status == "running":
             interrupted_payload = {
                 "attempt_no": durable_attempts[-1].attempt_no,
-                "error_code": (
-                    "semantic_provider_outcome_unknown"
-                    if self.semantic_durability is not None
-                    else "attempt_interrupted"
-                ),
+                "error_code": "attempt_interrupted",
             }
             chain = _record_semantic_attempt(
                 chain,

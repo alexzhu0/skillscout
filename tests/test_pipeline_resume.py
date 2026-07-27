@@ -2130,6 +2130,10 @@ def test_extractor_pre_request_barrier_failure_issues_zero_requests(
                 store, processor, semantic_durability=_semantic_guard(barrier)
             ).run(_repository_subject(), tmp_path / "pre-barrier")
         assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+        with pytest.raises(SemanticProviderFailure):
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "pre-barrier-restart")
     finally:
         store.close()
     assert processor.extractor_requests == 0
