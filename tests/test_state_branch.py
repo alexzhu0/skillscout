@@ -324,6 +324,7 @@ def _bundle(
         "candidate_digests": [],
         "discovery_reservation_digests": [],
         "semantic_reservation_digests": [],
+        "workflow_terminal_digests": [],
         "candidate_terminal_digests": [],
         "run_summary_digests": [],
     }

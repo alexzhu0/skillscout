@@ -604,6 +604,7 @@ def _projection() -> DiscoveryStateRebuildProjectionV1:
         "semantic_reservation_digests": (
             _semantic_reservation().reservation_digest,
         ),
+        "workflow_terminal_digests": (),
         "candidate_terminal_digests": (
             _terminal("semantic_outcome_unknown").terminal_digest,
         ),

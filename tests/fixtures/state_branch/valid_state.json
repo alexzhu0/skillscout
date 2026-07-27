@@ -48,13 +48,14 @@
       "candidate_digests": [],
       "candidate_terminal_digests": [],
       "discovery_reservation_digests": [],
-      "projection_digest": "sha256:4d51affb6c027efea4336cc10f0a5216ceb14234c1b921f1fcdc7a10d9d2e95c",
+      "projection_digest": "sha256:5503ff9ec08fb19477b259c064743003def18cdc51ed8bd6294503436a707e6a",
       "run_summary_digests": [],
       "schema_version": "discovery-state-rebuild-projection-v1",
       "search_page_digests": [],
-      "semantic_reservation_digests": []
+      "semantic_reservation_digests": [],
+      "workflow_terminal_digests": []
     },
-    "root_digest": "sha256:098415171ee2cee03833b62d1b72662d9a9aace992efa7b2ab14e0c45f1d3bea",
+    "root_digest": "sha256:65210de903ccc579bd7ad4e81fdbc687614557eb865edf10852d0b102744a52e",
     "root_locator": "state/root.json",
     "schema_version": "discovery-state-root-v1",
     "state_parent_commit_sha": "4444444444444444444444444444444444444444"
