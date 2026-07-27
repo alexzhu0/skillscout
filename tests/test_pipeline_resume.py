@@ -2116,6 +2116,26 @@ def test_failed_extractor_reservation_blocks_provider_request(tmp_path: Path) ->
     assert processor.extractor_requests == 0
 
 
+def test_semantic_guard_accepts_narrow_barrier_protocol() -> None:
+    class ProtocolBarrier:
+        def confirm(self, **_kwargs):
+            raise AssertionError("construction must remain effect free")
+
+    guard = SemanticDurabilityGuard(
+        barrier=ProtocolBarrier(),
+        operations_store=_SemanticOwner(),
+        publication_store=_StaticOwner("publication"),
+        repository_id=101,
+        workflow_authority_digest=sha256_digest({"workflow": 101}),
+        provider="openai",
+        expected_prior_state_head="a" * 40,
+        expected_prior_root_digest=sha256_digest({"prior": 101}),
+        operations_run_id="discovery-operations-1",
+    )
+
+    assert guard.operations_run_id == "discovery-operations-1"
+
+
 def test_extractor_confirmed_retry_is_remotely_durable_before_next_request(
     tmp_path: Path,
 ) -> None:

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from skillscout.domain.canonical import sha256_digest
+
 
 DIGEST_A = "sha256:" + ("a" * 64)
 DIGEST_B = "sha256:" + ("b" * 64)
@@ -115,6 +117,31 @@ def test_transition_authority_is_self_hashed_and_has_no_untrusted_payload_surfac
     tampered["attempt_no"] = 2
     with pytest.raises(ValueError, match="transition authority"):
         module.SemanticDurabilityTransition.from_dict(tampered)
+
+
+def test_transition_separates_execution_and_operations_run_identity() -> None:
+    transition = _ports().SemanticDurabilityTransition.create(
+        run_id="phase3-execution-1",
+        operations_run_id="discovery-operations-1",
+        repository_id=101,
+        workflow_authority_digest=DIGEST_A,
+        provider="openai",
+        stage="generator",
+        attempt_no=1,
+        recorded_at="2026-07-27T12:00:00.000000Z",
+        transition="attempt_started",
+        expected_prior_state_head="a" * 40,
+        expected_prior_root_digest=DIGEST_B,
+        pipeline_export_digest=DIGEST_A,
+        operations_export_digest=DIGEST_B,
+        publication_export_digest=DIGEST_C,
+    )
+
+    assert transition.run_id == "phase3-execution-1"
+    assert transition.operations_run_id == "discovery-operations-1"
+    assert transition.transition_authority_digest == sha256_digest(
+        transition.as_dict(exclude_authority=True)
+    )
 
 
 @pytest.mark.parametrize("provider", ("", "OPENAI", "other", None))

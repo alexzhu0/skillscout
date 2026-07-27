@@ -499,6 +499,54 @@ def test_semantic_attempt_identity_isolated_per_workflow_authority(
         assert first.attempt_digest != second.attempt_digest
 
 
+def test_workflow_terminals_and_run_snapshot_preserve_exact_eligible_set(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    authority = _authority()
+    page = _page(authority)
+    candidate = _candidate(authority, page)
+    workflow_a = sha256_digest({"workflow": "eligible"})
+    workflow_b = sha256_digest({"workflow": "rejected"})
+    locator = "state/objects/sha256/aa/" + ("a" * 64) + ".json"
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        store.create_run(authority, TIMESTAMP)
+        store.record_search_page(authority.run_id, page, (candidate,))
+        store.reserve_discovery_candidate(authority.run_id, candidate, TIMESTAMP)
+        store.record_workflow_terminal(
+            run_id=authority.run_id,
+            repository_id=candidate.repository.repository_id,
+            workflow_authority_digest=workflow_a,
+            outcome="eligible_local_candidate",
+            eligible_locator=locator,
+            eligible_object_digest="sha256:" + ("a" * 64),
+            recorded_at=TIMESTAMP,
+        )
+        store.record_workflow_terminal(
+            run_id=authority.run_id,
+            repository_id=candidate.repository.repository_id,
+            workflow_authority_digest=workflow_b,
+            outcome="review_rejected",
+            eligible_locator=None,
+            eligible_object_digest=None,
+            recorded_at=TIMESTAMP,
+        )
+
+        snapshot = store.snapshot_run(authority.run_id)
+
+    assert snapshot.search_pages == (page,)
+    assert snapshot.candidates == (candidate,)
+    assert tuple(
+        item.workflow_authority_digest
+        for item in snapshot.workflow_terminals
+    ) == (workflow_a, workflow_b)
+    assert tuple(
+        item.workflow_authority_digest
+        for item in snapshot.workflow_terminals
+        if item.outcome == "eligible_local_candidate"
+    ) == (workflow_a,)
+
+
 def test_operations_store_rejects_legacy_ambiguous_semantic_attempt_schema(
     tmp_path: Path,
 ) -> None:
