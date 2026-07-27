@@ -1409,9 +1409,12 @@ class SQLiteStateStore:
         *,
         migration_fail_at: str | None = None,
         filesystem_seam: Callable[[str], None] | None = None,
+        reconcile_orphans: bool = True,
     ) -> None:
         if migration_fail_at is not None and migration_fail_at not in _MIGRATION_SEAMS:
             raise ValueError("unknown migration failure seam")
+        if type(reconcile_orphans) is not bool:
+            raise ValueError("orphan reconciliation policy rejected")
         self.path = Path(os.path.abspath(os.fspath(path)))
         self.manifest_root = self.path.with_suffix(".manifests")
         self.phase3_artifact_root = self.path.with_suffix(".phase3-artifacts")
@@ -1476,7 +1479,8 @@ class SQLiteStateStore:
                     self._persist_startup_snapshot(previous=raw)
                 else:
                     raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
-            self.reconcile_orphan_running_attempts()
+            if reconcile_orphans:
+                self.reconcile_orphan_running_attempts()
         except SafeFailure:
             self.close()
             raise

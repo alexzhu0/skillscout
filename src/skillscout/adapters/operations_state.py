@@ -2717,7 +2717,7 @@ def restore_three_store_bundle(
     OperationsStateStore.rebuild_owned_state(operations_path, operations)
     PublicationStateStore.rebuild_owned_state(publication_path, publication)
 
-    pipeline_store = SQLiteStateStore(pipeline_path)
+    pipeline_store = SQLiteStateStore(pipeline_path, reconcile_orphans=False)
     operations_store = OperationsStateStore(operations_path)
     publication_store = PublicationStateStore(publication_path)
     try:
