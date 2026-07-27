@@ -289,7 +289,7 @@ def verify_validation_map(repository_root: Path) -> None:
     )
     _require(all(source.count(identity) >= 1 for identity in ACTION_IDENTITIES))
     _require("audit digest `d3d5f8a3480d55b7cf7278505f92e8f96ccd6622683f95401dd739f916aae622`" in source)
-    _require("workflow SHA-256 `99fded78508bd4f20303cb201942f7b22b2be10c6b65042909835789853c2a09`" in source)
+    _require("workflow SHA-256 `224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c`" in source)
     _require("ruleset digest `sha256:e58e74403d890296e44105cb60b42abffe522f11d169884d6d51f285b63948b5`" in source)
     _require(source.count(EXPECTED_RELEASE_COMMAND) >= 2)
     _require(
