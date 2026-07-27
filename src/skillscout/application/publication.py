@@ -35,6 +35,10 @@ class PublicationApplicationResult:
     status: Literal["published", "manual_intervention_required", "failed"]
     code: str
     record: PublicationRecordV1 | None = None
+    disposition: Literal["draft_created", "draft_updated", "draft_reused"] | None = None
+    commit_sha: str | None = None
+    pull_number: int | None = None
+    pull_url: str | None = None
     remote_writes: int = 0
 
 
@@ -72,31 +76,49 @@ class PublicationApplication:
             raise TypeError("publication requires an admitted canonical input")
         validate_reviewer_targets(reviewers=admission.intent.reviewers)
         store = self._dependencies.state_factory()
-        store.begin_attempt(admission.intent)
-        # A completed local row is advisory: construct the remote client and
-        # establish exact ownership again before returning it.
-        remote = self._dependencies.remote_factory()
         try:
-            catalog = remote.get_catalog()
-            if (catalog.repository_id, catalog.full_name, catalog.default_branch) != (admission.catalog_repository_id, admission.catalog_full_name, admission.intent.base_branch):
-                return PublicationApplicationResult("manual_intervention_required", "catalog_mismatch")
-            base = remote.get_base_ref()
-            pulls = remote.list_open_pulls(admission.head_branch, admission.intent.base_branch)
-            if len(pulls) > 1:
-                return PublicationApplicationResult("manual_intervention_required", "ambiguous_open_drafts")
-            ref = self._maybe_ref(remote)
-            if pulls:
-                result = self._reconcile_existing(admission, store, remote, base.sha, ref, pulls[0])
-                if result is not None:
-                    return result
-            if ref is not None:
-                # A ref without an exact Draft marker is never adopted.
-                return PublicationApplicationResult("manual_intervention_required", "unowned_machine_ref")
-            return self._create(admission, store, remote, base.sha)
+            attempt = store.begin_attempt(admission.intent)
+            remote = self._dependencies.remote_factory()
+            try:
+                catalog = remote.get_catalog()
+                if (
+                    catalog.repository_id,
+                    catalog.full_name,
+                    catalog.default_branch,
+                ) != (
+                    admission.catalog_repository_id,
+                    admission.catalog_full_name,
+                    admission.intent.base_branch,
+                ):
+                    return self._manual("catalog_mismatch")
+                base = remote.get_base_ref()
+                pulls = remote.list_open_pulls(
+                    admission.head_branch, admission.intent.base_branch
+                )
+                if len(pulls) > 1:
+                    return self._manual("ambiguous_open_drafts")
+                ref = self._maybe_ref(remote)
+                if pulls:
+                    return self._reconcile_existing(
+                        admission,
+                        store,
+                        remote,
+                        base.sha,
+                        ref,
+                        pulls[0],
+                        attempt.record,
+                    )
+                if ref is not None:
+                    return self._manual("unowned_machine_ref")
+                if attempt.record is not None:
+                    return self._manual("completed_remote_state_missing")
+                return self._create(admission, store, remote, base.sha)
+            finally:
+                close = getattr(remote, "close", None)
+                if callable(close):
+                    close()
         finally:
-            close = getattr(remote, "close", None)
-            if callable(close):
-                close()
+            store.close()
 
     @staticmethod
     def _maybe_ref(remote: object) -> object | None:
@@ -107,35 +129,76 @@ class PublicationApplication:
         except RefNotFound:
             return None
 
-    def _reconcile_existing(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, base_sha: str, ref: object | None, pull: object) -> PublicationApplicationResult | None:
-        if ref is None or not getattr(pull, "draft", False) or getattr(pull, "head", None) != admission.head_branch or getattr(pull, "base", None) != admission.intent.base_branch:
-            return PublicationApplicationResult("manual_intervention_required", "pull_or_ref_inconsistent")
+    @staticmethod
+    def _manual(code: str) -> PublicationApplicationResult:
+        return PublicationApplicationResult("manual_intervention_required", code)
+
+    def _reconcile_existing(
+        self,
+        admission: PublicationAdmissionV1,
+        store: PublicationStateStore,
+        remote: object,
+        base_sha: str,
+        ref: object | None,
+        pull: object,
+        completed: PublicationRecordV1 | None,
+    ) -> PublicationApplicationResult:
+        if (
+            ref is None
+            or not getattr(pull, "draft", False)
+            or getattr(pull, "head", None) != admission.head_branch
+            or getattr(pull, "base", None) != admission.intent.base_branch
+            or getattr(pull, "head_sha", None) != ref.sha
+            or getattr(pull, "base_sha", None) != base_sha
+        ):
+            return self._manual("pull_or_ref_inconsistent")
         commit = remote.get_commit(ref.sha)
-        if commit.parent_sha != base_sha:
-            return PublicationApplicationResult("manual_intervention_required", "machine_lineage_inconsistent")
         try:
             marker = parse_publication_marker(getattr(pull, "body", "") or "", catalog_authority=self._catalog_authority(admission))
         except Exception:
-            return PublicationApplicationResult("manual_intervention_required", "marker_invalid")
-        if (marker.publication_key, marker.stable_slug, marker.head_branch, marker.machine_commit_sha, marker.machine_parent_sha) != (admission.publication_key, admission.evidence.stable_slug, admission.head_branch, ref.sha, base_sha):
-            return PublicationApplicationResult("manual_intervention_required", "marker_lineage_inconsistent")
-        requested = remote.get_requested_reviewers(pull.number).users
-        completed = tuple(sorted({row[0] for row in remote.list_reviews(pull.number)}))
-        if any(login not in requested and login not in completed for login in admission.intent.reviewers):
-            return PublicationApplicationResult("manual_intervention_required", "reviewer_evidence_missing")
+            return self._manual("marker_invalid")
+        if not self._marker_owns_admission(marker, admission):
+            return self._manual("marker_identity_inconsistent")
+        if not self._validate_machine_lineage(
+            admission, remote, base_sha, commit, marker
+        ):
+            return self._manual("machine_lineage_inconsistent")
+        if not self._reviewers_are_durable(admission, remote, pull.number, ref.sha):
+            return self._manual("reviewer_evidence_missing")
         tree = remote.get_tree(commit.tree_sha, recursive=True)
-        desired = {
-            f"skills/{admission.evidence.stable_slug}/{file.path}": _git_blob_object_id(
-                file.content
-            )
-            for file in admission.evidence.files
-        }
+        desired = self._desired_tree(admission)
         observed = {entry.path: entry.sha for entry in tree}
-        if marker.desired_revision == admission.desired_revision and observed == desired:
-            record = PublicationRecordV1(schema_version="publication-record-v1", publication_key=admission.publication_key, desired_revision=admission.desired_revision, marker_digest=marker.marker_digest)
-            store.append_checkpoint(admission.intent, step="remote_verified", status_class="success", remote_id=str(pull.number), remote_sha=ref.sha)
-            store.complete(admission.intent, record)
-            return PublicationApplicationResult("published", "reconstructed_remote_completion", record)
+        if (
+            marker.desired_revision == admission.desired_revision
+            and marker.package_digest == admission.evidence.package_digest
+            and observed == desired
+        ):
+            verified = self._verify_remote(
+                admission,
+                remote,
+                base_sha=base_sha,
+                commit_sha=ref.sha,
+                pull_number=pull.number,
+                marker=marker,
+            )
+            if verified is None:
+                return self._manual("remote_verification_failed")
+            return self._persist_verified(
+                admission,
+                store,
+                verified,
+                marker,
+                completed=completed,
+                disposition="draft_reused",
+                code=(
+                    "revalidated_completed"
+                    if completed is not None
+                    else "reconstructed_remote_completion"
+                ),
+                remote_writes=0,
+            )
+        if completed is not None:
+            return self._manual("completed_remote_state_changed")
         return self._update(admission, store, remote, base_sha, ref, pull, tree, marker)
 
     @staticmethod
@@ -143,7 +206,126 @@ class PublicationApplication:
         from skillscout.domain.publication import CatalogAuthorityV1
         return CatalogAuthorityV1(schema_version="catalog-authority-v1", catalog_repository_id=admission.catalog_repository_id, catalog_full_name=admission.catalog_full_name, base_branch=admission.intent.base_branch, catalog_root="skills")
 
-    def _write_commit(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, parent_sha: str, base_tree: str, existing: Iterable[object]) -> str:
+    @staticmethod
+    def _desired_tree(admission: PublicationAdmissionV1) -> dict[str, str]:
+        return {
+            f"skills/{admission.evidence.stable_slug}/{file.path}": _git_blob_object_id(
+                file.content
+            )
+            for file in admission.evidence.files
+        }
+
+    @staticmethod
+    def _marker_owns_admission(
+        marker: PublicationMarkerV1, admission: PublicationAdmissionV1
+    ) -> bool:
+        return (
+            marker.publication_key,
+            marker.stable_slug,
+            marker.target_root,
+            marker.head_branch,
+            marker.reviewers,
+        ) == (
+            admission.publication_key,
+            admission.evidence.stable_slug,
+            admission.intent.target_root,
+            admission.head_branch,
+            admission.intent.reviewers,
+        )
+
+    @staticmethod
+    def _machine_trailers(message: str) -> dict[str, str] | None:
+        if type(message) is not str or len(message) > 4_096:
+            return None
+        trailers: dict[str, str] = {}
+        allowed = {
+            "SkillScout-Publication",
+            "Publication-Key",
+            "Desired-Revision",
+            "Prior-Marker-Digest",
+        }
+        for line in message.splitlines():
+            if ": " not in line:
+                continue
+            key, value = line.split(": ", 1)
+            if key in allowed:
+                if key in trailers or not value:
+                    return None
+                trailers[key] = value
+        return trailers if set(trailers) == allowed else None
+
+    def _validate_machine_lineage(
+        self,
+        admission: PublicationAdmissionV1,
+        remote: object,
+        base_sha: str,
+        commit: object,
+        marker: PublicationMarkerV1,
+    ) -> bool:
+        if (
+            getattr(commit, "sha", None) != marker.machine_commit_sha
+            or getattr(commit, "parent_sha", None) != marker.machine_parent_sha
+        ):
+            return False
+        trailers = self._machine_trailers(getattr(commit, "message", ""))
+        expected_prior = marker.prior_marker_digest or "none"
+        if trailers is None or trailers != {
+            "SkillScout-Publication": "v1",
+            "Publication-Key": admission.publication_key,
+            "Desired-Revision": marker.desired_revision,
+            "Prior-Marker-Digest": expected_prior,
+        }:
+            return False
+        if (marker.prior_marker_digest is None) != (marker.machine_parent_sha == base_sha):
+            return False
+        cursor = commit
+        seen = {marker.machine_commit_sha}
+        for _ in range(32):
+            parent_sha = getattr(cursor, "parent_sha", None)
+            if parent_sha == base_sha:
+                return True
+            if type(parent_sha) is not str or parent_sha in seen:
+                return False
+            seen.add(parent_sha)
+            cursor = remote.get_commit(parent_sha)
+            parent_trailers = self._machine_trailers(getattr(cursor, "message", ""))
+            if (
+                parent_trailers is None
+                or parent_trailers["SkillScout-Publication"] != "v1"
+                or parent_trailers["Publication-Key"] != admission.publication_key
+            ):
+                return False
+        return False
+
+    @staticmethod
+    def _reviewers_are_durable(
+        admission: PublicationAdmissionV1,
+        remote: object,
+        number: int,
+        commit_sha: str,
+    ) -> bool:
+        requested = remote.get_requested_reviewers(number).users
+        completed = {
+            row[0]
+            for row in remote.list_reviews(number)
+            if len(row) == 4 and row[2] == commit_sha
+        }
+        return all(
+            login in requested or login in completed
+            for login in admission.intent.reviewers
+        )
+
+    def _write_commit(
+        self,
+        admission: PublicationAdmissionV1,
+        store: PublicationStateStore,
+        remote: object,
+        parent_sha: str,
+        base_tree: str,
+        existing: Iterable[object],
+        *,
+        prior_marker_digest: str | None,
+    ) -> str:
         existing_paths = {item.path for item in existing}
         entries: list[dict[str, object]] = []
         for file in admission.evidence.files:
@@ -154,15 +336,30 @@ class PublicationApplication:
         entries.extend({"path": path, "mode": "100644", "type": "blob", "sha": None} for path in sorted(existing_paths - wanted))
         tree = remote.create_tree(base_tree, entries)
         store.append_checkpoint(admission.intent, step="tree_created", status_class="success", remote_sha=tree)
-        trailer = f"SkillScout-Publication: v1\nPublication-Key: {admission.publication_key}\nDesired-Revision: {admission.desired_revision}"
+        trailer = (
+            "SkillScout-Publication: v1\n"
+            f"Publication-Key: {admission.publication_key}\n"
+            f"Desired-Revision: {admission.desired_revision}\n"
+            f"Prior-Marker-Digest: {prior_marker_digest or 'none'}"
+        )
         commit = remote.create_commit(f"skillscout: update {admission.evidence.stable_slug}\n\n{trailer}", tree, [parent_sha])
         store.append_checkpoint(admission.intent, step="commit_created", status_class="success", remote_sha=commit)
         return commit
 
     def _create(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, base_sha: str) -> PublicationApplicationResult:
         base_commit = remote.get_commit(base_sha)
-        commit = self._write_commit(admission, store, remote, base_sha, base_commit.tree_sha, ())
-        remote.create_machine_ref(commit)
+        commit = self._write_commit(
+            admission,
+            store,
+            remote,
+            base_sha,
+            base_commit.tree_sha,
+            (),
+            prior_marker_digest=None,
+        )
+        visible = remote.create_machine_ref(commit)
+        if getattr(visible, "sha", None) != commit:
+            return self._manual("ref_write_not_visible")
         store.append_checkpoint(admission.intent, step="ref_visible", status_class="success", remote_sha=commit)
         marker = PublicationMarkerV1.from_admission(
             admission=admission,
@@ -184,12 +381,41 @@ class PublicationApplication:
         requested = remote.get_requested_reviewers(pull.number).users
         if any(login not in requested for login in admission.intent.reviewers):
             return PublicationApplicationResult("manual_intervention_required", "reviewer_request_not_visible", remote_writes=1)
-        return self._finalize(admission, store, remote, pull.number, commit, marker)
+        verified = self._verify_remote(
+            admission,
+            remote,
+            base_sha=base_sha,
+            commit_sha=commit,
+            pull_number=pull.number,
+            marker=marker,
+        )
+        if verified is None:
+            return self._manual("remote_verification_failed")
+        return self._persist_verified(
+            admission,
+            store,
+            verified,
+            marker,
+            completed=None,
+            disposition="draft_created",
+            code="remote_verified",
+            remote_writes=len(admission.evidence.files) + 5,
+        )
 
     def _update(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, base_sha: str, ref: object, pull: object, tree: Iterable[object], prior_marker: PublicationMarkerV1) -> PublicationApplicationResult:
         # Only a fast-forward from the exact verified machine head is allowed.
-        commit = self._write_commit(admission, store, remote, ref.sha, remote.get_commit(ref.sha).tree_sha, tree)
-        remote.update_machine_ref(commit)
+        commit = self._write_commit(
+            admission,
+            store,
+            remote,
+            ref.sha,
+            remote.get_commit(ref.sha).tree_sha,
+            tree,
+            prior_marker_digest=prior_marker.marker_digest,
+        )
+        visible = remote.update_machine_ref(commit)
+        if getattr(visible, "sha", None) != commit:
+            return self._manual("ref_write_not_visible")
         store.append_checkpoint(admission.intent, step="ref_visible", status_class="success", remote_sha=commit)
         marker = PublicationMarkerV1.from_admission(
             admission=admission,
@@ -208,52 +434,158 @@ class PublicationApplication:
             ),
         )
         store.append_checkpoint(admission.intent, step="draft_visible", status_class="success", remote_id=str(pull.number), remote_sha=commit)
-        return self._finalize(admission, store, remote, pull.number, commit, marker)
+        verified = self._verify_remote(
+            admission,
+            remote,
+            base_sha=base_sha,
+            commit_sha=commit,
+            pull_number=pull.number,
+            marker=marker,
+        )
+        if verified is None:
+            return self._manual("remote_verification_failed")
+        return self._persist_verified(
+            admission,
+            store,
+            verified,
+            marker,
+            completed=None,
+            disposition="draft_updated",
+            code="remote_verified",
+            remote_writes=len(admission.evidence.files) + 4,
+        )
 
-    def _finalize(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, number: int, commit: str, marker: PublicationMarkerV1) -> PublicationApplicationResult:
-        requested = remote.get_requested_reviewers(number).users
-        completed = tuple(sorted({row[0] for row in remote.list_reviews(number)}))
-        if any(login not in requested and login not in completed for login in admission.intent.reviewers):
-            return PublicationApplicationResult("manual_intervention_required", "reviewer_evidence_missing")
-        record = PublicationRecordV1(schema_version="publication-record-v1", publication_key=admission.publication_key, desired_revision=admission.desired_revision, marker_digest=marker.marker_digest)
-        store.append_checkpoint(admission.intent, step="remote_verified", status_class="success", remote_id=str(number), remote_sha=commit)
+    def _verify_remote(
+        self,
+        admission: PublicationAdmissionV1,
+        remote: object,
+        *,
+        base_sha: str,
+        commit_sha: str,
+        pull_number: int,
+        marker: PublicationMarkerV1,
+    ) -> object | None:
+        catalog = remote.get_catalog()
+        if (
+            catalog.repository_id,
+            catalog.full_name,
+            catalog.default_branch,
+        ) != (
+            admission.catalog_repository_id,
+            admission.catalog_full_name,
+            admission.intent.base_branch,
+        ):
+            return None
+        observed_base = remote.get_base_ref()
+        if observed_base.sha != base_sha:
+            return None
+        observed_ref = self._maybe_ref(remote)
+        if observed_ref is None or observed_ref.sha != commit_sha:
+            return None
+        commit = remote.get_commit(commit_sha)
+        if not self._validate_machine_lineage(
+            admission, remote, base_sha, commit, marker
+        ):
+            return None
+        observed_tree = {
+            item.path: item.sha
+            for item in remote.get_tree(commit.tree_sha, recursive=True)
+        }
+        if observed_tree != self._desired_tree(admission):
+            return None
+        pulls = remote.list_open_pulls(
+            admission.head_branch, admission.intent.base_branch
+        )
+        if len(pulls) != 1:
+            return None
+        pull = pulls[0]
+        if (
+            pull.number != pull_number
+            or not pull.draft
+            or pull.head != admission.head_branch
+            or pull.base != admission.intent.base_branch
+            or pull.head_sha != commit_sha
+            or pull.base_sha != base_sha
+        ):
+            return None
+        try:
+            observed_marker = parse_publication_marker(
+                pull.body or "", catalog_authority=self._catalog_authority(admission)
+            )
+        except Exception:
+            return None
+        if observed_marker != marker:
+            return None
+        if not self._reviewers_are_durable(
+            admission, remote, pull_number, commit_sha
+        ):
+            return None
+        return pull
+
+    def _persist_verified(
+        self,
+        admission: PublicationAdmissionV1,
+        store: PublicationStateStore,
+        pull: object,
+        marker: PublicationMarkerV1,
+        *,
+        completed: PublicationRecordV1 | None,
+        disposition: Literal["draft_created", "draft_updated", "draft_reused"],
+        code: str,
+        remote_writes: int,
+    ) -> PublicationApplicationResult:
+        record = PublicationRecordV1(
+            schema_version="publication-record-v1",
+            publication_key=admission.publication_key,
+            desired_revision=admission.desired_revision,
+            marker_digest=marker.marker_digest,
+            commit_sha=marker.machine_commit_sha,
+            pull_number=pull.number,
+            pull_url=pull.url,
+            disposition=disposition,
+        )
+        if completed is not None:
+            if (
+                completed.publication_key,
+                completed.desired_revision,
+                completed.marker_digest,
+                completed.commit_sha,
+                completed.pull_number,
+                completed.pull_url,
+            ) != (
+                record.publication_key,
+                record.desired_revision,
+                record.marker_digest,
+                record.commit_sha,
+                record.pull_number,
+                record.pull_url,
+            ):
+                return self._manual("completed_record_mismatch")
+            return PublicationApplicationResult(
+                "published",
+                code,
+                completed,
+                "draft_reused",
+                completed.commit_sha,
+                completed.pull_number,
+                completed.pull_url,
+                remote_writes,
+            )
+        store.append_checkpoint(
+            admission.intent,
+            step="remote_verified",
+            status_class="success",
+            remote_id=str(pull.number),
+            remote_sha=marker.machine_commit_sha,
+        )
         store.complete(admission.intent, record)
-        return PublicationApplicationResult("published", "remote_verified", record, remote_writes=1)
-
-
-@dataclass(frozen=True)
-class _FixtureResult:
-    disposition: str
-    content_writes: int = 0
-    reviewer_requests: int = 0
-    force_updates: int = 0
-    ref_updates: int = 0
-    draft_count: int = 1
-    duplicate_reviewer_notifications: int = 0
-    final_remote_verification: bool = True
-    selected_remote_object: str | None = "owned-draft"
-    observed_reviewers: tuple[str, ...] = ("alpha-reviewer", "zeta-reviewer")
-    provider_teams: tuple[str, ...] = ()
-    deleted_paths: tuple[str, ...] = ()
-    outside_owned_subtree_writes: int = 0
-
-
-def reconcile_publication_fixture(name: str, *, configured_reviewers: tuple[str, ...]) -> _FixtureResult:
-    validate_reviewer_targets(reviewers=configured_reviewers)
-    manual = {"duplicate_matching_pulls", "non_draft_pull", "wrong_base", "wrong_head", "malformed_marker", "cross_catalog_marker", "markerless_machine_commit", "inconsistent_lineage", "human_commit", "force_updated_ref", "closed_pull", "reopened_pull", "deleted_pull", "ref_conflict", "removed_after_request", "malformed_review_evidence"}
-    if name in manual:
-        return _FixtureResult("manual_intervention_required", selected_remote_object=None)
-    if name == "default_branch_changed":
-        return _FixtureResult("restart_reconciliation")
-    if name == "new_draft_no_prior_reviewer_opportunity":
-        return _FixtureResult("created", reviewer_requests=1)
-    if name == "stale_owned_catalog_files":
-        return _FixtureResult("update_draft", content_writes=1, deleted_paths=("skills/bounded-workflow/references/obsolete.md",))
-    if name == "legitimate_later_package_revision":
-        return _FixtureResult("update_draft", content_writes=1)
-    return _FixtureResult("recovered")
-
-
-def recover_crashed_publication_fixture(_crash_point: str, *, configured_reviewers: tuple[str, ...]) -> _FixtureResult:
-    validate_reviewer_targets(reviewers=configured_reviewers)
-    return _FixtureResult("recovered")
+        return PublicationApplicationResult(
+            "published",
+            code,
+            record,
+            disposition,
+            record.commit_sha,
+            record.pull_number,
+            record.pull_url,
+            remote_writes,
+        )

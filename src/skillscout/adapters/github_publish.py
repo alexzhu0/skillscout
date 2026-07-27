@@ -49,6 +49,7 @@ class CommitObservation:
     sha: str
     tree_sha: str
     parent_sha: str | None
+    message: str
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,9 @@ class PullObservation:
     head: str
     base: str
     body: str | None
+    head_sha: str
+    base_sha: str
+    url: str
 
 
 class RefNotFound(Exception):
@@ -192,7 +196,10 @@ class GitHubPublishClient:
         if not isinstance(parents, list) or len(parents) > 1 or any(not isinstance(item, dict) for item in parents):
             _fail()
         parent = None if not parents else _sha(parents[0].get("sha"))
-        return CommitObservation(sha, _sha(raw["tree"].get("sha")), parent)
+        message = raw.get("message")
+        if type(message) is not str or not message or len(message) > 4_096:
+            _fail()
+        return CommitObservation(sha, _sha(raw["tree"].get("sha")), parent, message)
 
     def get_tree(self, sha: str, recursive: bool = True, *, stable_slug: str | None = None) -> tuple[OwnedTreeEntry, ...]:
         if recursive is not True:
@@ -302,8 +309,9 @@ class GitHubPublishClient:
         return _sha(raw.get("sha") if isinstance(raw, dict) else None)
 
     def create_machine_ref(self, sha: str) -> RefObservation:
-        raw = self._json("POST", f"/repos/{self._repository}/git/refs", {"ref": f"refs/heads/{self._branch}", "sha": _sha(sha)})
-        return self._ref_response(raw)
+        expected = _sha(sha)
+        raw = self._json("POST", f"/repos/{self._repository}/git/refs", {"ref": f"refs/heads/{self._branch}", "sha": expected})
+        return self._ref_response(raw, expected_sha=expected)
 
     def create_ref(self, ref: str, sha: str) -> RefObservation:
         if ref != f"refs/heads/{self._branch}":
@@ -311,8 +319,9 @@ class GitHubPublishClient:
         return self.create_machine_ref(sha)
 
     def update_machine_ref(self, sha: str) -> RefObservation:
-        raw = self._json("PATCH", f"/repos/{self._repository}/git/refs/heads/{self._branch}", {"sha": _sha(sha), "force": False})
-        return self._ref_response(raw)
+        expected = _sha(sha)
+        raw = self._json("PATCH", f"/repos/{self._repository}/git/refs/heads/{self._branch}", {"sha": expected, "force": False})
+        return self._ref_response(raw, expected_sha=expected)
 
     def update_ref(self, ref: str, sha: str, force: bool) -> RefObservation:
         if ref != f"heads/{self._branch}" or force is not False:
@@ -479,12 +488,21 @@ class GitHubPublishClient:
         body = raw.get("body")
         if body is not None and type(body) is not str:
             _fail()
-        return PullObservation(_number(raw.get("number")), True, branch, base, body)
+        number = _number(raw.get("number"))
+        head_sha = _sha(raw["head"].get("sha"))
+        base_sha = _sha(raw["base"].get("sha"))
+        url = raw.get("html_url")
+        if url != f"https://github.com/{self._repository}/pull/{number}":
+            _fail()
+        return PullObservation(number, True, branch, base, body, head_sha, base_sha, url)
 
-    def _ref_response(self, raw: object) -> RefObservation:
+    def _ref_response(self, raw: object, *, expected_sha: str | None = None) -> RefObservation:
         if not isinstance(raw, dict) or raw.get("ref") != f"refs/heads/{self._branch}" or not isinstance(raw.get("object"), dict):
             _fail()
-        return RefObservation(raw["ref"], _sha(raw["object"].get("sha")))
+        observed_sha = _sha(raw["object"].get("sha"))
+        if expected_sha is not None and observed_sha != expected_sha:
+            _fail()
+        return RefObservation(raw["ref"], observed_sha)
 
     def _text(self, value: str) -> str:
         if type(value) is not str or not value or len(value) > 16_384:

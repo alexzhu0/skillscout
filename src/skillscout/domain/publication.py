@@ -317,6 +317,13 @@ class PublicationRecordV1(StrictFrozenModel):
     publication_key: Digest
     desired_revision: Digest
     marker_digest: Digest
+    commit_sha: _SHA | None = None
+    pull_number: Annotated[int, Field(ge=1)] | None = None
+    pull_url: Annotated[
+        str,
+        Field(pattern=r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$"),
+    ] | None = None
+    disposition: Literal["draft_created", "draft_updated", "draft_reused"] | None = None
 
 class PublicationResultV1(StrictFrozenModel):
     schema_version: Literal["publication-result-v1"]

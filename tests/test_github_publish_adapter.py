@@ -174,8 +174,21 @@ def test_review_observations_are_bounded_users_only_and_team_state_is_ambiguous(
 
 def test_paginated_pulls_and_reviews_follow_only_canonical_same_origin_links() -> None:
     pull = _fixture("pull_draft")
-    pulls_page_one = [{**pull, "number": number} for number in range(1, 101)]
-    pulls_page_two = [{**pull, "number": 101}]
+    pulls_page_one = [
+        {
+            **pull,
+            "number": number,
+            "html_url": f"https://github.com/catalog-org/skills/pull/{number}",
+        }
+        for number in range(1, 101)
+    ]
+    pulls_page_two = [
+        {
+            **pull,
+            "number": 101,
+            "html_url": "https://github.com/catalog-org/skills/pull/101",
+        }
+    ]
     review = _fixture("reviewers")["reviews"][0]
     reviews_page_one = [{**review, "id": number} for number in range(1, 101)]
     reviews_page_two = [{**review, "id": 101}]
@@ -261,7 +274,19 @@ def test_provider_error_matrix_is_closed_and_safe(field: str) -> None:
                     "<https://api.github.com" + prefix + '2>; rel="next"'
                 ),
             },
-            json.dumps([{**pull, "number": number} for number in range(1, 101)]).encode(),
+                json.dumps(
+                    [
+                        {
+                            **pull,
+                            "number": number,
+                            "html_url": (
+                                "https://github.com/catalog-org/skills/pull/"
+                                f"{number}"
+                            ),
+                        }
+                        for number in range(1, 101)
+                    ]
+                ).encode(),
         )
         routes[("GET", prefix + "2")] = RecordedResponse(
             200,
@@ -269,7 +294,17 @@ def test_provider_error_matrix_is_closed_and_safe(field: str) -> None:
                 "content-type": "application/json",
                 "x-github-request-id": "REQ-MATRIX-2",
             },
-            json.dumps([{**pull, "number": 101}]).encode(),
+                json.dumps(
+                    [
+                        {
+                            **pull,
+                            "number": 101,
+                            "html_url": (
+                                "https://github.com/catalog-org/skills/pull/101"
+                            ),
+                        }
+                    ]
+                ).encode(),
         )
         recorded = RecordedTransport(routes)
         with _adapter(recorded) as client:
