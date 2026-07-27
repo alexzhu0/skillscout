@@ -254,6 +254,65 @@ def test_search_accepts_live_colon_delimited_github_request_id() -> None:
     assert recorded.call_count("GET", path) == 1
 
 
+def _recorded_search_with_default_branch(default_branch: object) -> RecordedTransport:
+    path = _search_path(1, 1)
+    recorded_response = recorded_search_fixture("page_one")
+    body = json.loads(recorded_response.body)
+    body["items"][0]["default_branch"] = default_branch
+    live_response = type(recorded_response)(
+        status=recorded_response.status,
+        headers=recorded_response.headers,
+        body=json.dumps(body, separators=(",", ":")).encode(),
+    )
+    return RecordedTransport({("GET", path): live_response})
+
+
+def test_search_accepts_slash_bearing_default_branch() -> None:
+    path = _search_path(1, 1)
+    recorded = _recorded_search_with_default_branch("release/v1")
+    with GitHubReadClient(
+        token=TOKEN_CANARY,
+        transport=recorded.transport(),
+        sleeper=lambda _seconds: None,
+    ) as client:
+        _page, repositories = _invoke_search(
+            client,
+            query_ordinal=1,
+            page=1,
+        )
+
+    assert repositories[0].default_branch == "release/v1"
+    assert recorded.call_count("GET", path) == 1
+
+
+@pytest.mark.parametrize(
+    "default_branch",
+    (
+        "/release",
+        "release v1",
+        "release\\v1",
+        "release:v1",
+        "release^v1",
+        "r" * 201,
+    ),
+)
+def test_search_rejects_malformed_or_oversized_default_branch(
+    default_branch: str,
+) -> None:
+    path = _search_path(1, 1)
+    recorded = _recorded_search_with_default_branch(default_branch)
+    with GitHubReadClient(
+        token=TOKEN_CANARY,
+        transport=recorded.transport(),
+        sleeper=lambda _seconds: None,
+    ) as client:
+        with pytest.raises(SafeFailure) as failure:
+            _invoke_search(client, query_ordinal=1, page=1)
+
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert recorded.call_count("GET", path) == 1
+
+
 @pytest.mark.parametrize(
     "request_id",
     (

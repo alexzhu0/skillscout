@@ -36,6 +36,14 @@ _GitHubSegment = Annotated[
         pattern=r"^[A-Za-z0-9_.-]+$",
     ),
 ]
+_GitHubRef = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$",
+    ),
+]
 _GitHubFullName = Annotated[
     str,
     Field(
@@ -266,7 +274,7 @@ class SearchRepositoryObservationV1(StrictFrozenModel):
     fork: bool
     archived: bool
     disabled: bool
-    default_branch: _GitHubSegment | None
+    default_branch: _GitHubRef | None
     observation_digest: Digest
 
     @model_validator(mode="after")
