@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -67,6 +68,9 @@ from skillscout.domain.models import (
     VerifiedRunChain,
 )
 from skillscout.domain.subjects import RepositorySubject
+
+_DIGEST_PATTERN: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
+_STATE_SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 
 STAGE_SEQUENCE = tuple(stage.value for stage in PipelineStage)
 RETRY_POLICY_VERSION = "retry-v1"
@@ -260,6 +264,23 @@ class _ExtractionSummaryWriter:
         )
 
 
+@dataclass(frozen=True)
+class SemanticReservationReceipt:
+    """Closed proof that semantic budget is remotely durable before a request."""
+
+    reservation_digest: str
+    verified_state_head: str
+    state_root_digest: str
+
+    def __post_init__(self) -> None:
+        if (
+            _DIGEST_PATTERN.fullmatch(self.reservation_digest) is None
+            or _STATE_SHA_PATTERN.fullmatch(self.verified_state_head) is None
+            or _DIGEST_PATTERN.fullmatch(self.state_root_digest) is None
+        ):
+            raise ValueError("invalid semantic reservation receipt")
+
+
 class SemanticDurabilityGuard:
     """Bind semantic attempt authority to an exact remotely confirmed state."""
 
@@ -274,6 +295,7 @@ class SemanticDurabilityGuard:
         provider: Literal["openai", "deepseek"],
         expected_prior_state_head: str,
         expected_prior_root_digest: str,
+        reservation_hook: Callable[..., SemanticReservationReceipt] | None = None,
     ) -> None:
         if (
             not isinstance(barrier, ThreeStoreDurabilityBarrier)
@@ -293,6 +315,32 @@ class SemanticDurabilityGuard:
         self._provider = provider
         self._expected_prior_state_head = expected_prior_state_head
         self._expected_prior_root_digest = expected_prior_root_digest
+        self._reservation_hook = reservation_hook
+
+    def reserve_before_extractor(
+        self,
+        *,
+        pipeline_store: object,
+        run_id: str,
+    ) -> SemanticReservationReceipt | None:
+        """Confirm a non-refundable reservation before the first provider call."""
+
+        if self._reservation_hook is None:
+            return None
+        try:
+            receipt = self._reservation_hook(
+                pipeline_store=pipeline_store,
+                run_id=run_id,
+            )
+            if type(receipt) is not SemanticReservationReceipt:
+                raise TypeError("invalid semantic reservation receipt")
+        except SafeFailure:
+            raise
+        except Exception:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        self._expected_prior_state_head = receipt.verified_state_head
+        self._expected_prior_root_digest = receipt.state_root_digest
+        return receipt
 
     def confirm(
         self,
@@ -588,6 +636,12 @@ class PipelineRunner:
                 error_summary=None,
                 retryable=False,
             )
+            if semantic_stage:
+                if attempt_no == 1:
+                    self.semantic_durability.reserve_before_extractor(
+                        pipeline_store=self.state,
+                        run_id=run_id,
+                    )
             self.state.start_attempt(attempt)
             if semantic_stage:
                 self._confirm_semantic(
