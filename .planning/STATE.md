@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Automated Discovery Operations
 status: executing
-stopped_at: Completed 05-04-PLAN.md
-last_updated: "2026-07-27T13:38:13.075Z"
+stopped_at: Completed 05-05-PLAN.md
+last_updated: "2026-07-27T13:58:20.976Z"
 last_activity: 2026-07-27
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 61
-  completed_plans: 51
+  completed_plans: 52
   percent: 67
 ---
 
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 5 — Automated Discovery Operations
-**Plan:** 5 of 14
+**Plan:** 6 of 14
 **Verification:** 13/13 requirements verified; clean Round-4 code review; exact release gate passed 1247 tests
 **Next command:** `$gsd-plan-phase 4`
 
@@ -115,8 +115,8 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 ## Session Continuity
 
 **Last activity:** 2026-07-27
-**Last session:** 2026-07-27T13:38:13.070Z
-**Stopped at:** Completed 05-04-PLAN.md
+**Last session:** 2026-07-27T13:58:11.414Z
+**Stopped at:** Completed 05-05-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -175,6 +175,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 | Phase 05 P02 | 6min | 2 tasks | 6 files |
 | Phase 05 P03 | 9min | 2 tasks | 9 files |
 | Phase 05 P04 | 5min | 2 tasks | 2 files |
+| Phase 05 P05 | 16min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -285,3 +286,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 - [Phase 05]: Extend the existing GitHubReadClient and keep one serial REMOTE_READ capability rather than introduce a second GitHub client. — Preserves the verified fixed-host, capped-body, sanitized read boundary.
 - [Phase 05]: Revalidate the complete reviewed query-set authority before constructing the exact Search request. — Prevents runtime query text or bypass-constructed models from widening discovery authority.
 - [Phase 05]: Persist only strict self-hashed Search observations and discard provider prose, raw Link values, provider bodies and arbitrary headers. — Keeps untrusted content outside durable and diagnostic surfaces.
+- [Phase 05]: Make unique contiguous reservation rows, not mutable counters, the sole 100/20 budget authority.
+- [Phase 05]: Treat outcome-unknown semantic attempts as consumed and terminally non-replayable; only confirmed-retryable attempts may advance automatically.
+- [Phase 05]: Keep complete canonical operations-owned facts authoritative and treat the SQLite snapshot as a verified disposable query index.
+- [Phase 05]: Reject a valid SQLite snapshot that disagrees with its digest or JSON projection, while allowing corrupt or absent bytes to rebuild only from fully validated owned facts.
