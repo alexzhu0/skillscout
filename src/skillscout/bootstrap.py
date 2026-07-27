@@ -179,6 +179,15 @@ def _closed_publication_locator(path: Path, *, root: str) -> str:
     return raw
 
 
+def validate_publication_state_locator(path: Path) -> Path:
+    """Confine the mutable publication ledger to the fixed ``state/`` root."""
+
+    _closed_publication_locator(path, root="state")
+    if path.name.startswith("."):
+        _publication_config_fail()
+    return path
+
+
 def _publication_projection(
     *,
     candidate: Path,
@@ -332,6 +341,7 @@ def build_publication_application(
         or admission.intent.reviewers != authority.catalog_reviewers
     ):
         _publication_config_fail()
+    publication_state = validate_publication_state_locator(publication_state)
     runtime = load_publication_runtime_config(authority, token_factory=token_factory)
 
     def remote_factory() -> object:

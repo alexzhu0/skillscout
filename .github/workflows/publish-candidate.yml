@@ -125,13 +125,16 @@ jobs:
           protected_admission="$(mktemp)"
           trap 'rm -f "$protected_admission"' EXIT
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-publication-admission --candidate "$CANDIDATE_LOCATOR" --phase2-state "$PHASE2_STATE_LOCATOR" --phase3-state "$PHASE3_STATE_LOCATOR" --compare-env > "$protected_admission"
-          python - "$protected_admission" "$GITHUB_ENV" <<'PY'
+          python - "$protected_admission" "$GITHUB_ENV" "$PUBLICATION_STATE_LOCATOR" <<'PY'
           import json
           import re
           import sys
 
           with open(sys.argv[1], encoding="utf-8") as source:
               protected = json.load(source)
+          from pathlib import Path
+          from skillscout.bootstrap import validate_publication_state_locator
+          validate_publication_state_locator(Path(sys.argv[3]))
           for field in ("publication_intent_digest", "admission_digest"):
               value = protected.get(field)
               if not isinstance(value, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:

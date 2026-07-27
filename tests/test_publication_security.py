@@ -184,6 +184,25 @@ def test_runtime_config_does_not_mint_token_until_explicit_remote_factory() -> N
     assert calls == 0
 
 
+@pytest.mark.parametrize(
+    "locator",
+    (
+        Path("/tmp/publication.db"),
+        Path("../state/publication.db"),
+        Path("evidence/publication.db"),
+        Path("state/../publication.db"),
+        Path("state/.publication.db"),
+    ),
+)
+def test_publication_state_locator_is_confined_before_token_or_state(
+    locator: Path,
+) -> None:
+    from skillscout.bootstrap import validate_publication_state_locator
+
+    with pytest.raises(ValueError):
+        validate_publication_state_locator(locator)
+
+
 def test_publication_models_and_rendering_do_not_echo_secrets_or_candidate_prose() -> None:
     from skillscout.domain import publication
 
@@ -268,6 +287,8 @@ def test_publish_workflow_crosses_only_candidate_handoff_and_revalidates_before_
     assert re.search(r"^    environment: skillscout-catalog-publish$", publish, re.MULTILINE)
     assert "verify-publication-admission --candidate \"$CANDIDATE_LOCATOR\" --phase2-state \"$PHASE2_STATE_LOCATOR\" --phase3-state \"$PHASE3_STATE_LOCATOR\" --compare-env" in publish
     assert publish.index("verify-publication-admission") < publish.index("actions/create-github-app-token")
+    assert "validate_publication_state_locator" in publish
+    assert publish.index("validate_publication_state_locator") < publish.index("actions/create-github-app-token")
     assert "SKILLSCOUT_CATALOG_TEAM_REVIEWERS" in publish
     assert "permission-contents: write" in publish
     assert "permission-pull-requests: write" in publish
