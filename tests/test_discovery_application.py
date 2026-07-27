@@ -223,6 +223,22 @@ def test_fatal_summary_counts_only_durably_reserved_candidates() -> None:
         "                candidate.repository.repository_id\n"
         "            ] = reservation"
     ) in source
+    assert (
+        "if any(\n"
+        "            terminal.outcome in _FATAL_OUTCOMES\n"
+        "            for terminal in terminals\n"
+        "        ):\n"
+        "            selected = []"
+    ) in source
+
+
+def test_summary_schema_retains_multiple_crash_persisted_fatals() -> None:
+    summary_schema = importlib.import_module(
+        "skillscout.domain.discovery"
+    ).DiscoveryRunSummaryV1.model_json_schema()
+    properties = summary_schema["properties"]
+    assert properties["integrity_conflict_count"]["maximum"] == 100
+    assert properties["permanent_failure_count"]["maximum"] == 100
 
 
 def test_unknown_outcome_consumes_once_without_automatic_replay() -> None:
