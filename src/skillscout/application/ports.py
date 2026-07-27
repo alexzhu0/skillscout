@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 _DURABILITY_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _DURABILITY_SHA = re.compile(r"^[0-9a-f]{40}$")
 _DURABILITY_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_DURABILITY_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
+)
 _SEMANTIC_PROVIDERS = frozenset({"openai", "deepseek"})
 _SEMANTIC_STAGES = frozenset({"extractor", "generator", "reviewer"})
 _DURABILITY_TRANSITIONS = frozenset(
@@ -79,6 +82,7 @@ class SemanticDurabilityTransition:
     provider: Literal["openai", "deepseek"]
     stage: Literal["extractor", "generator", "reviewer"]
     attempt_no: int
+    recorded_at: str
     transition: Literal[
         "attempt_started",
         "result_decided",
@@ -105,6 +109,11 @@ class SemanticDurabilityTransition:
             raise ValueError("invalid semantic stage")
         if type(self.attempt_no) is not int or not 1 <= self.attempt_no <= 16:
             raise ValueError("invalid semantic attempt")
+        if (
+            type(self.recorded_at) is not str
+            or _DURABILITY_TIMESTAMP.fullmatch(self.recorded_at) is None
+        ):
+            raise ValueError("invalid semantic transition time")
         if self.transition not in _DURABILITY_TRANSITIONS:
             raise ValueError("invalid semantic durability transition")
         _require_state_sha(self.expected_prior_state_head, "prior state head")
@@ -134,6 +143,7 @@ class SemanticDurabilityTransition:
         provider: Literal["openai", "deepseek"],
         stage: Literal["extractor", "generator", "reviewer"],
         attempt_no: int,
+        recorded_at: str,
         transition: Literal[
             "attempt_started",
             "result_decided",
@@ -154,6 +164,7 @@ class SemanticDurabilityTransition:
             "provider": provider,
             "stage": stage,
             "attempt_no": attempt_no,
+            "recorded_at": recorded_at,
             "transition": transition,
             "expected_prior_state_head": expected_prior_state_head,
             "expected_prior_root_digest": expected_prior_root_digest,

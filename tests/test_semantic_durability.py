@@ -44,6 +44,7 @@ def _transition(
         provider=provider,
         stage=stage,
         attempt_no=attempt_no,
+        recorded_at="2026-07-27T12:00:00.000000Z",
         transition=transition,
         expected_prior_state_head=PRIOR_HEAD,
         expected_prior_root_digest=DIGEST_B,
@@ -126,6 +127,7 @@ def test_transition_rejects_invalid_provider(provider: object) -> None:
             provider=provider,
             stage="extractor",
             attempt_no=1,
+            recorded_at="2026-07-27T12:00:00.000000Z",
             transition="attempt_started",
             expected_prior_state_head=PRIOR_HEAD,
             expected_prior_root_digest=DIGEST_B,
@@ -261,7 +263,14 @@ def _state_branch():
 
 
 class _Remote:
-    def __init__(self, module, *, head: str = PRIOR_HEAD, fail_at: str | None = None):
+    def __init__(
+        self,
+        module,
+        *,
+        prior_bundle,
+        head: str = PRIOR_HEAD,
+        fail_at: str | None = None,
+    ):
         self.module = module
         self.head = head
         self.fail_at = fail_at
@@ -273,6 +282,24 @@ class _Remote:
         self.provider_requests = 0
         self.retry_or_terminal = 0
         self._rereading = False
+        for item in prior_bundle.files:
+            self.blobs[module._git_blob_id(item.content)] = item.content
+        prior_tree = "b" * 40
+        self.trees[prior_tree] = tuple(
+            module.StateTreeEntry(
+                path=item.path,
+                sha=module._git_blob_id(item.content),
+                mode="100644",
+                size=len(item.content),
+            )
+            for item in prior_bundle.files
+        )
+        self.commits[head] = module.StateCommitObservation(
+            sha=head,
+            tree_sha=prior_tree,
+            parents=("c" * 40,),
+            message="skillscout: prior state",
+        )
 
     def _sha(self) -> str:
         self.counter += 1
@@ -372,6 +399,19 @@ def _owned_stores(
         run_id="discovery-run-1",
         repository_id=101,
     )
+    coordinator = importlib.import_module(
+        "skillscout.adapters.operations_state"
+    )
+    prior_bundle, _ = coordinator._bundle_from_exports(
+        pipeline=pipeline.export_owned_state(),
+        operations=operations.export_owned_state(),
+        publication=publication.export_owned_state(),
+        prior_root_digest=DIGEST_B,
+        state_parent_commit_sha="c" * 40,
+        query_set_digest="sha256:" + ("7" * 64),
+        budget_policy_digest="sha256:" + ("8" * 64),
+        created_at="2026-07-27T11:59:59.000000Z",
+    )
     operations.record_semantic_attempt(
         run_id="discovery-run-1",
         repository_id=101,
@@ -407,14 +447,19 @@ def _owned_stores(
         provider="openai",
         stage=stage,
         attempt_no=1,
+        recorded_at=(
+            "2026-07-27T12:00:00.000000Z"
+            if transition == "attempt_started"
+            else "2026-07-27T12:00:01.000000Z"
+        ),
         transition=transition,
         expected_prior_state_head=PRIOR_HEAD,
-        expected_prior_root_digest=DIGEST_B,
+        expected_prior_root_digest=prior_bundle.root.root_digest,
         pipeline_export_digest=exports[0].export_digest,
         operations_export_digest=exports[1].export_digest,
         publication_export_digest=exports[2].export_digest,
     )
-    return pipeline, operations, publication, request
+    return pipeline, operations, publication, request, prior_bundle
 
 
 def _barrier(remote):
@@ -423,7 +468,6 @@ def _barrier(remote):
         state_store=module.StateBranchStore(remote),
         query_set_digest="sha256:" + ("7" * 64),
         budget_policy_digest="sha256:" + ("8" * 64),
-        clock=lambda: "2026-07-27T12:00:02.000000Z",
     )
 
 
@@ -436,7 +480,7 @@ def test_two_provider_three_stage_transition_matrix_is_remote_confirmed_and_idem
     stage: str,
     transition: str,
 ) -> None:
-    pipeline, operations, publication, base = _owned_stores(
+    pipeline, operations, publication, base, prior_bundle = _owned_stores(
         tmp_path,
         stage=stage,
         transition=transition,
@@ -446,7 +490,7 @@ def test_two_provider_three_stage_transition_matrix_is_remote_confirmed_and_idem
     request_values.pop("transition_authority_digest")
     request_values["provider"] = provider
     request = _ports().SemanticDurabilityTransition.create(**request_values)
-    remote = _Remote(_state_branch())
+    remote = _Remote(_state_branch(), prior_bundle=prior_bundle)
     barrier = _barrier(remote)
     try:
         receipt = barrier.confirm(
@@ -487,13 +531,14 @@ def test_every_export_cas_reread_and_verification_failure_blocks_guarded_effect(
     tmp_path: Path,
     seam: str,
 ) -> None:
-    pipeline, operations, publication, request = _owned_stores(
+    pipeline, operations, publication, request, prior_bundle = _owned_stores(
         tmp_path,
         stage="extractor",
         transition="attempt_started",
     )
     remote = _Remote(
         _state_branch(),
+        prior_bundle=prior_bundle,
         fail_at=seam if seam in {"cas", "reread", "projection"} else None,
     )
     stores = {
@@ -526,7 +571,7 @@ def test_every_export_cas_reread_and_verification_failure_blocks_guarded_effect(
 def test_stale_export_and_missing_attempt_transition_fail_before_remote_write(
     tmp_path: Path,
 ) -> None:
-    pipeline, operations, publication, request = _owned_stores(
+    pipeline, operations, publication, request, prior_bundle = _owned_stores(
         tmp_path,
         stage="reviewer",
         transition="attempt_started",
@@ -539,7 +584,8 @@ def test_stale_export_and_missing_attempt_transition_fail_before_remote_write(
         status="decided",
         recorded_at="2026-07-27T12:00:03.000000Z",
     )
-    remote = _Remote(_state_branch())
+    remote = _Remote(_state_branch(), prior_bundle=prior_bundle)
+    prior_blobs = dict(remote.blobs)
     try:
         with pytest.raises(_ports().SafeFailure):
             _barrier(remote).confirm(
@@ -548,7 +594,7 @@ def test_stale_export_and_missing_attempt_transition_fail_before_remote_write(
                 operations_store=operations,
                 publication_store=publication,
             )
-        assert remote.blobs == {}
+        assert remote.blobs == prior_blobs
         assert remote.head == PRIOR_HEAD
     finally:
         publication.close()
@@ -578,7 +624,7 @@ def test_crash_restart_matrix_never_replays_ambiguous_semantic_effect(
         if "attempt_started" in crash_seam
         else "result_outcome_unknown"
     )
-    pipeline, operations, publication, base = _owned_stores(
+    pipeline, operations, publication, base, prior_bundle = _owned_stores(
         tmp_path,
         stage=stage,
         transition=transition,
@@ -588,7 +634,7 @@ def test_crash_restart_matrix_never_replays_ambiguous_semantic_effect(
     values.pop("transition_authority_digest")
     values["provider"] = provider
     request = _ports().SemanticDurabilityTransition.create(**values)
-    remote = _Remote(_state_branch())
+    remote = _Remote(_state_branch(), prior_bundle=prior_bundle)
     barrier = _barrier(remote)
     provider_requests = 0 if "attempt_started" in crash_seam else 1
     guarded_followups = 0

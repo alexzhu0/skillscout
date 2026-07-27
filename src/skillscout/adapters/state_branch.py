@@ -18,7 +18,12 @@ from typing import Any, Iterable, Literal, Mapping
 import httpx
 from pydantic import ValidationError
 
-from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.application.ports import (
+    DurabilityReceipt,
+    ErrorCode,
+    SafeFailure,
+    SemanticDurabilityTransition,
+)
 from skillscout.domain.canonical import canonical_json_bytes
 from skillscout.domain.discovery import DiscoveryStateRootV1
 from skillscout.domain.enums import EffectScope
@@ -130,6 +135,12 @@ def _sha(value: object) -> str:
 
 def _digest_bytes(value: bytes) -> str:
     return f"sha256:{hashlib.sha256(value).hexdigest()}"
+
+
+def _require_digest(value: object) -> str:
+    if type(value) is not str or _DIGEST.fullmatch(value) is None:
+        raise StateIntegrityFailure
+    return value
 
 
 def _git_blob_id(value: bytes) -> str:
@@ -661,6 +672,201 @@ class StateBranchStore:
         if callable(sync_fixture):
             return sync_fixture(observation.bundle, observed_head)
         return self.sync(observation.bundle, observed_head)
+
+
+class StateBranchDurabilityBarrier:
+    """Remote acknowledgement boundary for one exact semantic transition."""
+
+    def __init__(
+        self,
+        *,
+        state_store: StateBranchStore,
+        query_set_digest: str,
+        budget_policy_digest: str,
+    ) -> None:
+        if type(state_store) is not StateBranchStore:
+            raise ValueError("invalid state-branch durability store")
+        _require_digest(query_set_digest)
+        _require_digest(budget_policy_digest)
+        self._state_store = state_store
+        self._query_set_digest = query_set_digest
+        self._budget_policy_digest = budget_policy_digest
+
+    def confirm(
+        self,
+        *,
+        transition: SemanticDurabilityTransition,
+        pipeline_store: object,
+        operations_store: object,
+        publication_store: object,
+    ) -> DurabilityReceipt:
+        """Export, CAS, fully reread, and acknowledge an exact owned transition."""
+
+        try:
+            return self._confirm(
+                transition=transition,
+                pipeline_store=pipeline_store,
+                operations_store=operations_store,
+                publication_store=publication_store,
+            )
+        except SafeFailure as failure:
+            if failure.code is ErrorCode.STATE_OPERATION_FAILED:
+                raise
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        except Exception:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+    def _confirm(
+        self,
+        *,
+        transition: SemanticDurabilityTransition,
+        pipeline_store: object,
+        operations_store: object,
+        publication_store: object,
+    ) -> DurabilityReceipt:
+        if type(transition) is not SemanticDurabilityTransition:
+            raise ValueError("invalid semantic durability transition")
+
+        pipeline = pipeline_store.export_owned_state()
+        operations = operations_store.export_owned_state()
+        publication = publication_store.export_owned_state()
+        if (
+            pipeline.export_digest != transition.pipeline_export_digest
+            or operations.export_digest != transition.operations_export_digest
+            or publication.export_digest != transition.publication_export_digest
+        ):
+            raise StateIntegrityFailure
+        self._verify_transition_fact(operations, transition)
+
+        # Import locally to keep operations_state's existing bundle coordinator
+        # free to import the fixed state-branch value types without a cycle.
+        from skillscout.adapters.operations_state import (
+            _bundle_from_exports,
+            _parse_bundle_exports,
+        )
+
+        bundle, _ = _bundle_from_exports(
+            pipeline=pipeline,
+            operations=operations,
+            publication=publication,
+            prior_root_digest=transition.expected_prior_root_digest,
+            state_parent_commit_sha=transition.expected_prior_state_head,
+            query_set_digest=self._query_set_digest,
+            budget_policy_digest=self._budget_policy_digest,
+            created_at=transition.recorded_at,
+        )
+
+        current = self._state_store.restore()
+        if (
+            current.status != "verified"
+            or current.observed_head is None
+            or current.bundle is None
+        ):
+            raise StateIntegrityFailure
+        if current.observed_head == transition.expected_prior_state_head:
+            if current.bundle.root.root_digest != (
+                transition.expected_prior_root_digest
+            ):
+                raise StateIntegrityFailure
+            synchronized = self._state_store.sync(
+                bundle,
+                transition.expected_prior_state_head,
+            )
+            verified_head = synchronized.commit_sha
+        elif self._bundles_equal(current.bundle, bundle):
+            # A restart after the ref update receives authority only by fully
+            # rereading the already-present exact state, never by local memory.
+            verified_head = current.observed_head
+        else:
+            raise StateBranchConflict
+
+        reread = self._state_store.restore()
+        if (
+            reread.status != "verified"
+            or reread.observed_head != verified_head
+            or reread.bundle is None
+            or not self._bundles_equal(reread.bundle, bundle)
+        ):
+            raise StateIntegrityFailure
+        (
+            remote_pipeline,
+            remote_operations,
+            remote_publication,
+            _remote_projection,
+        ) = _parse_bundle_exports(reread.bundle)
+        if (
+            remote_pipeline != pipeline
+            or remote_operations != operations
+            or remote_publication != publication
+        ):
+            raise StateIntegrityFailure
+        self._verify_transition_fact(remote_operations, transition)
+        return DurabilityReceipt.from_remote_verification(
+            transition=transition,
+            verified_state_head=verified_head,
+            state_root_digest=reread.bundle.root.root_digest,
+            pipeline_database_digest=remote_pipeline.database_digest,
+            operations_database_digest=remote_operations.database_digest,
+            publication_database_digest=remote_publication.database_digest,
+            pipeline_projection_digest=remote_pipeline.projection_digest,
+            operations_projection_digest=remote_operations.projection_digest,
+            publication_projection_digest=remote_publication.projection_digest,
+        )
+
+    @staticmethod
+    def _bundles_equal(
+        left: VerifiedStateBundle,
+        right: VerifiedStateBundle,
+    ) -> bool:
+        return (
+            left.root == right.root
+            and left.content_by_path() == right.content_by_path()
+            and len(left.files) == len(right.files)
+        )
+
+    @staticmethod
+    def _verify_transition_fact(
+        operations: object,
+        transition: SemanticDurabilityTransition,
+    ) -> None:
+        expected_status = {
+            "attempt_started": "started",
+            "result_decided": "decided",
+            "result_confirmed_retryable": "confirmed_retryable",
+            "result_outcome_unknown": "semantic_outcome_unknown",
+        }[transition.transition]
+        matches = 0
+        for fact in operations.facts:
+            if fact.kind != "semantic_attempt":
+                continue
+            try:
+                payload = json.loads(fact.payload_json)
+            except (TypeError, ValueError):
+                raise StateIntegrityFailure from None
+            value = payload.get("value") if type(payload) is dict else None
+            if type(value) is not dict:
+                raise StateIntegrityFailure
+            identity = (
+                value.get("run_id"),
+                value.get("repository_id"),
+                value.get("stage"),
+                value.get("attempt_no"),
+            )
+            expected_identity = (
+                transition.run_id,
+                transition.repository_id,
+                transition.stage,
+                transition.attempt_no,
+            )
+            if identity == expected_identity:
+                if (
+                    value.get("status") != expected_status
+                    or value.get("recorded_at") != transition.recorded_at
+                ):
+                    raise StateIntegrityFailure
+                matches += 1
+        if matches != 1:
+            raise StateIntegrityFailure
 
 
 class FixtureStateRemote:
