@@ -16,15 +16,11 @@ from skillscout.domain.discovery import (
     DISCOVERY_MAX_SEMANTIC_CANDIDATES,
     DiscoveryBudgetPolicyV1,
 )
+from skillscout.domain.canonical import sha256_digest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).parent / "fixtures" / "state_branch" / "valid_state.json"
-EXPORT_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="phase5-wave0-store-export-missing",
-)
-
 FORBIDDEN_SCHEMA_OWNERS = {
     "runs",
     "stage_attempts",
@@ -338,7 +334,6 @@ def test_outcome_unknown_attempt_is_consumed_and_blocks_automatic_reentry(
             )
 
 
-@EXPORT_XFAIL
 def test_owned_export_rebuild_and_projection_equality_fail_closed(
     tmp_path: Path,
 ) -> None:
@@ -368,3 +363,89 @@ def test_owned_export_rebuild_and_projection_equality_fail_closed(
             tmp_path / "rejected.sqlite3",
             tampered,
         )
+
+
+def test_corrupt_database_bytes_rebuild_from_complete_owned_json(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    with module.OperationsStateStore(tmp_path / "source.sqlite3") as store:
+        store.seed_test_reservations(
+            run_id="discovery-rebuild",
+            repository_id=910001,
+        )
+        store.record_test_terminal(
+            run_id="discovery-rebuild",
+            repository_id=910001,
+            outcome="semantic_outcome_unknown",
+        )
+        exported = store.export_owned_state()
+
+    corrupt = exported.model_copy(
+        update={
+            "database_bytes": b"not-a-sqlite-database",
+            "database_digest": sha256_digest(b"not-a-sqlite-database"),
+        }
+    )
+    rebuilt = tmp_path / "rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, corrupt)
+    with module.OperationsStateStore(rebuilt) as store:
+        restored = store.export_owned_state()
+    assert restored.facts == exported.facts
+    assert restored.projection == exported.projection
+
+
+@pytest.mark.parametrize("damage", ("database_digest", "missing_fact", "reordered"))
+def test_valid_database_with_wrong_owned_authority_fails_closed(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    module = _operations_module()
+    with module.OperationsStateStore(tmp_path / "source.sqlite3") as store:
+        store.seed_test_reservations(
+            run_id="discovery-rebuild",
+            repository_id=910001,
+        )
+        exported = store.export_owned_state()
+
+    if damage == "database_digest":
+        tampered = exported.model_copy(
+            update={"database_digest": "sha256:" + ("f" * 64)}
+        )
+    elif damage == "missing_fact":
+        tampered = exported.model_copy(update={"facts": exported.facts[:-1]})
+    else:
+        tampered = exported.model_copy(update={"facts": tuple(reversed(exported.facts))})
+    with pytest.raises(module.OperationsIntegrityError):
+        module.OperationsStateStore.rebuild_owned_state(
+            tmp_path / f"rejected-{damage}.sqlite3",
+            tampered,
+        )
+
+
+def test_failed_owned_snapshot_exposes_previous_complete_database(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    active = False
+
+    def fail_after_replace(operation: str) -> None:
+        if active and operation == "before_operations_state_directory_fsync":
+            raise OSError("simulated killed writer")
+
+    database = tmp_path / "operations.sqlite3"
+    store = module.OperationsStateStore(database, filesystem_seam=fail_after_replace)
+    before = database.read_bytes()
+    active = True
+    with pytest.raises(module.OperationsStateError):
+        store.seed_test_reservations(
+            run_id="discovery-killed",
+            repository_id=910001,
+        )
+    store.close()
+    assert database.read_bytes() == before
+    with module.OperationsStateStore(database) as reopened:
+        assert reopened.reservation_count(
+            "discovery-killed",
+            kind="discovery",
+        ) == 0
