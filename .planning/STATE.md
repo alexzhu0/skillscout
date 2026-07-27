@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Automated Discovery Operations
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-07-27T13:05:58.192Z"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-07-27T13:16:13.624Z"
 last_activity: 2026-07-27
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 61
-  completed_plans: 48
+  completed_plans: 49
   percent: 67
 ---
 
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 5 — Automated Discovery Operations
-**Plan:** 2 of 14
+**Plan:** 3 of 14
 **Verification:** 13/13 requirements verified; clean Round-4 code review; exact release gate passed 1247 tests
 **Next command:** `$gsd-plan-phase 4`
 
@@ -115,8 +115,8 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 ## Session Continuity
 
 **Last activity:** 2026-07-27
-**Last session:** 2026-07-27T13:05:22.569Z
-**Stopped at:** Completed 05-01-PLAN.md
+**Last session:** 2026-07-27T13:16:13.620Z
+**Stopped at:** Completed 05-02-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -172,6 +172,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 | Phase 03 P13 | 16min | 2 tasks | 3 files |
 | Phase 03 P14 | 17min | 2 tasks | 5 files |
 | Phase 05 P01 | 9min | 2 tasks | 3 files |
+| Phase 05 P02 | 6min | 2 tasks | 6 files |
 
 ## Decisions
 
@@ -274,3 +275,6 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 - [Phase 05]: Use numeric repository ID as discovery deduplication authority. — Owner and repository names are mutable provenance, not stable identity.
 - [Phase 05]: Quarantine outcome-unknown semantic attempts separately from confirmed retryable outcomes. — Automatic replay cannot be proven duplicate-free after an indeterminate provider request.
 - [Phase 05]: Bind one prior-root-linked state root to digest-derived objects and exactly three owner-specific SQLite paths with no pruning surface. — Audit and rebuild authority stays complete, path-closed and retention-preserving.
+- [Phase 05]: Freeze Search results as one strict page observation plus a tuple of strict repository observations. — Raw provider dictionaries and discarded prose never cross the adapter boundary.
+- [Phase 05]: Keep fixture, recorder, parser, and numeric-ID tests ordinary green while only named adapter behavior nodes strict-xfail. — Collection and unrelated defects remain hard failures, and unexpected adapter passes XPASS-fail.
+- [Phase 05]: Synthesize malformed and oversized responses from bounded fixture instructions. — The repository retains a compact deterministic corpus instead of megabyte-scale provider bodies.
