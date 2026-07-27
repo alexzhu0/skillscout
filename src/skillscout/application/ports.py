@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Protocol, runtime_checkable
+import re
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, runtime_checkable
 
+from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.candidate_authority import CandidateSubjectDescriptorV1
 from skillscout.domain.enums import EffectScope, PipelineStage
 from skillscout.domain.models import (
@@ -22,12 +24,324 @@ from skillscout.domain.models import (
 )
 
 if TYPE_CHECKING:
+    from skillscout.adapters.operations_state import OperationsStateStore
     from skillscout.adapters.openai_generate import GenerationRequestV1, GenerationResult
+    from skillscout.adapters.publication_state import PublicationStateStore
     from skillscout.adapters.state import CompletedCandidateProjectionV1
+    from skillscout.adapters.state import SQLiteStateStore
     from skillscout.domain.candidate_authority import CandidateExecutionAuthorityV1
     from skillscout.domain.review import ReviewResult
     from skillscout.domain.skill_artifacts import FrozenSkillPackageV1
     from skillscout.domain.validation import ValidationReportV1
+
+
+_DURABILITY_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DURABILITY_SHA = re.compile(r"^[0-9a-f]{40}$")
+_DURABILITY_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_SEMANTIC_PROVIDERS = frozenset({"openai", "deepseek"})
+_SEMANTIC_STAGES = frozenset({"extractor", "generator", "reviewer"})
+_DURABILITY_TRANSITIONS = frozenset(
+    {
+        "attempt_started",
+        "result_decided",
+        "result_confirmed_retryable",
+        "result_outcome_unknown",
+    }
+)
+
+
+def _require_digest(value: object, label: str) -> str:
+    if type(value) is not str or _DURABILITY_DIGEST.fullmatch(value) is None:
+        raise ValueError(f"invalid {label}")
+    return value
+
+
+def _require_state_sha(value: object, label: str) -> str:
+    if type(value) is not str or _DURABILITY_SHA.fullmatch(value) is None:
+        raise ValueError(f"invalid {label}")
+    return value
+
+
+def _require_durability_id(value: object, label: str) -> str:
+    if type(value) is not str or _DURABILITY_ID.fullmatch(value) is None:
+        raise ValueError(f"invalid {label}")
+    return value
+
+
+@dataclass(frozen=True)
+class SemanticDurabilityTransition:
+    """Exact semantic-attempt state that must exist on the remote state branch."""
+
+    schema_version: Literal["semantic-durability-transition-v1"]
+    run_id: str
+    repository_id: int
+    workflow_authority_digest: str
+    provider: Literal["openai", "deepseek"]
+    stage: Literal["extractor", "generator", "reviewer"]
+    attempt_no: int
+    transition: Literal[
+        "attempt_started",
+        "result_decided",
+        "result_confirmed_retryable",
+        "result_outcome_unknown",
+    ]
+    expected_prior_state_head: str
+    expected_prior_root_digest: str
+    pipeline_export_digest: str
+    operations_export_digest: str
+    publication_export_digest: str
+    transition_authority_digest: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "semantic-durability-transition-v1":
+            raise ValueError("invalid semantic durability schema")
+        _require_durability_id(self.run_id, "run id")
+        if type(self.repository_id) is not int or self.repository_id <= 0:
+            raise ValueError("invalid repository id")
+        _require_digest(self.workflow_authority_digest, "workflow authority")
+        if self.provider not in _SEMANTIC_PROVIDERS:
+            raise ValueError("invalid semantic provider")
+        if self.stage not in _SEMANTIC_STAGES:
+            raise ValueError("invalid semantic stage")
+        if type(self.attempt_no) is not int or not 1 <= self.attempt_no <= 16:
+            raise ValueError("invalid semantic attempt")
+        if self.transition not in _DURABILITY_TRANSITIONS:
+            raise ValueError("invalid semantic durability transition")
+        _require_state_sha(self.expected_prior_state_head, "prior state head")
+        for label, value in (
+            ("prior root", self.expected_prior_root_digest),
+            ("pipeline export", self.pipeline_export_digest),
+            ("operations export", self.operations_export_digest),
+            ("publication export", self.publication_export_digest),
+        ):
+            _require_digest(value, label)
+        _require_digest(
+            self.transition_authority_digest,
+            "transition authority",
+        )
+        if self.transition_authority_digest != sha256_digest(
+            self.as_dict(exclude_authority=True)
+        ):
+            raise ValueError("transition authority digest mismatch")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        run_id: str,
+        repository_id: int,
+        workflow_authority_digest: str,
+        provider: Literal["openai", "deepseek"],
+        stage: Literal["extractor", "generator", "reviewer"],
+        attempt_no: int,
+        transition: Literal[
+            "attempt_started",
+            "result_decided",
+            "result_confirmed_retryable",
+            "result_outcome_unknown",
+        ],
+        expected_prior_state_head: str,
+        expected_prior_root_digest: str,
+        pipeline_export_digest: str,
+        operations_export_digest: str,
+        publication_export_digest: str,
+    ) -> SemanticDurabilityTransition:
+        values: dict[str, object] = {
+            "schema_version": "semantic-durability-transition-v1",
+            "run_id": run_id,
+            "repository_id": repository_id,
+            "workflow_authority_digest": workflow_authority_digest,
+            "provider": provider,
+            "stage": stage,
+            "attempt_no": attempt_no,
+            "transition": transition,
+            "expected_prior_state_head": expected_prior_state_head,
+            "expected_prior_root_digest": expected_prior_root_digest,
+            "pipeline_export_digest": pipeline_export_digest,
+            "operations_export_digest": operations_export_digest,
+            "publication_export_digest": publication_export_digest,
+        }
+        return cls(
+            **values,
+            transition_authority_digest=sha256_digest(values),
+        )  # type: ignore[arg-type]
+
+    @classmethod
+    def from_dict(cls, value: object) -> SemanticDurabilityTransition:
+        if type(value) is not dict or set(value) != {
+            field.name for field in dataclass_fields(cls)
+        }:
+            raise ValueError("invalid semantic durability transition")
+        return cls(**value)  # type: ignore[arg-type]
+
+    def as_dict(self, *, exclude_authority: bool = False) -> dict[str, object]:
+        values = {
+            field.name: getattr(self, field.name)
+            for field in dataclass_fields(type(self))
+        }
+        if exclude_authority:
+            values.pop("transition_authority_digest")
+        return values
+
+
+@dataclass(frozen=True)
+class DurabilityReceipt:
+    """Self-authenticating acknowledgement of an exact remotely reread state."""
+
+    schema_version: Literal["durability-receipt-v1"]
+    transition_authority_digest: str
+    expected_prior_state_head: str
+    expected_prior_root_digest: str
+    verified_state_head: str
+    state_root_digest: str
+    pipeline_export_digest: str
+    operations_export_digest: str
+    publication_export_digest: str
+    pipeline_database_digest: str
+    operations_database_digest: str
+    publication_database_digest: str
+    pipeline_projection_digest: str
+    operations_projection_digest: str
+    publication_projection_digest: str
+    receipt_digest: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "durability-receipt-v1":
+            raise ValueError("invalid durability receipt schema")
+        _require_state_sha(self.expected_prior_state_head, "prior state head")
+        _require_state_sha(self.verified_state_head, "verified state head")
+        if self.verified_state_head == self.expected_prior_state_head:
+            raise ValueError("remote state head was not advanced")
+        for field_info in dataclass_fields(type(self)):
+            if field_info.name.endswith("_digest"):
+                _require_digest(getattr(self, field_info.name), field_info.name)
+        if self.receipt_digest != sha256_digest(
+            self.as_dict(exclude_receipt_digest=True)
+        ):
+            raise ValueError("receipt digest mismatch")
+
+    @classmethod
+    def from_remote_verification(
+        cls,
+        *,
+        transition: SemanticDurabilityTransition,
+        verified_state_head: str,
+        state_root_digest: str,
+        pipeline_database_digest: str,
+        operations_database_digest: str,
+        publication_database_digest: str,
+        pipeline_projection_digest: str,
+        operations_projection_digest: str,
+        publication_projection_digest: str,
+    ) -> DurabilityReceipt:
+        if type(transition) is not SemanticDurabilityTransition:
+            raise TypeError("invalid durability transition")
+        values: dict[str, object] = {
+            "schema_version": "durability-receipt-v1",
+            "transition_authority_digest": (
+                transition.transition_authority_digest
+            ),
+            "expected_prior_state_head": transition.expected_prior_state_head,
+            "expected_prior_root_digest": (
+                transition.expected_prior_root_digest
+            ),
+            "verified_state_head": verified_state_head,
+            "state_root_digest": state_root_digest,
+            "pipeline_export_digest": transition.pipeline_export_digest,
+            "operations_export_digest": transition.operations_export_digest,
+            "publication_export_digest": transition.publication_export_digest,
+            "pipeline_database_digest": pipeline_database_digest,
+            "operations_database_digest": operations_database_digest,
+            "publication_database_digest": publication_database_digest,
+            "pipeline_projection_digest": pipeline_projection_digest,
+            "operations_projection_digest": operations_projection_digest,
+            "publication_projection_digest": publication_projection_digest,
+        }
+        return cls(
+            **values,
+            receipt_digest=sha256_digest(values),
+        )  # type: ignore[arg-type]
+
+    @classmethod
+    def from_dict(cls, value: object) -> DurabilityReceipt:
+        if type(value) is not dict or set(value) != {
+            field.name for field in dataclass_fields(cls)
+        }:
+            raise ValueError("invalid durability receipt")
+        return cls(**value)  # type: ignore[arg-type]
+
+    @property
+    def database_digests(self) -> tuple[str, str, str]:
+        return (
+            self.pipeline_database_digest,
+            self.operations_database_digest,
+            self.publication_database_digest,
+        )
+
+    def as_dict(
+        self,
+        *,
+        exclude_receipt_digest: bool = False,
+    ) -> dict[str, object]:
+        values = {
+            field.name: getattr(self, field.name)
+            for field in dataclass_fields(type(self))
+        }
+        if exclude_receipt_digest:
+            values.pop("receipt_digest")
+        return values
+
+    def authorizes(self, transition: SemanticDurabilityTransition) -> bool:
+        return (
+            type(transition) is SemanticDurabilityTransition
+            and self.transition_authority_digest
+            == transition.transition_authority_digest
+            and self.expected_prior_state_head
+            == transition.expected_prior_state_head
+            and self.expected_prior_root_digest
+            == transition.expected_prior_root_digest
+            and self.pipeline_export_digest
+            == transition.pipeline_export_digest
+            and self.operations_export_digest
+            == transition.operations_export_digest
+            and self.publication_export_digest
+            == transition.publication_export_digest
+        )
+
+
+def receipt_authorizes(
+    transition: SemanticDurabilityTransition,
+    receipt: object,
+) -> bool:
+    """Return false for every absent, malformed, stale, or mismatched receipt."""
+
+    return type(receipt) is DurabilityReceipt and receipt.authorizes(transition)
+
+
+def require_durability_receipt(
+    transition: SemanticDurabilityTransition,
+    receipt: object,
+) -> DurabilityReceipt:
+    """Fail with one closed diagnostic unless exact remote authority is present."""
+
+    if not receipt_authorizes(transition, receipt):
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+    assert isinstance(receipt, DurabilityReceipt)
+    return receipt
+
+
+@runtime_checkable
+class ThreeStoreDurabilityBarrier(Protocol):
+    """Persist all three owner exports and acknowledge only an exact reread."""
+
+    def confirm(
+        self,
+        *,
+        transition: SemanticDurabilityTransition,
+        pipeline_store: SQLiteStateStore,
+        operations_store: OperationsStateStore,
+        publication_store: PublicationStateStore,
+    ) -> DurabilityReceipt: ...
 
 
 class ErrorCode(StrEnum):

@@ -198,6 +198,7 @@ def test_incomplete_or_mismatched_receipt_never_grants_authority(
     )
     if field != "transition_authority_digest":
         changed.pop("transition_authority_digest")
+        changed.pop("schema_version")
         other = module.SemanticDurabilityTransition.create(**changed)
     else:
         with pytest.raises(ValueError):
