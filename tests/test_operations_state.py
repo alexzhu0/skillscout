@@ -266,6 +266,78 @@ def test_tampered_reservation_ordinal_is_rejected_before_reuse(
         module.OperationsStateStore(database)
 
 
+@pytest.mark.parametrize("damage", ("authority", "status"))
+def test_tampered_run_authority_or_status_is_rejected_before_reuse(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    module = _operations_module()
+    database = tmp_path / f"operations-{damage}.sqlite3"
+    with module.OperationsStateStore(database) as store:
+        store.seed_test_reservations(
+            run_id="discovery-tampered",
+            repository_id=910001,
+        )
+
+    connection = sqlite3.connect(":memory:")
+    connection.deserialize(database.read_bytes())
+    if damage == "authority":
+        connection.execute(
+            """UPDATE operations_runs SET authority_digest = ?
+               WHERE run_id = 'discovery-tampered'""",
+            ("sha256:" + ("f" * 64),),
+        )
+    else:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """UPDATE operations_runs SET status = 'refundable'
+               WHERE run_id = 'discovery-tampered'"""
+        )
+    connection.commit()
+    database.write_bytes(connection.serialize())
+    connection.close()
+
+    with pytest.raises(module.OperationsIntegrityError):
+        module.OperationsStateStore(database)
+
+
+def test_outcome_unknown_attempt_is_consumed_and_blocks_automatic_reentry(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        store.seed_test_reservations(
+            run_id="discovery-unknown",
+            repository_id=910001,
+        )
+        started = store.record_semantic_attempt(
+            run_id="discovery-unknown",
+            repository_id=910001,
+            stage="extractor",
+            attempt_no=1,
+            status="started",
+            recorded_at="2026-07-27T12:00:00.000000Z",
+        )
+        unknown = store.record_semantic_attempt(
+            run_id="discovery-unknown",
+            repository_id=910001,
+            stage="extractor",
+            attempt_no=1,
+            status="semantic_outcome_unknown",
+            recorded_at="2026-07-27T12:00:01.000000Z",
+        )
+        assert unknown.attempt_digest != started.attempt_digest
+        with pytest.raises(module.OperationsIntegrityError):
+            store.record_semantic_attempt(
+                run_id="discovery-unknown",
+                repository_id=910001,
+                stage="extractor",
+                attempt_no=2,
+                status="started",
+                recorded_at="2026-07-27T12:00:02.000000Z",
+            )
+
+
 @EXPORT_XFAIL
 def test_owned_export_rebuild_and_projection_equality_fail_closed(
     tmp_path: Path,
