@@ -493,11 +493,17 @@ def _bundle(
     *,
     parent: str,
     pipeline_bytes: bytes = b"SQLite format 3\x00pipeline-state",
+    object_count: int = 0,
+    prior_root_digest: str | None = None,
 ) -> object:
     database_bytes = {
         "pipeline": pipeline_bytes,
         "operations": b"SQLite format 3\x00operations-state",
         "publication": b"SQLite format 3\x00publication-state",
+    }
+    object_bytes = {
+        sha256_digest({"index": index}): canonical_json_bytes({"index": index})
+        for index in range(object_count)
     }
     projection = {
         "schema_version": "discovery-state-rebuild-projection-v1",
@@ -513,11 +519,22 @@ def _bundle(
     root_payload = {
         "schema_version": "discovery-state-root-v1",
         "root_locator": "state/root.json",
-        "prior_root_digest": None,
+        "prior_root_digest": prior_root_digest,
         "state_parent_commit_sha": parent,
         "query_set_digest": "sha256:" + "1" * 64,
         "budget_policy_digest": "sha256:" + "2" * 64,
-        "objects": [],
+        "objects": [
+            {
+                "object_digest": digest,
+                "locator": (
+                    "state/objects/sha256/"
+                    f"{digest.removeprefix('sha256:')[:2]}/"
+                    f"{digest.removeprefix('sha256:')}.json"
+                ),
+                "size_bytes": len(content),
+            }
+            for digest, content in sorted(object_bytes.items())
+        ],
         "databases": [
             {
                 "owner": owner,
@@ -541,7 +558,18 @@ def _bundle(
         module.StateOwnedFile(
             "state/root.json",
             canonical_json_bytes(root.model_dump(mode="json", exclude_none=False)),
-        )
+        ),
+        *(
+            module.StateOwnedFile(
+                (
+                    "state/objects/sha256/"
+                    f"{digest.removeprefix('sha256:')[:2]}/"
+                    f"{digest.removeprefix('sha256:')}.json"
+                ),
+                content,
+            )
+            for digest, content in sorted(object_bytes.items())
+        ),
     ]
     files.extend(
         module.StateOwnedFile(f"state/databases/{owner}.sqlite3", content)
@@ -560,6 +588,15 @@ class _StateRemote:
         self.writes: list[str] = []
         self.force_values: list[bool] = []
         self.counter = 10
+        if head is not None:
+            tree_sha = self._sha()
+            self.trees[tree_sha] = ()
+            self.commits[head] = self.module.StateCommitObservation(
+                sha=head,
+                tree_sha=tree_sha,
+                parents=(),
+                message="existing parent",
+            )
 
     def _sha(self) -> str:
         self.counter += 1
@@ -628,6 +665,79 @@ class _StateRemote:
 
     def get_blob(self, sha: str) -> bytes:
         return self.blobs[sha]
+
+
+def test_sync_reuses_unchanged_parent_blobs_below_content_creation_limit() -> None:
+    module = _state_module()
+
+    class ContentLimitedRemote(_StateRemote):
+        def __init__(self, head: str) -> None:
+            super().__init__(module, head)
+            self.blob_creation_limit: int | None = None
+            self.blob_creation_count = 0
+
+        def create_blob(self, content: bytes) -> str:
+            self.blob_creation_count += 1
+            if (
+                self.blob_creation_limit is not None
+                and self.blob_creation_count > self.blob_creation_limit
+            ):
+                raise RuntimeError("synthetic content creation limit")
+            return super().create_blob(content)
+
+    remote = ContentLimitedRemote("4" * 40)
+    parent_bundle = _bundle(
+        module,
+        parent="4" * 40,
+        object_count=83,
+    )
+    parent = module.StateBranchStore(remote).sync(
+        parent_bundle,
+        observed_head="4" * 40,
+    )
+    child_bundle = _bundle(
+        module,
+        parent=parent.commit_sha,
+        object_count=109,
+        prior_root_digest=parent_bundle.root.root_digest,
+    )
+    remote.blob_creation_count = 0
+    remote.blob_creation_limit = 80
+    remote.writes.clear()
+
+    synchronized = module.StateBranchStore(remote).sync(
+        child_bundle,
+        observed_head=parent.commit_sha,
+    )
+
+    assert synchronized.status == "verified"
+    assert remote.blob_creation_count == 27
+    assert remote.writes.count("blob") == 27
+    assert remote.writes[-1] == "update_ref"
+    assert remote.force_values[-1] is False
+
+
+def test_sync_rejects_invalid_parent_tree_before_blob_reuse() -> None:
+    module = _state_module()
+    observed_head = "4" * 40
+    remote = _StateRemote(module, observed_head)
+    parent = remote.commits[observed_head]
+    remote.trees[parent.tree_sha] = (
+        module.StateTreeEntry(
+            path="state/unowned.json",
+            sha="9" * 40,
+            mode="100644",
+            size=1,
+        ),
+    )
+
+    with pytest.raises(module.StateBranchConflict):
+        module.StateBranchStore(remote).sync(
+            _bundle(module, parent=observed_head),
+            observed_head=observed_head,
+        )
+
+    assert remote.writes == []
 
 
 @pytest.mark.parametrize("bootstrap", (False, True))

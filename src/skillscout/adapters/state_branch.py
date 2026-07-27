@@ -585,11 +585,34 @@ class StateBranchStore:
         if current is not None and current.sha != expected_parent:
             raise StateBranchConflict
 
+        parent_entries: dict[str, StateTreeEntry] = {}
+        if current is not None:
+            parent_commit = self._remote.get_commit(current.sha)
+            if (
+                parent_commit.sha != current.sha
+                or len(parent_commit.parents) > 1
+            ):
+                raise StateBranchConflict
+            try:
+                parent_entries = _validate_tree_shape(
+                    self._remote.get_tree(parent_commit.tree_sha)
+                )
+            except StateIntegrityFailure:
+                raise StateBranchConflict from None
+
         blob_entries: list[dict[str, object]] = []
         for path, content in sorted(files.items()):
-            blob_sha = self._remote.create_blob(content)
-            if blob_sha != _git_blob_id(content):
-                raise StateBranchConflict
+            expected_blob_sha = _git_blob_id(content)
+            parent_entry = parent_entries.get(path)
+            if (
+                parent_entry is not None
+                and parent_entry.sha == expected_blob_sha
+            ):
+                blob_sha = expected_blob_sha
+            else:
+                blob_sha = self._remote.create_blob(content)
+                if blob_sha != expected_blob_sha:
+                    raise StateBranchConflict
             blob_entries.append(
                 {
                     "path": path,
