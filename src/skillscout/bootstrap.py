@@ -358,7 +358,10 @@ class _LateStateDurabilityBarrier:
             if (
                 reread.status != "verified"
                 or reread.observed_head != synchronized.commit_sha
-                or reread.bundle != bundle
+                or reread.bundle is None
+                or reread.bundle.root != bundle.root
+                or len(reread.bundle.files) != len(bundle.files)
+                or reread.bundle.content_by_path() != bundle.content_by_path()
             ):
                 raise ValueError("discovery state synchronization rejected")
             return synchronized

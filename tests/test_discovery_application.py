@@ -536,6 +536,143 @@ def test_real_bootstrap_and_operations_store_complete_empty_discovery(
     assert Path("state/databases/operations.sqlite3").is_file()
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "order_only",
+        "status",
+        "head",
+        "missing_bundle",
+        "root",
+        "missing_file",
+        "content",
+    ),
+)
+def test_late_discovery_barrier_accepts_state_branch_file_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    operations_module = importlib.import_module(
+        "skillscout.adapters.operations_state"
+    )
+    monkeypatch.chdir(tmp_path)
+    config = _runtime_config(bootstrap, tmp_path)
+    sync_calls = 0
+
+    class StateClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class StateStore:
+        def __init__(self, _remote: object) -> None:
+            self.bundle = None
+
+        def sync(self, bundle, observed_head: str):
+            nonlocal sync_calls
+            sync_calls += 1
+            assert observed_head == "a" * 40
+            self.bundle = bundle
+            return SimpleNamespace(
+                commit_sha="b" * 40,
+                root_digest=bundle.root.root_digest,
+            )
+
+        def restore(self):
+            assert self.bundle is not None
+            root_file = next(
+                item
+                for item in self.bundle.files
+                if item.path == "state/root.json"
+            )
+            restored_files = (
+                root_file,
+                *sorted(
+                    (
+                        item
+                        for item in self.bundle.files
+                        if item.path != "state/root.json"
+                    ),
+                    key=lambda item: item.path,
+                ),
+            )
+            restored_bundle = type(self.bundle)(
+                self.bundle.root,
+                restored_files,
+            )
+            assert restored_bundle != self.bundle
+            assert (
+                restored_bundle.content_by_path()
+                == self.bundle.content_by_path()
+            )
+            if mutation == "root":
+                restored_bundle = type(restored_bundle)(
+                    restored_bundle.root.model_copy(
+                        update={"root_digest": "sha256:" + ("f" * 64)}
+                    ),
+                    restored_bundle.files,
+                )
+            elif mutation == "missing_file":
+                restored_bundle = type(restored_bundle)(
+                    restored_bundle.root,
+                    restored_bundle.files[:-1],
+                )
+            elif mutation == "content":
+                changed_files = list(restored_bundle.files)
+                changed = changed_files[-1]
+                changed_files[-1] = type(changed)(
+                    changed.path,
+                    changed.content + b"x",
+                )
+                restored_bundle = type(restored_bundle)(
+                    restored_bundle.root,
+                    tuple(changed_files),
+                )
+            return SimpleNamespace(
+                status="absent" if mutation == "status" else "verified",
+                observed_head=("c" if mutation == "head" else "b") * 40,
+                bundle=None if mutation == "missing_bundle" else restored_bundle,
+            )
+
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchClient",
+        StateClient,
+    )
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchStore",
+        StateStore,
+    )
+    operations = operations_module.OperationsStateStore(config.operations_state)
+    try:
+        barrier = bootstrap._LateStateDurabilityBarrier(
+            config,
+            {"SKILLSCOUT_STATE_GITHUB_TOKEN": "state-token"},
+        )
+        arguments = {
+            "operations_store": operations,
+            "observed_head": "a" * 40,
+            "prior_root_digest": config.initial_state_root_digest,
+            "created_at": "2026-07-28T03:40:00.000000Z",
+        }
+        if mutation == "order_only":
+            synchronized = barrier.sync_discovery(**arguments)
+            assert synchronized.commit_sha == "b" * 40
+        else:
+            with pytest.raises(
+                ValueError,
+                match=r"^discovery state synchronization rejected$",
+            ):
+                barrier.sync_discovery(**arguments)
+    finally:
+        operations.close()
+
+    assert sync_calls == 1
+
+
 def test_real_operations_resume_advances_from_persisted_search_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
