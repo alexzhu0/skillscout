@@ -2066,6 +2066,7 @@ def test_extractor_confirmed_retry_is_remotely_durable_before_next_request(
     assert [item.transition for item in barrier.transitions] == [
         "attempt_started",
         "result_confirmed_retryable",
+        "result_confirmed_retryable",
         "attempt_started",
         "result_decided",
     ]
@@ -2089,16 +2090,19 @@ def test_extractor_unknown_is_consumed_once_and_never_replayed(
             PipelineRunner(
                 store, processor, semantic_durability=_semantic_guard(barrier)
             ).run(_repository_subject(), tmp_path / "unknown-first")
-        with pytest.raises(SafeFailure) as resumed:
+        with pytest.raises(SemanticProviderFailure) as resumed:
             PipelineRunner(
                 store, processor, semantic_durability=_semantic_guard(barrier)
             ).run(_repository_subject(), tmp_path / "unknown-second")
-        assert resumed.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+        assert resumed.value.disposition is (
+            SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+        )
     finally:
         store.close()
     assert processor.extractor_requests == 1
     assert [item.transition for item in barrier.transitions] == [
         "attempt_started",
+        "result_outcome_unknown",
         "result_outcome_unknown",
     ]
 

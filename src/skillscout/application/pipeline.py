@@ -8,24 +8,32 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Final, Iterable, Mapping, Protocol
+from typing import Callable, Final, Iterable, Literal, Mapping, Protocol
 
 from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject
 from skillscout.adapters.github import GitHubReadClient
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.adapters.openai_extract import OpenAIExtractionClient
+from skillscout.adapters.semantic_provider import (
+    SemanticProviderFailure,
+    SemanticTransportDisposition,
+)
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.ports import (
     AdapterRegistration,
     Clock,
+    DurabilityReceipt,
     ErrorCode,
     IdProvider,
     SafeFailure,
+    SemanticDurabilityTransition,
     StageContext,
     StageOutcome,
     StageProcessor,
     StageTelemetry,
     StateStore,
+    ThreeStoreDurabilityBarrier,
+    require_durability_receipt,
 )
 from skillscout.application.processors import PhaseTwoProcessor
 from skillscout.domain.canonical import (
@@ -252,6 +260,107 @@ class _ExtractionSummaryWriter:
         )
 
 
+class SemanticDurabilityGuard:
+    """Bind semantic attempt authority to an exact remotely confirmed state."""
+
+    def __init__(
+        self,
+        *,
+        barrier: ThreeStoreDurabilityBarrier,
+        operations_store: object,
+        publication_store: object,
+        repository_id: int,
+        workflow_authority_digest: str,
+        provider: Literal["openai", "deepseek"],
+        expected_prior_state_head: str,
+        expected_prior_root_digest: str,
+    ) -> None:
+        if (
+            not isinstance(barrier, ThreeStoreDurabilityBarrier)
+            or not hasattr(operations_store, "record_semantic_attempt")
+            or not hasattr(operations_store, "export_owned_state")
+            or not hasattr(publication_store, "export_owned_state")
+            or type(repository_id) is not int
+            or repository_id <= 0
+            or provider not in {"openai", "deepseek"}
+        ):
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        self._barrier = barrier
+        self._operations_store = operations_store
+        self._publication_store = publication_store
+        self._repository_id = repository_id
+        self._workflow_authority_digest = workflow_authority_digest
+        self._provider = provider
+        self._expected_prior_state_head = expected_prior_state_head
+        self._expected_prior_root_digest = expected_prior_root_digest
+
+    def confirm(
+        self,
+        *,
+        pipeline_store: object,
+        run_id: str,
+        stage: Literal["extractor", "generator", "reviewer"],
+        attempt_no: int,
+        status: Literal[
+            "started",
+            "decided",
+            "confirmed_retryable",
+            "semantic_outcome_unknown",
+        ],
+        recorded_at: str,
+    ) -> DurabilityReceipt:
+        """Persist one owner fact and return only an exact barrier receipt."""
+
+        try:
+            record = self._operations_store.record_semantic_attempt(
+                run_id=run_id,
+                repository_id=self._repository_id,
+                stage=stage,
+                attempt_no=attempt_no,
+                status=status,
+                recorded_at=recorded_at,
+            )
+            pipeline = pipeline_store.export_owned_state()
+            operations = self._operations_store.export_owned_state()
+            publication = self._publication_store.export_owned_state()
+            transition = SemanticDurabilityTransition.create(
+                run_id=run_id,
+                repository_id=self._repository_id,
+                workflow_authority_digest=self._workflow_authority_digest,
+                provider=self._provider,
+                stage=stage,
+                attempt_no=attempt_no,
+                recorded_at=record.recorded_at,
+                transition={
+                    "started": "attempt_started",
+                    "decided": "result_decided",
+                    "confirmed_retryable": "result_confirmed_retryable",
+                    "semantic_outcome_unknown": "result_outcome_unknown",
+                }[status],
+                expected_prior_state_head=self._expected_prior_state_head,
+                expected_prior_root_digest=self._expected_prior_root_digest,
+                pipeline_export_digest=pipeline.export_digest,
+                operations_export_digest=operations.export_digest,
+                publication_export_digest=publication.export_digest,
+            )
+            receipt = require_durability_receipt(
+                transition,
+                self._barrier.confirm(
+                    transition=transition,
+                    pipeline_store=pipeline_store,
+                    operations_store=self._operations_store,
+                    publication_store=self._publication_store,
+                ),
+            )
+        except SafeFailure:
+            raise
+        except Exception:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        self._expected_prior_state_head = receipt.verified_state_head
+        self._expected_prior_root_digest = receipt.state_root_digest
+        return receipt
+
+
 class PipelineRunner:
     """Persist running identity before work and atomic evidence after work."""
 
@@ -265,6 +374,7 @@ class PipelineRunner:
         retry_policy: RetryPolicy | None = None,
         publication_writer: _PublicationWriter | None = None,
         extraction_writer: _ExtractionSummaryWriter | None = None,
+        semantic_durability: SemanticDurabilityGuard | None = None,
         filesystem_seam: Callable[[str], None] | None = None,
     ) -> None:
         self.state = state
@@ -278,6 +388,7 @@ class PipelineRunner:
         self.extraction_writer = extraction_writer or _ExtractionSummaryWriter(
             filesystem_seam
         )
+        self.semantic_durability = semantic_durability
 
     def run(
         self,
@@ -381,6 +492,62 @@ class PipelineRunner:
                 producer_version=producer_version,
                 retry_policy_version=self.retry_policy.version,
             )
+            semantic_stage = (
+                self.semantic_durability is not None
+                and profile.uses_context
+                and stage is PipelineStage.EXTRACTOR
+            )
+            if semantic_stage:
+                prior_attempt = self._latest_attempt(run_id, stage)
+                if prior_attempt is not None:
+                    prior_status = str(prior_attempt["status"])
+                    prior_error = prior_attempt["error_code"]
+                    prior_attempt_no = int(prior_attempt["attempt_no"])
+                    if prior_status in {"running", "abandoned"}:
+                        unknown = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+                        self.state.fail_attempt(
+                            str(prior_attempt["attempt_id"]),
+                            run_id,
+                            unknown,
+                            self.clock.now(),
+                            retryable=False,
+                        )
+                        self._confirm_semantic(
+                            run_id=run_id,
+                            attempt_no=prior_attempt_no,
+                            status="semantic_outcome_unknown",
+                        )
+                        raise SemanticProviderFailure(
+                            disposition=(
+                                SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                            ),
+                            code="semantic_provider_outcome_unknown",
+                        )
+                    if prior_status == "failed":
+                        if prior_error == ErrorCode.STAGE_TRANSIENT_FAILURE.value:
+                            self._confirm_semantic(
+                                run_id=run_id,
+                                attempt_no=prior_attempt_no,
+                                status="confirmed_retryable",
+                            )
+                        elif prior_error == ErrorCode.PIPELINE_INTERRUPTED.value:
+                            self._confirm_semantic(
+                                run_id=run_id,
+                                attempt_no=prior_attempt_no,
+                                status="semantic_outcome_unknown",
+                            )
+                            raise SemanticProviderFailure(
+                                disposition=(
+                                    SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                                ),
+                                code="semantic_provider_outcome_unknown",
+                            )
+                        elif prior_error == ErrorCode.STAGE_PERMANENT_FAILURE.value:
+                            self._confirm_semantic(
+                                run_id=run_id,
+                                attempt_no=prior_attempt_no,
+                                status="decided",
+                            )
             self.state.abandon_stale_running(run_id, stage, self.clock.now())
             if self.state.has_permanent_failure(reusable_digest):
                 failure = SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
@@ -421,6 +588,12 @@ class PipelineRunner:
                 retryable=False,
             )
             self.state.start_attempt(attempt)
+            if semantic_stage:
+                self._confirm_semantic(
+                    run_id=run_id,
+                    attempt_no=attempt_no,
+                    status="started",
+                )
 
             try:
                 if profile.uses_context:
@@ -438,6 +611,49 @@ class PipelineRunner:
                         payload=self.processor.process(stage_input),
                         telemetry=None,
                     )
+            except SemanticProviderFailure as failure:
+                if (
+                    failure.disposition
+                    is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                ):
+                    closed = SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+                    status = "confirmed_retryable"
+                elif (
+                    failure.disposition
+                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                ):
+                    closed = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+                    status = "semantic_outcome_unknown"
+                else:
+                    closed = SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+                    status = "decided"
+                self.state.fail_attempt(
+                    attempt_id,
+                    run_id,
+                    closed,
+                    self.clock.now(),
+                    retryable=(
+                        failure.disposition
+                        is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                    ),
+                )
+                if semantic_stage:
+                    self._confirm_semantic(
+                        run_id=run_id,
+                        attempt_no=attempt_no,
+                        status=status,
+                    )
+                if (
+                    failure.disposition
+                    is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                ):
+                    raise closed from None
+                if (
+                    failure.disposition
+                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                ):
+                    raise
+                raise closed from None
             except SafeFailure as failure:
                 self._close_started_attempt(
                     attempt_id=attempt_id,
@@ -531,6 +747,12 @@ class PipelineRunner:
                 if telemetry is not None:
                     self.state.record_attempt_telemetry(attempt_id, telemetry)
                 self.state.complete_stage(envelope)
+                if semantic_stage:
+                    self._confirm_semantic(
+                        run_id=run_id,
+                        attempt_no=attempt_no,
+                        status="decided",
+                    )
             except SafeFailure as failure:
                 self._close_started_attempt(
                     attempt_id=attempt_id,
@@ -580,6 +802,50 @@ class PipelineRunner:
             reused_stage_count=invocation_event.reused_stage_count,
             publication_plan_path=artifact_name,
             remote_writes_attempted=0,
+        )
+
+    def _latest_attempt(
+        self,
+        run_id: str,
+        stage: PipelineStage,
+    ) -> Mapping[str, object] | None:
+        connection = getattr(self.state, "connection", None)
+        if connection is None:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        try:
+            row = connection.execute(
+                """SELECT attempt_id, attempt_no, status, error_code
+                   FROM stage_attempts
+                   WHERE run_id = ? AND stage = ?
+                   ORDER BY attempt_no DESC LIMIT 1""",
+                (run_id, stage.value),
+            ).fetchone()
+        except Exception:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        return row
+
+    def _confirm_semantic(
+        self,
+        *,
+        run_id: str,
+        attempt_no: int,
+        status: Literal[
+            "started",
+            "decided",
+            "confirmed_retryable",
+            "semantic_outcome_unknown",
+        ],
+    ) -> DurabilityReceipt:
+        guard = self.semantic_durability
+        if guard is None:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        return guard.confirm(
+            pipeline_store=self.state,
+            run_id=run_id,
+            stage="extractor",
+            attempt_no=attempt_no,
+            status=status,
+            recorded_at=self.clock.now(),
         )
 
     def _close_started_attempt(
