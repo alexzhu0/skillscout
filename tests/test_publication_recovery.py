@@ -423,6 +423,27 @@ def test_human_or_force_rewritten_machine_lineage_is_never_overwritten(
     assert len(remote.writes) == writes
 
 
+def test_default_branch_drift_rejects_an_otherwise_machine_owned_chain(
+    tmp_path: Path,
+) -> None:
+    admission = _admission()
+    remote = StatefulRemote()
+    _run(tmp_path, remote, admission)
+    writes = len(remote.writes)
+    remote.base_sha = "9" * 40
+
+    result = _run(
+        tmp_path,
+        remote,
+        admission,
+        state_name="drifted-default.db",
+    )
+
+    assert result.status == "manual_intervention_required"
+    assert result.code == "pull_or_ref_inconsistent"
+    assert len(remote.writes) == writes
+
+
 def test_transient_ref_read_failure_propagates_with_zero_remote_writes(
     tmp_path: Path,
 ) -> None:
