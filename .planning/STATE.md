@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Automated Discovery Operations
 status: executing
-stopped_at: Completed 05-07-PLAN.md
-last_updated: "2026-07-27T16:04:48.476Z"
+stopped_at: Completed 05-08-PLAN.md
+last_updated: "2026-07-27T17:05:16.395Z"
 last_activity: 2026-07-27
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 61
-  completed_plans: 58
+  completed_plans: 59
   percent: 67
 ---
 
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 5 — Automated Discovery Operations
-**Plan:** 11 of 14
+**Plan:** 12 of 14
 **Verification:** 13/13 requirements verified; clean Round-4 code review; exact release gate passed 1247 tests
 **Next command:** `$gsd-plan-phase 4`
 
@@ -115,8 +115,8 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 ## Session Continuity
 
 **Last activity:** 2026-07-27
-**Last session:** 2026-07-27T16:04:48.460Z
-**Stopped at:** Completed 05-07-PLAN.md
+**Last session:** 2026-07-27T17:05:16.390Z
+**Stopped at:** Completed 05-08-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -182,6 +182,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 | Phase 05 P14 | 10min | 2 tasks | 3 files |
 | Phase 05 P13 | 15min | 2 tasks | 4 files |
 | Phase 05 P07 | 8min | 2 tasks | 3 files |
+| Phase 05 P08 | 56min | 2 tasks | 20 files |
 
 ## Decisions
 
@@ -312,3 +313,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 - [Phase 05]: Keep unprotected discovery structurally incapable of receiving Phase 4, catalog credential, or remote publisher authority. — Preserve the authority-zone split before protected re-admission.
 - [Phase 05]: Consume one semantic repository reservation across zero-to-three independently identified workflow paths. — Repository-level semantic cost remains non-refundable while sibling workflows retain separate authorities.
 - [Phase 05]: Persist eligible output only as bounded exact-state locators and authorities requiring later protected re-admission. — Eligibility alone must not grant publication authority.
+- [Phase 05]: Discovery and protected publication remain separate authority zones — Discovery cannot resolve catalog credentials or construct publication objects.
+- [Phase 05]: Operations run identity is explicit and distinct from semantic execution identity — Durability checks must address the discovery reservation namespace exactly.
+- [Phase 05]: Workflow terminal facts are authoritative for exact eligible-set reconstruction — Candidate aggregates cannot prove which workflow emitted each artifact.
+- [Phase 05]: Discovery resumes from typed persisted prefixes — Search pages, candidates, reservations, workflow terminals and summaries must not replay after durable completion.
