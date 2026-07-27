@@ -109,7 +109,11 @@ def test_discovery_job_cannot_observe_catalog_secrets_or_candidate_shell() -> No
     discovery_block = source.split("  protected_publication:", 1)[0]
     assert set(
         re.findall(r"\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}", discovery_block)
-    ) == {"OPENAI_API_KEY"}
+    ) == {"DEEPSEEK_API_KEY"}
+    assert "SKILLSCOUT_LLM_PROVIDER: deepseek" in discovery_block
+    assert "DEEPSEEK_BASE_URL: https://api.deepseek.com" in discovery_block
+    assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in discovery_block
+    assert "OPENAI_API_KEY" not in discovery_block
     assert "SKILLSCOUT_GITHUB_APP_" not in discovery_block
     assert "SKILLSCOUT_CATALOG_" not in discovery_block
     for block in re.findall(r"run:\s*\|\n((?:\s{8,}.*\n?)*)", source):

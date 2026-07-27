@@ -37,7 +37,9 @@ jobs:
       INITIAL_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST }}
       SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
       SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SKILLSCOUT_LLM_PROVIDER: deepseek
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     steps:
       - name: Check out the fixed workflow revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
