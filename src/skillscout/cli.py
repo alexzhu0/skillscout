@@ -13,9 +13,14 @@ from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
 from skillscout.bootstrap import (
+    build_discovery_application,
     build_publication_application,
+    derive_discovery_publication_admissions,
+    load_discovery_runtime_config,
     load_publication_authority_config,
+    read_exact_discovery_state,
     require_phase3_gate_b3,
+    run_protected_discovery_publication,
     verify_publication_admission_handoff,
 )
 
@@ -124,6 +129,12 @@ def build_parser() -> SafeArgumentParser:
     publish.add_argument("--phase2-state", required=True, type=Path)
     publish.add_argument("--phase3-state", required=True, type=Path)
     publish.add_argument("--publication-state", required=True, type=Path)
+    discover = commands.add_parser("discover")
+    discover.add_argument("--state-repository-id", required=True)
+    discover.add_argument("--state-repository-full-name", required=True)
+    discover.add_argument("--initial-state-root-digest", required=True)
+    publish_discovered = commands.add_parser("publish-discovered")
+    publish_discovered.add_argument("--handoff", required=True, type=Path)
     return parser
 
 
@@ -583,6 +594,150 @@ def _run_publish_candidate(arguments: argparse.Namespace) -> dict[str, object]:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
+_DISCOVERY_QUERY_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "discovery-queries-v1.json"
+)
+_DISCOVERY_PIPELINE_STATE = Path("state/databases/pipeline.sqlite3")
+_DISCOVERY_OPERATIONS_STATE = Path("state/databases/operations.sqlite3")
+_DISCOVERY_PUBLICATION_STATE = Path("state/databases/publication.sqlite3")
+_MAX_DISCOVERY_HANDOFF_BYTES = 65_536
+
+
+def _run_discover(arguments: argparse.Namespace) -> dict[str, object]:
+    """Run only the unprotected Phase 2/3 discovery graph."""
+
+    provider = resolve_semantic_provider()
+    config = load_discovery_runtime_config(
+        state_repository_id=arguments.state_repository_id,
+        state_repository_full_name=arguments.state_repository_full_name,
+        state_ref="refs/heads/skillscout-state",
+        query_set_path=_DISCOVERY_QUERY_PATH,
+        pipeline_state=_DISCOVERY_PIPELINE_STATE,
+        operations_state=_DISCOVERY_OPERATIONS_STATE,
+        publication_state=_DISCOVERY_PUBLICATION_STATE,
+        semantic_provider=provider.provider.value,
+        extractor_model_id=provider.extract_model,
+        generator_model_id=provider.generator_model,
+        reviewer_model_id=provider.reviewer_model,
+        initial_state_root_digest=arguments.initial_state_root_digest,
+    )
+    result = build_discovery_application(config).run()
+    return {
+        "run_id": result.run_id,
+        "state_root_digest": result.state_root_digest,
+        "state_commit_sha": result.state_commit_sha,
+        "eligible_count": len(result.eligible_candidates),
+        "eligible_candidates": [
+            {
+                "locator": item.locator,
+                "authority_digest": item.authority_digest,
+                "workflow_identity_digest": item.workflow_identity_digest,
+            }
+            for item in result.eligible_candidates
+        ],
+    }
+
+
+def _read_discovery_handoff(path: Path) -> dict[str, object]:
+    try:
+        metadata = os.lstat(path)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o022
+            or not 1 <= metadata.st_size <= _MAX_DISCOVERY_HANDOFF_BYTES
+        ):
+            raise ValueError
+        payload = path.read_bytes()
+        if len(payload) != metadata.st_size:
+            raise ValueError
+        decoded = json.loads(payload)
+        if type(decoded) is not dict:
+            raise ValueError
+        return decoded
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _protected_state_repository() -> tuple[int, str]:
+    try:
+        raw_id = os.environ["SKILLSCOUT_STATE_REPOSITORY_ID"]
+        full_name = os.environ["SKILLSCOUT_STATE_REPOSITORY_FULL_NAME"]
+        if (
+            not raw_id.isascii()
+            or not raw_id.isdecimal()
+            or raw_id.startswith("0")
+            or full_name.count("/") != 1
+        ):
+            raise ValueError
+        return int(raw_id), full_name
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _run_publish_discovered(arguments: argparse.Namespace) -> dict[str, object]:
+    """Protected exact-state readmission followed by sequential Draft publishing."""
+
+    try:
+        handoff = _read_discovery_handoff(arguments.handoff)
+        handoff.pop("eligible_count", None)
+        repository_id, repository_full_name = _protected_state_repository()
+
+        def state_reader(commit_sha: str) -> object:
+            return read_exact_discovery_state(
+                state_commit_sha=commit_sha,
+                state_repository_id=repository_id,
+                state_repository_full_name=repository_full_name,
+                pipeline_state=_DISCOVERY_PIPELINE_STATE,
+                operations_state=_DISCOVERY_OPERATIONS_STATE,
+                publication_state=_DISCOVERY_PUBLICATION_STATE,
+            )
+
+        def admission_deriver(state: object, normalized: object) -> object:
+            return derive_discovery_publication_admissions(
+                state,
+                normalized,
+                pipeline_state=_DISCOVERY_PIPELINE_STATE,
+                phase3_state=_DISCOVERY_PIPELINE_STATE,
+            )
+
+        def publication_factory(*, admission: object, token: str) -> object:
+            authority = load_publication_authority_config()
+            return build_publication_application(
+                admission=admission,
+                authority=authority,
+                publication_state=_DISCOVERY_PUBLICATION_STATE,
+                token_factory=lambda: token,
+            )
+
+        results = run_protected_discovery_publication(
+            handoff=handoff,
+            state_reader=state_reader,
+            admission_deriver=admission_deriver,
+            catalog_token_factory=lambda: os.environ["SKILLSCOUT_GITHUB_TOKEN"],
+            publication_factory=publication_factory,
+        )
+        return {
+            "published_count": len(results),
+            "outcomes": [
+                {
+                    "status": str(getattr(result, "status")),
+                    "reason_code": str(getattr(result, "code")),
+                    "commit_sha": getattr(result, "commit_sha", None),
+                    "pull_number": getattr(result, "pull_number", None),
+                    "pull_url": getattr(result, "pull_url", None),
+                }
+                for result in results
+            ],
+        }
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     state: SQLiteStateStore | None = None
@@ -596,6 +751,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_verify_publication_admission(arguments)
         elif arguments.command == "publish-candidate":
             payload = _run_publish_candidate(arguments)
+        elif arguments.command == "discover":
+            payload = _run_discover(arguments)
+        elif arguments.command == "publish-discovered":
+            payload = _run_publish_discovered(arguments)
         elif arguments.command == "extract-repo":
             provider = resolve_semantic_provider()
             subject = load_subject(arguments.subject)

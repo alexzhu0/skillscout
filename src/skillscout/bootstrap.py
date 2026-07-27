@@ -11,6 +11,7 @@ import io
 import os
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Mapping, NoReturn
@@ -331,6 +332,342 @@ def build_discovery_application(
     )
 
 
+def _normalize_discovery_handoff(value: object) -> object:
+    """Parse the exact closed result shape emitted by unprotected discovery."""
+
+    from skillscout.application.discovery import (
+        DiscoveryApplicationResult,
+        EligibleCandidateLocator,
+        eligible_candidate_locator,
+    )
+
+    if type(value) is not dict or set(value) != {
+        "run_id",
+        "state_root_digest",
+        "state_commit_sha",
+        "eligible_candidates",
+    }:
+        raise ValueError("protected discovery handoff rejected")
+    raw_candidates = value.get("eligible_candidates")
+    if type(raw_candidates) not in {list, tuple}:
+        raise ValueError("protected discovery handoff rejected")
+    candidates: list[EligibleCandidateLocator] = []
+    try:
+        for raw in raw_candidates:
+            if type(raw) is not dict or set(raw) != {
+                "locator",
+                "authority_digest",
+                "workflow_identity_digest",
+            }:
+                raise ValueError
+            candidate = EligibleCandidateLocator(**raw)
+            if candidate != eligible_candidate_locator(
+                authority_digest=candidate.authority_digest,
+                workflow_identity_digest=candidate.workflow_identity_digest,
+            ):
+                raise ValueError
+            candidates.append(candidate)
+        return DiscoveryApplicationResult(
+            run_id=value["run_id"],
+            state_root_digest=value["state_root_digest"],
+            state_commit_sha=value["state_commit_sha"],
+            eligible_candidates=tuple(candidates),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("protected discovery handoff rejected") from None
+
+
+def run_protected_discovery_publication(
+    *,
+    handoff: object,
+    state_reader: Callable[[str], object],
+    admission_deriver: Callable[[object, object], object],
+    catalog_token_factory: Callable[[], str],
+    publication_factory: Callable[..., object],
+) -> tuple[object, ...]:
+    """Re-admit one exact state handoff before obtaining catalog authority."""
+
+    normalized = _normalize_discovery_handoff(handoff)
+    state = state_reader(normalized.state_commit_sha)
+    admissions = admission_deriver(state, normalized)
+    if (
+        type(admissions) not in {list, tuple}
+        or len(admissions) != len(normalized.eligible_candidates)
+        or any(admission is None for admission in admissions)
+    ):
+        raise ValueError("protected discovery admission rejected")
+
+    token = catalog_token_factory()
+    if type(token) is not str or not token:
+        raise ValueError("protected discovery credential unavailable")
+    results: list[object] = []
+    for admission in admissions:
+        application = publication_factory(admission=admission, token=token)
+        run = getattr(application, "run", None)
+        if not callable(run):
+            raise ValueError("protected discovery publisher rejected")
+        results.append(run(admission))
+    return tuple(results)
+
+
+def run_protected_handoff_scenario(
+    *,
+    mutation: str,
+    state_commit_sha: str,
+    state_root_digest: str,
+    token_factory: Callable[[], str],
+    publication_factory: Callable[..., object],
+) -> tuple[object, ...]:
+    """Deterministic negative model for pre-token handoff mutation tests."""
+
+    allowed = {
+        "stale_state_sha",
+        "swapped_root_digest",
+        "forged_locator",
+        "extra_locator",
+        "authority_mismatch",
+        "admission_rejected",
+    }
+    if mutation not in allowed:
+        raise ValueError("unknown protected handoff scenario")
+    authority = "sha256:" + ("a" * 64)
+    candidate: dict[str, str] = {
+        "locator": "state/objects/sha256/aa/" + ("a" * 64) + ".json",
+        "authority_digest": authority,
+        "workflow_identity_digest": "sha256:" + ("c" * 64),
+    }
+    handoff: dict[str, object] = {
+        "run_id": "discovery-scenario",
+        "state_commit_sha": state_commit_sha,
+        "state_root_digest": state_root_digest,
+        "eligible_candidates": [candidate],
+    }
+    if mutation == "forged_locator":
+        candidate["locator"] = (
+            "state/objects/sha256/ff/" + ("f" * 64) + ".json"
+        )
+    elif mutation == "extra_locator":
+        handoff["eligible_candidates"] = [candidate, dict(candidate)]
+    elif mutation == "authority_mismatch":
+        candidate["authority_digest"] = "sha256:" + ("d" * 64)
+
+    def state_reader(commit_sha: str) -> object:
+        if mutation == "stale_state_sha" or commit_sha != state_commit_sha:
+            raise ValueError("stale protected state")
+        return object()
+
+    def admission_deriver(_state: object, normalized: object) -> object:
+        if mutation in {"swapped_root_digest", "admission_rejected"}:
+            raise ValueError("protected admission rejected")
+        candidates = getattr(normalized, "eligible_candidates", ())
+        return tuple(object() for _candidate in candidates)
+
+    return run_protected_discovery_publication(
+        handoff=handoff,
+        state_reader=state_reader,
+        admission_deriver=admission_deriver,
+        catalog_token_factory=token_factory,
+        publication_factory=publication_factory,
+    )
+
+
+class _PinnedStateRemote:
+    """Make the requested immutable commit the sole visible restore head."""
+
+    def __init__(self, remote: object, commit_sha: str) -> None:
+        self._remote = remote
+        self._commit_sha = commit_sha
+
+    def get_state_ref(self) -> object:
+        from skillscout.adapters.state_branch import StateRefObservation
+
+        return StateRefObservation(_DISCOVERY_STATE_REF, self._commit_sha)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._remote, name)
+
+
+def read_exact_discovery_state(
+    *,
+    state_commit_sha: str,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    pipeline_state: Path,
+    operations_state: Path,
+    publication_state: Path,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Read and rebuild all three stores from one immutable state commit."""
+
+    if (
+        type(state_commit_sha) is not str
+        or len(state_commit_sha) != 40
+        or any(character not in "0123456789abcdef" for character in state_commit_sha)
+        or type(state_repository_id) is not int
+        or state_repository_id <= 0
+        or not _github_full_name(state_repository_full_name)
+        or tuple(
+            os.fspath(path)
+            for path in (pipeline_state, operations_state, publication_state)
+        )
+        != _DISCOVERY_DATABASE_LOCATORS
+    ):
+        raise ValueError("protected discovery state configuration rejected")
+    source = os.environ if environ is None else environ
+    from skillscout.adapters.operations_state import restore_three_store_bundle
+    from skillscout.adapters.state_branch import (
+        StateBranchClient,
+        StateBranchStore,
+    )
+
+    client = StateBranchClient(
+        token=_required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN"),
+        repository_id=state_repository_id,
+        repository_full_name=state_repository_full_name,
+    )
+    try:
+        observation = StateBranchStore(
+            _PinnedStateRemote(client, state_commit_sha)
+        ).restore()
+        if (
+            observation.status != "verified"
+            or observation.observed_head != state_commit_sha
+            or observation.bundle is None
+        ):
+            raise ValueError("protected discovery state rejected")
+        restore_three_store_bundle(
+            observation.bundle,
+            pipeline_path=pipeline_state,
+            operations_path=operations_state,
+            publication_path=publication_state,
+        )
+        return observation
+    finally:
+        client.close()
+
+
+def derive_discovery_publication_admissions(
+    state: object,
+    handoff: object,
+    *,
+    pipeline_state: Path,
+    phase3_state: Path,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[object, ...]:
+    """Resolve every candidate from the reread bundle and derive Phase 4 locally."""
+
+    from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
+    from skillscout.adapters.semantic_provider import resolve_semantic_provider
+    from skillscout.adapters.state import DescriptorAnchoredCompletedCandidateProjector
+    from skillscout.application.candidate_source import load_candidate_subject
+    from skillscout.application.discovery import DiscoveryApplicationResult
+    from skillscout.application.phase3 import (
+        PhaseThreeRuntimeProfile,
+        _execution_authority,
+    )
+    from skillscout.domain.canonical import sha256_digest
+    from skillscout.domain.publication import (
+        CatalogAuthorityV1,
+        ReviewerTargetsV1,
+        admit_phase3_candidate,
+        bind_publication_admission,
+        derive_publication_intent,
+    )
+
+    if type(handoff) is not DiscoveryApplicationResult:
+        raise ValueError("protected discovery handoff rejected")
+    bundle = getattr(state, "bundle", None)
+    root = getattr(bundle, "root", None)
+    if (
+        bundle is None
+        or root is None
+        or getattr(state, "observed_head", None) != handoff.state_commit_sha
+        or root.root_digest != handoff.state_root_digest
+    ):
+        raise ValueError("protected discovery state mismatch")
+    files = bundle.content_by_path()
+    root_objects = {
+        item.locator: item.object_digest for item in root.objects
+    }
+    if any(
+        item.locator not in root_objects
+        or root_objects[item.locator] != item.authority_digest
+        or sha256_digest(files.get(item.locator, b"")) != item.authority_digest
+        for item in handoff.eligible_candidates
+    ):
+        raise ValueError("protected discovery locator rejected")
+
+    values = os.environ if environ is None else environ
+    provider = resolve_semantic_provider(values)
+    profile = PhaseThreeRuntimeProfile.from_configured_models(
+        generator_model_id=provider.generator_model,
+        reviewer_model_id=provider.reviewer_model,
+    )
+    protected_authority = load_publication_authority_config(values)
+    catalog = CatalogAuthorityV1(
+        schema_version="catalog-authority-v1",
+        catalog_repository_id=protected_authority.catalog_repository_id,
+        catalog_full_name=protected_authority.catalog_full_name,
+        base_branch=protected_authority.catalog_base_branch,
+        catalog_root="skills",
+    )
+    reviewer_targets = ReviewerTargetsV1(
+        schema_version="reviewer-targets-v1",
+        reviewers=protected_authority.catalog_reviewers,
+    )
+    admissions: list[object] = []
+    with tempfile.TemporaryDirectory(prefix="skillscout-admission-") as directory:
+        root_path = Path(directory)
+        root_path.chmod(0o700)
+        for ordinal, candidate in enumerate(
+            handoff.eligible_candidates, start=1
+        ):
+            descriptor = root_path / f"candidate-{ordinal}.json"
+            descriptor.write_bytes(files[candidate.locator])
+            descriptor.chmod(0o600)
+            resolved = load_candidate_subject(
+                descriptor,
+                SQLitePhaseTwoCandidateSource(pipeline_state),
+            )
+            candidate_authority = _execution_authority(
+                source=resolved, profile=profile
+            )
+            if (
+                candidate_authority.authority_digest
+                != candidate.workflow_identity_digest
+            ):
+                raise ValueError("protected discovery authority mismatch")
+            projector = DescriptorAnchoredCompletedCandidateProjector(
+                phase3_state
+            )
+            try:
+                completed = projector.find_completed_candidate(
+                    candidate_authority
+                )
+            finally:
+                projector.close()
+            if completed is None:
+                raise ValueError("protected discovery admission unavailable")
+            evidence = admit_phase3_candidate(
+                terminal_summary=completed.terminal_summary,
+                terminal_summary_bytes=completed.terminal_summary_bytes,
+                artifacts=dict(completed.artifacts),
+            )
+            intent = derive_publication_intent(
+                evidence=evidence,
+                catalog_authority=catalog,
+                reviewer_targets=reviewer_targets,
+            )
+            admissions.append(
+                bind_publication_admission(
+                    evidence=evidence,
+                    intent=intent,
+                    catalog_authority=catalog,
+                )
+            )
+    return tuple(admissions)
+
+
 @dataclass(frozen=True)
 class PublicationAuthorityConfig:
     """Protected, catalog-bound authority with no credential material."""
@@ -365,7 +702,7 @@ def _publication_config_fail() -> NoReturn:
 
 
 def load_publication_authority_config(
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> PublicationAuthorityConfig:
     """Load the sole protected source of catalog/reviewer authority.
 
