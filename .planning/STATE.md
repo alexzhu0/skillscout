@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Automated Discovery Operations
 status: executing
-stopped_at: Completed 05-14-PLAN.md
-last_updated: "2026-07-27T15:35:35.801Z"
+stopped_at: Completed 05-13-PLAN.md
+last_updated: "2026-07-27T15:54:31.032Z"
 last_activity: 2026-07-27
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 61
-  completed_plans: 56
+  completed_plans: 57
   percent: 67
 ---
 
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 5 — Automated Discovery Operations
-**Plan:** 9 of 14
+**Plan:** 10 of 14
 **Verification:** 13/13 requirements verified; clean Round-4 code review; exact release gate passed 1247 tests
 **Next command:** `$gsd-plan-phase 4`
 
@@ -115,8 +115,8 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 ## Session Continuity
 
 **Last activity:** 2026-07-27
-**Last session:** 2026-07-27T15:35:35.797Z
-**Stopped at:** Completed 05-14-PLAN.md
+**Last session:** 2026-07-27T15:53:35.122Z
+**Stopped at:** Completed 05-13-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -180,6 +180,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 | Phase 05 P11 | 8min | 2 tasks | 8 files |
 | Phase 05 P12 | 20min | 2 tasks | 7 files |
 | Phase 05 P14 | 10min | 2 tasks | 3 files |
+| Phase 05 P13 | 15min | 2 tasks | 4 files |
 
 ## Decisions
 
@@ -304,3 +305,6 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 - [Phase 05]: Validate prospective bundle equality before writes and fresh three-store projection equality after rebuild. — No partial, swapped, stale, or cross-store-mismatched bundle can grant reuse authority.
 - [Phase 05]: Bind semantic request, retry and terminal authority to exact self-hashed transition identity plus all three owner export digests. — A caller-provided label cannot prove the recorded attempt or remote three-store state.
 - [Phase 05]: Grant restart idempotence only after a fresh full remote reread equals the deterministic prospective three-store bundle. — This closes crash windows without accepting local-only durability or ambiguous replay.
+- [Phase 05]: Only confirmed-retryable semantic failures enter bounded automatic retry; outcome-unknown attempts are consumed and quarantined. — This prevents ambiguous OpenAI or DeepSeek effects from being replayed after a crash or transport uncertainty.
+- [Phase 05]: Retain attempt_interrupted in the Phase 3 local compatibility ledger while operations state owns the semantic_outcome_unknown quarantine fact. — This preserves the verified Phase 3 chain schema without weakening the explicit remote quarantine authority.
+- [Phase 05]: Require the exact three-store receipt before provider requests, retries, downstream stages, or terminal projection. — Local durability alone cannot authorize a semantic effect when the canonical operational state lives on the protected state branch.
