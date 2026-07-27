@@ -74,7 +74,15 @@ The locked project does not contain mypy, so no mypy gate is claimed. The chain 
 
 ## Actual Results
 
-Task 04-11 records the measured 2026-07-27 results in `04-11-SUMMARY.md`; no fabricated historical count is used here.
+Measured on 2026-07-27 from the exact final locked chain:
+
+- `tools/verify_phase4_validation_map.py`: `phase4 validation map valid`
+- `tools/verify_phase4_action_audit.py`: `phase4 action audit valid`
+- `ruff check .`: `All checks passed!`
+- Full pytest: `1419 passed, 2 skipped in 37.46s`
+- `tools/verify_phase4_acceptance.py`: `phase4 acceptance valid`
+
+The two skips are the deliberately opt-in live-canary paths. Gate B4 is credited from the separately authorized, human-reviewed evidence in `04-10-SUMMARY.md`; the live network canary was not rerun during this offline release chain.
 
 ## Validation Sign-Off
 
