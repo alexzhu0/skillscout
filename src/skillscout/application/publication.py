@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import re
 from typing import Callable, Iterable, Literal
 
 from skillscout.adapters.publication_state import PublicationStateStore
@@ -20,6 +21,17 @@ from skillscout.domain.publication import (
     render_pull_request_body,
     render_pull_request_title,
 )
+
+_LOGIN_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
+)
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_COMPLETED_REVIEW_STATES = {
+    "APPROVED",
+    "CHANGES_REQUESTED",
+    "COMMENTED",
+    "DISMISSED",
+}
 
 
 @dataclass(frozen=True)
@@ -44,10 +56,7 @@ class PublicationApplicationResult:
 
 def validate_reviewer_targets(*, reviewers: tuple[str, ...], teams: tuple[str, ...] = (), dependencies: object | None = None) -> tuple[str, ...]:
     """Reject teams and noncanonical reviewer identities before any capability."""
-    import re
-
-    login = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
-    if teams or not reviewers or reviewers != tuple(sorted(reviewers)) or len(set(reviewers)) != len(reviewers) or any(type(item) is not str or login.fullmatch(item) is None for item in reviewers):
+    if teams or not reviewers or reviewers != tuple(sorted(reviewers)) or len(set(reviewers)) != len(reviewers) or any(type(item) is not str or _LOGIN_RE.fullmatch(item) is None for item in reviewers):
         raise ValueError("reviewers must be sorted unique individual logins")
     return reviewers
 
@@ -163,7 +172,7 @@ class PublicationApplication:
             admission, remote, base_sha, commit, marker
         ):
             return self._manual("machine_lineage_inconsistent")
-        if not self._reviewers_are_durable(admission, remote, pull.number, ref.sha):
+        if not self._reviewers_are_durable(admission, remote, pull.number):
             return self._manual("reviewer_evidence_missing")
         tree = remote.get_tree(commit.tree_sha, recursive=True)
         desired = self._desired_tree(admission)
@@ -302,14 +311,45 @@ class PublicationApplication:
         admission: PublicationAdmissionV1,
         remote: object,
         number: int,
-        commit_sha: str,
     ) -> bool:
-        requested = remote.get_requested_reviewers(number).users
-        completed = {
-            row[0]
-            for row in remote.list_reviews(number)
-            if len(row) == 4 and row[2] == commit_sha
-        }
+        requested = getattr(
+            remote.get_requested_reviewers(number), "users", None
+        )
+        if (
+            type(requested) is not tuple
+            or any(
+                type(login) is not str
+                or _LOGIN_RE.fullmatch(login) is None
+                for login in requested
+            )
+            or requested != tuple(sorted(requested))
+            or len(set(requested)) != len(requested)
+        ):
+            return False
+        reviews = remote.list_reviews(number)
+        if type(reviews) is not tuple:
+            return False
+        completed: set[str] = set()
+        review_ids: set[int] = set()
+        for row in reviews:
+            if type(row) is not tuple or len(row) != 4:
+                return False
+            login, review_id, review_commit, state = row
+            if (
+                type(login) is not str
+                or _LOGIN_RE.fullmatch(login) is None
+                or type(review_id) is not int
+                or review_id <= 0
+                or review_id in review_ids
+                or type(review_commit) is not str
+                or _SHA_RE.fullmatch(review_commit) is None
+                or type(state) is not str
+                or state not in _COMPLETED_REVIEW_STATES
+            ):
+                return False
+            review_ids.add(review_id)
+            if login in admission.intent.reviewers:
+                completed.add(login)
         return all(
             login in requested or login in completed
             for login in admission.intent.reviewers
@@ -516,9 +556,7 @@ class PublicationApplication:
             return None
         if observed_marker != marker:
             return None
-        if not self._reviewers_are_durable(
-            admission, remote, pull_number, commit_sha
-        ):
+        if not self._reviewers_are_durable(admission, remote, pull_number):
             return None
         return pull
 

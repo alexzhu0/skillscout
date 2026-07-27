@@ -395,6 +395,69 @@ def test_later_revisions_follow_a_bounded_machine_owned_commit_chain(
     assert marker.prior_marker_digest is not None
 
 
+def test_completed_reviewer_remains_durable_across_later_revision(
+    tmp_path: Path,
+) -> None:
+    remote = StatefulRemote()
+    first = _admission(revision=1)
+    second = _admission(revision=2)
+    created = _run(tmp_path, remote, first, state_name="first.db")
+    assert created.status == "published"
+    reviewed_head = remote.ref_sha
+    assert reviewed_head is not None
+    remote.requested.clear()
+    remote.reviews = [
+        ("alpha-reviewer", 7001, reviewed_head, "APPROVED")
+    ]
+    writes_before_update = len(remote.writes)
+    notifications_before_update = [
+        write for write in remote.writes if write[0] == "request_reviewers"
+    ]
+
+    updated = _run(tmp_path, remote, second, state_name="second.db")
+
+    assert updated.status == "published"
+    assert updated.code == "remote_verified"
+    assert updated.disposition == "draft_updated"
+    assert remote.ref_sha != reviewed_head
+    assert len(remote.writes) == writes_before_update + 6
+    assert [
+        write for write in remote.writes if write[0] == "request_reviewers"
+    ] == notifications_before_update
+    assert remote.requested == set()
+
+
+@pytest.mark.parametrize(
+    "reviews",
+    (
+        (("other-reviewer", 7001, "a" * 40, "APPROVED"),),
+        (("alpha-reviewer", 7001, "a" * 40),),
+        (
+            ("alpha-reviewer", 7001, "a" * 40, "APPROVED"),
+            ("other-reviewer", 7001, "a" * 40, "APPROVED"),
+        ),
+    ),
+    ids=("unconfigured", "malformed", "ambiguous-review-id"),
+)
+def test_invalid_completed_reviewer_evidence_fails_before_revision_write(
+    tmp_path: Path,
+    reviews: tuple[tuple[object, ...], ...],
+) -> None:
+    remote = StatefulRemote()
+    first = _admission(revision=1)
+    second = _admission(revision=2)
+    _run(tmp_path, remote, first, state_name="first.db")
+    remote.requested.clear()
+    remote.reviews = list(reviews)
+    writes_before_update = len(remote.writes)
+
+    result = _run(tmp_path, remote, second, state_name="second.db")
+
+    assert result.status == "manual_intervention_required"
+    assert result.code == "reviewer_evidence_missing"
+    assert len(remote.writes) == writes_before_update
+
+
 def test_human_or_force_rewritten_machine_lineage_is_never_overwritten(
     tmp_path: Path,
 ) -> None:
