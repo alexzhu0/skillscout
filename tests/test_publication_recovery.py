@@ -697,3 +697,74 @@ def test_state_rejects_terminal_record_revision_mismatch(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="disagrees with intent"):
         store.complete(intent, mismatched)
     store.close()
+
+
+def test_publication_owned_export_rebuilds_corrupt_snapshot_from_canonical_facts(
+    tmp_path: Path,
+) -> None:
+    intent = _state_intent()
+    source = tmp_path / "publication-source.sqlite3"
+    store = PublicationStateStore(source)
+    store.begin_attempt(intent)
+    store.append_checkpoint(intent, step="reconciled", status_class="read")
+    record = PublicationRecordV1(
+        schema_version="publication-record-v1",
+        publication_key=intent.publication_key,
+        desired_revision=intent.desired_revision,
+        marker_digest="sha256:" + "d" * 64,
+    )
+    store.complete(intent, record)
+    exported = store.export_owned_state()
+    store.close()
+
+    assert exported.owner == "publication"
+    assert exported.database_locator == "state/databases/publication.sqlite3"
+    assert exported.projection.intent_digests == (intent.intent_digest,)
+    corrupt = exported.model_copy(
+        update={
+            "database_bytes": b"corrupt-publication-snapshot",
+            "database_digest": sha256_digest(b"corrupt-publication-snapshot"),
+        }
+    )
+    rebuilt = tmp_path / "publication-rebuilt.sqlite3"
+    PublicationStateStore.rebuild_owned_state(rebuilt, corrupt)
+
+    restored = PublicationStateStore(rebuilt)
+    assert restored.find_completed(intent) == record
+    assert restored.export_owned_state().facts == exported.facts
+    restored.close()
+
+
+@pytest.mark.parametrize("damage", ("missing", "reordered", "unknown", "tampered"))
+def test_publication_owned_rebuild_rejects_noncanonical_facts_before_replacement(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    intent = _state_intent()
+    store = PublicationStateStore(tmp_path / "publication-authority.sqlite3")
+    store.begin_attempt(intent)
+    store.append_checkpoint(intent, step="reconciled", status_class="read")
+    exported = store.export_owned_state()
+    store.close()
+
+    if damage == "missing":
+        changed = exported.facts[:-1]
+    elif damage == "reordered":
+        changed = tuple(reversed(exported.facts))
+    elif damage == "unknown":
+        changed = (
+            exported.facts[0].model_copy(update={"kind": "unknown_private_table"}),
+            *exported.facts[1:],
+        )
+    else:
+        changed = (
+            exported.facts[0].model_copy(update={"payload_json": "{}"}),
+            *exported.facts[1:],
+        )
+    rejected = tmp_path / f"publication-rejected-{damage}.sqlite3"
+    with pytest.raises(Exception):
+        PublicationStateStore.rebuild_owned_state(
+            rejected,
+            exported.model_copy(update={"facts": changed}),
+        )
+    assert not rejected.exists()

@@ -2393,3 +2393,81 @@ def test_write_manifest_recovers_crash_left_temp(tmp_path: Path) -> None:
         assert manifest.read_bytes() == canonical_json_bytes(envelope)
     finally:
         store.close()
+
+
+def test_pipeline_owned_export_rebuilds_corrupt_snapshot_from_canonical_facts(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "pipeline-source.sqlite3"
+    store = SQLiteStateStore(source)
+    try:
+        store.create_run(
+            "owned-pipeline-run",
+            _run_identity("owned-pipeline-subject"),
+            "2026-07-27T12:00:00.000000Z",
+        )
+        exported = store.export_owned_state()
+    finally:
+        store.close()
+
+    assert exported.owner == "pipeline"
+    assert exported.database_locator == "state/databases/pipeline.sqlite3"
+    assert exported.projection.phase1_run_ids == ("owned-pipeline-run",)
+    corrupt = exported.model_copy(
+        update={
+            "database_bytes": b"corrupt-pipeline-snapshot",
+            "database_digest": sha256_digest(b"corrupt-pipeline-snapshot"),
+        }
+    )
+    rebuilt = tmp_path / "pipeline-rebuilt.sqlite3"
+    SQLiteStateStore.rebuild_owned_state(rebuilt, corrupt)
+
+    store = SQLiteStateStore(rebuilt)
+    try:
+        assert store.verify_run_chain("owned-pipeline-run").run.run_id == (
+            "owned-pipeline-run"
+        )
+        restored = store.export_owned_state()
+    finally:
+        store.close()
+    assert restored.facts == exported.facts
+    assert restored.projection == exported.projection
+
+
+@pytest.mark.parametrize("damage", ("missing", "reordered", "unknown", "tampered"))
+def test_pipeline_owned_rebuild_rejects_noncanonical_facts_before_replacement(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    store = SQLiteStateStore(tmp_path / "pipeline-authority.sqlite3")
+    try:
+        store.create_run(
+            "owned-pipeline-run",
+            _run_identity("owned-pipeline-subject"),
+            "2026-07-27T12:00:00.000000Z",
+        )
+        exported = store.export_owned_state()
+    finally:
+        store.close()
+
+    if damage == "missing":
+        changed = exported.facts[:-1]
+    elif damage == "reordered":
+        changed = tuple(reversed(exported.facts))
+    elif damage == "unknown":
+        changed = (
+            exported.facts[0].model_copy(update={"kind": "unknown_private_table"}),
+            *exported.facts[1:],
+        )
+    else:
+        changed = (
+            exported.facts[0].model_copy(update={"payload_json": "{}"}),
+            *exported.facts[1:],
+        )
+    rejected = tmp_path / f"pipeline-rejected-{damage}.sqlite3"
+    with pytest.raises(Exception):
+        SQLiteStateStore.rebuild_owned_state(
+            rejected,
+            exported.model_copy(update={"facts": changed}),
+        )
+    assert not rejected.exists()
