@@ -11,7 +11,13 @@ import pytest
 
 from recorded_transport import RecordedTransport, recorded_search_fixture
 
-from skillscout.adapters.github import GITHUB_API_VERSION, GitHubReadClient
+from skillscout.adapters.github import (
+    GITHUB_API_VERSION,
+    MAX_METADATA_BYTES,
+    MAX_RETRY_AFTER_SECONDS,
+    GitHubReadClient,
+)
+from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.discovery import (
     DiscoveryQuerySetV1,
     SearchPageObservationV1,
@@ -306,3 +312,189 @@ def test_incomplete_page_is_truthful_and_does_not_treat_query_as_admission() -> 
     assert repositories[0].visibility == "private"
     assert repositories[1].fork is True
     assert repositories[2].archived is True
+
+
+def test_error_fixture_matrix_is_bounded_closed_and_contains_no_credentials() -> None:
+    matrix_path = SEARCH_FIXTURES / "error_matrix.json"
+    payload = matrix_path.read_bytes()
+    assert len(payload) < 16_384
+    assert TOKEN_CANARY.encode() not in payload
+    assert b"github_pat_" not in payload
+    assert b"-----BEGIN PRIVATE KEY-----" not in payload
+
+    matrix = json.loads(payload)
+    assert set(matrix) == {
+        "wrong_host_link",
+        "wrong_path_link",
+        "wrong_query_link",
+        "fragment_link",
+        "userinfo_link",
+        "noninteger_page_link",
+        "out_of_policy_page_link",
+        "duplicate_next_link",
+        "redirect",
+        "malformed_json",
+        "oversized_body",
+        "rate_403",
+        "rate_429",
+        "server_500",
+        "missing_rate_used",
+        "malformed_rate_limit",
+        "wrong_rate_resource",
+        "overlong_request_id",
+    }
+    for name in matrix:
+        response = recorded_search_fixture(name)
+        expected_size = (
+            MAX_METADATA_BYTES + 1 if name == "oversized_body" else len(response.body)
+        )
+        assert len(response.body) == expected_size
+
+
+def _recorded_failure(
+    name: str,
+    *,
+    token: str | None = None,
+) -> tuple[SafeFailure, RecordedTransport, list[float]]:
+    path = _search_path(1, 1)
+    recorded = RecordedTransport(
+        {("GET", path): recorded_search_fixture(name)}
+    )
+    sleeps: list[float] = []
+    with GitHubReadClient(
+        token=token,
+        transport=recorded.transport(),
+        sleeper=sleeps.append,
+    ) as client:
+        with pytest.raises(SafeFailure) as caught:
+            _invoke_search(client, query_ordinal=1, page=1)
+    return caught.value, recorded, sleeps
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "wrong_host_link",
+        "wrong_path_link",
+        "wrong_query_link",
+        "fragment_link",
+        "userinfo_link",
+        "noninteger_page_link",
+        "out_of_policy_page_link",
+        "duplicate_next_link",
+    ),
+)
+@WAVE0_XFAIL
+def test_hostile_link_is_rejected_without_following_arbitrary_url(name: str) -> None:
+    failure, recorded, sleeps = _recorded_failure(name)
+    assert failure.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert sleeps == []
+    assert len(recorded.requests) == 1
+    assert recorded.requests[0].url.host == "api.github.com"
+    assert recorded.requests[0].url.path == "/search/repositories"
+
+
+@WAVE0_XFAIL
+def test_hostile_redirect_is_rejected_without_second_request() -> None:
+    failure, recorded, sleeps = _recorded_failure("redirect")
+    assert failure.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert sleeps == []
+    assert len(recorded.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("malformed_json", "oversized_body"),
+)
+@WAVE0_XFAIL
+def test_oversized_or_malformed_search_body_fails_closed(name: str) -> None:
+    failure, recorded, sleeps = _recorded_failure(name)
+    assert failure.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert sleeps == []
+    assert len(recorded.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_sleep"),
+    (
+        ("rate_403", 7.0),
+        ("rate_429", 2.0),
+        ("server_500", 0.0),
+    ),
+)
+@WAVE0_XFAIL
+def test_rate_error_matrix_is_transient_with_bounded_defer(
+    name: str,
+    expected_sleep: float,
+) -> None:
+    failure, recorded, sleeps = _recorded_failure(name)
+    assert failure.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+    assert sleeps == [expected_sleep]
+    assert sleeps[0] <= float(MAX_RETRY_AFTER_SECONDS)
+    assert len(recorded.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "missing_rate_used",
+        "malformed_rate_limit",
+        "wrong_rate_resource",
+        "overlong_request_id",
+    ),
+)
+@WAVE0_XFAIL
+def test_rate_error_missing_or_malformed_mandatory_facts_is_permanent(
+    name: str,
+) -> None:
+    failure, recorded, sleeps = _recorded_failure(name)
+    assert failure.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert sleeps == []
+    assert len(recorded.requests) == 1
+
+
+@WAVE0_XFAIL
+def test_error_transport_failure_is_sanitized_and_never_retried_in_adapter() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError(
+            "PROVIDER_TRANSPORT_ERROR_CANARY",
+            request=request,
+        )
+
+    with GitHubReadClient(
+        token=TOKEN_CANARY,
+        transport=httpx.MockTransport(handler),
+        sleeper=lambda _seconds: None,
+    ) as client:
+        with pytest.raises(SafeFailure) as caught:
+            _invoke_search(client, query_ordinal=1, page=1)
+    assert caught.value.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+    assert "PROVIDER_TRANSPORT_ERROR_CANARY" not in repr(caught.value.as_dict())
+    assert TOKEN_CANARY not in repr(caught.value.as_dict())
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("rate_403", "rate_429", "server_500"),
+)
+@WAVE0_XFAIL
+def test_error_provider_body_and_token_never_cross_closed_diagnostics(
+    name: str,
+) -> None:
+    failure, recorded, _sleeps = _recorded_failure(
+        name,
+        token=TOKEN_CANARY,
+    )
+    rendered = repr(failure.as_dict())
+    assert "PROVIDER_ERROR_BODY_CANARY" not in rendered
+    assert TOKEN_CANARY not in rendered
+    assert len(recorded.requests) == 1
+    request = recorded.requests[0]
+    assert request.headers["authorization"] == f"Bearer {TOKEN_CANARY}"
+    assert TOKEN_CANARY not in str(request.url)
+    assert TOKEN_CANARY.encode() not in request.read()

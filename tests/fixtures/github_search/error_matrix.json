@@ -1,0 +1,125 @@
+{
+  "wrong_host_link": {
+    "base_fixture": "page_one",
+    "headers": {
+      "link": "<https://attacker.invalid/search/repositories?q=%22agent+workflow%22+in%3Aname%2Cdescription%2Creadme+is%3Apublic+archived%3Afalse&sort=updated&order=desc&per_page=25&page=2>; rel=\"next\""
+    }
+  },
+  "wrong_path_link": {
+    "base_fixture": "page_one",
+    "headers": {
+      "link": "<https://api.github.com/repos/fixture-org/workflow-alpha?page=2>; rel=\"next\""
+    }
+  },
+  "wrong_query_link": {
+    "base_fixture": "page_one",
+    "headers": {
+      "link": "<https://api.github.com/search/repositories?q=topic%3Aunreviewed&sort=updated&order=desc&per_page=25&page=2>; rel=\"next\""
+    }
+  },
+  "fragment_link": {
+    "base_fixture": "page_one",
+    "headers": {
+      "link": "<https://api.github.com/search/repositories?q=%22agent+workflow%22+in%3Aname%2Cdescription%2Creadme+is%3Apublic+archived%3Afalse&sort=updated&order=desc&per_page=25&page=2#provider-fragment>; rel=\"next\""
+    }
+  },
+  "userinfo_link": {
+    "base_fixture": "page_one",
+    "headers": {
+      "link": "<https://attacker@api.github.com/search/repositories?q=%22agent+workflow%22+in%3Aname%2Cdescription%2Creadme+is%3Apublic+archived%3Afalse&sort=updated&order=desc&per_page=25&page=2>; rel=\"next\""
+    }
+  },
+  "noninteger_page_link": {
+    "base_fixture": "page_one",
+    "headers": {
+      "link": "<https://api.github.com/search/repositories?q=%22agent+workflow%22+in%3Aname%2Cdescription%2Creadme+is%3Apublic+archived%3Afalse&sort=updated&order=desc&per_page=25&page=next>; rel=\"next\""
+    }
+  },
+  "out_of_policy_page_link": {
+    "base_fixture": "page_one",
+    "headers": {
+      "link": "<https://api.github.com/search/repositories?q=%22agent+workflow%22+in%3Aname%2Cdescription%2Creadme+is%3Apublic+archived%3Afalse&sort=updated&order=desc&per_page=25&page=5>; rel=\"next\""
+    }
+  },
+  "duplicate_next_link": {
+    "base_fixture": "page_one",
+    "headers": {
+      "link": "<https://api.github.com/search/repositories?q=%22agent+workflow%22+in%3Aname%2Cdescription%2Creadme+is%3Apublic+archived%3Afalse&sort=updated&order=desc&per_page=25&page=2>; rel=\"next\", <https://api.github.com/search/repositories?q=%22agent+workflow%22+in%3Aname%2Cdescription%2Creadme+is%3Apublic+archived%3Afalse&sort=updated&order=desc&per_page=25&page=2>; rel=\"next\""
+    }
+  },
+  "redirect": {
+    "base_fixture": "page_one",
+    "status": 307,
+    "headers": {
+      "location": "https://api.github.com/search/repositories?page=2"
+    },
+    "body_text": ""
+  },
+  "malformed_json": {
+    "base_fixture": "page_one",
+    "body_text": "{not-json"
+  },
+  "oversized_body": {
+    "base_fixture": "page_one",
+    "repeat_byte": " ",
+    "repeat_count": 1048577
+  },
+  "rate_403": {
+    "base_fixture": "page_one",
+    "status": 403,
+    "headers": {
+      "retry-after": "7",
+      "x-ratelimit-limit": "30",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-used": "30",
+      "x-ratelimit-reset": "1785160800",
+      "x-ratelimit-resource": "search"
+    },
+    "body_text": "{\"message\":\"PROVIDER_ERROR_BODY_CANARY_403\"}"
+  },
+  "rate_429": {
+    "base_fixture": "page_one",
+    "status": 429,
+    "headers": {
+      "retry-after": "2",
+      "x-ratelimit-limit": "30",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-used": "30",
+      "x-ratelimit-reset": "1785160800",
+      "x-ratelimit-resource": "search"
+    },
+    "body_text": "{\"message\":\"PROVIDER_ERROR_BODY_CANARY_429\"}"
+  },
+  "server_500": {
+    "base_fixture": "page_one",
+    "status": 500,
+    "headers": {
+      "retry-after": "0"
+    },
+    "body_text": "{\"message\":\"PROVIDER_ERROR_BODY_CANARY_500\"}"
+  },
+  "missing_rate_used": {
+    "base_fixture": "page_one",
+    "remove_headers": [
+      "x-ratelimit-used"
+    ]
+  },
+  "malformed_rate_limit": {
+    "base_fixture": "page_one",
+    "headers": {
+      "x-ratelimit-limit": "thirty"
+    }
+  },
+  "wrong_rate_resource": {
+    "base_fixture": "page_one",
+    "headers": {
+      "x-ratelimit-resource": "core"
+    }
+  },
+  "overlong_request_id": {
+    "base_fixture": "page_one",
+    "headers": {
+      "x-github-request-id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR"
+    }
+  }
+}
