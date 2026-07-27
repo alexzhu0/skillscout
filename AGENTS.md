@@ -39,7 +39,7 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 | 模型策略 | 配置化，MVP 默认 `gpt-5.6-terra` | 提取、生成、审核使用互相独立的请求和上下文；不要把模型名写死在业务逻辑中。生产评测通过后再锁定快照；高价值失败样本可路由到更强模型。 |
 | 结构化契约 | Pydantic 2.13.x + JSON Schema | 每个阶段输入输出均为版本化模型；同一模型用于运行时校验、数据库序列化和 OpenAI Structured Outputs schema。 |
 | 状态存储 | Python `sqlite3` + 版本化 JSON 审计清单 | SQLite 是 MVP 的可查询运行状态；JSON 是内容寻址、可审阅、可重建的阶段事实。SQLite 不能只留在临时 Actions runner 上。 |
-| Skill 格式 | Agent Skills 规范 + 官方 `skills-ref validate` | 生成 `SKILL.md` 和按需的 `references/`、`assets/`；MVP 不生成 `scripts/`，避免把外部代码变成可执行供应链。 |
+| Skill 格式 | Agent Skills 规范 + 官方 `skills-ref validate` | 在每个生成的 Skill 包内创建规范主说明文件，并按需创建 `references/`、`assets/`；MVP 不生成 `scripts/`，避免把外部代码变成可执行供应链。 |
 | YAML | PyYAML 6.0.x，严格使用 safe API | 只生成规范允许的简单 frontmatter；禁止任意对象构造。也可以在实现时用一个很小的专用 frontmatter 序列化器替代。 |
 | 自动化 | GitHub Actions | `schedule` + `workflow_dispatch`；单并发组串行运行；最小权限；第三方 Action 固定到完整 commit SHA。 |
 | 鉴权 | GitHub App 短期 installation token | 目标 Skill catalog 若为独立仓库，默认 `GITHUB_TOKEN` 不足以安全跨仓库发布。GitHub App 只授予目标仓库的 Contents/PR 必要权限，默认分支由 ruleset 阻止写入。 |
@@ -129,7 +129,7 @@ Architecture not yet mapped. Follow existing patterns found in the codebase.
 
 ## Project Skills
 
-No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/` with a `SKILL.md` index file.
+No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/`, with the standard Agent Skill index file inside each skill directory.
 <!-- GSD:skills-end -->
 
 <!-- GSD:workflow-start source:GSD defaults -->
@@ -154,3 +154,36 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 > Profile not yet configured. Run `/gsd-profile-user` to generate your developer profile.
 > This section is managed by `generate-claude-profile` -- do not edit manually.
 <!-- GSD:profile-end -->
+
+## Current Implementation Status
+
+The repository contains an installed Python 3.13 CLI exposed as `skillscout`. Its current commands are `dry-run`, `extract-repo`, `build-candidate`, `inspect-run`, `verify-publication-admission`, and `publish-candidate`.
+
+Phases 1–3 are implemented and verified. The Phase 4 controlled-publication implementation is present, including strict publication admission, dedicated publication state, bounded GitHub publishing, recovery, Draft PR handling, and the protected workflow. Phase 4 is not yet accepted for live production use: the separately authorized live canary and its human-reviewed Gate B4 evidence remain pending. Do not describe the publication path as fully verified until that gate passes.
+
+## Semantic Provider Boundary
+
+- OpenAI is the default provider. Extraction, generation, and review use the Responses API with `gpt-5.6-terra`, strict Pydantic response models, `store=false`, and no tools.
+- DeepSeek is an explicit opt-in selected with `SKILLSCOUT_LLM_PROVIDER=deepseek` and the exact official base URL. It uses `deepseek-v4-flash` through the guarded Chat Completions compatibility path.
+- DeepSeek JSON is never trusted as provider-validated structured output. Each response is decoded and validated locally against the same strict Pydantic schemas, and extra or malformed fields fail closed.
+- Both provider clients are constructed with SDK retries disabled (`max_retries=0`). Retry authority remains in the deterministic pipeline policy so one semantic-stage attempt produces exactly one provider request.
+- Semantic calls never receive tool authority, code execution, shell access, or permission to follow instructions embedded in repository content.
+
+## Repository Commands and Secret Handling
+
+Use the repository-local locked toolchain for tests:
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked pytest -q
+```
+
+Do not read any repository `.env` file or any PEM, JWT, token, private-key, or other secret material. Credentials may be injected only through the runtime environment at the latest required boundary. Secret values and private-key material must never be read into prompts, printed, logged, copied into fixtures or state, staged, or committed. If a task appears to require inspecting secret contents, stop and request a non-secret substitute or separately authorized procedure.
+
+## Project Documentation
+
+- [README](README.md) — project overview, installation, CLI quick start, and operating boundaries.
+- [Architecture](docs/ARCHITECTURE.md) — components, stage isolation, data flow, and publication boundary.
+- [Configuration](docs/CONFIGURATION.md) — CLI paths, semantic-provider settings, and protected publication configuration.
+- [Development](docs/DEVELOPMENT.md) — local setup, commands, coding standards, and change-safety rules.
+- [Testing](docs/TESTING.md) — test suites, focused commands, coverage status, and CI integration.
+- [Release](RELEASE.md) — current verification status, release gates, and remaining live-canary work.
