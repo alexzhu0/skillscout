@@ -11,7 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.application.ports import (
+    CandidateSourceUnavailable,
+    ErrorCode,
+    SafeFailure,
+)
 from skillscout.domain.canonical import sha256_digest
 
 
@@ -1227,7 +1231,10 @@ def test_mixed_workflow_outcomes_persist_exact_handoff_and_degrade(
     "failing_close",
     ("extractor", "github", "publication", "phase2_state"),
 )
-@pytest.mark.parametrize("primary_outcome", ("handled_terminal", "exception"))
+@pytest.mark.parametrize(
+    "primary_outcome",
+    ("handled_terminal", "exception", "candidate_source_unavailable"),
+)
 def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1267,6 +1274,9 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
         def __init__(self, _path: Path) -> None:
             super().__init__("phase2_state")
 
+        def verify_run_chain(self, _run_id: str) -> object:
+            return SimpleNamespace(results=())
+
     class Barrier:
         def confirm(self, **_kwargs: object) -> object:
             raise AssertionError(
@@ -1285,7 +1295,9 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
             def run(self, _subject, _output):
                 if primary_outcome == "exception":
                     raise PrimaryFailure("SECRET primary failure")
-                raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+                if primary_outcome == "handled_terminal":
+                    raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+                return SimpleNamespace(run_id="completed-phase2")
 
         return SimpleNamespace(runner=Runner())
 
@@ -1309,6 +1321,14 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
         "skillscout.application.pipeline.build_phase_two_runtime",
         build_runtime,
     )
+    if primary_outcome == "candidate_source_unavailable":
+        monkeypatch.setattr(
+            "skillscout.application.candidate_source."
+            "derive_candidate_subject_descriptors",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                CandidateSourceUnavailable()
+            ),
+        )
 
     application = bootstrap.build_discovery_application(
         config,
