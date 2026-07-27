@@ -667,6 +667,161 @@ class _StateRemote:
         return self.blobs[sha]
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (None, "missing", "extra", "wrong_sha", "duplicate", "wrong_mode"),
+)
+def test_sync_verifies_complete_path_to_blob_sha_without_body_gets(
+    mutation: str | None,
+) -> None:
+    module = _state_module()
+
+    class ExactTreeRemote(_StateRemote):
+        def __init__(self) -> None:
+            super().__init__(module, "4" * 40)
+            self.body_gets = 0
+
+        def update_state_ref(self, sha: str, *, force: bool) -> object:
+            response = super().update_state_ref(sha, force=force)
+            tree_sha = self.commits[sha].tree_sha
+            entries = list(self.trees[tree_sha])
+            if mutation == "missing":
+                entries.pop()
+            elif mutation == "extra":
+                content = canonical_json_bytes({"extra": True})
+                digest = sha256_digest({"extra": True}).removeprefix(
+                    "sha256:"
+                )
+                blob_sha = module._git_blob_id(content)
+                self.blobs[blob_sha] = content
+                entries.append(
+                    module.StateTreeEntry(
+                        path=(
+                            "state/objects/sha256/"
+                            f"{digest[:2]}/{digest}.json"
+                        ),
+                        sha=blob_sha,
+                        mode="100644",
+                        size=len(content),
+                    )
+                )
+            elif mutation == "wrong_sha":
+                entries[0] = module.StateTreeEntry(
+                    path=entries[0].path,
+                    sha="9" * 40,
+                    mode=entries[0].mode,
+                    size=entries[0].size,
+                )
+            elif mutation == "duplicate":
+                entries.append(entries[0])
+            elif mutation == "wrong_mode":
+                entries[0] = module.StateTreeEntry(
+                    path=entries[0].path,
+                    sha=entries[0].sha,
+                    mode="100755",
+                    size=entries[0].size,
+                )
+            self.trees[tree_sha] = tuple(entries)
+            return response
+
+        def get_blob(self, sha: str) -> bytes:
+            del sha
+            self.body_gets += 1
+            raise AssertionError(
+                "sync verification must use the exact tree, not blob bodies"
+            )
+
+    remote = ExactTreeRemote()
+    store = module.StateBranchStore(remote)
+    bundle = _bundle(module, parent="4" * 40, object_count=2)
+
+    if mutation is None:
+        synchronized = store.sync(bundle, observed_head="4" * 40)
+        assert synchronized.status == "verified"
+    else:
+        with pytest.raises(module.StateBranchConflict):
+            store.sync(bundle, observed_head="4" * 40)
+    assert remote.body_gets == 0
+
+
+def test_one_hundred_discovery_syncs_have_constant_metadata_request_cost() -> None:
+    module = _state_module()
+
+    class CountingRemote(_StateRemote):
+        def __init__(self) -> None:
+            super().__init__(module, "4" * 40)
+            self.calls: dict[str, int] = {}
+
+        def count(self, name: str) -> None:
+            self.calls[name] = self.calls.get(name, 0) + 1
+
+        def get_state_ref(self) -> object:
+            self.count("get_state_ref")
+            return super().get_state_ref()
+
+        def get_commit(self, sha: str) -> object:
+            self.count("get_commit")
+            return super().get_commit(sha)
+
+        def get_tree(self, sha: str) -> tuple[object, ...]:
+            self.count("get_tree")
+            return super().get_tree(sha)
+
+        def get_blob(self, sha: str) -> bytes:
+            self.count("get_blob")
+            return super().get_blob(sha)
+
+        def create_blob(self, content: bytes) -> str:
+            self.count("create_blob")
+            return super().create_blob(content)
+
+        def create_tree(self, entries: list[dict[str, object]]) -> str:
+            self.count("create_tree")
+            return super().create_tree(entries)
+
+        def create_commit(
+            self,
+            message: str,
+            tree: str,
+            parents: tuple[str, ...],
+        ) -> str:
+            self.count("create_commit")
+            return super().create_commit(message, tree, parents)
+
+        def update_state_ref(self, sha: str, *, force: bool) -> object:
+            self.count("update_state_ref")
+            return super().update_state_ref(sha, force=force)
+
+    remote = CountingRemote()
+    store = module.StateBranchStore(remote)
+    bundle = _bundle(module, parent="4" * 40)
+    synchronized = store.sync(bundle, observed_head="4" * 40)
+    remote.calls.clear()
+
+    for object_count in range(1, 101):
+        bundle = _bundle(
+            module,
+            parent=synchronized.commit_sha,
+            object_count=object_count,
+            prior_root_digest=bundle.root.root_digest,
+        )
+        synchronized = store.sync(
+            bundle,
+            observed_head=synchronized.commit_sha,
+        )
+
+    assert remote.calls == {
+        "get_state_ref": 200,
+        "get_commit": 200,
+        "get_tree": 200,
+        "create_blob": 200,
+        "create_tree": 100,
+        "create_commit": 100,
+        "update_state_ref": 100,
+    }
+    assert sum(remote.calls.values()) == 1_100
+
+
 def test_sync_reuses_unchanged_parent_blobs_below_content_creation_limit() -> None:
     module = _state_module()
 

@@ -154,6 +154,15 @@ def _git_blob_id(value: bytes) -> str:
     ).hexdigest()
 
 
+def _state_commit_message(root_digest: str) -> str:
+    _require_digest(root_digest)
+    return (
+        "skillscout: persist state\n\n"
+        "SkillScout-State: v1\n"
+        f"Root-Digest: {root_digest}"
+    )
+
+
 def _contains_canary(value: bytes) -> bool:
     lowered = value.lower()
     return any(canary.lower() in lowered for canary in _SECRET_CANARIES)
@@ -491,6 +500,8 @@ class StateBranchStore:
         if root_entry.size is not None and root_entry.size != len(root_bytes):
             raise StateIntegrityFailure
         root = _parse_root(root_bytes)
+        if commit.message != _state_commit_message(root.root_digest):
+            raise StateIntegrityFailure
         if commit.parents and root.state_parent_commit_sha != commit.parents[0]:
             raise StateIntegrityFailure
         expected_paths = _expected_paths(root)
@@ -573,9 +584,17 @@ class StateBranchStore:
         self,
         bundle: VerifiedStateBundle,
         observed_head: str | None,
+        *,
+        expected_prior_root_digest: str | None = None,
     ) -> StateSyncObservation:
         expected_parent = None if observed_head is None else _sha(observed_head)
         files = _validate_bundle(bundle, expected_parent=expected_parent)
+        if (
+            expected_prior_root_digest is not None
+            and bundle.root.prior_root_digest
+            != _require_digest(expected_prior_root_digest)
+        ):
+            raise StateIntegrityFailure
         try:
             current = self._remote.get_state_ref()
         except StateRefNotFound:
@@ -591,6 +610,11 @@ class StateBranchStore:
             if (
                 parent_commit.sha != current.sha
                 or len(parent_commit.parents) > 1
+                or (
+                    expected_prior_root_digest is not None
+                    and parent_commit.message
+                    != _state_commit_message(expected_prior_root_digest)
+                )
             ):
                 raise StateBranchConflict
             try:
@@ -624,11 +648,7 @@ class StateBranchStore:
         tree_sha = self._remote.create_tree(blob_entries)
         parents = () if expected_parent is None else (expected_parent,)
         commit_sha = self._remote.create_commit(
-            (
-                "skillscout: persist state\n\n"
-                "SkillScout-State: v1\n"
-                f"Root-Digest: {bundle.root.root_digest}"
-            ),
+            _state_commit_message(bundle.root.root_digest),
             tree_sha,
             parents,
         )
@@ -664,6 +684,8 @@ class StateBranchStore:
             commit.sha != commit_sha
             or commit.tree_sha != tree_sha
             or commit.parents != expected_parents
+            or commit.message
+            != _state_commit_message(bundle.root.root_digest)
         ):
             raise StateBranchConflict
         entries = self._remote.get_tree(tree_sha)
@@ -675,10 +697,7 @@ class StateBranchStore:
             raise StateBranchConflict
         for path, content in expected_files.items():
             entry = observed[path]
-            if (
-                entry.sha != _git_blob_id(content)
-                or self._remote.get_blob(entry.sha) != content
-            ):
+            if entry.sha != _git_blob_id(content):
                 raise StateBranchConflict
         return StateSyncObservation(
             "verified",
@@ -788,31 +807,30 @@ class StateBranchDurabilityBarrier:
             created_at=transition.recorded_at,
         )
 
-        current = self._state_store.restore()
-        if (
-            current.status != "verified"
-            or current.observed_head is None
-            or current.bundle is None
-        ):
-            raise StateIntegrityFailure
-        if current.observed_head == transition.expected_prior_state_head:
-            if current.bundle.root.root_digest != (
-                transition.expected_prior_root_digest
-            ):
-                raise StateIntegrityFailure
+        reread = None
+        try:
             synchronized = self._state_store.sync(
                 bundle,
                 transition.expected_prior_state_head,
+                expected_prior_root_digest=(
+                    transition.expected_prior_root_digest
+                ),
             )
             verified_head = synchronized.commit_sha
-        elif self._bundles_equal(current.bundle, bundle):
-            # A restart after the ref update receives authority only by fully
-            # rereading the already-present exact state, never by local memory.
-            verified_head = current.observed_head
-        else:
-            raise StateBranchConflict
-
-        reread = self._state_store.restore()
+        except StateBranchConflict:
+            reread = self._state_store.restore()
+            if (
+                reread.status != "verified"
+                or reread.observed_head is None
+                or reread.bundle is None
+                or not self._bundles_equal(reread.bundle, bundle)
+            ):
+                raise StateBranchConflict from None
+            # A restart or ambiguous post-CAS observation receives authority
+            # only by fully restoring the already-present exact state.
+            verified_head = reread.observed_head
+        if reread is None:
+            reread = self._state_store.restore()
         if (
             reread.status != "verified"
             or reread.observed_head != verified_head

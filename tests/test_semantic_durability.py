@@ -308,6 +308,7 @@ class _Remote:
         self.force_values: list[bool] = []
         self.provider_requests = 0
         self.retry_or_terminal = 0
+        self.blob_reads = 0
         self._rereading = False
         for item in prior_bundle.files:
             self.blobs[module._git_blob_id(item.content)] = item.content
@@ -325,7 +326,9 @@ class _Remote:
             sha=head,
             tree_sha=prior_tree,
             parents=("c" * 40,),
-            message="skillscout: prior state",
+            message=module._state_commit_message(
+                prior_bundle.root.root_digest
+            ),
         )
 
     def _sha(self) -> str:
@@ -379,12 +382,21 @@ class _Remote:
         raise AssertionError("semantic durability never bootstraps an absent branch")
 
     def get_commit(self, sha: str):
-        return self.commits[sha]
+        commit = self.commits[sha]
+        if self.fail_at == "commit_message" and self._rereading:
+            return self.module.StateCommitObservation(
+                sha=commit.sha,
+                tree_sha=commit.tree_sha,
+                parents=commit.parents,
+                message="wrong root binding",
+            )
+        return commit
 
     def get_tree(self, sha: str):
         return self.trees[sha]
 
     def get_blob(self, sha: str) -> bytes:
+        self.blob_reads += 1
         content = self.blobs[sha]
         if self.fail_at == "projection" and self._rereading:
             return content + b"x"
@@ -545,6 +557,71 @@ def test_two_provider_three_stage_transition_matrix_is_remote_confirmed_and_idem
         pipeline.close()
 
 
+def test_active_and_idempotent_confirmation_each_restore_blob_bodies_once(
+    tmp_path: Path,
+) -> None:
+    pipeline, operations, publication, request, prior_bundle = _owned_stores(
+        tmp_path,
+        stage="extractor",
+        transition="attempt_started",
+    )
+    remote = _Remote(_state_branch(), prior_bundle=prior_bundle)
+    barrier = _barrier(remote)
+    try:
+        receipt = barrier.confirm(
+            transition=request,
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+        )
+        committed_tree = remote.commits[receipt.verified_state_head].tree_sha
+        expected_body_reads = len(remote.trees[committed_tree])
+        assert remote.blob_reads == expected_body_reads
+
+        barrier.confirm(
+            transition=request,
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+        )
+        assert remote.blob_reads == expected_body_reads * 2
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+
+def test_semantic_confirmation_rejects_wrong_prior_root_before_cas(
+    tmp_path: Path,
+) -> None:
+    pipeline, operations, publication, base, prior_bundle = _owned_stores(
+        tmp_path,
+        stage="extractor",
+        transition="attempt_started",
+    )
+    values = base.as_dict()
+    values.pop("schema_version")
+    values.pop("transition_authority_digest")
+    values["expected_prior_root_digest"] = "sha256:" + ("0" * 64)
+    request = _ports().SemanticDurabilityTransition.create(**values)
+    remote = _Remote(_state_branch(), prior_bundle=prior_bundle)
+    try:
+        with pytest.raises(_ports().SafeFailure) as failure:
+            _barrier(remote).confirm(
+                transition=request,
+                pipeline_store=pipeline,
+                operations_store=operations,
+                publication_store=publication,
+            )
+        assert failure.value.code is _ports().ErrorCode.STATE_OPERATION_FAILED
+        assert remote.head == PRIOR_HEAD
+        assert remote.force_values == []
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+
 @pytest.mark.parametrize(
     "seam",
     (
@@ -553,6 +630,7 @@ def test_two_provider_three_stage_transition_matrix_is_remote_confirmed_and_idem
         "publication_export",
         "cas",
         "reread",
+        "commit_message",
         "projection",
     ),
 )
@@ -568,7 +646,11 @@ def test_every_export_cas_reread_and_verification_failure_blocks_guarded_effect(
     remote = _Remote(
         _state_branch(),
         prior_bundle=prior_bundle,
-        fail_at=seam if seam in {"cas", "reread", "projection"} else None,
+        fail_at=(
+            seam
+            if seam in {"cas", "reread", "commit_message", "projection"}
+            else None
+        ),
     )
     stores = {
         "pipeline_store": _ExportFailure(
