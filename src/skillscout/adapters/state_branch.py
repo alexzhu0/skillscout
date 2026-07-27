@@ -232,30 +232,42 @@ class StateBranchClient:
         ):
             _safe_failure()
         entries: list[StateTreeEntry] = []
+        directories: set[str] = set()
         for item in raw["tree"]:
+            if not isinstance(item, dict) or type(item.get("path")) is not str:
+                _safe_failure()
+            path = item["path"]
             if (
-                not isinstance(item, dict)
-                or item.get("type") != "blob"
-                or item.get("mode") != "100644"
-                or type(item.get("path")) is not str
-                or not item["path"]
-                or "\\" in item["path"]
-                or item["path"].startswith("/")
-                or ".." in item["path"].split("/")
+                not path
+                or "\\" in path
+                or path.startswith("/")
+                or ".." in path.split("/")
             ):
+                _safe_failure()
+            if item.get("type") == "tree":
+                if item.get("mode") != "040000" or not _allowed_tree_path(path):
+                    _safe_failure()
+                _sha(item.get("sha"))
+                if path in directories:
+                    _safe_failure()
+                directories.add(path)
+                continue
+            if item.get("type") != "blob" or item.get("mode") != "100644":
                 _safe_failure()
             size = item.get("size")
             if size is not None and (type(size) is not int or size < 0):
                 _safe_failure()
             entries.append(
                 StateTreeEntry(
-                    path=item["path"],
+                    path=path,
                     sha=_sha(item.get("sha")),
                     mode="100644",
                     size=size,
                 )
             )
         if len({entry.path for entry in entries}) != len(entries):
+            _safe_failure()
+        if directories != _required_directory_paths(entries):
             _safe_failure()
         return tuple(sorted(entries, key=lambda entry: entry.path))
 
@@ -456,6 +468,8 @@ class StateBranchStore:
         if root_entry is None:
             raise StateIntegrityFailure
         root_bytes = self._remote.get_blob(root_entry.sha)
+        if root_entry.size is not None and root_entry.size != len(root_bytes):
+            raise StateIntegrityFailure
         root = _parse_root(root_bytes)
         if commit.parents and root.state_parent_commit_sha != commit.parents[0]:
             raise StateIntegrityFailure
@@ -830,3 +844,30 @@ def _normalize_tree_entries(
             }
         )
     return sorted(normalized, key=lambda item: str(item["path"]))
+
+
+def _allowed_tree_path(path: str) -> bool:
+    if path in {
+        "state",
+        "state/databases",
+        "state/objects",
+        "state/objects/sha256",
+    }:
+        return True
+    prefix = "state/objects/sha256/"
+    suffix = path.removeprefix(prefix)
+    return (
+        path.startswith(prefix)
+        and len(suffix) == 2
+        and re.fullmatch(r"[0-9a-f]{2}", suffix) is not None
+    )
+
+
+def _required_directory_paths(
+    entries: Iterable[StateTreeEntry],
+) -> set[str]:
+    required = {"state"}
+    for entry in entries:
+        parts = entry.path.split("/")
+        required.update("/".join(parts[:index]) for index in range(2, len(parts)))
+    return required

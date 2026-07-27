@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.discovery import DiscoveryStateRootV1
 
 
@@ -177,6 +178,7 @@ def test_state_client_accepts_only_expected_recursive_tree_directories() -> None
     module = _state_module()
     tree_sha = "a" * 40
     root_sha = "b" * 40
+    database_sha = "e" * 40
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
@@ -205,6 +207,13 @@ def test_state_client_accepts_only_expected_recursive_tree_directories() -> None
                         "sha": "d" * 40,
                     },
                     {
+                        "path": "state/databases/pipeline.sqlite3",
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": database_sha,
+                        "size": 200,
+                    },
+                    {
                         "path": "state/root.json",
                         "mode": "100644",
                         "type": "blob",
@@ -223,6 +232,12 @@ def test_state_client_accepts_only_expected_recursive_tree_directories() -> None
     )
     try:
         assert client.get_tree(tree_sha) == (
+            module.StateTreeEntry(
+                path="state/databases/pipeline.sqlite3",
+                sha=database_sha,
+                mode="100644",
+                size=200,
+            ),
             module.StateTreeEntry(
                 path="state/root.json",
                 sha=root_sha,
@@ -270,3 +285,197 @@ def test_state_client_rejects_unexpected_recursive_tree_directory() -> None:
             client.get_tree(tree_sha)
     finally:
         client.close()
+
+
+def _bundle(
+    module: object,
+    *,
+    parent: str,
+    pipeline_bytes: bytes = b"SQLite format 3\x00pipeline-state",
+) -> object:
+    database_bytes = {
+        "pipeline": pipeline_bytes,
+        "operations": b"SQLite format 3\x00operations-state",
+        "publication": b"SQLite format 3\x00publication-state",
+    }
+    projection = {
+        "schema_version": "discovery-state-rebuild-projection-v1",
+        "search_page_digests": [],
+        "candidate_digests": [],
+        "discovery_reservation_digests": [],
+        "semantic_reservation_digests": [],
+        "candidate_terminal_digests": [],
+        "run_summary_digests": [],
+    }
+    projection["projection_digest"] = sha256_digest(projection)
+    root_payload = {
+        "schema_version": "discovery-state-root-v1",
+        "root_locator": "state/root.json",
+        "prior_root_digest": None,
+        "state_parent_commit_sha": parent,
+        "query_set_digest": "sha256:" + "1" * 64,
+        "budget_policy_digest": "sha256:" + "2" * 64,
+        "objects": [],
+        "databases": [
+            {
+                "owner": owner,
+                "locator": f"state/databases/{owner}.sqlite3",
+                "content_digest": sha256_digest(content),
+                "size_bytes": len(content),
+                "schema_fingerprint": "sha256:" + digit * 64,
+            }
+            for owner, content, digit in (
+                ("pipeline", database_bytes["pipeline"], "a"),
+                ("operations", database_bytes["operations"], "b"),
+                ("publication", database_bytes["publication"], "c"),
+            )
+        ],
+        "rebuild_projection": projection,
+        "created_at": "2026-07-27T12:00:00.000000Z",
+    }
+    root_payload["root_digest"] = sha256_digest(root_payload)
+    root = DiscoveryStateRootV1.model_validate(root_payload, strict=True)
+    files = [
+        module.StateOwnedFile(
+            "state/root.json",
+            canonical_json_bytes(root.model_dump(mode="json", exclude_none=False)),
+        )
+    ]
+    files.extend(
+        module.StateOwnedFile(f"state/databases/{owner}.sqlite3", content)
+        for owner, content in database_bytes.items()
+    )
+    return module.VerifiedStateBundle(root, tuple(files))
+
+
+class _StateRemote:
+    def __init__(self, module: object, head: str | None) -> None:
+        self.module = module
+        self.head = head
+        self.blobs: dict[str, bytes] = {}
+        self.trees: dict[str, tuple[object, ...]] = {}
+        self.commits: dict[str, object] = {}
+        self.writes: list[str] = []
+        self.force_values: list[bool] = []
+        self.counter = 10
+
+    def _sha(self) -> str:
+        self.counter += 1
+        return f"{self.counter:040x}"
+
+    def get_state_ref(self) -> object:
+        if self.head is None:
+            raise self.module.StateRefNotFound
+        return self.module.StateRefObservation(
+            self.module.STATE_REF,
+            self.head,
+        )
+
+    def create_blob(self, content: bytes) -> str:
+        sha = self.module._git_blob_id(content)
+        self.blobs[sha] = content
+        self.writes.append("blob")
+        return sha
+
+    def create_tree(self, entries: list[dict[str, object]]) -> str:
+        sha = self._sha()
+        self.trees[sha] = tuple(
+            self.module.StateTreeEntry(
+                path=str(entry["path"]),
+                sha=str(entry["sha"]),
+                mode="100644",
+                size=len(self.blobs[str(entry["sha"])]),
+            )
+            for entry in entries
+        )
+        self.writes.append("tree")
+        return sha
+
+    def create_commit(
+        self,
+        message: str,
+        tree: str,
+        parents: tuple[str, ...],
+    ) -> str:
+        sha = self._sha()
+        self.commits[sha] = self.module.StateCommitObservation(
+            sha=sha,
+            tree_sha=tree,
+            parents=tuple(parents),
+            message=message,
+        )
+        self.writes.append("commit")
+        return sha
+
+    def create_state_ref(self, sha: str) -> object:
+        self.head = sha
+        self.writes.append("create_ref")
+        return self.module.StateRefObservation(self.module.STATE_REF, sha)
+
+    def update_state_ref(self, sha: str, *, force: bool) -> object:
+        self.force_values.append(force)
+        self.head = sha
+        self.writes.append("update_ref")
+        return self.module.StateRefObservation(self.module.STATE_REF, sha)
+
+    def get_commit(self, sha: str) -> object:
+        return self.commits[sha]
+
+    def get_tree(self, sha: str) -> tuple[object, ...]:
+        return self.trees[sha]
+
+    def get_blob(self, sha: str) -> bytes:
+        return self.blobs[sha]
+
+
+@pytest.mark.parametrize("bootstrap", (False, True))
+def test_sync_bootstrap_and_fast_forward_reread_exact_state(
+    bootstrap: bool,
+) -> None:
+    module = _state_module()
+    observed_head = None if bootstrap else "4" * 40
+    root_parent = observed_head or "0" * 40
+    remote = _StateRemote(module, observed_head)
+
+    result = module.StateBranchStore(remote).sync(
+        _bundle(module, parent=root_parent),
+        observed_head=observed_head,
+    )
+
+    assert result.status == "verified"
+    assert result.previous_head == observed_head
+    assert remote.commits[result.commit_sha].parents == (
+        () if bootstrap else (observed_head,)
+    )
+    assert remote.force_values == ([] if bootstrap else [False])
+    assert remote.writes[-1] == ("create_ref" if bootstrap else "update_ref")
+
+
+def test_sync_secret_canary_fails_before_first_blob_creation() -> None:
+    module = _state_module()
+    observed_head = "4" * 40
+    remote = _StateRemote(module, observed_head)
+    bundle = _bundle(
+        module,
+        parent=observed_head,
+        pipeline_bytes=b"SQLite format 3\x00github_pat_STATE_BRANCH_CANARY",
+    )
+
+    with pytest.raises(module.StateIntegrityFailure):
+        module.StateBranchStore(remote).sync(bundle, observed_head)
+
+    assert remote.writes == []
+
+
+def test_sync_changed_observed_head_fails_before_first_blob_creation() -> None:
+    module = _state_module()
+    observed_head = "4" * 40
+    remote = _StateRemote(module, "5" * 40)
+
+    with pytest.raises(module.StateBranchConflict):
+        module.StateBranchStore(remote).sync(
+            _bundle(module, parent=observed_head),
+            observed_head,
+        )
+
+    assert remote.writes == []
