@@ -38,12 +38,6 @@ DISCARDED_CANARIES = (
     "CROSS_QUERY_RENAME_CANARY",
     "DISCARDED_TOPIC_CANARY",
 )
-WAVE0_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="phase5-wave0-search-adapter-missing",
-)
-
-
 @pytest.fixture(autouse=True)
 def _clear_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SKILLSCOUT_GITHUB_TOKEN", raising=False)
@@ -389,7 +383,6 @@ def test_hostile_link_is_rejected_without_following_arbitrary_url(name: str) -> 
     assert recorded.requests[0].url.path == "/search/repositories"
 
 
-@WAVE0_XFAIL
 def test_hostile_redirect_is_rejected_without_second_request() -> None:
     failure, recorded, sleeps = _recorded_failure("redirect")
     assert failure.code is ErrorCode.STAGE_PERMANENT_FAILURE
@@ -401,7 +394,6 @@ def test_hostile_redirect_is_rejected_without_second_request() -> None:
     "name",
     ("malformed_json", "oversized_body"),
 )
-@WAVE0_XFAIL
 def test_oversized_or_malformed_search_body_fails_closed(name: str) -> None:
     failure, recorded, sleeps = _recorded_failure(name)
     assert failure.code is ErrorCode.STAGE_PERMANENT_FAILURE
@@ -417,7 +409,6 @@ def test_oversized_or_malformed_search_body_fails_closed(name: str) -> None:
         ("server_500", 0.0),
     ),
 )
-@WAVE0_XFAIL
 def test_rate_error_matrix_is_transient_with_bounded_defer(
     name: str,
     expected_sleep: float,
@@ -438,7 +429,6 @@ def test_rate_error_matrix_is_transient_with_bounded_defer(
         "overlong_request_id",
     ),
 )
-@WAVE0_XFAIL
 def test_rate_error_missing_or_malformed_mandatory_facts_is_permanent(
     name: str,
 ) -> None:
@@ -448,7 +438,6 @@ def test_rate_error_missing_or_malformed_mandatory_facts_is_permanent(
     assert len(recorded.requests) == 1
 
 
-@WAVE0_XFAIL
 def test_error_transport_failure_is_sanitized_and_never_retried_in_adapter() -> None:
     calls = 0
 
@@ -477,7 +466,6 @@ def test_error_transport_failure_is_sanitized_and_never_retried_in_adapter() -> 
     "name",
     ("rate_403", "rate_429", "server_500"),
 )
-@WAVE0_XFAIL
 def test_error_provider_body_and_token_never_cross_closed_diagnostics(
     name: str,
 ) -> None:

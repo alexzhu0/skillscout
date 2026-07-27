@@ -277,6 +277,13 @@ class GitHubReadClient:
 
         if type(query_set) is not DiscoveryQuerySetV1:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        validated_query_set = _validate(
+            DiscoveryQuerySetV1,
+            query_set.model_dump(mode="python", exclude={"query_set_digest"}),
+        )
+        if validated_query_set != query_set:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        query_set = validated_query_set
         if type(query_ordinal) is not int or not 1 <= query_ordinal <= len(
             query_set.queries
         ):
@@ -299,9 +306,9 @@ class GitHubReadClient:
             ]
         )
         path = f"/search/repositories?{params}"
+        self._last_request_id = None
         response = self._send(path)
         try:
-            self._last_request_id = response.headers.get("x-github-request-id")
             status = response.status_code
             if status in (301, 302, 303, 307, 308):
                 raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
@@ -321,6 +328,7 @@ class GitHubReadClient:
                 self._read_capped(response, MAX_METADATA_BYTES),
             )
             request_id = _search_request_id(response.headers)
+            self._last_request_id = request_id
             rate_limit = _search_rate_limit_facts(response.headers)
             next_page = _search_next_page(
                 response.headers.get("link"),
@@ -596,16 +604,20 @@ def _search_next_page(
     if len(next_urls) != 1:
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
 
-    target = urlsplit(next_urls[0])
-    if (
-        target.scheme != "https"
-        or target.hostname != "api.github.com"
-        or target.port is not None
-        or target.username is not None
-        or target.password is not None
-        or target.path != "/search/repositories"
-        or target.fragment
-    ):
+    try:
+        target = urlsplit(next_urls[0])
+        valid_target = (
+            target.scheme == "https"
+            and target.hostname == "api.github.com"
+            and target.port is None
+            and target.username is None
+            and target.password is None
+            and target.path == "/search/repositories"
+            and not target.fragment
+        )
+    except ValueError:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+    if not valid_target:
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
     query = query_set.queries[query_ordinal - 1]
     expected_page = current_page + 1
