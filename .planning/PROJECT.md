@@ -20,6 +20,10 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 - ✓ 所有外部内容均为不可信数据：不 clone、安装、构建、import 或执行候选代码；Prompt Injection 样本无法获得指令或工具权限。 — Phase 2
 - ✓ LLM 仅在确定性门禁通过后执行一次无工具、`store=false` 的严格结构化语义提取，可输出 0–3 个独立工作流。 — Phase 2
 - ✓ 提取后仅有经过证据校验的 `WorkflowSpec` 和有界 provenance 可以进入下游；完整原文只存在于进程内存。 — Phase 2
+- ✓ 只有通过资格、生成、格式/安全校验和独立 Reviewer 的候选才能进入受控 catalog 发布 admission。 — Phase 3–4
+- ✓ Publisher 只能创建或更新机器分支、Draft PR 和个人 reviewer 请求；生产代码没有 merge、approve、ready、默认分支写入或 ruleset 管理能力。 — Phase 4（Gate B4 实测）
+- ✓ Draft PR 包含来源、commit SHA、许可证、验证、独立评审和人类控制证据，最终合并只能由人类完成。 — Phase 4
+- ✓ 相同发布身份可安全复用/更新一个 Draft，并从远端状态恢复；冲突、歧义或篡改状态在写入前失败关闭。 — Phase 4
 
 ### Active
 
@@ -32,10 +36,6 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 - [ ] 生成的 Skill 必须通过确定性格式检查、安全检查和来源约束检查。
 - [ ] 独立 LLM Reviewer 必须在不了解生成过程内部推理的前提下评价可复用性、质量、安全性、来源完整性和发布价值。
 - [ ] Reviewer 只输出结构化通过或拒绝结论、置信度、理由、缺失假设和最小修改建议，不得编辑或重写 Skill。
-- [ ] 只有 Reviewer 通过的 Skill 才能在中央受控 Skill 仓库创建 Draft Pull Request。
-- [ ] Publisher 只能创建隔离分支、提交 Skill 包、打开 Draft Pull Request 并指派人类 Reviewer，不得写入默认分支。
-- [ ] Draft Pull Request 必须携带来源、评审结果、校验结果和风险摘要，且只能由人类决定是否合并。
-- [ ] 系统按仓库、提交 SHA 和工作流指纹实现幂等处理；相关文件发生变化时重新分析，并优先更新已有 Draft PR。
 - [ ] SQLite 保存运行、候选、快照、阶段产物、评审和 PR 状态；敏感凭据不进入数据库或生成产物。
 - [ ] MVP 必须在至少 5 个不同公开仓库上完成端到端验证，并证明重跑幂等、不会执行外部代码、不会自动合并。
 
@@ -85,19 +85,19 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | 采用 Agent Skills 标准目录包作为唯一 MVP 输出 | 避免先维护私有规范，直接得到可审核、可分发的标准资产 | — Pending |
-| 使用中央受控 Skill 仓库承接 Draft PR | 统一目录、去重、审核、版本和安全政策 | — Pending |
-| Reviewer 通过后才创建 Draft PR | 减少低质量 PR 噪声，同时保留最终人类决策权 | — Pending |
+| 使用中央受控 Skill 仓库承接 Draft PR | 统一目录、去重、审核、版本和安全政策 | ✓ Phase 4 |
+| Reviewer 通过后才创建 Draft PR | 减少低质量 PR 噪声，同时保留最终人类决策权 | ✓ Phase 4 |
 | MVP 仅扫描公开 GitHub 仓库 | 简化权限模型并减少隐私与凭据风险 | — Pending |
 | MVP 仅接受明确的宽松许可证 | 建立保守、确定性的法律门槛 | ✓ Phase 2 |
 | 一个仓库可生成多个独立 Skill | 仓库可能包含多个可单独复用的工作流，不应被迫合并 | ✓ Phase 2（提取上限 3） |
 | 每日调度并支持人工触发 | 兼顾持续发现与可控调试 | — Pending |
 | 每次最多 100 个候选、20 个 LLM 分析对象 | 为 MVP 建立明确的成本与速率边界 | — Pending |
-| 使用仓库、提交 SHA 和工作流指纹实现幂等 | 避免重复成本与 PR 噪声，同时允许来源更新 | — Pending |
+| 使用仓库、提交 SHA 和工作流指纹实现幂等 | 避免重复成本与 PR 噪声，同时允许来源更新 | ✓ Phase 4（发布身份与 revision lineage） |
 | 默认重新表述来源内容且不复制可执行代码 | 减少安全、维护和版权风险，同时保留必要归因 | — Pending |
 | 至少 5 个真实公开仓库通过端到端验收 | 验证系统不是仅对单一样例成立 | — Pending |
 | 以阶段契约而不是固定 Agent 数量定义系统 | 保留启发流程的职责隔离，同时避免为 MVP 引入不必要的多 Agent 编排复杂度 | — Pending |
 | 提取后只向下游传递 WorkflowSpec 与 provenance | 缩小 Prompt Injection 传播面，并让评分、生成和审核可独立测试 | ✓ Phase 2 |
-| Reviewer 只评判、不编辑 | 避免生成者与评判者职责混淆，并保留清晰的审核证据 | — Pending |
+| Reviewer 只评判、不编辑 | 避免生成者与评判者职责混淆，并保留清晰的审核证据 | ✓ Phase 3 |
 | 描述符锚定本地文件系统 + 确定性原子替换 + flock 下 owner 校验 stale-temp 恢复 | 进程/主机崩溃窗口可在不重放已验证副作用的前提下修复；被拒绝的 temp 保留且 fail closed | ✓ Phase 1 |
 | 内容寻址、全链校验的 SQLite 状态与不可变 resume 事件作为唯一复用权限 | 公共复用计数只能来自已验证事件链，消除重放与篡改面 | ✓ Phase 1 |
 | dry-run 以能力缺失（无 remote adapter）与封闭 scope 上限架构级阻止远程写入 | 无写入不是配置开关而是结构属性；`remote_writes_attempted=0` 可验证 | ✓ Phase 1 |
@@ -125,4 +125,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-22 after Phase 2*
+*Last updated: 2026-07-27 after Phase 4*

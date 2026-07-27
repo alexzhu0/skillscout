@@ -70,7 +70,7 @@ status: complete
 
 # Phase 04 Plan 11: Independent Release Validation Summary
 
-**Exact 25-task Nyquist map and mutation-tested read-only acceptance inspector close Phase 4 with a 1419-test locked release chain.**
+**Exact 25-task Nyquist map and mutation-tested read-only acceptance inspector close Phase 4; post-review verification passed the current 1410-test locked release chain.**
 
 ## Performance
 
@@ -84,7 +84,7 @@ status: complete
 
 - Replaced the draft validation strategy with an exact one-to-one map for all 25 Phase 4 tasks, including waves, dependencies, plan commands, evidence paths, six requirement inverse maps, and Gate A4/Gate B4 identities.
 - Added a standard-library-only acceptance inspector covering authority-free candidate evidence, protected-local intent/admission derivation, bounded GitHub operations, exact deletion/recovery behavior, candidate-only workflow handoff, immutable action pins, scoped live denials, cleanup evidence, and forbidden production surfaces.
-- Passed the exact final locked release chain: both independent verifiers, Ruff, `1419 passed, 2 skipped`, and terminal acceptance.
+- Passed the post-review exact final locked release chain: all three independent verifiers, Ruff, `1410 passed, 2 skipped`, and terminal acceptance.
 
 ## Task Commits
 
@@ -144,13 +144,13 @@ None.
 
 ## Next Phase Readiness
 
-Phase 4 is ready for goal verification. Gate A4 and Gate B4 remain bound to their exact immutable evidence; any action, workflow, ruleset, catalog, reviewer, or installation identity change requires fresh review.
+Phase 4 goal verification passed 11/11. Gate A4 and the post-review-fix Gate B4 remain bound to their exact immutable evidence; any action, workflow, ruleset, catalog, reviewer, or installation identity change requires fresh review.
 
 ## Self-Check: PASSED
 
 - Verified all four created files and the updated validation contract exist.
 - Verified commits `4198929`, `79364c2`, `3852925`, `3c7deb7`, `a891102`, and `53d32fc` exist.
-- Verified the exact final release chain passed with `1419 passed, 2 skipped in 37.46s`.
+- Verified the post-review exact final release chain passed with `1410 passed, 2 skipped`; Phase 4 goal verification passed 11/11.
 
 ---
 *Phase: 04-controlled-draft-pr*

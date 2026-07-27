@@ -61,11 +61,11 @@
 
 ### Draft PR Publication
 
-- [ ] **PUB-01**: Publisher 只向配置的受控中央 Skill catalog 仓库创建或更新确定性机器分支、提交已验证 artifact、创建 Draft Pull Request，并请求配置的人类 reviewer 或 team。
-- [ ] **PUB-02**: Draft PR 正文必须包含来源仓库、commit SHA、许可证、workflow fingerprint、证据摘要、资格结果、安全/格式检查、独立审核结论及明确的人类审核提示。
-- [ ] **PUB-03**: Publisher 不得设置 auto-merge、调用 merge API、批准 PR、把 Draft 标记为 ready for review、修改规则集或直接向默认分支写入。
-- [ ] **PUB-04**: 发布身份使用最小权限短期 GitHub App installation token；catalog 默认分支 ruleset 必须在平台层阻止该身份直接写入、绕过人工审批或 merge。
-- [ ] **PUB-05**: Publisher 根据目标仓库、稳定 slug、发布分支和机器可读 PR marker 实现幂等；重复运行更新已有 Draft PR，并能在本地状态丢失时从远端恢复 Publication Record。
+- [x] **PUB-01**: Publisher 只向配置的受控中央 Skill catalog 仓库创建或更新确定性机器分支、提交已验证 artifact、创建 Draft Pull Request，并请求配置的人类 reviewer 或 team。
+- [x] **PUB-02**: Draft PR 正文必须包含来源仓库、commit SHA、许可证、workflow fingerprint、证据摘要、资格结果、安全/格式检查、独立审核结论及明确的人类审核提示。
+- [x] **PUB-03**: Publisher 不得设置 auto-merge、调用 merge API、批准 PR、把 Draft 标记为 ready for review、修改规则集或直接向默认分支写入。
+- [x] **PUB-04**: 发布身份使用最小权限短期 GitHub App installation token；catalog 默认分支 ruleset 必须在平台层阻止该身份直接写入、绕过人工审批或 merge。
+- [x] **PUB-05**: Publisher 根据目标仓库、稳定 slug、发布分支和机器可读 PR marker 实现幂等；重复运行更新已有 Draft PR，并能在本地状态丢失时从远端恢复 Publication Record。
 
 ### State, Recovery, and Audit
 
@@ -77,7 +77,7 @@
 ### Security Controls
 
 - [x] **SEC-01**: 所有 OpenAI 请求默认 `store=false`，不提供 Web、MCP、shell、代码解释器或其他工具，不包含 GitHub/OpenAI 密钥，并将仓库内容作为低优先级不可信输入处理。
-- [ ] **SEC-02**: CI 使用最小 GitHub Actions 权限、固定第三方 Action commit SHA、受保护发布环境和结构化日志字段 allowlist；候选仓库数据不得直接插值到 shell 命令。
+- [x] **SEC-02**: CI 使用最小 GitHub Actions 权限、固定第三方 Action commit SHA、受保护发布环境和结构化日志字段 allowlist；候选仓库数据不得直接插值到 shell 命令。
 
 ### MVP Verification
 
@@ -166,17 +166,17 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | REV-01 | Phase 3 | Complete |
 | REV-02 | Phase 3 | Complete |
 | REV-03 | Phase 3 | Complete |
-| PUB-01 | Phase 4 | Pending |
-| PUB-02 | Phase 4 | Pending |
-| PUB-03 | Phase 4 | Pending |
-| PUB-04 | Phase 4 | Pending |
-| PUB-05 | Phase 4 | Pending |
+| PUB-01 | Phase 4 | Complete |
+| PUB-02 | Phase 4 | Complete |
+| PUB-03 | Phase 4 | Complete |
+| PUB-04 | Phase 4 | Complete |
+| PUB-05 | Phase 4 | Complete |
 | OPS-01 | Phase 1 | Complete |
 | OPS-02 | Phase 5 | Pending |
 | OPS-03 | Phase 5 | Pending |
 | OPS-04 | Phase 1 | Complete |
 | SEC-01 | Phase 2 | Complete |
-| SEC-02 | Phase 4 | Pending |
+| SEC-02 | Phase 4 | Complete |
 | TEST-01 | Phase 6 | Pending |
 | TEST-02 | Phase 6 | Pending |
 | TEST-03 | Phase 6 | Pending |

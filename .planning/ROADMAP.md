@@ -15,7 +15,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 - [x] **Phase 1: Auditable Dry-Run Spine** — 用确定性 fixture 打通所有阶段状态、审计、恢复和副作用防火墙。 (completed 2026-07-21)
 - [x] **Phase 2: Safe Single-Repository Extraction** — 从一个指定公共仓库安全地产出 `WorkflowSpec` 或结构化拒绝。 (completed 2026-07-22)
 - [x] **Phase 3: Validated Skill Candidate** — 把合格 `WorkflowSpec` 转为经过格式、安全和独立审核的本地 Skill 候选。 (completed 2026-07-23)
-- [ ] **Phase 4: Controlled Draft PR** — 在平台权限硬约束下创建或更新一个可追溯 Draft PR。
+- [x] **Phase 4: Controlled Draft PR** — 在平台权限硬约束下创建或更新一个可追溯 Draft PR。 (completed 2026-07-27)
 - [ ] **Phase 5: Automated Discovery Operations** — 将已验证的单仓库路径扩展到定时/手动 GitHub Search 和持久状态。
 - [ ] **Phase 6: Adversarial MVP Acceptance** — 用五个真实仓库、注入样本和权限 canary 证明 MVP 达标。
 
@@ -224,7 +224,7 @@ Plans:
 
 **Depends on:** Phase 3  
 **Requirements:** PUB-01, PUB-02, PUB-03, PUB-04, PUB-05, SEC-02  
-**Plans:** 11 plans
+**Plans:** 11/11 plans complete
 
 Plans:
 
@@ -325,7 +325,7 @@ Plans:
 | 1. Auditable Dry-Run Spine | Complete    | 2 | 2026-07-21 |
 | 2. Safe Single-Repository Extraction | Complete | 14 | 2026-07-22 |
 | 3. Validated Skill Candidate | 14/14 | Complete   | 2026-07-23 |
-| 4. Controlled Draft PR | Not started | 6 | 0/6 |
+| 4. Controlled Draft PR | 11/11 | Complete    | 2026-07-27 |
 | 5. Automated Discovery Operations | Not started | 5 | 0/5 |
 | 6. Adversarial MVP Acceptance | Not started | 4 | 0/4 |
 
