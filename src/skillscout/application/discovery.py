@@ -13,6 +13,7 @@ from typing import Callable, Literal, Protocol
 
 from skillscout.application.phase3 import PhaseThreeApplication
 from skillscout.application.pipeline import PipelineRunner
+from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.discovery import (
     DISCOVERY_MAX_CANDIDATES,
@@ -125,6 +126,25 @@ class EligibleCandidateLocator:
             raise ValueError("invalid eligible candidate locator")
 
 
+def eligible_candidate_locator(
+    *,
+    authority_digest: str,
+    workflow_identity_digest: str,
+) -> EligibleCandidateLocator:
+    """Derive the sole bounded locator form accepted by the protected reader."""
+
+    if _DIGEST.fullmatch(authority_digest) is None:
+        raise ValueError("invalid eligible authority")
+    digest_hex = authority_digest.removeprefix("sha256:")
+    return EligibleCandidateLocator(
+        locator=(
+            f"state/objects/sha256/{digest_hex[:2]}/{digest_hex}.json"
+        ),
+        authority_digest=authority_digest,
+        workflow_identity_digest=workflow_identity_digest,
+    )
+
+
 @dataclass(frozen=True)
 class DiscoveryApplicationResult:
     """Bounded discovery handoff; it grants no publication admission."""
@@ -164,24 +184,29 @@ class DiscoveryApplication:
     def run(self, authority: object | None = None) -> DiscoveryApplicationResult:
         """Restore exact state and execute the owner-provided bounded controller."""
 
-        restored = self._dependencies.state_restore()
-        operations = self._dependencies.operations_store_factory()
-        run_discovery = getattr(operations, "run_discovery", None)
-        if not callable(run_discovery):
-            raise TypeError("operations controller is unavailable")
-        result = run_discovery(
-            authority=authority,
-            restored_state=restored,
-            search_factory=self._dependencies.search_factory,
-            durability_barrier=self._dependencies.durability_barrier,
-            phase2_factory=self._dependencies.phase2_factory,
-            phase3_factory=self._dependencies.phase3_factory,
-            max_candidates=DISCOVERY_MAX_CANDIDATES,
-            max_semantic_candidates=DISCOVERY_MAX_SEMANTIC_CANDIDATES,
-        )
-        if type(result) is not DiscoveryApplicationResult:
-            raise TypeError("invalid discovery result")
-        return result
+        try:
+            restored = self._dependencies.state_restore()
+            operations = self._dependencies.operations_store_factory()
+            run_discovery = getattr(operations, "run_discovery", None)
+            if not callable(run_discovery):
+                raise TypeError("operations controller is unavailable")
+            result = run_discovery(
+                authority=authority,
+                restored_state=restored,
+                search_factory=self._dependencies.search_factory,
+                durability_barrier=self._dependencies.durability_barrier,
+                phase2_factory=self._dependencies.phase2_factory,
+                phase3_factory=self._dependencies.phase3_factory,
+                max_candidates=DISCOVERY_MAX_CANDIDATES,
+                max_semantic_candidates=DISCOVERY_MAX_SEMANTIC_CANDIDATES,
+            )
+            if type(result) is not DiscoveryApplicationResult:
+                raise TypeError("invalid discovery result")
+            return result
+        except SafeFailure:
+            raise
+        except Exception:
+            raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED) from None
 
 
 @dataclass(frozen=True)
