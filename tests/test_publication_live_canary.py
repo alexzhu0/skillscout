@@ -27,6 +27,7 @@ REQUIRED_CANARY_ENV = (
     "SKILLSCOUT_LIVE_CANARY",
     "SKILLSCOUT_CANARY_CATALOG_ID",
     "SKILLSCOUT_CANARY_CATALOG_FULL_NAME",
+    "SKILLSCOUT_CANARY_INSTALLATION_ID",
     "SKILLSCOUT_CANARY_APP_TOKEN",
     "SKILLSCOUT_CANARY_RULESET_EVIDENCE_DIGEST",
     "SKILLSCOUT_CANARY_REVIEWER",
@@ -56,6 +57,7 @@ _LOGIN = re.compile(r"[A-Za-z0-9-]{1,39}")
 class LiveCanaryConfig:
     catalog_id: int
     catalog_full_name: str
+    installation_id: int
     app_token: str = field(repr=False)
     ruleset_evidence_digest: str
     reviewer: str
@@ -94,11 +96,12 @@ def load_live_canary_config(env: Mapping[str, str] | None = None) -> LiveCanaryC
         return None
     try:
         catalog_id = int(values["SKILLSCOUT_CANARY_CATALOG_ID"])
+        installation_id = int(values["SKILLSCOUT_CANARY_INSTALLATION_ID"])
         positive_pull_number = int(values["SKILLSCOUT_CANARY_POSITIVE_PULL"])
         otherwise_mergeable_pr = int(values["SKILLSCOUT_CANARY_OTHERWISE_MERGEABLE_PR"])
     except ValueError:
         return None
-    if catalog_id <= 0 or positive_pull_number <= 0 or otherwise_mergeable_pr <= 0:
+    if catalog_id <= 0 or installation_id <= 0 or positive_pull_number <= 0 or otherwise_mergeable_pr <= 0:
         return None
     digest = values["SKILLSCOUT_CANARY_RULESET_EVIDENCE_DIGEST"]
     if _DIGEST.fullmatch(digest) is None:
@@ -120,6 +123,7 @@ def load_live_canary_config(env: Mapping[str, str] | None = None) -> LiveCanaryC
     return LiveCanaryConfig(
         catalog_id=catalog_id,
         catalog_full_name=full_name,
+        installation_id=installation_id,
         app_token=values["SKILLSCOUT_CANARY_APP_TOKEN"],
         ruleset_evidence_digest=digest,
         reviewer=reviewer,
@@ -180,9 +184,7 @@ class CanaryGitHubClient:
         """Run explicit positive and negative probes; there is deliberately no cleanup."""
 
         try:
-            installation = self._required_json("/installation")
-            installation_id = installation.get("id")
-            assert isinstance(installation_id, int) and installation_id > 0
+            installation_id = self._config.installation_id
             self._installation_id = installation_id
             catalog = self._required_json(f"/repos/{self._config.catalog_full_name}")
             assert (catalog.get("id"), catalog.get("full_name")) == (
@@ -213,7 +215,13 @@ class CanaryGitHubClient:
                 ("repository_or_environment_secret_access", "GET", f"/repos/{self._config.catalog_full_name}/{self._config.unauthorized_resource}", None),
             )
             classifications = tuple((name, self._json(method, path, payload=payload)[0]) for name, method, path, payload in probes)
-            assert all(classification in SAFE_CLASSIFICATIONS for _, classification in classifications)
+            classification_by_name = dict(classifications)
+            assert classification_by_name["ruleset_read"] in SAFE_CLASSIFICATIONS | {"success"}
+            assert all(
+                classification in SAFE_CLASSIFICATIONS
+                for name, classification in classifications
+                if name != "ruleset_read"
+            )
             default_after = self._required_json(f"/repos/{self._config.catalog_full_name}/git/ref/heads/{base_branch}")
             default_sha_after = str(default_after.get("object", {}).get("sha", ""))
             assert _SHA.fullmatch(default_sha_after)
@@ -259,6 +267,8 @@ def test_live_canary_skips_before_client_construction_without_complete_opt_in(
 
 
 def test_partial_environment_fails_closed_before_token_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in REQUIRED_CANARY_ENV:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SKILLSCOUT_LIVE_CANARY", "1")
     monkeypatch.setenv("SKILLSCOUT_CANARY_APP_TOKEN", "token-must-not-be-used")
     assert load_live_canary_config() is None
@@ -268,6 +278,7 @@ def test_live_canary_result_is_bounded_and_emits_cleanup_manifest_only() -> None
     config = LiveCanaryConfig(
         catalog_id=910001,
         catalog_full_name="catalog-org/skills",
+        installation_id=4001,
         app_token="not-rendered",
         ruleset_evidence_digest="sha256:" + "a" * 64,
         reviewer="skill-maintainer",
@@ -336,6 +347,7 @@ def test_test_only_canary_uses_one_installation_identity_for_positive_and_negati
     config = LiveCanaryConfig(
         catalog_id=910001,
         catalog_full_name="catalog-org/skills",
+        installation_id=4001,
         app_token="not-rendered",
         ruleset_evidence_digest="sha256:" + "a" * 64,
         reviewer="skill-maintainer",
@@ -354,7 +366,6 @@ def test_test_only_canary_uses_one_installation_identity_for_positive_and_negati
         assert isinstance(request, httpx.Request)
         requests.append((request.method, request.url.path, request.headers.get("authorization")))
         routes = {
-            ("GET", "/installation"): {"id": 4001},
             ("GET", "/repos/catalog-org/skills"): {"id": 910001, "full_name": "catalog-org/skills", "default_branch": "main"},
             ("GET", "/repos/catalog-org/skills/git/ref/heads/main"): {"ref": "refs/heads/main", "object": {"sha": "a" * 40}},
             ("GET", "/repos/catalog-org/skills/pulls/78"): {"number": 78, "draft": True, "head": {"ref": "skillscout/bounded-workflow-canary"}},
@@ -364,6 +375,8 @@ def test_test_only_canary_uses_one_installation_identity_for_positive_and_negati
         payload = routes.get((request.method, request.url.path))
         if payload is not None:
             return httpx.Response(200, json=payload)
+        if (request.method, request.url.path) == ("GET", "/repos/catalog-org/skills/rulesets"):
+            return httpx.Response(200, json=[])
         return httpx.Response(403, json={"message": "denied"})
 
     import httpx
@@ -376,6 +389,9 @@ def test_test_only_canary_uses_one_installation_identity_for_positive_and_negati
     assert result.remote_state_unchanged is True
     assert result.probe_installation_ids == (4001,) * len(NEGATIVE_PROBES)
     assert {name for name, _ in result.negative_classifications} == set(NEGATIVE_PROBES)
-    assert all(value == "denied" for _, value in result.negative_classifications)
+    classifications = dict(result.negative_classifications)
+    assert classifications["ruleset_read"] == "success"
+    assert classifications["ruleset_mutation"] == "denied"
+    assert all(value == "denied" for name, value in result.negative_classifications if name != "ruleset_read")
     assert all(header == "Bearer not-rendered" for _, _, header in requests)
     assert not any(method == "DELETE" for method, _, _ in requests)
