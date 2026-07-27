@@ -27,3 +27,11 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Fix:** Preserved the 128-character bound and legacy safe-token alternative, added an exact two-or-more non-empty uppercase-hex colon-group alternative, and locked the boundary with the recorded live 404 plus missing, whitespace/control, malformed-group, non-hex, and oversized mutations without logging the value.
 - **Files changed:** src/skillscout/adapters/state_branch.py, tests/test_state_branch.py
 ---
+
+## github-blob-base64 — CR/LF-folded GitHub blob base64 failed strict decode
+- **Date:** 2026-07-28
+- **Error patterns:** StateBranchClient, GitHub blob content, CR/LF, base64, write-after-read, strict decoder, SafeFailure
+- **Root cause:** `StateBranchClient.get_blob` applied Python's strict base64 decoder directly to GitHub's CR/LF-folded wire value, so valid live blobs failed before integrity verification; the decoder alone also accepts noncanonical pad-bit spellings.
+- **Fix:** Removed only CR and LF before strict decoding, required exact canonical re-encoding equality, retained decoded-size and requested git-blob-ID verification, and added adapter-level positive and negative mutations for the complete boundary.
+- **Files changed:** src/skillscout/adapters/state_branch.py, tests/test_state_branch.py
+---
