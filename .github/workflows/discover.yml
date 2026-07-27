@@ -1,0 +1,250 @@
+name: Discover and publish eligible Skill drafts
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# GitHub Actions retains at most one pending run for a concurrency group. Until
+# hosted evidence proves any stronger grammar, pending run replacement is the
+# documented fallback while the active production run is never cancelled.
+concurrency:
+  group: skillscout-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  discovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    outputs:
+      discovery_run_id: ${{ steps.handoff.outputs.discovery_run_id }}
+      state_root_digest: ${{ steps.handoff.outputs.state_root_digest }}
+      state_commit_sha: ${{ steps.handoff.outputs.state_commit_sha }}
+      eligible_candidates_json: ${{ steps.handoff.outputs.eligible_candidates_json }}
+      eligible_candidates_digest: ${{ steps.handoff.outputs.eligible_candidates_digest }}
+    env:
+      STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
+      INITIAL_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST }}
+      SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Check out the fixed workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run bounded discovery through independent review
+        id: handoff
+        run: |
+          set -euo pipefail
+          result_file="$(mktemp)"
+          trap 'rm -f "$result_file"' EXIT
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli discover --state-repository-id "$STATE_REPOSITORY_ID" --state-repository-full-name "$STATE_REPOSITORY_FULL_NAME" --initial-state-root-digest "$INITIAL_STATE_ROOT_DIGEST" > "$result_file"
+          python - "$result_file" "$GITHUB_OUTPUT" <<'PY'
+          import hashlib
+          import json
+          import re
+          import sys
+
+          digest_pattern = re.compile(r"sha256:[0-9a-f]{64}")
+          state_sha_pattern = re.compile(r"[0-9a-f]{40}")
+          run_pattern = re.compile(r"[A-Za-z0-9._-]{1,128}")
+          locator_pattern = re.compile(
+              r"state/objects/sha256/[0-9a-f]{2}/[0-9a-f]{64}\.json"
+          )
+          with open(sys.argv[1], encoding="utf-8") as source:
+              payload = json.load(source)
+          if set(payload) != {"run_id", "state_root_digest", "state_commit_sha", "eligible_count", "eligible_candidates"}:
+              raise SystemExit("unexpected discovery handoff")
+          candidates = payload["eligible_candidates"]
+          if (
+              type(candidates) is not list
+              or len(candidates) > 60
+              or payload["eligible_count"] != len(candidates)
+              or run_pattern.fullmatch(payload["run_id"]) is None
+              or digest_pattern.fullmatch(payload["state_root_digest"]) is None
+              or state_sha_pattern.fullmatch(payload["state_commit_sha"]) is None
+          ):
+              raise SystemExit("invalid discovery handoff")
+          for candidate in candidates:
+              if (
+                  type(candidate) is not dict
+                  or set(candidate) != {"locator", "authority_digest", "workflow_identity_digest"}
+                  or locator_pattern.fullmatch(candidate["locator"]) is None
+                  or digest_pattern.fullmatch(candidate["authority_digest"]) is None
+                  or digest_pattern.fullmatch(candidate["workflow_identity_digest"]) is None
+              ):
+                  raise SystemExit("invalid discovery candidate handoff")
+          canonical = json.dumps(
+              candidates, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+          ).encode("ascii")
+          if len(canonical) > 65_536 or b"\n" in canonical or b"\r" in canonical:
+              raise SystemExit("oversized discovery handoff")
+          candidate_digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+          outputs = {
+              "discovery_run_id": payload["run_id"],
+              "state_root_digest": payload["state_root_digest"],
+              "state_commit_sha": payload["state_commit_sha"],
+              "eligible_candidates_json": canonical.decode("ascii"),
+              "eligible_candidates_digest": candidate_digest,
+          }
+          with open(sys.argv[2], "a", encoding="utf-8") as destination:
+              for field, value in outputs.items():
+                  destination.write(f"{field}={value}\n")
+          PY
+
+  protected_publication:
+    needs: discovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: skillscout-catalog-publish
+    permissions:
+      contents: read
+    env:
+      DISCOVERY_RUN_ID: ${{ needs.discovery.outputs.discovery_run_id }}
+      STATE_ROOT_DIGEST: ${{ needs.discovery.outputs.state_root_digest }}
+      STATE_COMMIT_SHA: ${{ needs.discovery.outputs.state_commit_sha }}
+      ELIGIBLE_CANDIDATES_JSON: ${{ needs.discovery.outputs.eligible_candidates_json }}
+      ELIGIBLE_CANDIDATES_DIGEST: ${{ needs.discovery.outputs.eligible_candidates_digest }}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_CATALOG_REPOSITORY_ID: ${{ vars.SKILLSCOUT_CATALOG_REPOSITORY_ID }}
+      SKILLSCOUT_CATALOG_FULL_NAME: ${{ vars.SKILLSCOUT_CATALOG_FULL_NAME }}
+      SKILLSCOUT_CATALOG_BASE_BRANCH: ${{ vars.SKILLSCOUT_CATALOG_BASE_BRANCH }}
+      SKILLSCOUT_CATALOG_REVIEWERS: ${{ vars.SKILLSCOUT_CATALOG_REVIEWERS }}
+      SKILLSCOUT_CATALOG_TEAM_REVIEWERS: ${{ vars.SKILLSCOUT_CATALOG_TEAM_REVIEWERS }}
+      SKILLSCOUT_PUBLICATION_POLICY_VERSION: ${{ vars.SKILLSCOUT_PUBLICATION_POLICY_VERSION }}
+    steps:
+      - name: Check out the same fixed workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reconstruct and validate the bounded metadata handoff
+        run: |
+          set -euo pipefail
+          python - /tmp/skillscout-discovery-handoff.json <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+
+          digest_pattern = re.compile(r"sha256:[0-9a-f]{64}")
+          state_sha_pattern = re.compile(r"[0-9a-f]{40}")
+          run_pattern = re.compile(r"[A-Za-z0-9._-]{1,128}")
+          locator_pattern = re.compile(
+              r"state/objects/sha256/[0-9a-f]{2}/[0-9a-f]{64}\.json"
+          )
+          encoded = os.environ["ELIGIBLE_CANDIDATES_JSON"].encode("ascii")
+          if (
+              not 2 <= len(encoded) <= 65_536
+              or "sha256:" + hashlib.sha256(encoded).hexdigest()
+              != os.environ["ELIGIBLE_CANDIDATES_DIGEST"]
+          ):
+              raise SystemExit("invalid protected handoff digest")
+          candidates = json.loads(encoded)
+          if type(candidates) is not list or len(candidates) > 60:
+              raise SystemExit("invalid protected handoff")
+          for candidate in candidates:
+              if (
+                  type(candidate) is not dict
+                  or set(candidate) != {"locator", "authority_digest", "workflow_identity_digest"}
+                  or locator_pattern.fullmatch(candidate["locator"]) is None
+                  or digest_pattern.fullmatch(candidate["authority_digest"]) is None
+                  or digest_pattern.fullmatch(candidate["workflow_identity_digest"]) is None
+              ):
+                  raise SystemExit("invalid protected candidate handoff")
+          handoff = {
+              "run_id": os.environ["DISCOVERY_RUN_ID"],
+              "state_root_digest": os.environ["STATE_ROOT_DIGEST"],
+              "state_commit_sha": os.environ["STATE_COMMIT_SHA"],
+              "eligible_candidates": candidates,
+          }
+          if (
+              run_pattern.fullmatch(handoff["run_id"]) is None
+              or digest_pattern.fullmatch(handoff["state_root_digest"]) is None
+              or state_sha_pattern.fullmatch(handoff["state_commit_sha"]) is None
+          ):
+              raise SystemExit("invalid protected handoff authority")
+          with open(sys.argv[1], "x", encoding="ascii") as destination:
+              json.dump(
+                  handoff,
+                  destination,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  ensure_ascii=True,
+              )
+          os.chmod(sys.argv[1], 0o600)
+          PY
+      - name: Re-read exact state commit and re-derive every admission
+        run: |
+          set -euo pipefail
+          .tools/uv-0.11.29/bin/uv run --locked python - /tmp/skillscout-discovery-handoff.json <<'PY'
+          import sys
+          from pathlib import Path
+
+          from skillscout.bootstrap import (
+              _normalize_discovery_handoff,
+              derive_discovery_publication_admissions,
+              read_exact_discovery_state,
+          )
+          from skillscout.cli import (
+              _DISCOVERY_OPERATIONS_STATE,
+              _DISCOVERY_PIPELINE_STATE,
+              _DISCOVERY_PUBLICATION_STATE,
+              _protected_state_repository,
+              _read_discovery_handoff,
+          )
+
+          handoff = _normalize_discovery_handoff(
+              _read_discovery_handoff(Path(sys.argv[1]))
+          )
+          repository_id, repository_full_name = _protected_state_repository()
+          state = read_exact_discovery_state(
+              state_commit_sha=handoff.state_commit_sha,
+              state_repository_id=repository_id,
+              state_repository_full_name=repository_full_name,
+              pipeline_state=_DISCOVERY_PIPELINE_STATE,
+              operations_state=_DISCOVERY_OPERATIONS_STATE,
+              publication_state=_DISCOVERY_PUBLICATION_STATE,
+          )
+          admissions = derive_discovery_publication_admissions(
+              state,
+              handoff,
+              pipeline_state=_DISCOVERY_PIPELINE_STATE,
+              phase3_state=_DISCOVERY_PIPELINE_STATE,
+          )
+          if len(admissions) != len(handoff.eligible_candidates):
+              raise SystemExit("protected admission mismatch")
+          PY
+      - name: Mint catalog-scoped installation token after exact re-admission
+        id: app-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c8cde82c3ff073ffe3b5
+        with:
+          app-id: ${{ secrets.SKILLSCOUT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.SKILLSCOUT_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ vars.SKILLSCOUT_CATALOG_OWNER }}
+          repositories: ${{ vars.SKILLSCOUT_CATALOG_REPOSITORY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Publish independently re-admitted candidates as Drafts only
+        env:
+          SKILLSCOUT_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          publication_result="$(mktemp)"
+          trap 'rm -f "$publication_result" /tmp/skillscout-discovery-handoff.json' EXIT
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli publish-discovered --handoff /tmp/skillscout-discovery-handoff.json > "$publication_result"

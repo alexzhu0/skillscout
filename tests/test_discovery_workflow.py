@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-candidate.yml"
@@ -38,7 +41,11 @@ def test_phase4_gate_b4_baseline_workflow_bytes_remain_exact() -> None:
 
 def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> None:
     text = _workflow()
-    assert re.search(r'^on:\n(?:.*\n)*?  schedule:\n    - cron: "17 3 \* \* \*"', text)
+    assert re.search(
+        r'^on:\n(?:.*\n)*?  schedule:\n    - cron: "17 3 \* \* \*"',
+        text,
+        re.MULTILINE,
+    )
     assert re.search(r"^  workflow_dispatch:\s*$", text, re.MULTILINE)
     assert re.search(
         r"^concurrency:\n  group: skillscout-production\n  cancel-in-progress: false",
@@ -58,8 +65,7 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
     assert re.search(r"^    permissions:\n      contents: read$", publication, re.MULTILINE)
 
 
-def test_discovery_and_protected_jobs_are_separate_authority_zones() -> None:
-    text = _workflow()
+def _assert_separate_authority_zones(text: str) -> None:
     discovery = _job(text, "discovery")
     publication = _job(text, "protected_publication")
     assert "environment:" not in discovery
@@ -71,8 +77,12 @@ def test_discovery_and_protected_jobs_are_separate_authority_zones() -> None:
     assert "skillscout.cli publish-discovered" in publication
     assert "skillscout.cli discover" not in publication
     assert "environment: skillscout-catalog-publish" in publication
-    admission_index = publication.index("read_exact_discovery_state")
-    derivation_index = publication.index("derive_discovery_publication_admissions")
+    assert "state = read_exact_discovery_state(" in publication
+    assert "admissions = derive_discovery_publication_admissions(" in publication
+    admission_index = publication.index("state = read_exact_discovery_state(")
+    derivation_index = publication.index(
+        "admissions = derive_discovery_publication_admissions("
+    )
     token_index = publication.index("actions/create-github-app-token")
     invocation_index = publication.index("skillscout.cli publish-discovered")
     assert admission_index < derivation_index < token_index < invocation_index
@@ -97,8 +107,11 @@ def test_discovery_and_protected_jobs_are_separate_authority_zones() -> None:
     assert "persist-credentials: false" in publication
 
 
-def test_workflow_handoff_is_bounded_and_shell_never_interpolates_candidates() -> None:
-    text = _workflow()
+def test_discovery_and_protected_jobs_are_separate_authority_zones() -> None:
+    _assert_separate_authority_zones(_workflow())
+
+
+def _assert_bounded_handoff(text: str) -> None:
     discovery = _job(text, "discovery")
     expected = {
         "discovery_run_id",
@@ -129,6 +142,47 @@ def test_workflow_handoff_is_bounded_and_shell_never_interpolates_candidates() -
     assert "actions/cache" not in text
     assert "upload-artifact" not in text
     assert "download-artifact" not in text
+
+
+def test_workflow_handoff_is_bounded_and_shell_never_interpolates_candidates() -> None:
+    _assert_bounded_handoff(_workflow())
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement", "audit"),
+    (
+        (
+            "skillscout.cli discover",
+            "skillscout.cli publish-discovered",
+            _assert_separate_authority_zones,
+        ),
+        (
+            "state = read_exact_discovery_state(",
+            "state = object(",
+            _assert_separate_authority_zones,
+        ),
+        (
+            "eligible_candidates_json:",
+            "candidate_payload:",
+            _assert_bounded_handoff,
+        ),
+        (
+            'run: |\n          set -euo pipefail',
+            'run: |\n          echo "${{ needs.discovery.outputs.eligible_candidates_json }}"\n          set -euo pipefail',
+            _assert_bounded_handoff,
+        ),
+    ),
+)
+def test_workflow_security_audit_rejects_boundary_mutations(
+    needle: str,
+    replacement: str,
+    audit: Callable[[str], None],
+) -> None:
+    text = _workflow()
+    assert needle in text
+    mutated = text.replace(needle, replacement, 1)
+    with pytest.raises(AssertionError):
+        audit(mutated)
 
 
 def test_queue_grammar_requires_recorded_hosted_validation_or_fixed_fallback() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import re
 from pathlib import Path
 
 import pytest
@@ -106,8 +107,10 @@ def test_discovery_job_cannot_observe_catalog_secrets_or_candidate_shell() -> No
     path = ROOT / ".github" / "workflows" / "discover.yml"
     source = path.read_text()
     discovery_block = source.split("  protected_publication:", 1)[0]
-    assert "secrets." not in discovery_block
+    assert set(
+        re.findall(r"\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}", discovery_block)
+    ) == {"OPENAI_API_KEY"}
     assert "SKILLSCOUT_GITHUB_APP_" not in discovery_block
     assert "SKILLSCOUT_CATALOG_" not in discovery_block
-    for block in source.split("run: |")[1:]:
-        assert "${{" not in block.split("\n      - ", 1)[0]
+    for block in re.findall(r"run:\s*\|\n((?:\s{8,}.*\n?)*)", source):
+        assert "${{" not in block
