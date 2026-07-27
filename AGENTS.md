@@ -159,7 +159,7 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 
 The repository contains an installed Python 3.13 CLI exposed as `skillscout`. Its current commands are `dry-run`, `extract-repo`, `build-candidate`, `inspect-run`, `verify-publication-admission`, and `publish-candidate`.
 
-Phases 1–3 are implemented and verified. The Phase 4 controlled-publication implementation is present, including strict publication admission, dedicated publication state, bounded GitHub publishing, recovery, Draft PR handling, and the protected workflow. Phase 4 is not yet accepted for live production use: the separately authorized live canary and its human-reviewed Gate B4 evidence remain pending. Do not describe the publication path as fully verified until that gate passes.
+Phases 1–4 are implemented and verified. Phase 4 controlled publication includes strict admission, dedicated publication state, bounded GitHub publishing, recovery, Draft-only handling, and a protected workflow. Gate B4 passed on 2026-07-27 against the exact workflow SHA-256 `224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c`, with causal denial probes, unchanged default branch, and separate human/admin cleanup. Any change to the workflow, App scope, catalog, ruleset, reviewer configuration, or installation identity invalidates that evidence and requires a fresh Gate B4 run. This does not make the whole product production-ready; Phase 5 operations and Phase 6 adversarial acceptance remain pending.
 
 ## Semantic Provider Boundary
 

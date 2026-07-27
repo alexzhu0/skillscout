@@ -5,7 +5,7 @@
 
 SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turns bounded, read-only evidence from public GitHub repositories into validated Agent Skill candidates and, through a separately controlled publication boundary, human-reviewable Draft Pull Requests.
 
-This preview demonstrates the implemented pipeline and its offline verification evidence. It does **not** make a production-readiness claim. Phase 4 live canary **Gate B4 is pending**, so the production GitHub App, catalog ruleset, protected environment, and real Draft PR path have not yet been accepted as a complete live control set.
+This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 4 live canary **Gate B4 passed** for the exact reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration; Phase 5 automated discovery operations and Phase 6 adversarial acceptance remain pending.
 
 ## Implemented preview scope
 
@@ -43,7 +43,7 @@ The automated terminal state is always a **Draft PR**. SkillScout has no merge, 
 
 The current observed baseline, recorded on **2026-07-27**, is:
 
-- Locked full test suite: `1384 passed, 2 skipped`.
+- Locked full test suite: `1410 passed, 2 skipped`.
 - The two skipped cases are the separately authorized live-canary paths under ordinary offline configuration.
 - Offline tests cover stage contracts, public-repository filtering and bounded reads, semantic-provider boundaries, candidate generation and validation, resumability and tamper detection, publication reconciliation, Draft-only transport, forbidden production surfaces, and protected-workflow structure.
 
@@ -58,7 +58,7 @@ This count is a dated observation, not a permanent compatibility or pass-count c
 - Credentials are injected only by the runtime, introduced as late as possible, excluded from durable models and public diagnostics, and must never be committed or copied into evidence.
 - Publication authority is isolated from extraction and generation. Candidate-only evidence does not confer catalog authority.
 - The production adapter and workflow expose Draft creation/update and individual reviewer requests only. Merge, approve, ready-for-review, administration, and default-branch mutation are absent from the SkillScout surface.
-- GitHub's coarse Pull Requests permission may retain capabilities outside SkillScout if a token is stolen or misused. The closed application surface reduces that risk but does not replace the pending live platform controls.
+- GitHub's coarse Pull Requests permission may retain capabilities outside SkillScout if a token is stolen or misused. Gate B4 verified the scoped live controls and causal denials for the reviewed identity, while the closed application surface prevents SkillScout from expressing approve, ready, merge, or administration operations.
 
 ## Operational prerequisites
 
@@ -77,7 +77,7 @@ Do not enable `publish-candidate` from an ordinary developer shell. Follow [Conf
 
 ## Known limitations
 
-- Phase 4 live canary Gate B4 is pending; no production-readiness claim is made.
+- Gate B4 evidence is identity- and byte-bound; any workflow, App scope, catalog, ruleset, reviewer, or installation change requires a fresh canary before publication is credited.
 - Automated GitHub Search discovery, scheduled operation, candidate budgets, and durable multi-run state-branch operations are not part of this preview.
 - The adversarial MVP acceptance run across five pinned real repositories has not been completed.
 - Publication supports configured individual reviewers only. Team reviewer targets fail closed to manual handling.
@@ -109,17 +109,15 @@ Do not enable `publish-candidate` from an ordinary developer shell. Follow [Conf
 
 The following gates remain before SkillScout can make a production-ready release claim:
 
-1. **Phase 4 live canary Gate B4:** an independently authorized human must review the real catalog identity, GitHub App installation permissions, protected environment, reviewer configuration, active default-branch ruleset, lack of App bypass, and exact pinned workflow identities. The protected canary must use the production installation identity to create the intended machine-branch commit, Draft PR, and reviewer request while causally demonstrating denial of default-branch writes, merge, ruleset or administration access, unauthorized repository/resource access, and secret-resource access. Approve and ready-for-review must remain proven absent from SkillScout's production surface, without falsely claiming that GitHub denies every out-of-process use of the coarse token. Cleanup must be attested under separate human or administrator authority.
-2. **Phase 4 final release chain:** after Gate B4, the validation map, Action audit, offline publication suites, acceptance mutation tests and inspectors, repository-wide Ruff check, locked full pytest suite, and terminal acceptance inspection must all pass from the same reviewed revision.
-3. **Automated discovery operations:** bounded Search queries, daily/manual scheduling, hard candidate and semantic-call budgets, durable auditable state, concurrency control, and interruption/rate-limit recovery must be implemented and verified.
-4. **Adversarial MVP acceptance:** five public repositories pinned to exact commits must exercise successful and rejected paths, prompt-injection samples, end-to-end idempotency, at least one real human-reviewed Draft PR, repeated platform canary evidence, secret scanning, and evidence for every release requirement.
+1. **Automated discovery operations:** bounded Search queries, daily/manual scheduling, hard candidate and semantic-call budgets, durable auditable state, concurrency control, and interruption/rate-limit recovery must be implemented and verified.
+2. **Adversarial MVP acceptance:** five public repositories pinned to exact commits must exercise successful and rejected paths, prompt-injection samples, end-to-end idempotency, at least one real human-reviewed Draft PR, repeated platform canary evidence, secret scanning, and evidence for every release requirement.
 
 ## Production-ready release checklist
 
-- [ ] Phase 4 live canary Gate B4 is approved with non-secret evidence and separate-authority cleanup attestation.
-- [ ] The production identity cannot write the protected default branch, merge, administer rulesets, or access unauthorized repositories or secret resources.
-- [ ] SkillScout's production code, CLI, transport, and workflow still expose no merge, approve, auto-merge, ready-for-review, or automated cleanup path.
-- [ ] The exact final locked validation chain passes, including Ruff, pytest, validation-map checks, Action audit, and acceptance inspectors.
+- [x] Phase 4 live canary Gate B4 is approved with non-secret evidence and separate-authority cleanup attestation.
+- [x] The reviewed production identity cannot write the protected default branch, merge, administer rulesets, or access unauthorized repositories or secret resources.
+- [x] SkillScout's production code, CLI, transport, and workflow expose no merge, approve, auto-merge, ready-for-review, or automated cleanup path.
+- [x] The exact final locked Phase 4 validation chain passes, including Ruff, pytest, validation-map checks, Action audit, and acceptance inspectors.
 - [ ] A push/pull-request CI quality gate runs the locked offline checks on the reviewed revision.
 - [ ] Automated discovery and operational state persistence meet the documented hard budgets and recovery requirements.
 - [ ] Five pinned public repositories and the adversarial corpus complete the MVP acceptance matrix.
