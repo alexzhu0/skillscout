@@ -6,16 +6,9 @@ import hashlib
 import re
 from pathlib import Path
 
-import pytest
-
-
 ROOT = Path(__file__).resolve().parents[1]
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-candidate.yml"
 DISCOVER_WORKFLOW = ROOT / ".github" / "workflows" / "discover.yml"
-WORKFLOW_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="phase5-wave0-discovery-workflow-missing",
-)
 PUBLISH_WORKFLOW_SHA256 = (
     "224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c"
 )
@@ -43,7 +36,6 @@ def test_phase4_gate_b4_baseline_workflow_bytes_remain_exact() -> None:
     )
 
 
-@WORKFLOW_XFAIL
 def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> None:
     text = _workflow()
     assert re.search(r'^on:\n(?:.*\n)*?  schedule:\n    - cron: "17 3 \* \* \*"', text)
@@ -59,9 +51,13 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
     assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in refs)
     assert CHECKOUT_SHA in refs
     assert APP_TOKEN_SHA in refs
+    assert re.search(r"^permissions:\n  contents: read$", text, re.MULTILINE)
+    discovery = _job(text, "discovery")
+    publication = _job(text, "protected_publication")
+    assert re.search(r"^    permissions:\n      contents: write$", discovery, re.MULTILINE)
+    assert re.search(r"^    permissions:\n      contents: read$", publication, re.MULTILINE)
 
 
-@WORKFLOW_XFAIL
 def test_discovery_and_protected_jobs_are_separate_authority_zones() -> None:
     text = _workflow()
     discovery = _job(text, "discovery")
@@ -70,16 +66,37 @@ def test_discovery_and_protected_jobs_are_separate_authority_zones() -> None:
     assert "SKILLSCOUT_GITHUB_APP_PRIVATE_KEY" not in discovery
     assert "SKILLSCOUT_CATALOG_" not in discovery
     assert "publish-candidate" not in discovery
-    assert "protected-discovery-publication" in publication
+    assert "skillscout.cli discover" in discovery
+    assert "skillscout.cli publish-discovered" not in discovery
+    assert "skillscout.cli publish-discovered" in publication
+    assert "skillscout.cli discover" not in publication
     assert "environment: skillscout-catalog-publish" in publication
-    assert publication.index("protected-discovery-publication") < publication.index(
+    admission_index = publication.index("read_exact_discovery_state")
+    derivation_index = publication.index("derive_discovery_publication_admissions")
+    token_index = publication.index("actions/create-github-app-token")
+    invocation_index = publication.index("skillscout.cli publish-discovered")
+    assert admission_index < derivation_index < token_index < invocation_index
+    for forbidden in (
+        "build_publication_application",
+        "PublicationApplication",
+        "GitHubPublishClient",
+    ):
+        assert forbidden not in discovery
+        assert forbidden not in publication[:token_index]
+    assert publication.count(
         "actions/create-github-app-token"
+    ) == 1
+    assert publication.count(
+        "skillscout.cli publish-discovered"
+    ) == 1
+    assert re.search(
+        r"needs:\s*discovery",
+        publication,
     )
     assert "persist-credentials: false" in discovery
     assert "persist-credentials: false" in publication
 
 
-@WORKFLOW_XFAIL
 def test_workflow_handoff_is_bounded_and_shell_never_interpolates_candidates() -> None:
     text = _workflow()
     discovery = _job(text, "discovery")
@@ -87,7 +104,7 @@ def test_workflow_handoff_is_bounded_and_shell_never_interpolates_candidates() -
         "discovery_run_id",
         "state_root_digest",
         "state_commit_sha",
-        "eligible_candidates_locator",
+        "eligible_candidates_json",
         "eligible_candidates_digest",
     }
     output_block = re.search(
@@ -100,13 +117,20 @@ def test_workflow_handoff_is_bounded_and_shell_never_interpolates_candidates() -
         re.findall(r"^      ([a-z][a-z0-9_]+):", output_block.group("body"), re.MULTILINE)
     )
     assert actual == expected
+    assert 'set(payload) != {"run_id", "state_root_digest", "state_commit_sha", "eligible_count", "eligible_candidates"}' in discovery
+    assert "len(candidates) > 60" in discovery
+    assert "len(canonical) > 65_536" in discovery
+    assert 'set(candidate) != {"locator", "authority_digest", "workflow_identity_digest"}' in discovery
+    publication = _job(text, "protected_publication")
+    for output in expected:
+        assert f"${{{{ needs.discovery.outputs.{output} }}}}" in publication
     for block in re.findall(r"run:\s*\|\n((?:\s{8,}.*\n?)*)", text):
         assert "${{" not in block
     assert "actions/cache" not in text
     assert "upload-artifact" not in text
+    assert "download-artifact" not in text
 
 
-@WORKFLOW_XFAIL
 def test_queue_grammar_requires_recorded_hosted_validation_or_fixed_fallback() -> None:
     text = _workflow()
     evidence = ROOT / ".planning" / "phases" / "05-automated-discovery-operations" / "05-HOSTED-CONCURRENCY.json"

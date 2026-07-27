@@ -17,10 +17,6 @@ APPLICATION_XFAIL = pytest.mark.xfail(
     strict=True,
     reason="phase5-wave0-discovery-application-missing",
 )
-WORKFLOW_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="phase5-wave0-discovery-workflow-missing",
-)
 CANARIES = (
     "github_pat_DISCOVERY_SECURITY_CANARY",
     "-----BEGIN PRIVATE KEY----- DISCOVERY_SECURITY_CANARY",
@@ -106,7 +102,6 @@ def test_discovery_bootstrap_has_no_catalog_factory_or_publication_dependency() 
     )
 
 
-@WORKFLOW_XFAIL
 def test_discovery_job_cannot_observe_catalog_secrets_or_candidate_shell() -> None:
     path = ROOT / ".github" / "workflows" / "discover.yml"
     source = path.read_text()
