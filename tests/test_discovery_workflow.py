@@ -82,6 +82,12 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
     assert publication.index(setup) < publication.index("uv run --locked")
     assert text.count("uv run --locked") == 3
     assert ".tools/uv-" not in text
+    assert text.count("UV_LINK_MODE: copy") == 2
+    for job in (discovery, publication):
+        assert "      UV_LINK_MODE: copy" in job
+        assert job.index("UV_LINK_MODE: copy") < job.index("uv run --locked")
+    assert "UV_LINK_MODE: hardlink" not in text
+    assert "--link-mode hardlink" not in text
 
 
 def _assert_separate_authority_zones(text: str) -> None:
