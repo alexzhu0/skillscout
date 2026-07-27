@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,42 @@ from test_phase3_pipeline import (
     _workflow,
     _write_composition_descriptor_for_workflow,
 )
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    ("draft_created", "draft_updated", "draft_reused"),
+)
+def test_publication_result_projection_preserves_disposition_and_remote_ids(
+    disposition: str,
+) -> None:
+    result = SimpleNamespace(
+        status="published",
+        disposition=disposition,
+        code="remote_verified",
+        commit_sha="a" * 40,
+        pull_number=42,
+        pull_url="https://github.com/catalog-org/skills/pull/42",
+        record=SimpleNamespace(marker_digest="sha256:" + "b" * 64),
+    )
+    admission = SimpleNamespace(
+        catalog_repository_id=202,
+        head_branch="skillscout/bounded-workflow",
+        intent=SimpleNamespace(
+            base_branch="main", reviewers=("alpha-reviewer",)
+        ),
+        evidence=SimpleNamespace(package_digest="sha256:" + "c" * 64),
+    )
+
+    payload = cli._public_publication_payload(
+        result=result,
+        admission=admission,
+    )
+
+    assert payload["outcome"] == disposition
+    assert payload["commit_sha"] == "a" * 40
+    assert payload["pull_number"] == 42
+    assert payload["pull_url"] == "https://github.com/catalog-org/skills/pull/42"
 
 
 def _build_candidate_parser() -> argparse.ArgumentParser:

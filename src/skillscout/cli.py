@@ -535,7 +535,18 @@ def _public_publication_payload(*, result: object, admission: object) -> dict[st
     """Project the publisher's bounded public result without provider bodies."""
 
     status = str(getattr(result, "status", "manual_intervention_required"))
-    outcome = "draft_updated" if status == "published" else "manual_intervention_required"
+    outcome = (
+        str(getattr(result, "disposition"))
+        if status == "published"
+        else "manual_intervention_required"
+    )
+    if outcome not in {
+        "draft_created",
+        "draft_updated",
+        "draft_reused",
+        "manual_intervention_required",
+    }:
+        outcome = "manual_intervention_required"
     intent = getattr(admission, "intent")
     evidence = getattr(admission, "evidence")
     return {
@@ -543,6 +554,9 @@ def _public_publication_payload(*, result: object, admission: object) -> dict[st
         "catalog_repository_id": getattr(admission, "catalog_repository_id"),
         "base_branch": getattr(intent, "base_branch"),
         "head_branch": getattr(admission, "head_branch"),
+        "commit_sha": getattr(result, "commit_sha", None),
+        "pull_number": getattr(result, "pull_number", None),
+        "pull_url": getattr(result, "pull_url", None),
         "package_digest": getattr(evidence, "package_digest"),
         "marker_digest": getattr(getattr(result, "record", None), "marker_digest", None),
         "reviewers": list(getattr(intent, "reviewers")),
