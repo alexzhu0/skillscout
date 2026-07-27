@@ -415,6 +415,7 @@ def _owned_stores(
     operations.record_semantic_attempt(
         run_id="discovery-run-1",
         repository_id=101,
+        workflow_authority_digest=DIGEST_A,
         stage=stage,
         attempt_no=1,
         status="started",
@@ -430,6 +431,7 @@ def _owned_stores(
         operations.record_semantic_attempt(
             run_id="discovery-run-1",
             repository_id=101,
+            workflow_authority_digest=DIGEST_A,
             stage=stage,
             attempt_no=1,
             status=status,
@@ -579,6 +581,7 @@ def test_stale_export_and_missing_attempt_transition_fail_before_remote_write(
     operations.record_semantic_attempt(
         run_id="discovery-run-1",
         repository_id=101,
+        workflow_authority_digest=DIGEST_A,
         stage="reviewer",
         attempt_no=1,
         status="decided",

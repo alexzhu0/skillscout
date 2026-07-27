@@ -315,6 +315,7 @@ class SemanticDurabilityGuard:
             record = self._operations_store.record_semantic_attempt(
                 run_id=run_id,
                 repository_id=self._repository_id,
+                workflow_authority_digest=self._workflow_authority_digest,
                 stage=stage,
                 attempt_no=attempt_no,
                 status=status,

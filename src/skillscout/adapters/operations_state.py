@@ -99,6 +99,7 @@ class SemanticAttemptRecord:
 
     run_id: str
     repository_id: int
+    workflow_authority_digest: str
     stage: Literal["extractor", "generator", "reviewer"]
     attempt_no: int
     status: Literal[
@@ -265,6 +266,7 @@ def _schema_statements() -> tuple[str, ...]:
             attempt_digest TEXT PRIMARY KEY,
             run_id TEXT NOT NULL REFERENCES operations_runs(run_id),
             repository_id INTEGER NOT NULL CHECK (repository_id > 0),
+            workflow_authority_digest TEXT NOT NULL,
             stage TEXT NOT NULL CHECK (
                 stage IN ('extractor', 'generator', 'reviewer')
             ),
@@ -274,7 +276,10 @@ def _schema_statements() -> tuple[str, ...]:
                            'semantic_outcome_unknown')
             ),
             attempt_json TEXT NOT NULL,
-            UNIQUE (run_id, repository_id, stage, attempt_no)
+            UNIQUE (
+                run_id, repository_id, workflow_authority_digest,
+                stage, attempt_no
+            )
         )""",
         """CREATE TABLE operations_candidate_terminals (
             terminal_digest TEXT PRIMARY KEY,
@@ -387,11 +392,18 @@ _FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str,
         "semantic_attempt",
         "operations_semantic_attempts",
         "attempt_json",
-        ("run_id", "repository_id", "stage", "attempt_no"),
+        (
+            "run_id",
+            "repository_id",
+            "workflow_authority_digest",
+            "stage",
+            "attempt_no",
+        ),
         (
             "attempt_digest",
             "run_id",
             "repository_id",
+            "workflow_authority_digest",
             "stage",
             "attempt_no",
             "status",
@@ -795,7 +807,8 @@ class OperationsStateStore:
 
         for row in connection.execute(
             """SELECT * FROM operations_semantic_attempts
-               ORDER BY run_id, repository_id, stage, attempt_no"""
+               ORDER BY run_id, repository_id, workflow_authority_digest,
+                        stage, attempt_no"""
         ).fetchall():
             raw = _decoded_json(row["attempt_json"])
             if not isinstance(raw, dict):
@@ -804,6 +817,9 @@ class OperationsStateStore:
                 "schema_version": "operations-semantic-attempt-v1",
                 "run_id": row["run_id"],
                 "repository_id": row["repository_id"],
+                "workflow_authority_digest": row[
+                    "workflow_authority_digest"
+                ],
                 "stage": row["stage"],
                 "attempt_no": row["attempt_no"],
                 "status": row["status"],
@@ -1290,6 +1306,7 @@ class OperationsStateStore:
         *,
         run_id: str,
         repository_id: int,
+        workflow_authority_digest: str | None = None,
         stage: Literal["extractor", "generator", "reviewer"],
         attempt_no: int,
         status: Literal[
@@ -1316,18 +1333,35 @@ class OperationsStateStore:
 
         def mutate(connection: sqlite3.Connection) -> SemanticAttemptRecord:
             reservation = connection.execute(
-                """SELECT reservation_digest
+                """SELECT reservation_digest, phase2_run_authority_digest
                    FROM operations_semantic_reservations
                    WHERE run_id = ? AND repository_id = ?""",
                 (run_id, repository_id),
             ).fetchone()
             if reservation is None:
                 raise OperationsIntegrityError("semantic reservation is missing")
+            resolved_workflow_authority = workflow_authority_digest
+            if resolved_workflow_authority is None:
+                if stage != "extractor":
+                    raise OperationsIntegrityError(
+                        "workflow authority is required for sibling semantic stages"
+                    )
+                resolved_workflow_authority = str(
+                    reservation["phase2_run_authority_digest"]
+                )
+            if _DIGEST_PATTERN.fullmatch(resolved_workflow_authority) is None:
+                raise ValueError("invalid workflow authority digest")
             rows = connection.execute(
                 """SELECT * FROM operations_semantic_attempts
-                   WHERE run_id = ? AND repository_id = ? AND stage = ?
+                   WHERE run_id = ? AND repository_id = ?
+                     AND workflow_authority_digest = ? AND stage = ?
                    ORDER BY attempt_no""",
-                (run_id, repository_id, stage),
+                (
+                    run_id,
+                    repository_id,
+                    resolved_workflow_authority,
+                    stage,
+                ),
             ).fetchall()
             existing = next(
                 (row for row in rows if int(row["attempt_no"]) == attempt_no),
@@ -1346,6 +1380,7 @@ class OperationsStateStore:
                 return SemanticAttemptRecord(
                     run_id=run_id,
                     repository_id=repository_id,
+                    workflow_authority_digest=resolved_workflow_authority,
                     stage=stage,
                     attempt_no=attempt_no,
                     status=status,
@@ -1359,6 +1394,7 @@ class OperationsStateStore:
                 "schema_version": "operations-semantic-attempt-v1",
                 "run_id": run_id,
                 "repository_id": repository_id,
+                "workflow_authority_digest": resolved_workflow_authority,
                 "stage": stage,
                 "attempt_no": attempt_no,
                 "status": status,
@@ -1368,13 +1404,15 @@ class OperationsStateStore:
             if existing is None:
                 connection.execute(
                     """INSERT INTO operations_semantic_attempts
-                       (attempt_digest, run_id, repository_id, stage, attempt_no,
+                       (attempt_digest, run_id, repository_id,
+                        workflow_authority_digest, stage, attempt_no,
                         status, attempt_json)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         values["attempt_digest"],
                         run_id,
                         repository_id,
+                        resolved_workflow_authority,
                         stage,
                         attempt_no,
                         status,
@@ -1386,6 +1424,7 @@ class OperationsStateStore:
                     """UPDATE operations_semantic_attempts
                        SET attempt_digest = ?, status = ?, attempt_json = ?
                        WHERE run_id = ? AND repository_id = ?
+                         AND workflow_authority_digest = ?
                          AND stage = ? AND attempt_no = ?""",
                     (
                         values["attempt_digest"],
@@ -1393,6 +1432,7 @@ class OperationsStateStore:
                         _json_text(values),
                         run_id,
                         repository_id,
+                        resolved_workflow_authority,
                         stage,
                         attempt_no,
                     ),
@@ -1400,6 +1440,7 @@ class OperationsStateStore:
             return SemanticAttemptRecord(
                 run_id=run_id,
                 repository_id=repository_id,
+                workflow_authority_digest=resolved_workflow_authority,
                 stage=stage,
                 attempt_no=attempt_no,
                 status=status,

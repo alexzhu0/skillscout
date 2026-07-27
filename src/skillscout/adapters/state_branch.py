@@ -849,12 +849,14 @@ class StateBranchDurabilityBarrier:
             identity = (
                 value.get("run_id"),
                 value.get("repository_id"),
+                value.get("workflow_authority_digest"),
                 value.get("stage"),
                 value.get("attempt_no"),
             )
             expected_identity = (
                 transition.run_id,
                 transition.repository_id,
+                transition.workflow_authority_digest,
                 transition.stage,
                 transition.attempt_no,
             )
