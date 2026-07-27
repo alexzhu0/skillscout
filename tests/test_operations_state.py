@@ -14,7 +14,15 @@ import pytest
 from skillscout.domain.discovery import (
     DISCOVERY_MAX_CANDIDATES,
     DISCOVERY_MAX_SEMANTIC_CANDIDATES,
+    DiscoveredCandidateV1,
     DiscoveryBudgetPolicyV1,
+    DiscoveryCandidateTerminalV1,
+    DiscoveryQuerySetV1,
+    DiscoveryRunAuthorityV1,
+    DiscoveryRunSummaryV1,
+    SearchPageObservationV1,
+    SearchRateLimitFactsV1,
+    SearchRepositoryObservationV1,
 )
 from skillscout.domain.canonical import sha256_digest
 
@@ -29,6 +37,122 @@ FORBIDDEN_SCHEMA_OWNERS = {
     "publication_attempts",
     "publication_checkpoints",
 }
+TIMESTAMP = "2026-07-27T12:00:00.000000Z"
+DIGEST_A = "sha256:" + ("a" * 64)
+DIGEST_B = "sha256:" + ("b" * 64)
+
+
+def _digest_values(values: dict[str, object]) -> str:
+    def json_value(value: object) -> object:
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json", exclude_none=False)
+        if isinstance(value, tuple):
+            return [json_value(item) for item in value]
+        return value
+
+    return sha256_digest({key: json_value(value) for key, value in values.items()})
+
+
+def _authority() -> DiscoveryRunAuthorityV1:
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config" / "discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    budget = DiscoveryBudgetPolicyV1()
+    values = {
+        "schema_version": "discovery-run-authority-v1",
+        "run_id": "discovery-operations",
+        "query_set_digest": query_set.query_set_digest,
+        "budget_policy_digest": budget.budget_policy_digest,
+        "phase2_profile_version": "phase2-v1",
+        "phase3_profile_version": "phase3-profile-v1",
+        "semantic_provider": "openai",
+        "extractor_model_id": "gpt-5.6-terra",
+        "generator_model_id": "gpt-5.6-terra",
+        "reviewer_model_id": "gpt-5.6-terra",
+        "initial_state_root_digest": DIGEST_A,
+    }
+    return DiscoveryRunAuthorityV1(
+        **values,
+        authority_digest=_digest_values(values),
+    )
+
+
+def _page(authority: DiscoveryRunAuthorityV1) -> SearchPageObservationV1:
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config" / "discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    values = {
+        "schema_version": "search-page-observation-v1",
+        "discovery_run_authority_digest": authority.authority_digest,
+        "query_set_version": query_set.query_set_version,
+        "query_set_digest": query_set.query_set_digest,
+        "query_id": query_set.queries[0].query_id,
+        "query_ordinal": 1,
+        "query_text": query_set.queries[0].query_text,
+        "sort": "updated",
+        "order": "desc",
+        "page": 1,
+        "per_page": 25,
+        "next_page": None,
+        "total_count": 1,
+        "incomplete_results": False,
+        "item_count": 1,
+        "request_id": "request-operations",
+        "rate_limit": SearchRateLimitFactsV1(
+            limit=30,
+            remaining=29,
+            used=1,
+            reset_epoch=1,
+            resource="search",
+        ),
+    }
+    return SearchPageObservationV1(
+        **values,
+        observation_digest=_digest_values(values),
+    )
+
+
+def _candidate(
+    authority: DiscoveryRunAuthorityV1,
+    page: SearchPageObservationV1,
+) -> DiscoveredCandidateV1:
+    repository_values = {
+        "schema_version": "search-repository-observation-v1",
+        "repository_id": 910001,
+        "owner": "octo-org",
+        "name": "workflow-kit",
+        "full_name": "octo-org/workflow-kit",
+        "private": False,
+        "visibility": "public",
+        "fork": False,
+        "archived": False,
+        "disabled": False,
+        "default_branch": "main",
+    }
+    repository = SearchRepositoryObservationV1(
+        **repository_values,
+        observation_digest=sha256_digest(repository_values),
+    )
+    values = {
+        "schema_version": "discovered-candidate-v1",
+        "discovery_run_authority_digest": authority.authority_digest,
+        "repository": repository,
+        "source_page_digest": page.observation_digest,
+        "query_ordinal": 1,
+        "page": 1,
+        "item_ordinal": 1,
+        "dedup_disposition": "first_seen",
+        "discovery_ordinal": 1,
+        "first_seen_query_ordinal": 1,
+        "first_seen_page": 1,
+        "first_seen_item_ordinal": 1,
+    }
+    return DiscoveredCandidateV1(
+        **values,
+        candidate_digest=_digest_values(values),
+    )
 
 
 def _operations_module():
@@ -38,11 +162,15 @@ def _operations_module():
 def test_state_fixture_is_bounded_canonical_and_database_owner_complete() -> None:
     payload = FIXTURE.read_bytes()
     assert len(payload) < 16_384
-    assert payload == json.dumps(
-        json.loads(payload),
-        indent=2,
-        sort_keys=True,
-    ).encode() + b"\n"
+    assert (
+        payload
+        == json.dumps(
+            json.loads(payload),
+            indent=2,
+            sort_keys=True,
+        ).encode()
+        + b"\n"
+    )
     parsed = json.loads(payload)
     assert tuple(parsed["databases"]) == (
         "operations",
@@ -62,12 +190,8 @@ def test_state_fixture_is_bounded_canonical_and_database_owner_complete() -> Non
 
 
 def test_operations_schema_ownership_is_disjoint_from_existing_stores() -> None:
-    existing = (
-        ROOT / "src" / "skillscout" / "adapters" / "state.py"
-    ).read_text()
-    publication = (
-        ROOT / "src" / "skillscout" / "adapters" / "publication_state.py"
-    ).read_text()
+    existing = (ROOT / "src" / "skillscout" / "adapters" / "state.py").read_text()
+    publication = (ROOT / "src" / "skillscout" / "adapters" / "publication_state.py").read_text()
     assert "CREATE TABLE IF NOT EXISTS publication_attempts" not in existing
     assert "CREATE TABLE IF NOT EXISTS phase3_candidate_runs" not in publication
 
@@ -97,9 +221,7 @@ def test_operations_store_has_closed_non_refundable_surface() -> None:
         "restore_owned_state",
         "close",
     } <= public
-    assert not public.intersection(
-        {"refund", "delete_reservation", "reset_budget", "prune"}
-    )
+    assert not public.intersection({"refund", "delete_reservation", "reset_budget", "prune"})
 
 
 @pytest.mark.parametrize(
@@ -130,9 +252,7 @@ def test_reservation_limits_are_literal_and_transactional(
             for ordinal in range(1, limit + 1)
         )
         reservation = reservations[-1]
-        assert tuple(item.ordinal for item in reservations) == tuple(
-            range(1, limit + 1)
-        )
+        assert tuple(item.ordinal for item in reservations) == tuple(range(1, limit + 1))
         assert reservation.ordinal == limit
         assert (
             store.reserve_test_slot(
@@ -152,10 +272,13 @@ def test_reservation_limits_are_literal_and_transactional(
                 requested_ordinal=denied,
                 policy=policy,
             )
-        assert store.reservation_count(
-            "discovery-wave0",
-            kind=kind,
-        ) == limit
+        assert (
+            store.reservation_count(
+                "discovery-wave0",
+                kind=kind,
+            )
+            == limit
+        )
     finally:
         store.close()
 
@@ -180,10 +303,13 @@ def test_reservation_is_unique_under_repeated_concurrent_callers(
             reservations = tuple(executor.map(lambda _index: reserve(), range(32)))
 
         assert len(set(reservations)) == 1
-        assert store.reservation_count(
-            "discovery-concurrent",
-            kind="discovery",
-        ) == 1
+        assert (
+            store.reservation_count(
+                "discovery-concurrent",
+                kind="discovery",
+            )
+            == 1
+        )
 
 
 def test_reservation_ordinal_must_be_the_next_contiguous_value(
@@ -355,14 +481,95 @@ def test_owned_export_rebuild_and_projection_equality_fail_closed(
     with module.OperationsStateStore(rebuilt) as store:
         assert store.export_owned_state().projection == exported.projection
 
-    tampered = exported.model_copy(
-        update={"projection_digest": "sha256:" + ("f" * 64)}
-    )
+    tampered = exported.model_copy(update={"projection_digest": "sha256:" + ("f" * 64)})
     with pytest.raises(Exception):
         module.OperationsStateStore.rebuild_owned_state(
             tmp_path / "rejected.sqlite3",
             tampered,
         )
+
+
+def test_complete_typed_discovery_chain_round_trips_through_owned_json(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    authority = _authority()
+    page = _page(authority)
+    candidate = _candidate(authority, page)
+    source = tmp_path / "typed-source.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        store.create_run(authority, TIMESTAMP)
+        store.record_search_page(authority.run_id, page, (candidate,))
+        discovery = store.reserve_discovery_candidate(
+            authority.run_id,
+            candidate,
+            TIMESTAMP,
+        )
+        semantic = store.reserve_semantic_candidate(
+            authority.run_id,
+            candidate.repository.repository_id,
+            DIGEST_B,
+            TIMESTAMP,
+        )
+        store.record_semantic_attempt(
+            run_id=authority.run_id,
+            repository_id=candidate.repository.repository_id,
+            stage="extractor",
+            attempt_no=1,
+            status="started",
+            recorded_at=TIMESTAMP,
+        )
+        store.record_semantic_attempt(
+            run_id=authority.run_id,
+            repository_id=candidate.repository.repository_id,
+            stage="extractor",
+            attempt_no=1,
+            status="semantic_outcome_unknown",
+            recorded_at="2026-07-27T12:00:01.000000Z",
+        )
+        terminal_values = {
+            "schema_version": "discovery-candidate-terminal-v1",
+            "discovery_run_authority_digest": authority.authority_digest,
+            "repository_id": candidate.repository.repository_id,
+            "semantic_reservation_digest": semantic.reservation_digest,
+            "outcome": "semantic_outcome_unknown",
+            "workflow_authority_digests": (),
+            "recorded_at": "2026-07-27T12:00:01.000000Z",
+        }
+        terminal = DiscoveryCandidateTerminalV1(
+            **terminal_values,
+            terminal_digest=sha256_digest(terminal_values),
+        )
+        store.record_candidate_terminal(authority.run_id, terminal)
+        summary_values = {
+            "schema_version": "discovery-run-summary-v1",
+            "discovery_run_authority_digest": authority.authority_digest,
+            "status": "completed_degraded",
+            "selected_candidate_count": 1,
+            "semantic_reservation_count": 1,
+            "business_terminal_count": 0,
+            "quarantined_candidate_count": 1,
+            "confirmed_retryable_count": 0,
+            "integrity_conflict_count": 0,
+            "permanent_failure_count": 0,
+            "terminal_digests": (terminal.terminal_digest,),
+            "completed_at": "2026-07-27T12:00:02.000000Z",
+        }
+        summary = DiscoveryRunSummaryV1(
+            **summary_values,
+            summary_digest=sha256_digest(summary_values),
+        )
+        store.record_run_summary(authority.run_id, summary)
+        exported = store.export_owned_state()
+
+    assert discovery.ordinal == semantic.ordinal == 1
+    assert len(exported.projection.search_page_digests) == 1
+    assert len(exported.projection.candidate_digests) == 1
+    assert len(exported.projection.run_summary_digests) == 1
+    rebuilt = tmp_path / "typed-rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        assert store.export_owned_state().facts == exported.facts
 
 
 def test_corrupt_database_bytes_rebuild_from_complete_owned_json(
@@ -409,9 +616,7 @@ def test_valid_database_with_wrong_owned_authority_fails_closed(
         exported = store.export_owned_state()
 
     if damage == "database_digest":
-        tampered = exported.model_copy(
-            update={"database_digest": "sha256:" + ("f" * 64)}
-        )
+        tampered = exported.model_copy(update={"database_digest": "sha256:" + ("f" * 64)})
     elif damage == "missing_fact":
         tampered = exported.model_copy(update={"facts": exported.facts[:-1]})
     else:
@@ -445,7 +650,10 @@ def test_failed_owned_snapshot_exposes_previous_complete_database(
     store.close()
     assert database.read_bytes() == before
     with module.OperationsStateStore(database) as reopened:
-        assert reopened.reservation_count(
-            "discovery-killed",
-            kind="discovery",
-        ) == 0
+        assert (
+            reopened.reservation_count(
+                "discovery-killed",
+                kind="discovery",
+            )
+            == 0
+        )

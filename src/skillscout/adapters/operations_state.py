@@ -10,7 +10,9 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Final, Literal, TypeVar
+from typing import Annotated, Callable, Final, Literal, TypeVar
+
+from pydantic import Field, model_validator
 
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
@@ -25,7 +27,9 @@ from skillscout.domain.discovery import (
     DiscoveryRunSummaryV1,
     SearchPageObservationV1,
     SemanticReservationV1,
+    DiscoveryStateRebuildProjectionV1,
 )
+from skillscout.domain.models import Digest, StrictFrozenModel
 
 
 OPERATIONS_SCHEMA_VERSION: Final = 1
@@ -80,6 +84,82 @@ class SemanticAttemptRecord:
     ]
     recorded_at: str
     attempt_digest: str
+
+
+_FactKind = Literal[
+    "run",
+    "search_page",
+    "candidate",
+    "discovery_reservation",
+    "semantic_reservation",
+    "semantic_attempt",
+    "candidate_terminal",
+    "run_summary",
+    "root_checkpoint",
+]
+
+
+class OperationsOwnedFactV1(StrictFrozenModel):
+    """One canonical, content-addressed discovery-owned rebuild fact."""
+
+    schema_version: Literal["operations-owned-fact-v1"]
+    kind: _FactKind
+    sequence: Annotated[int, Field(ge=0, le=8_192)]
+    payload_json: Annotated[str, Field(min_length=2, max_length=1_048_576)]
+    object_digest: Digest
+
+    @model_validator(mode="after")
+    def validate_canonical_payload(self) -> OperationsOwnedFactV1:
+        decoded = _decoded_json(self.payload_json)
+        if not isinstance(decoded, dict):
+            raise ValueError("operations fact payload is not an object")
+        if self.object_digest != sha256_digest(self.payload_json.encode("utf-8")):
+            raise ValueError("operations fact digest mismatch")
+        return self
+
+
+class OperationsOwnedStateV1(StrictFrozenModel):
+    """Complete operations-owned JSON authority plus a disposable SQLite index."""
+
+    schema_version: Literal["operations-owned-state-v1"]
+    owner: Literal["operations"]
+    database_locator: Literal["state/databases/operations.sqlite3"]
+    schema_fingerprint: Digest
+    database_bytes: Annotated[bytes, Field(max_length=MAX_OPERATIONS_DB_BYTES)]
+    database_digest: Digest
+    facts: Annotated[tuple[OperationsOwnedFactV1, ...], Field(max_length=8_192)]
+    projection: DiscoveryStateRebuildProjectionV1
+    projection_digest: Digest
+    export_digest: Digest
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_facts(cls, value: object) -> object:
+        if isinstance(value, dict) and isinstance(value.get("facts"), list):
+            payload = dict(value)
+            payload["facts"] = tuple(payload["facts"])
+            return payload
+        return value
+
+    @model_validator(mode="after")
+    def validate_owned_authority(self) -> OperationsOwnedStateV1:
+        if self.schema_fingerprint != _schema_fingerprint():
+            raise ValueError("operations schema fingerprint mismatch")
+        if tuple(fact.sequence for fact in self.facts) != tuple(range(len(self.facts))):
+            raise ValueError("operations facts are not canonically ordered")
+        if len({fact.object_digest for fact in self.facts}) != len(self.facts):
+            raise ValueError("operations facts are not unique")
+        if self.projection != _projection_from_facts(self.facts):
+            raise ValueError("operations projection disagrees with facts")
+        if self.projection_digest != self.projection.projection_digest:
+            raise ValueError("operations projection digest mismatch")
+        if self.export_digest != _export_digest(
+            schema_fingerprint=self.schema_fingerprint,
+            facts=self.facts,
+            projection=self.projection,
+        ):
+            raise ValueError("operations export digest mismatch")
+        return self
 
 
 def _schema_statements() -> tuple[str, ...]:
@@ -201,6 +281,116 @@ def _expected_schema() -> dict[str, str]:
 
 
 _EXPECTED_SCHEMA: Final = _expected_schema()
+_FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str, ...]], ...]] = (
+    (
+        "run",
+        "operations_runs",
+        "authority_json",
+        ("run_id",),
+        ("run_id", "authority_digest", "status", "created_at"),
+    ),
+    (
+        "search_page",
+        "operations_search_pages",
+        "observation_json",
+        ("run_id", "query_ordinal", "page"),
+        ("observation_digest", "run_id", "query_ordinal", "page"),
+    ),
+    (
+        "candidate",
+        "operations_candidates",
+        "candidate_json",
+        ("run_id", "query_ordinal", "page", "item_ordinal"),
+        (
+            "candidate_digest",
+            "run_id",
+            "repository_id",
+            "source_page_digest",
+            "query_ordinal",
+            "page",
+            "item_ordinal",
+        ),
+    ),
+    (
+        "discovery_reservation",
+        "operations_discovery_reservations",
+        "reservation_json",
+        ("run_id", "ordinal"),
+        (
+            "reservation_digest",
+            "run_id",
+            "repository_id",
+            "ordinal",
+            "candidate_digest",
+        ),
+    ),
+    (
+        "semantic_reservation",
+        "operations_semantic_reservations",
+        "reservation_json",
+        ("run_id", "ordinal"),
+        (
+            "reservation_digest",
+            "run_id",
+            "repository_id",
+            "ordinal",
+            "discovery_reservation_digest",
+            "phase2_run_authority_digest",
+        ),
+    ),
+    (
+        "semantic_attempt",
+        "operations_semantic_attempts",
+        "attempt_json",
+        ("run_id", "repository_id", "stage", "attempt_no"),
+        (
+            "attempt_digest",
+            "run_id",
+            "repository_id",
+            "stage",
+            "attempt_no",
+            "status",
+        ),
+    ),
+    (
+        "candidate_terminal",
+        "operations_candidate_terminals",
+        "terminal_json",
+        ("run_id", "repository_id"),
+        (
+            "terminal_digest",
+            "run_id",
+            "repository_id",
+            "semantic_reservation_digest",
+            "outcome",
+        ),
+    ),
+    (
+        "run_summary",
+        "operations_run_summaries",
+        "summary_json",
+        ("run_id",),
+        ("summary_digest", "run_id"),
+    ),
+    (
+        "root_checkpoint",
+        "operations_root_checkpoints",
+        "checkpoint_json",
+        ("run_id", "event_index"),
+        (
+            "checkpoint_digest",
+            "run_id",
+            "event_index",
+            "prior_checkpoint_digest",
+            "state_root_digest",
+            "state_commit_sha",
+        ),
+    ),
+)
+
+
+def _schema_fingerprint() -> str:
+    return sha256_digest(tuple((name, _EXPECTED_SCHEMA[name]) for name in sorted(_EXPECTED_SCHEMA)))
 
 
 def _json_text(value: object) -> str:
@@ -226,6 +416,75 @@ def _test_run_payload(run_id: str) -> dict[str, object]:
     }
     values["authority_digest"] = sha256_digest(values)
     return values
+
+
+def _fact_payload(fact: OperationsOwnedFactV1) -> dict[str, object]:
+    decoded = _decoded_json(fact.payload_json)
+    if not isinstance(decoded, dict):
+        raise OperationsIntegrityError("operations fact payload is not an object")
+    return decoded
+
+
+def _projection_from_facts(
+    facts: tuple[OperationsOwnedFactV1, ...],
+) -> DiscoveryStateRebuildProjectionV1:
+    fields: dict[str, list[str]] = {
+        "search_page_digests": [],
+        "candidate_digests": [],
+        "discovery_reservation_digests": [],
+        "semantic_reservation_digests": [],
+        "candidate_terminal_digests": [],
+        "run_summary_digests": [],
+    }
+    mapping = {
+        "search_page": ("search_page_digests", "observation_digest"),
+        "candidate": ("candidate_digests", "candidate_digest"),
+        "discovery_reservation": (
+            "discovery_reservation_digests",
+            "reservation_digest",
+        ),
+        "semantic_reservation": (
+            "semantic_reservation_digests",
+            "reservation_digest",
+        ),
+        "candidate_terminal": ("candidate_terminal_digests", "terminal_digest"),
+        "run_summary": ("run_summary_digests", "summary_digest"),
+    }
+    for fact in facts:
+        target = mapping.get(fact.kind)
+        if target is None:
+            continue
+        payload = _fact_payload(fact)
+        nested = payload.get("value")
+        if not isinstance(nested, dict) or type(nested.get(target[1])) is not str:
+            raise OperationsIntegrityError("operations projection fact is malformed")
+        fields[target[0]].append(str(nested[target[1]]))
+    values: dict[str, object] = {
+        "schema_version": "discovery-state-rebuild-projection-v1",
+        **{name: tuple(digests) for name, digests in fields.items()},
+    }
+    return DiscoveryStateRebuildProjectionV1(
+        **values,
+        projection_digest=sha256_digest(values),
+    )
+
+
+def _export_digest(
+    *,
+    schema_fingerprint: str,
+    facts: tuple[OperationsOwnedFactV1, ...],
+    projection: DiscoveryStateRebuildProjectionV1,
+) -> str:
+    return sha256_digest(
+        {
+            "schema_version": "operations-owned-state-v1",
+            "owner": "operations",
+            "database_locator": "state/databases/operations.sqlite3",
+            "schema_fingerprint": schema_fingerprint,
+            "facts": tuple(fact.model_dump(mode="json", exclude_none=False) for fact in facts),
+            "projection": projection.model_dump(mode="json", exclude_none=False),
+        }
+    )
 
 
 class OperationsStateStore:
@@ -374,8 +633,7 @@ class OperationsStateStore:
             if actual != _EXPECTED_SCHEMA:
                 raise OperationsIntegrityError("operations schema fingerprint mismatch")
             integrity = tuple(
-                str(row[0])
-                for row in connection.execute("PRAGMA integrity_check").fetchall()
+                str(row[0]) for row in connection.execute("PRAGMA integrity_check").fetchall()
             )
             if integrity != ("ok",):
                 raise OperationsIntegrityError("operations integrity check failed")
@@ -389,9 +647,7 @@ class OperationsStateStore:
 
     @staticmethod
     def _verify_rows(connection: sqlite3.Connection) -> None:
-        run_rows = connection.execute(
-            "SELECT * FROM operations_runs ORDER BY run_id"
-        ).fetchall()
+        run_rows = connection.execute("SELECT * FROM operations_runs ORDER BY run_id").fetchall()
         run_authorities: dict[str, str] = {}
         for row in run_rows:
             raw = _decoded_json(row["authority_json"])
@@ -407,9 +663,8 @@ class OperationsStateStore:
                 if authority.run_id != row["run_id"]:
                     raise OperationsIntegrityError("run authority mismatch")
                 authority_digest = authority.authority_digest
-            if (
-                row["authority_digest"] != authority_digest
-                or not _DIGEST_PATTERN.fullmatch(authority_digest)
+            if row["authority_digest"] != authority_digest or not _DIGEST_PATTERN.fullmatch(
+                authority_digest
             ):
                 raise OperationsIntegrityError("run authority digest mismatch")
             run_authorities[str(row["run_id"])] = authority_digest
@@ -429,6 +684,39 @@ class OperationsStateStore:
             run_authorities=run_authorities,
         )
 
+        page_digests: set[str] = set()
+        for row in connection.execute(
+            "SELECT * FROM operations_search_pages ORDER BY run_id, query_ordinal, page"
+        ).fetchall():
+            page = SearchPageObservationV1.model_validate_json(row["observation_json"], strict=True)
+            if (
+                page.discovery_run_authority_digest != run_authorities.get(str(row["run_id"]))
+                or page.observation_digest != row["observation_digest"]
+                or page.query_ordinal != row["query_ordinal"]
+                or page.page != row["page"]
+            ):
+                raise OperationsIntegrityError("search page authority mismatch")
+            page_digests.add(page.observation_digest)
+
+        for row in connection.execute(
+            """SELECT * FROM operations_candidates
+               ORDER BY run_id, query_ordinal, page, item_ordinal"""
+        ).fetchall():
+            candidate = DiscoveredCandidateV1.model_validate_json(
+                row["candidate_json"], strict=True
+            )
+            if (
+                candidate.discovery_run_authority_digest != run_authorities.get(str(row["run_id"]))
+                or candidate.candidate_digest != row["candidate_digest"]
+                or candidate.repository.repository_id != row["repository_id"]
+                or candidate.source_page_digest != row["source_page_digest"]
+                or candidate.source_page_digest not in page_digests
+                or candidate.query_ordinal != row["query_ordinal"]
+                or candidate.page != row["page"]
+                or candidate.item_ordinal != row["item_ordinal"]
+            ):
+                raise OperationsIntegrityError("candidate observation mismatch")
+
         for row in connection.execute(
             "SELECT * FROM operations_candidate_terminals ORDER BY run_id, repository_id"
         ).fetchall():
@@ -447,16 +735,13 @@ class OperationsStateStore:
                     raise OperationsIntegrityError("invalid test candidate terminal")
                 terminal_digest = str(expected["terminal_digest"])
             else:
-                terminal = DiscoveryCandidateTerminalV1.model_validate(
-                    raw, strict=True
-                )
+                terminal = DiscoveryCandidateTerminalV1.model_validate(raw, strict=True)
                 if (
                     terminal.discovery_run_authority_digest
                     != run_authorities.get(str(row["run_id"]))
                     or terminal.repository_id != row["repository_id"]
                     or terminal.outcome != row["outcome"]
-                    or terminal.semantic_reservation_digest
-                    != row["semantic_reservation_digest"]
+                    or terminal.semantic_reservation_digest != row["semantic_reservation_digest"]
                 ):
                     raise OperationsIntegrityError("candidate terminal mismatch")
                 terminal_digest = terminal.terminal_digest
@@ -484,6 +769,52 @@ class OperationsStateStore:
             if raw != expected or row["attempt_digest"] != digest:
                 raise OperationsIntegrityError("semantic attempt digest mismatch")
 
+        for row in connection.execute(
+            "SELECT * FROM operations_run_summaries ORDER BY run_id"
+        ).fetchall():
+            summary = DiscoveryRunSummaryV1.model_validate_json(row["summary_json"], strict=True)
+            run = connection.execute(
+                "SELECT status FROM operations_runs WHERE run_id = ?",
+                (row["run_id"],),
+            ).fetchone()
+            terminal_digests = tuple(
+                str(item[0])
+                for item in connection.execute(
+                    """SELECT terminal_digest FROM operations_candidate_terminals
+                       WHERE run_id = ? ORDER BY repository_id""",
+                    (row["run_id"],),
+                ).fetchall()
+            )
+            counts = OperationsStateStore._counts(connection, str(row["run_id"]))
+            if (
+                run is None
+                or run["status"] != summary.status
+                or summary.discovery_run_authority_digest != run_authorities.get(str(row["run_id"]))
+                or summary.summary_digest != row["summary_digest"]
+                or summary.selected_candidate_count != counts["discovery"]
+                or summary.semantic_reservation_count != counts["semantic"]
+                or summary.terminal_digests != terminal_digests
+            ):
+                raise OperationsIntegrityError("run summary projection mismatch")
+
+        for run_id in run_authorities:
+            statuses = connection.execute(
+                "SELECT status FROM operations_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            summary_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM operations_run_summaries WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()[0]
+            )
+            if (
+                statuses is None
+                or (statuses["status"] not in {"running", "interrupted"} and summary_count != 1)
+                or (statuses["status"] in {"running", "interrupted"} and summary_count != 0)
+            ):
+                raise OperationsIntegrityError("run status and summary disagree")
+
     @staticmethod
     def _verify_reservation_rows(
         connection: sqlite3.Connection,
@@ -493,18 +824,13 @@ class OperationsStateStore:
         model: type[DiscoveryReservationV1] | type[SemanticReservationV1],
         run_authorities: dict[str, str],
     ) -> None:
-        rows = connection.execute(
-            f"SELECT * FROM {table} ORDER BY run_id, ordinal"
-        ).fetchall()
+        rows = connection.execute(f"SELECT * FROM {table} ORDER BY run_id, ordinal").fetchall()
         by_run: dict[str, list[sqlite3.Row]] = {}
         for row in rows:
             by_run.setdefault(str(row["run_id"]), []).append(row)
         for run_id, run_rows in by_run.items():
             ordinals = tuple(int(row["ordinal"]) for row in run_rows)
-            if (
-                len(run_rows) > maximum
-                or ordinals != tuple(range(1, len(run_rows) + 1))
-            ):
+            if len(run_rows) > maximum or ordinals != tuple(range(1, len(run_rows) + 1)):
                 raise OperationsIntegrityError("reservation ordinals are not contiguous")
             for row in run_rows:
                 raw = _decoded_json(row["reservation_json"])
@@ -529,8 +855,7 @@ class OperationsStateStore:
                 else:
                     reservation = model.model_validate(raw, strict=True)
                     if (
-                        reservation.discovery_run_authority_digest
-                        != run_authorities.get(run_id)
+                        reservation.discovery_run_authority_digest != run_authorities.get(run_id)
                         or reservation.repository_id != row["repository_id"]
                         or reservation.ordinal != row["ordinal"]
                     ):
@@ -583,9 +908,7 @@ class OperationsStateStore:
                 self._poisoned = True
                 self._connection.close()
                 self._connection = None
-                raise OperationsStateError(
-                    "operations state persistence is uncertain"
-                ) from None
+                raise OperationsStateError("operations state persistence is uncertain") from None
             current = self._connection
             self._connection = candidate
             self._durable_bytes = payload
@@ -625,10 +948,9 @@ class OperationsStateStore:
                 (authority.run_id,),
             ).fetchone()
             if existing is not None:
-                if (
-                    existing["authority_digest"] != authority.authority_digest
-                    or existing["authority_json"] != _json_text(authority)
-                ):
+                if existing["authority_digest"] != authority.authority_digest or existing[
+                    "authority_json"
+                ] != _json_text(authority):
                     raise OperationsIntegrityError("run identity conflict")
                 return authority
             connection.execute(
@@ -897,8 +1219,7 @@ class OperationsStateStore:
                 ).fetchone()
                 if (
                     reservation is None
-                    or reservation["reservation_digest"]
-                    != terminal.semantic_reservation_digest
+                    or reservation["reservation_digest"] != terminal.semantic_reservation_digest
                 ):
                     raise OperationsIntegrityError("terminal reservation mismatch")
             connection.execute(
@@ -971,15 +1292,9 @@ class OperationsStateStore:
                 if (
                     status != "started"
                     or attempt_no != len(rows) + 1
-                    or (
-                        rows
-                        and rows[-1]["status"]
-                        not in {"confirmed_retryable"}
-                    )
+                    or (rows and rows[-1]["status"] not in {"confirmed_retryable"})
                 ):
-                    raise OperationsIntegrityError(
-                        "semantic attempt continuity is invalid"
-                    )
+                    raise OperationsIntegrityError("semantic attempt continuity is invalid")
             elif existing["status"] == status:
                 raw = _decoded_json(existing["attempt_json"])
                 assert isinstance(raw, dict)
@@ -1129,9 +1444,7 @@ class OperationsStateStore:
             else "operations_semantic_reservations"
         )
         maximum = (
-            DISCOVERY_MAX_CANDIDATES
-            if kind == "discovery"
-            else DISCOVERY_MAX_SEMANTIC_CANDIDATES
+            DISCOVERY_MAX_CANDIDATES if kind == "discovery" else DISCOVERY_MAX_SEMANTIC_CANDIDATES
         )
 
         def mutate(connection: sqlite3.Connection) -> TestReservation:
@@ -1184,9 +1497,7 @@ class OperationsStateStore:
                         run_id,
                         repository_id,
                         requested_ordinal,
-                        sha256_digest(
-                            {"run_id": run_id, "repository_id": repository_id}
-                        ),
+                        sha256_digest({"run_id": run_id, "repository_id": repository_id}),
                         _json_text(values),
                     ),
                 )
@@ -1202,9 +1513,7 @@ class OperationsStateStore:
                         run_id,
                         repository_id,
                         requested_ordinal,
-                        sha256_digest(
-                            {"run_id": run_id, "repository_id": repository_id}
-                        ),
+                        sha256_digest({"run_id": run_id, "repository_id": repository_id}),
                         sha256_digest({"phase2": run_id, "repository_id": repository_id}),
                         _json_text(values),
                     ),
@@ -1308,15 +1617,264 @@ class OperationsStateStore:
 
         self._snapshot_transaction(mutate)
 
-    def export_owned_state(self) -> object:
-        raise OperationsStateError("operations export is not yet available")
+    @staticmethod
+    def _facts_from_connection(
+        connection: sqlite3.Connection,
+    ) -> tuple[OperationsOwnedFactV1, ...]:
+        facts: list[OperationsOwnedFactV1] = []
+        for kind, table, json_column, order_columns, stored_columns in _FACT_TABLES:
+            order = ", ".join(order_columns)
+            rows = connection.execute(f"SELECT * FROM {table} ORDER BY {order}").fetchall()
+            for row in rows:
+                value = _decoded_json(row[json_column])
+                if not isinstance(value, dict):
+                    raise OperationsIntegrityError("operations row JSON is invalid")
+                payload = {
+                    "schema_version": "operations-rebuild-row-v1",
+                    "kind": kind,
+                    "columns": {column: row[column] for column in stored_columns},
+                    "value": value,
+                }
+                payload_json = _json_text(payload)
+                facts.append(
+                    OperationsOwnedFactV1(
+                        schema_version="operations-owned-fact-v1",
+                        kind=kind,
+                        sequence=len(facts),
+                        payload_json=payload_json,
+                        object_digest=sha256_digest(payload_json.encode("utf-8")),
+                    )
+                )
+        return tuple(facts)
+
+    @classmethod
+    def _export_connection(
+        cls,
+        connection: sqlite3.Connection,
+    ) -> OperationsOwnedStateV1:
+        cls._verify_connection(connection)
+        database_bytes = cls._serialize(connection)
+        facts = cls._facts_from_connection(connection)
+        projection = _projection_from_facts(facts)
+        fingerprint = _schema_fingerprint()
+        return OperationsOwnedStateV1(
+            schema_version="operations-owned-state-v1",
+            owner="operations",
+            database_locator="state/databases/operations.sqlite3",
+            schema_fingerprint=fingerprint,
+            database_bytes=database_bytes,
+            database_digest=sha256_digest(database_bytes),
+            facts=facts,
+            projection=projection,
+            projection_digest=projection.projection_digest,
+            export_digest=_export_digest(
+                schema_fingerprint=fingerprint,
+                facts=facts,
+                projection=projection,
+            ),
+        )
+
+    @staticmethod
+    def _validated_export(exported: object) -> OperationsOwnedStateV1:
+        try:
+            if isinstance(exported, OperationsOwnedStateV1):
+                raw = exported.model_dump(mode="python", exclude_none=False)
+            elif isinstance(exported, dict):
+                raw = exported
+            else:
+                raise TypeError("invalid operations export")
+            return OperationsOwnedStateV1.model_validate(raw, strict=True)
+        except Exception:
+            raise OperationsIntegrityError("invalid operations owned export") from None
+
+    @classmethod
+    def _replay_facts(
+        cls,
+        facts: tuple[OperationsOwnedFactV1, ...],
+    ) -> sqlite3.Connection:
+        connection = cls._new_connection()
+        try:
+            cls._create_schema(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            kind_positions = {definition[0]: index for index, definition in enumerate(_FACT_TABLES)}
+            positions = tuple(kind_positions[fact.kind] for fact in facts)
+            if positions != tuple(sorted(positions)):
+                raise OperationsIntegrityError("operations fact kinds are not canonically ordered")
+            definitions = {definition[0]: definition for definition in _FACT_TABLES}
+            for fact in facts:
+                payload = _fact_payload(fact)
+                definition = definitions[fact.kind]
+                _kind, table, json_column, _order_columns, stored_columns = definition
+                if (
+                    payload.get("schema_version") != "operations-rebuild-row-v1"
+                    or payload.get("kind") != fact.kind
+                    or not isinstance(payload.get("columns"), dict)
+                    or not isinstance(payload.get("value"), dict)
+                ):
+                    raise OperationsIntegrityError("operations rebuild row is malformed")
+                columns = payload["columns"]
+                value = payload["value"]
+                assert isinstance(columns, dict)
+                assert isinstance(value, dict)
+                if set(columns) != set(stored_columns):
+                    raise OperationsIntegrityError("operations rebuild columns are not exact")
+                insert_columns = (*stored_columns, json_column)
+                placeholders = ", ".join("?" for _column in insert_columns)
+                connection.execute(
+                    f"""INSERT INTO {table} ({", ".join(insert_columns)})
+                        VALUES ({placeholders})""",
+                    (
+                        *(columns[column] for column in stored_columns),
+                        _json_text(value),
+                    ),
+                )
+            connection.commit()
+            cls._verify_connection(connection)
+            return connection
+        except Exception:
+            try:
+                connection.rollback()
+            except sqlite3.Error:
+                pass
+            connection.close()
+            raise
+
+    @classmethod
+    def _candidate_from_export(
+        cls,
+        exported: object,
+    ) -> tuple[sqlite3.Connection, OperationsOwnedStateV1]:
+        authority = cls._validated_export(exported)
+        database_is_valid = False
+        database_connection: sqlite3.Connection | None = None
+        if authority.database_bytes:
+            try:
+                database_connection = cls._new_connection()
+                database_connection.deserialize(authority.database_bytes)
+                database_connection.execute("PRAGMA foreign_keys = ON")
+                cls._verify_connection(database_connection)
+                database_is_valid = True
+            except Exception:
+                if database_connection is not None:
+                    database_connection.close()
+                    database_connection = None
+        if database_is_valid:
+            assert database_connection is not None
+            database_projection = cls._export_connection(database_connection)
+            database_connection.close()
+            if (
+                authority.database_digest != sha256_digest(authority.database_bytes)
+                or database_projection.facts != authority.facts
+                or database_projection.projection != authority.projection
+                or database_projection.schema_fingerprint != authority.schema_fingerprint
+            ):
+                raise OperationsIntegrityError(
+                    "valid operations database disagrees with owned JSON"
+                )
+
+        candidate = cls._replay_facts(authority.facts)
+        rebuilt = cls._export_connection(candidate)
+        if (
+            rebuilt.facts != authority.facts
+            or rebuilt.projection != authority.projection
+            or rebuilt.schema_fingerprint != authority.schema_fingerprint
+        ):
+            candidate.close()
+            raise OperationsIntegrityError(
+                "rebuilt operations projection disagrees with owned JSON"
+            )
+        return candidate, authority
+
+    def export_owned_state(self) -> OperationsOwnedStateV1:
+        with self._thread_lock:
+            if self._connection is None or self._poisoned:
+                raise OperationsStateError("operations state is unavailable")
+            return self._export_connection(self._connection)
+
+    def _install_candidate(self, candidate: sqlite3.Connection) -> None:
+        if self._parent is None:
+            candidate.close()
+            raise OperationsStateError("operations state is closed")
+        self._verify_connection(candidate)
+        payload = self._serialize(candidate)
+        previous = self._parent.read_bytes(
+            self._name,
+            max_bytes=MAX_OPERATIONS_DB_BYTES,
+            missing_ok=True,
+        )
+        try:
+            if previous is None:
+                self._parent.atomic_write(
+                    self._name,
+                    payload,
+                    max_bytes=MAX_OPERATIONS_DB_BYTES,
+                    seam_prefix="operations_state_",
+                )
+            else:
+                self._parent.atomic_write(
+                    self._name,
+                    payload,
+                    max_bytes=MAX_OPERATIONS_DB_BYTES,
+                    restore_bytes=previous,
+                    seam_prefix="operations_state_",
+                )
+        except (DurableWriteError, OSError):
+            candidate.close()
+            self._poisoned = True
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
+            raise OperationsStateError("operations state persistence is uncertain") from None
+        current = self._connection
+        self._connection = candidate
+        self._durable_bytes = payload
+        if current is not None:
+            current.close()
 
     def restore_owned_state(self, exported: object) -> None:
-        raise OperationsStateError("operations restore is not yet available")
+        candidate, authority = self._candidate_from_export(exported)
+        with self._thread_lock:
+            self._install_candidate(candidate)
+            restored = self.export_owned_state()
+            if restored.facts != authority.facts or restored.projection != authority.projection:
+                self._poisoned = True
+                raise OperationsIntegrityError("restored operations projection mismatch")
 
     @classmethod
     def rebuild_owned_state(cls, path: Path, exported: object) -> None:
-        raise OperationsStateError("operations rebuild is not yet available")
+        candidate, authority = cls._candidate_from_export(exported)
+        store = cls.__new__(cls)
+        store.path = Path(os.path.abspath(os.fspath(path)))
+        store._name = AnchoredDirectory.validate_child_name(store.path.name)
+        store._lock_name = AnchoredDirectory.validate_child_name(f".{store._name}.lock")
+        store._filesystem_seam = None
+        store._parent = None
+        store._lock_descriptor = -1
+        store._connection = None
+        store._durable_bytes = None
+        store._poisoned = False
+        store._thread_lock = threading.RLock()
+        try:
+            if (
+                not isinstance(path, Path)
+                or not path.name
+                or path.name.startswith(".")
+                or path.parent == path
+            ):
+                raise ValueError("operations state requires one private regular filename")
+            store._parent = AnchoredDirectory.open(store.path.parent, create=True)
+            store._acquire_lock()
+            store._parent.recover_stale_temporary(store._name)
+            store._install_candidate(candidate)
+            rebuilt = store.export_owned_state()
+            if rebuilt.facts != authority.facts or rebuilt.projection != authority.projection:
+                raise OperationsIntegrityError("rebuilt operations projection mismatch")
+        except Exception:
+            if store._connection is not candidate:
+                candidate.close()
+            raise
+        finally:
+            store.close()
 
     def close(self) -> None:
         with self._thread_lock:
