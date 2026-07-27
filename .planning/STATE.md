@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 5
 current_phase_name: Automated Discovery Operations
 status: executing
-stopped_at: Completed 05-06-PLAN.md
-last_updated: "2026-07-27T14:28:17.454Z"
+stopped_at: Completed 05-11-PLAN.md
+last_updated: "2026-07-27T14:56:01.245Z"
 last_activity: 2026-07-27
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 61
-  completed_plans: 53
-  percent: 87
+  completed_plans: 54
+  percent: 67
 ---
 
 # Project State: SkillScout
@@ -115,8 +115,8 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 ## Session Continuity
 
 **Last activity:** 2026-07-27
-**Last session:** 2026-07-27T14:28:17.449Z
-**Stopped at:** Completed 05-06-PLAN.md
+**Last session:** 2026-07-27T14:55:50.454Z
+**Stopped at:** Completed 05-11-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -177,6 +177,7 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 | Phase 05 P04 | 5min | 2 tasks | 2 files |
 | Phase 05 P05 | 16min | 2 tasks | 3 files |
 | Phase 05 P06 | 9min | 2 tasks | 2 files |
+| Phase 05 P11 | 8min | 2 tasks | 8 files |
 
 ## Decisions
 
@@ -294,3 +295,5 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 - [Phase 05]: Bind the state client to exactly refs/heads/skillscout-state with no general request, PR, reviewer, merge, deletion or arbitrary-ref capability. — Keep state persistence narrower than catalog publication authority.
 - [Phase 05]: Admit recursive Git directory entries only when they are the exact structural prefixes required by the allowlisted state blobs. — Support valid Git recursive trees without hiding empty or unexpected subtrees.
 - [Phase 05]: Accept state synchronization only after observed-parent force-false mutation and exact ref, commit, tree and blob reread. — Prevent lost updates and mutation-response lies from authorizing durable state.
+- [Phase 05]: Only exact 429 provider rejection grants confirmed semantic retry authority; timeout, connection loss, 408, 5xx and unrecognized failures are outcome-unknown. — Ambiguous replay could duplicate a paid semantic effect.
+- [Phase 05]: Keep refusal, incomplete and strict-schema failures as decided semantic results while treating post-send telemetry projection failures as outcome-unknown. — Business outcomes do not retry, and ambiguous local completion cannot safely replay.
