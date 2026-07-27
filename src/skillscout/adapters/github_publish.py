@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -131,6 +132,7 @@ class GitHubPublishClient:
         self._branch = f"skillscout/{stable_slug}"
         self._root = f"skills/{stable_slug}/"
         self._last_request_id: str | None = None
+        self._last_link: str | None = None
         self._client = httpx.Client(
             base_url=GITHUB_API_BASE,
             headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION, "Authorization": f"Bearer {token}", "User-Agent": "skillscout/0.1.0"},
@@ -229,13 +231,18 @@ class GitHubPublishClient:
 
     def get_requested_reviewers(self, number: int) -> RequestedReviewers:
         value = _number(number)
-        rows = self._pages(f"/repos/{self._repository}/pulls/{value}/requested_reviewer" + "s?per_page=100&page=", object_pages=True)
-        if len(rows) != 1 or not isinstance(rows[0], dict):
-            _fail()
-        raw = rows[0]
-        users, teams = raw.get("users"), raw.get("teams")
-        if not isinstance(users, list) or not isinstance(teams, list) or teams:
-            _fail()
+        pages = self._page_values(
+            f"/repos/{self._repository}/pulls/{value}/requested_reviewer"
+            + "s?per_page=100&page="
+        )
+        users: list[object] = []
+        for raw in pages:
+            if not isinstance(raw, dict) or not isinstance(raw.get("users"), list):
+                _fail()
+            teams = raw.get("teams")
+            if not isinstance(teams, list) or teams:
+                _fail()
+            users.extend(raw["users"])
         logins = tuple(sorted(self._login(item) for item in users))
         if len(set(logins)) != len(logins):
             _fail()
@@ -243,19 +250,22 @@ class GitHubPublishClient:
 
     def list_reviews(self, number: int) -> tuple[tuple[str, int, str, str], ...]:
         value = _number(number)
-        raw = self._json("GET", f"/repos/{self._repository}/pulls/{value}/review" + "s?per_page=100&page=1")
-        # The synthetic corpus uses a wrapper so requested-review and completed
-        # review observations can share one credential-free fixture.  Live REST
-        # responses are the list form; neither form may hide more than one page.
-        rows = raw.get("reviews") if isinstance(raw, dict) else raw
-        if not isinstance(rows, list) or len(rows) >= 100:
-            _fail()
+        pages = self._page_values(
+            f"/repos/{self._repository}/pulls/{value}/review"
+            + "s?per_page=100&page="
+        )
         allowed = {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"}
         observations: list[tuple[str, int, str, str]] = []
-        for row in rows:
-            if not isinstance(row, dict) or row.get("state") not in allowed or not isinstance(row.get("user"), dict):
+        for raw in pages:
+            # The synthetic corpus uses a wrapper so requested-review and
+            # completed-review observations can share one bounded fixture.
+            rows = raw.get("reviews") if isinstance(raw, dict) else raw
+            if not isinstance(rows, list) or len(rows) > 100:
                 _fail()
-            observations.append((self._login(row["user"]), _number(row.get("id")), _sha(row.get("commit_id")), row["state"]))
+            for row in rows:
+                if not isinstance(row, dict) or row.get("state") not in allowed or not isinstance(row.get("user"), dict):
+                    _fail()
+                observations.append((self._login(row["user"]), _number(row.get("id")), _sha(row.get("commit_id")), row["state"]))
         return tuple(observations)
 
     def create_blob(self, content: bytes) -> str:
@@ -351,6 +361,7 @@ class GitHubPublishClient:
             _fail()
         try:
             self._last_request_id = response.headers.get("x-github-request-id")
+            self._last_link = response.headers.get("link")
             if response.status_code in {301, 302, 303, 307, 308}:
                 _fail()
             if response.status_code == 429 or response.status_code >= 500:
@@ -382,18 +393,60 @@ class GitHubPublishClient:
 
     def _pages(self, prefix: str, *, object_pages: bool = False) -> list[Any]:
         output: list[Any] = []
-        for page in range(1, _MAX_PAGES + 1):
-            value = self._json("GET", f"{prefix}{page}")
+        for value in self._page_values(prefix):
             rows = [value] if object_pages else value
             if not isinstance(rows, list):
                 _fail()
             output.extend(rows)
-            # A next page must be explicitly presented through a canonical Link.
-            # The serial recorded transport has no Link, which is complete.
-            if len(rows) < 100:
+        return output
+
+    def _page_values(self, prefix: str) -> list[Any]:
+        output: list[Any] = []
+        path = f"{prefix}1"
+        seen: set[str] = set()
+        for page in range(1, _MAX_PAGES + 1):
+            if path in seen:
+                _fail()
+            seen.add(path)
+            output.append(self._json("GET", path))
+            next_path = self._next_page(self._last_link)
+            if next_path is None:
                 return output
-            _fail()
+            expected = f"{prefix}{page + 1}"
+            if next_path != expected or page == _MAX_PAGES:
+                _fail()
+            path = next_path
         _fail()
+
+    def _next_page(self, link: str | None) -> str | None:
+        if link is None:
+            return None
+        if type(link) is not str or len(link) > 8_192:
+            _fail()
+        next_urls: list[str] = []
+        for item in link.split(","):
+            match = re.fullmatch(
+                r'\s*<([^>]+)>\s*;\s*rel="([a-z]+)"\s*',
+                item,
+            )
+            if match is None:
+                _fail()
+            if match.group(2) == "next":
+                next_urls.append(match.group(1))
+        if not next_urls:
+            return None
+        if len(next_urls) != 1:
+            _fail()
+        parsed = urlsplit(next_urls[0])
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "api.github.com"
+            or parsed.fragment
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            _fail()
+        return parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
     def _machine_branch(self, value: str | None) -> str:
         branch = self._branch if value is None else value

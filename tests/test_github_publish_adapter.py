@@ -171,6 +171,73 @@ def test_review_observations_are_bounded_users_only_and_team_state_is_ambiguous(
             client.get_requested_reviewers(number=42)
 
 
+def test_paginated_pulls_and_reviews_follow_only_canonical_same_origin_links() -> None:
+    pull = _fixture("pull_draft")
+    pulls_page_one = [{**pull, "number": number} for number in range(1, 101)]
+    pulls_page_two = [{**pull, "number": 101}]
+    review = _fixture("reviewers")["reviews"][0]
+    reviews_page_one = [{**review, "id": number} for number in range(1, 101)]
+    reviews_page_two = [{**review, "id": 101}]
+    pull_prefix = (
+        f"{REPOSITORY}/pulls?state=open&head=catalog-org%3A{HEAD}"
+        f"&base={BASE}&per_page=100&page="
+    )
+    review_prefix = f"{REPOSITORY}/pulls/42/reviews?per_page=100&page="
+    routes = github_publish_routes()
+    routes[("GET", pull_prefix + "1")] = RecordedResponse(
+        200,
+        {
+            "content-type": "application/json",
+            "x-github-request-id": "REQ-PULLS-1",
+            "link": (
+                "<https://api.github.com"
+                + pull_prefix
+                + '2>; rel="next"'
+            ),
+        },
+        json.dumps(pulls_page_one).encode(),
+    )
+    routes[("GET", pull_prefix + "2")] = RecordedResponse(
+        200,
+        {"content-type": "application/json", "x-github-request-id": "REQ-PULLS-2"},
+        json.dumps(pulls_page_two).encode(),
+    )
+    routes[("GET", review_prefix + "1")] = RecordedResponse(
+        200,
+        {
+            "content-type": "application/json",
+            "x-github-request-id": "REQ-REVIEWS-1",
+            "link": (
+                "<https://api.github.com"
+                + review_prefix
+                + '2>; rel="next"'
+            ),
+        },
+        json.dumps(reviews_page_one).encode(),
+    )
+    routes[("GET", review_prefix + "2")] = RecordedResponse(
+        200,
+        {"content-type": "application/json", "x-github-request-id": "REQ-REVIEWS-2"},
+        json.dumps(reviews_page_two).encode(),
+    )
+    with _adapter(RecordedTransport(routes)) as client:
+        assert len(client.list_open_pulls()) == 101
+        assert len(client.list_reviews(42)) == 101
+
+    hostile = dict(routes)
+    hostile[("GET", pull_prefix + "1")] = RecordedResponse(
+        200,
+        {
+            "content-type": "application/json",
+            "x-github-request-id": "REQ-PULLS-1",
+            "link": '<https://attacker.example/pulls?page=2>; rel="next"',
+        },
+        json.dumps(pulls_page_one).encode(),
+    )
+    with _adapter(RecordedTransport(hostile)) as client, pytest.raises(Exception):
+        client.list_open_pulls()
+
+
 @pytest.mark.parametrize("field", tuple(_fixture("error_matrix")), ids=lambda value: value)
 def test_provider_error_matrix_is_closed_and_safe(field: str) -> None:
     from skillscout.adapters.github_publish import GitHubPublishClient
