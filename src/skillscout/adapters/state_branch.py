@@ -38,8 +38,12 @@ _MAX_ROOT_BYTES = 1_048_576
 _MAX_OBJECT_BYTES = 1_048_576
 _MAX_DATABASE_BYTES = 1_073_741_824
 _MAX_TREE_ENTRIES = 4_100
+_MAX_REQUEST_ID_CHARS = 128
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
+_GITHUB_REQUEST_ID = re.compile(
+    r"(?:[A-Za-z0-9._-]+|[0-9A-F]+(?::[0-9A-F]+)+)"
+)
 _OBJECT_PATH = re.compile(
     r"^state/objects/sha256/([0-9a-f]{2})/([0-9a-f]{64})\.json$"
 )
@@ -423,8 +427,8 @@ class StateBranchClient:
             if (
                 type(request_id) is not str
                 or not request_id
-                or len(request_id) > 128
-                or re.fullmatch(r"[A-Za-z0-9._-]+", request_id) is None
+                or len(request_id) > _MAX_REQUEST_ID_CHARS
+                or _GITHUB_REQUEST_ID.fullmatch(request_id) is None
             ):
                 _safe_failure()
             if response.status_code in {301, 302, 303, 307, 308}:

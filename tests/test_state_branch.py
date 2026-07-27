@@ -138,6 +138,69 @@ def test_absent_branch_bootstrap_and_valid_restore_are_distinct() -> None:
     assert restored.bundle.root.root_digest == fixture["root"]["root_digest"]
 
 
+def _missing_state_ref_client(module: object, request_id: str | None) -> object:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        headers = {"content-type": "application/json"}
+        if request_id is not None:
+            headers["x-github-request-id"] = request_id
+        return httpx.Response(
+            404,
+            headers=headers,
+            json={"message": "provider text must stay closed"},
+        )
+
+    return module.StateBranchClient(
+        token="test-token",
+        repository_id=101,
+        repository_full_name="source-org/source",
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def test_state_client_classifies_absent_ref_with_live_colon_request_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    module = _state_module()
+    request_id = "753C:748B6:2CB2070:2EA615C:6A679381"
+    client = _missing_state_ref_client(module, request_id)
+    try:
+        with pytest.raises(module.StateRefNotFound) as caught:
+            client.get_state_ref()
+    finally:
+        client.close()
+
+    assert request_id not in repr(caught.value)
+    assert request_id not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    (
+        None,
+        "",
+        "753C 748B6",
+        "753C:\t748B6",
+        "753C:\x00748B6",
+        ":753C",
+        "753C:",
+        "753C::748B6",
+        "753C:GG",
+        "753C:-748B6",
+        ("A" * 64) + ":" + ("B" * 64),
+    ),
+)
+def test_state_client_rejects_malformed_or_oversized_request_id(
+    request_id: str | None,
+) -> None:
+    module = _state_module()
+    client = _missing_state_ref_client(module, request_id)
+    try:
+        with pytest.raises(module.SafeFailure):
+            client.get_state_ref()
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
