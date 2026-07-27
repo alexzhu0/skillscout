@@ -17,6 +17,8 @@ from skillscout.adapters.openai_extract import (
 )
 from skillscout.adapters.semantic_provider import (
     DEEPSEEK_MODEL,
+    SemanticProviderFailure,
+    SemanticTransportDisposition,
     resolve_semantic_provider,
 )
 from skillscout.application.ports import ErrorCode, SafeFailure
@@ -260,9 +262,12 @@ def test_schema_invalid_response_maps_to_schema_invalid_outcome() -> None:
 
 def test_rate_limit_maps_to_transient_failure_with_one_request() -> None:
     recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("openai_429")})
-    with pytest.raises(SafeFailure) as failure:
+    with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).extract(user_payload=USER_PAYLOAD)
-    assert failure.value.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+    assert (
+        failure.value.disposition
+        is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+    )
     assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -282,17 +287,23 @@ def test_non_conforming_provider_telemetry_collapses_into_the_closed_failure_set
                 )
             }
         )
-        with pytest.raises(SafeFailure) as failure:
+        with pytest.raises(SemanticProviderFailure) as failure:
             _client(recorded).extract(user_payload=USER_PAYLOAD)
-        assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+        assert (
+            failure.value.disposition
+            is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+        )
         assert recorded.call_count(*RESPONSES) == 1
 
 
 def test_server_error_maps_to_transient_failure_with_one_request() -> None:
     recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("openai_500")})
-    with pytest.raises(SafeFailure) as failure:
+    with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).extract(user_payload=USER_PAYLOAD)
-    assert failure.value.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+    assert (
+        failure.value.disposition
+        is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+    )
     assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -304,9 +315,9 @@ def test_auth_and_bad_request_errors_map_to_permanent_failure(
     status: int, error_type: str
 ) -> None:
     recorded = RecordedTransport({RESPONSES: _error_response(status, error_type)})
-    with pytest.raises(SafeFailure) as failure:
+    with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).extract(user_payload=USER_PAYLOAD)
-    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert failure.value.disposition is SemanticTransportDisposition.PERMANENT
     assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -358,4 +369,28 @@ def test_deepseek_extraction_fails_closed(
     result = _deepseek_client(recorded).extract(user_payload=USER_PAYLOAD)
     assert result.status == status
     assert result.response is None
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        (429, SemanticTransportDisposition.CONFIRMED_RETRYABLE),
+        (500, SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
+        (400, SemanticTransportDisposition.PERMANENT),
+    ),
+)
+def test_deepseek_extraction_preserves_transport_disposition(
+    status: int,
+    expected: SemanticTransportDisposition,
+) -> None:
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _error_response(status, "closed_provider_error")}
+    )
+
+    with pytest.raises(SemanticProviderFailure) as failure:
+        _deepseek_client(recorded).extract(user_payload=USER_PAYLOAD)
+
+    assert failure.value.disposition is expected
+    assert "recorded" not in str(failure.value)
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1

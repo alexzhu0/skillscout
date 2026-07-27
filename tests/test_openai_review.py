@@ -21,6 +21,8 @@ from skillscout.adapters.openai_review import (
 )
 from skillscout.adapters.semantic_provider import (
     DEEPSEEK_MODEL,
+    SemanticProviderFailure,
+    SemanticTransportDisposition,
     resolve_semantic_provider,
 )
 from skillscout.application.ports import ErrorCode, SafeFailure
@@ -273,6 +275,14 @@ def _deepseek_response(content: str | None) -> RecordedResponse:
                 },
             }
         ).encode(),
+    )
+
+
+def _provider_error_response(status: int) -> RecordedResponse:
+    return RecordedResponse(
+        status=status,
+        headers={"content-type": "application/json"},
+        body=b'{"error":{"message":"RAW-PROVIDER-DETAIL","type":"closed"}}',
     )
 
 
@@ -593,19 +603,26 @@ def test_adapter_closed_model_outcomes_issue_exactly_one_request(
     assert recorded.call_count(*RESPONSES) == 1
 
 
-@pytest.mark.parametrize("fixture", ("openai_429", "openai_500"))
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    (
+        ("openai_429", SemanticTransportDisposition.CONFIRMED_RETRYABLE),
+        ("openai_500", SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
+    ),
+)
 def test_adapter_retryable_provider_failure_escapes_after_one_request(
     fixture: str,
+    expected: SemanticTransportDisposition,
 ) -> None:
     recorded = RecordedTransport({RESPONSES: _recorded_review_fixture(fixture)})
-    with pytest.raises(SafeFailure) as failure:
+    with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).review(
             workflow_spec=_workflow(),
             package=_package(),
             validation_report=_adapter_report(),
         )
 
-    assert failure.value.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+    assert failure.value.disposition is expected
     assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -613,14 +630,14 @@ def test_adapter_permanent_provider_failure_escapes_after_one_request() -> None:
     recorded = RecordedTransport(
         {RESPONSES: _recorded_review_fixture("openai_400")}
     )
-    with pytest.raises(SafeFailure) as failure:
+    with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).review(
             workflow_spec=_workflow(),
             package=_package(),
             validation_report=_adapter_report(),
         )
 
-    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert failure.value.disposition is SemanticTransportDisposition.PERMANENT
     assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -675,6 +692,34 @@ def test_deepseek_reviewer_rejects_invalid_schema_locally() -> None:
 
     assert result.status == "schema_invalid"
     assert result.judgment is None
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        (429, SemanticTransportDisposition.CONFIRMED_RETRYABLE),
+        (500, SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
+        (400, SemanticTransportDisposition.PERMANENT),
+    ),
+)
+def test_deepseek_reviewer_preserves_transport_disposition(
+    status: int,
+    expected: SemanticTransportDisposition,
+) -> None:
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _provider_error_response(status)}
+    )
+
+    with pytest.raises(SemanticProviderFailure) as failure:
+        _deepseek_client(recorded).review(
+            workflow_spec=_workflow(),
+            package=_package(),
+            validation_report=_adapter_report(),
+        )
+
+    assert failure.value.disposition is expected
+    assert "RAW-" not in str(failure.value)
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
 
 

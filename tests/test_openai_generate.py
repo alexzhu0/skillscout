@@ -24,6 +24,8 @@ from skillscout.adapters.openai_generate import (
 )
 from skillscout.adapters.semantic_provider import (
     DEEPSEEK_MODEL,
+    SemanticProviderFailure,
+    SemanticTransportDisposition,
     resolve_semantic_provider,
 )
 from skillscout.application.ports import ErrorCode, SafeFailure
@@ -144,6 +146,14 @@ def _deepseek_response(content: str | None) -> RecordedResponse:
     )
 
 
+def _provider_error_response(status: int) -> RecordedResponse:
+    return RecordedResponse(
+        status=status,
+        headers={"content-type": "application/json"},
+        body=b'{"error":{"message":"RAW-PROVIDER-DETAIL","type":"closed"}}',
+    )
+
+
 def _deepseek_client(recorded: RecordedTransport) -> OpenAIGenerationClient:
     return OpenAIGenerationClient(
         api_key=CANARY_KEY,
@@ -242,17 +252,24 @@ def test_generator_closed_model_outcomes_use_exactly_one_request(
     assert recorded.call_count(*RESPONSES) == 1
 
 
-@pytest.mark.parametrize("fixture", ("openai_429", "openai_500"))
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    (
+        ("openai_429", SemanticTransportDisposition.CONFIRMED_RETRYABLE),
+        ("openai_500", SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
+    ),
+)
 def test_generator_retryable_provider_failures_escape_after_one_request(
     fixture: str,
+    expected: SemanticTransportDisposition,
 ) -> None:
     recorded = RecordedTransport(
         {RESPONSES: recorded_openai_generator_fixture(fixture)}
     )
-    with pytest.raises(SafeFailure) as failure:
+    with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).generate(request=_request())
 
-    assert failure.value.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+    assert failure.value.disposition is expected
     assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -308,3 +325,37 @@ def test_deepseek_generator_rejects_extra_fields_locally() -> None:
     assert result.status == "schema_invalid"
     assert result.draft is None
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        (429, SemanticTransportDisposition.CONFIRMED_RETRYABLE),
+        (500, SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
+        (400, SemanticTransportDisposition.PERMANENT),
+    ),
+)
+def test_deepseek_generator_preserves_transport_disposition(
+    status: int,
+    expected: SemanticTransportDisposition,
+) -> None:
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _provider_error_response(status)}
+    )
+
+    with pytest.raises(SemanticProviderFailure) as failure:
+        _deepseek_client(recorded).generate(request=_request())
+
+    assert failure.value.disposition is expected
+    assert "RAW-" not in str(failure.value)
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+def test_generator_openai_request_rejection_is_permanent_after_one_request() -> None:
+    recorded = RecordedTransport({RESPONSES: _provider_error_response(400)})
+
+    with pytest.raises(SemanticProviderFailure) as failure:
+        _client(recorded).generate(request=_request())
+
+    assert failure.value.disposition is SemanticTransportDisposition.PERMANENT
+    assert recorded.call_count(*RESPONSES) == 1
