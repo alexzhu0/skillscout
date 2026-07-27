@@ -8,10 +8,6 @@ import inspect
 import pytest
 
 
-HANDOFF_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="phase5-wave0-protected-handoff-missing",
-)
 DIGEST = "sha256:" + ("a" * 64)
 STATE_SHA = "b" * 40
 
@@ -31,7 +27,6 @@ def _bootstrap():
     return importlib.import_module("skillscout.bootstrap")
 
 
-@HANDOFF_XFAIL
 def test_protected_entrypoint_signature_keeps_authority_dependencies_explicit() -> None:
     function = getattr(_bootstrap(), "run_protected_discovery_publication")
     parameters = set(inspect.signature(function).parameters)
@@ -44,7 +39,6 @@ def test_protected_entrypoint_signature_keeps_authority_dependencies_explicit() 
     } <= parameters
 
 
-@HANDOFF_XFAIL
 def test_exact_state_reread_and_all_admissions_precede_token_and_publisher() -> None:
     module = _bootstrap()
     calls: list[str] = []
@@ -55,12 +49,14 @@ def test_exact_state_reread_and_all_admissions_precede_token_and_publisher() -> 
         {"run": lambda self, _admission: calls.append("publication_run")},
     )()
     handoff = {
+        "run_id": "discovery-run-1",
         "state_commit_sha": STATE_SHA,
         "state_root_digest": DIGEST,
         "eligible_candidates": (
             {
                 "locator": "state/objects/sha256/aa/" + ("a" * 64) + ".json",
                 "authority_digest": DIGEST,
+                "workflow_identity_digest": "sha256:" + ("c" * 64),
             },
         ),
     }
@@ -91,7 +87,6 @@ def test_exact_state_reread_and_all_admissions_precede_token_and_publisher() -> 
         "admission_rejected",
     ),
 )
-@HANDOFF_XFAIL
 def test_handoff_mutations_fail_before_token_or_publisher(mutation: str) -> None:
     module = _bootstrap()
     runner = getattr(module, "run_protected_handoff_scenario")
@@ -105,3 +100,36 @@ def test_handoff_mutations_fail_before_token_or_publisher(mutation: str) -> None
             publication_factory=_Probe("publication_construct", calls, object()),
         )
     assert calls == []
+
+
+def test_token_failure_prevents_publication_construction() -> None:
+    module = _bootstrap()
+    calls: list[str] = []
+    handoff = {
+        "run_id": "discovery-run-1",
+        "state_commit_sha": STATE_SHA,
+        "state_root_digest": DIGEST,
+        "eligible_candidates": (
+            {
+                "locator": "state/objects/sha256/aa/" + ("a" * 64) + ".json",
+                "authority_digest": DIGEST,
+                "workflow_identity_digest": "sha256:" + ("c" * 64),
+            },
+        ),
+    }
+
+    def token_failure() -> str:
+        calls.append("token")
+        raise RuntimeError("credential unavailable")
+
+    with pytest.raises(Exception):
+        module.run_protected_discovery_publication(
+            handoff=handoff,
+            state_reader=_Probe("state_reread", calls, object()),
+            admission_deriver=_Probe("admission", calls, (object(),)),
+            catalog_token_factory=token_failure,
+            publication_factory=_Probe(
+                "publication_construct", calls, object()
+            ),
+        )
+    assert calls == ["state_reread", "admission", "token"]

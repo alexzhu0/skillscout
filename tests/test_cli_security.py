@@ -139,9 +139,11 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
     assert isinstance(parser, cli.SafeArgumentParser)
     assert set(subparsers.choices) == {
         "build-candidate",
+        "discover",
         "dry-run",
         "extract-repo",
         "inspect-run",
+        "publish-discovered",
         "publish-candidate",
         "verify-publication-admission",
     }
@@ -610,6 +612,36 @@ def test_publication_command_help_has_only_closed_locator_contracts(run_cli) -> 
     forbidden = {"--repository", "--branch", "--reviewer", "--merge", "--approve", "--ready", "--force", "--ruleset"}
     assert forbidden.isdisjoint(verifier_options)
     assert forbidden.isdisjoint(publisher_options)
+
+
+def test_discovery_entrypoint_help_has_no_authority_widening_options(run_cli) -> None:
+    discover = run_cli("discover", "--help")
+    protected = run_cli("publish-discovered", "--help")
+
+    assert discover.returncode == protected.returncode == 0
+    assert discover.stderr == protected.stderr == ""
+    discover_options = set(discover.stdout.split())
+    protected_options = set(protected.stdout.split())
+    assert {
+        "--state-repository-id",
+        "--state-repository-full-name",
+        "--initial-state-root-digest",
+    }.issubset(discover_options)
+    assert {"--handoff"}.issubset(protected_options)
+    forbidden = {
+        "--query",
+        "--budget",
+        "--branch",
+        "--reviewer",
+        "--admission",
+        "--token",
+        "--retry",
+        "--force",
+        "--merge",
+        "--approve",
+    }
+    assert forbidden.isdisjoint(discover_options)
+    assert forbidden.isdisjoint(protected_options)
 
 
 @pytest.mark.parametrize("unsafe_shape", ("nested-state", "nonempty-output"))
