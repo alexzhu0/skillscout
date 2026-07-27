@@ -7,10 +7,8 @@ project imports, network client, subprocess use, or file-writing behaviour.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
-import sys
 from pathlib import Path
 from typing import Any
 

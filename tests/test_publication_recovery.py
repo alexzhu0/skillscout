@@ -178,7 +178,9 @@ def test_state_checkpoints_are_canonical_durable_and_terminal(tmp_path: Path) ->
     from skillscout.adapters.publication_state import PublicationStateStore
     from skillscout.domain.publication import PublicationRecordV1
 
-    state_dir = tmp_path / "state"; state_dir.mkdir(); os.chmod(state_dir, 0o700)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    os.chmod(state_dir, 0o700)
     intent = _state_intent()
     store = PublicationStateStore(state_dir / "publication-state.db")
     assert store.find_pending(intent) is None
@@ -186,7 +188,8 @@ def test_state_checkpoints_are_canonical_durable_and_terminal(tmp_path: Path) ->
     checkpoint = store.append_checkpoint(intent, step="reconciled", status_class="read", request_id="REQ-1")
     assert checkpoint.event_index == 0
     record = PublicationRecordV1(schema_version="publication-record-v1", publication_key=intent.publication_key, desired_revision=intent.desired_revision, marker_digest="sha256:" + "d" * 64)
-    store.complete(intent, record); store.close()
+    store.complete(intent, record)
+    store.close()
     reopened = PublicationStateStore(state_dir / "publication-state.db")
     assert reopened.find_completed(intent) == record
     reopened.close()
@@ -195,9 +198,13 @@ def test_state_checkpoints_are_canonical_durable_and_terminal(tmp_path: Path) ->
 def test_state_rejects_checkpoint_corruption_before_projection(tmp_path: Path) -> None:
     from skillscout.adapters.publication_state import PublicationStateStore
 
-    state_dir = tmp_path / "state"; state_dir.mkdir(); os.chmod(state_dir, 0o700)
-    intent = _state_intent(); store = PublicationStateStore(state_dir / "publication-state.db")
-    store.begin_attempt(intent); store.append_checkpoint(intent, step="reconciled", status_class="read")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    os.chmod(state_dir, 0o700)
+    intent = _state_intent()
+    store = PublicationStateStore(state_dir / "publication-state.db")
+    store.begin_attempt(intent)
+    store.append_checkpoint(intent, step="reconciled", status_class="read")
     store._conn.execute("UPDATE publication_checkpoints SET checkpoint_json = ?", ("{}",))  # corruption simulates disk tampering before projection
     with pytest.raises(Exception):
         store.find_pending(intent)

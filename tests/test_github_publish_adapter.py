@@ -130,7 +130,8 @@ def test_tree_enumerates_only_owned_catalog_subtree_and_rejects_truncation() -> 
     assert {entry.path for entry in entries} == {"skills/bounded-workflow/SKILL.md", "skills/bounded-workflow/references/provenance.json"}
     assert all(entry.path.startswith("skills/bounded-workflow/") for entry in entries)
     routes = github_publish_routes()
-    bad = _fixture("tree"); bad["truncated"] = True
+    bad = _fixture("tree")
+    bad["truncated"] = True
     routes[("GET", f"{REPOSITORY}/git/trees/{TREE}?recursive=1")] = RecordedResponse(200, {"content-type": "application/json", "x-github-request-id": "REQ"}, json.dumps(bad).encode())
     with _adapter(RecordedTransport(routes)) as client:
         with pytest.raises(Exception):
@@ -143,7 +144,9 @@ def test_review_observations_are_bounded_users_only_and_team_state_is_ambiguous(
         reviews = client.list_reviews(number=42)
     assert requested.users == ("skill-maintainer",)
     assert reviews == (("completed-maintainer", 7001, COMMIT, "APPROVED"),)
-    routes = github_publish_routes(); team = _fixture("reviewers"); team["teams"] = [{"slug": "maintainers"}]
+    routes = github_publish_routes()
+    team = _fixture("reviewers")
+    team["teams"] = [{"slug": "maintainers"}]
     routes[("GET", f"{REPOSITORY}/pulls/42/requested_reviewers?per_page=100&page=1")] = RecordedResponse(200, {"content-type": "application/json", "x-github-request-id": "REQ"}, json.dumps(team).encode())
     with _adapter(RecordedTransport(routes)) as client:
         with pytest.raises(Exception):
