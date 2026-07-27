@@ -1,0 +1,27 @@
+{
+  "schema_version": "discovery-query-set-v1",
+  "query_set_version": "github-repository-search-v1",
+  "queries": [
+    {
+      "query_id": "agent-workflow-readme",
+      "query_text": "\"agent workflow\" in:name,description,readme is:public archived:false"
+    },
+    {
+      "query_id": "ai-workflow-readme",
+      "query_text": "\"AI workflow\" in:name,description,readme is:public archived:false"
+    },
+    {
+      "query_id": "llm-automation-readme",
+      "query_text": "\"LLM automation\" in:name,description,readme is:public archived:false"
+    },
+    {
+      "query_id": "agent-skills-topic",
+      "query_text": "topic:agent-skills is:public archived:false"
+    }
+  ],
+  "per_page": 25,
+  "max_pages_per_query": 4,
+  "acquisition_order": "round_robin",
+  "sort": "updated",
+  "order": "desc"
+}
