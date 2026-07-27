@@ -363,6 +363,52 @@ def test_phase2_query_protocol_and_adapter_expose_no_mutation_methods() -> None:
     assert public == {"resolve", "resolve_all"}
 
 
+def test_verified_rejection_vectors_reject_every_single_field_mutation() -> None:
+    valid_vectors = (
+        (
+            ("rejected", None),
+            ("skipped", "scout_rejected"),
+            ("skipped", "scout_rejected"),
+            ("skipped", "scout_rejected"),
+        ),
+        (
+            ("accepted", None),
+            ("rejected", None),
+            ("skipped", "filter_rejected"),
+            ("skipped", "filter_rejected"),
+        ),
+    )
+
+    def admitted(vector: tuple[tuple[str, str | None], ...]) -> bool:
+        payloads = tuple(
+            {"outcome": outcome, "skip_reason": skip_reason}
+            for outcome, skip_reason in vector
+        )
+        return phase2_state_module._is_verified_rejection_chain(
+            scout_payload=payloads[0],
+            filter_payload=payloads[1],
+            reader_payload=payloads[2],
+            extractor_payload=payloads[3],
+        )
+
+    for vector in valid_vectors:
+        assert admitted(vector)
+        for index, (outcome, skip_reason) in enumerate(vector):
+            changed_outcome = list(vector)
+            changed_outcome[index] = (
+                "schema_failure" if outcome == "accepted" else "accepted",
+                skip_reason,
+            )
+            assert not admitted(tuple(changed_outcome))
+
+            changed_reason = list(vector)
+            changed_reason[index] = (
+                outcome,
+                "unexpected" if skip_reason is None else None,
+            )
+            assert not admitted(tuple(changed_reason))
+
+
 @pytest.mark.parametrize(
     "outcome",
     ("rejected", "no_workflow", "refused", "incomplete", "schema_failure"),

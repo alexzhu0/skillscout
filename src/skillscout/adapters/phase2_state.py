@@ -7,7 +7,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Mapping
+from typing import Final, Mapping
 
 from pydantic import ValidationError
 
@@ -34,6 +34,22 @@ _PHASE_TWO_STAGES = (
     PipelineStage.FILTER,
     PipelineStage.READER,
     PipelineStage.EXTRACTOR,
+)
+_VERIFIED_REJECTION_VECTORS: Final = frozenset(
+    {
+        (
+            (PipelineStage.SCOUT, "rejected", None),
+            (PipelineStage.FILTER, "skipped", "scout_rejected"),
+            (PipelineStage.READER, "skipped", "scout_rejected"),
+            (PipelineStage.EXTRACTOR, "skipped", "scout_rejected"),
+        ),
+        (
+            (PipelineStage.SCOUT, "accepted", None),
+            (PipelineStage.FILTER, "rejected", None),
+            (PipelineStage.READER, "skipped", "filter_rejected"),
+            (PipelineStage.EXTRACTOR, "skipped", "filter_rejected"),
+        ),
+    }
 )
 _COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -177,6 +193,30 @@ def _source_facts(
     )
 
 
+def _is_verified_rejection_chain(
+    *,
+    scout_payload: Mapping[str, object],
+    filter_payload: Mapping[str, object],
+    reader_payload: Mapping[str, object],
+    extractor_payload: Mapping[str, object],
+) -> bool:
+    payloads = (
+        scout_payload,
+        filter_payload,
+        reader_payload,
+        extractor_payload,
+    )
+    vector = tuple(
+        (
+            stage,
+            payload.get("outcome"),
+            payload.get("skip_reason"),
+        )
+        for stage, payload in zip(_PHASE_TWO_STAGES, payloads, strict=True)
+    )
+    return vector in _VERIFIED_REJECTION_VECTORS
+
+
 class SQLitePhaseTwoCandidateSource:
     """Resolve one strict descriptor without exposing a writable state handle."""
 
@@ -273,6 +313,13 @@ class SQLitePhaseTwoCandidateSource:
             filter_payload = _mapping(chain.results[1].payload)
             reader_payload = _mapping(chain.results[2].payload)
             extractor_payload = _mapping(extractor.payload)
+            if _is_verified_rejection_chain(
+                scout_payload=scout_payload,
+                filter_payload=filter_payload,
+                reader_payload=reader_payload,
+                extractor_payload=extractor_payload,
+            ):
+                return ()
             if (
                 scout_payload.get("outcome") != "accepted"
                 or filter_payload.get("outcome") != "accepted"

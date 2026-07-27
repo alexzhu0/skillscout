@@ -16,6 +16,7 @@ from recorded_transport import (
 )
 
 from skillscout.adapters.github import GitHubReadClient
+from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.adapters.subjects import load_subject
 from skillscout.application.pipeline import PipelineRunner
@@ -559,6 +560,14 @@ def test_rejected_run_completes_with_skips_and_consumes_no_retry_budget(
     assert artifact.extractor_outcome == "skipped"
     assert artifact.workflow_count == 0
     assert artifact.workflow_fingerprints == ()
+    assert (
+        SQLitePhaseTwoCandidateSource(tmp_path / "state.db").resolve_all(
+            phase2_run_id=summary.run_id,
+            phase2_profile_version="phase2-v1",
+            phase2_producer_version="phase2-v1",
+        )
+        == ()
+    )
 
 
 def test_scout_rejected_run_skips_everything_without_content_fetches(
@@ -591,6 +600,14 @@ def test_scout_rejected_run_skips_everything_without_content_fetches(
     )
     assert artifact.pinned_commit_sha is None
     assert artifact.extractor_outcome == "skipped"
+    assert (
+        SQLitePhaseTwoCandidateSource(tmp_path / "state.db").resolve_all(
+            phase2_run_id=summary.run_id,
+            phase2_profile_version="phase2-v1",
+            phase2_producer_version="phase2-v1",
+        )
+        == ()
+    )
 
 
 def _reader_blob_routes() -> dict[tuple[str, str], RecordedResponse]:
