@@ -2017,14 +2017,18 @@ class _SemanticPhaseTwoProcessor:
         return StageOutcome(payload={"outcome": "accepted"}, telemetry=None)
 
 
-def _semantic_guard(barrier: _RecordingBarrier) -> SemanticDurabilityGuard:
+def _semantic_guard(
+    barrier: _RecordingBarrier,
+    *,
+    provider: str = "openai",
+) -> SemanticDurabilityGuard:
     return SemanticDurabilityGuard(
         barrier=barrier,
         operations_store=_SemanticOwner(),
         publication_store=_StaticOwner("publication"),
         repository_id=101,
         workflow_authority_digest=sha256_digest({"workflow": 101}),
-        provider="openai",
+        provider=provider,  # type: ignore[arg-type]
         expected_prior_state_head="a" * 40,
         expected_prior_root_digest=sha256_digest({"prior": 101}),
     )
@@ -2072,8 +2076,10 @@ def test_extractor_confirmed_retry_is_remotely_durable_before_next_request(
     ]
 
 
+@pytest.mark.parametrize("provider", ("openai", "deepseek"))
 def test_extractor_unknown_is_consumed_once_and_never_replayed(
     tmp_path: Path,
+    provider: str,
 ) -> None:
     processor = _SemanticPhaseTwoProcessor(
         [
@@ -2088,11 +2094,15 @@ def test_extractor_unknown_is_consumed_once_and_never_replayed(
     try:
         with pytest.raises(SemanticProviderFailure):
             PipelineRunner(
-                store, processor, semantic_durability=_semantic_guard(barrier)
+                store,
+                processor,
+                semantic_durability=_semantic_guard(barrier, provider=provider),
             ).run(_repository_subject(), tmp_path / "unknown-first")
         with pytest.raises(SemanticProviderFailure) as resumed:
             PipelineRunner(
-                store, processor, semantic_durability=_semantic_guard(barrier)
+                store,
+                processor,
+                semantic_durability=_semantic_guard(barrier, provider=provider),
             ).run(_repository_subject(), tmp_path / "unknown-second")
         assert resumed.value.disposition is (
             SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
@@ -2105,6 +2115,7 @@ def test_extractor_unknown_is_consumed_once_and_never_replayed(
         "result_outcome_unknown",
         "result_outcome_unknown",
     ]
+    assert {item.provider for item in barrier.transitions} == {provider}
 
 
 def test_extractor_pre_request_barrier_failure_issues_zero_requests(
@@ -2122,3 +2133,36 @@ def test_extractor_pre_request_barrier_failure_issues_zero_requests(
     finally:
         store.close()
     assert processor.extractor_requests == 0
+
+
+def test_extractor_post_result_barrier_failure_reconfirms_without_replay(
+    tmp_path: Path,
+) -> None:
+    processor = _SemanticPhaseTwoProcessor(
+        [
+            SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+                code="semantic_provider_outcome_unknown",
+            )
+        ]
+    )
+    barrier = _RecordingBarrier(fail_on={2})
+    store = SQLiteStateStore(tmp_path / "extractor-post-barrier.sqlite3")
+    try:
+        with pytest.raises(SafeFailure) as blocked:
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "post-barrier-first")
+        assert blocked.value.code is ErrorCode.STATE_OPERATION_FAILED
+        with pytest.raises(SemanticProviderFailure):
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "post-barrier-second")
+    finally:
+        store.close()
+    assert processor.extractor_requests == 1
+    assert [item.transition for item in barrier.transitions] == [
+        "attempt_started",
+        "result_outcome_unknown",
+        "result_outcome_unknown",
+    ]
