@@ -1,0 +1,63 @@
+{
+  "databases": {
+    "operations": {
+      "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "size_bytes": 4096
+    },
+    "pipeline": {
+      "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "size_bytes": 4096
+    },
+    "publication": {
+      "content_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "size_bytes": 4096
+    }
+  },
+  "objects": {},
+  "observed_head": "4444444444444444444444444444444444444444",
+  "root": {
+    "budget_policy_digest": "sha256:3679eb256788df7f2ff6e61eba8747a9392365f422ab0ccca3bb1302fedcc297",
+    "created_at": "2026-07-27T12:00:00.000000Z",
+    "databases": [
+      {
+        "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "locator": "state/databases/pipeline.sqlite3",
+        "owner": "pipeline",
+        "schema_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 4096
+      },
+      {
+        "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "locator": "state/databases/operations.sqlite3",
+        "owner": "operations",
+        "schema_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size_bytes": 4096
+      },
+      {
+        "content_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "locator": "state/databases/publication.sqlite3",
+        "owner": "publication",
+        "schema_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "size_bytes": 4096
+      }
+    ],
+    "objects": [],
+    "prior_root_digest": null,
+    "query_set_digest": "sha256:f238922a57010cb87e441294c4ff552dc2409fd12c01e8e1faf68f8fd979b544",
+    "rebuild_projection": {
+      "candidate_digests": [],
+      "candidate_terminal_digests": [],
+      "discovery_reservation_digests": [],
+      "projection_digest": "sha256:4d51affb6c027efea4336cc10f0a5216ceb14234c1b921f1fcdc7a10d9d2e95c",
+      "run_summary_digests": [],
+      "schema_version": "discovery-state-rebuild-projection-v1",
+      "search_page_digests": [],
+      "semantic_reservation_digests": []
+    },
+    "root_digest": "sha256:098415171ee2cee03833b62d1b72662d9a9aace992efa7b2ab14e0c45f1d3bea",
+    "root_locator": "state/root.json",
+    "schema_version": "discovery-state-root-v1",
+    "state_parent_commit_sha": "4444444444444444444444444444444444444444"
+  },
+  "schema_version": "state-branch-fixture-v1"
+}

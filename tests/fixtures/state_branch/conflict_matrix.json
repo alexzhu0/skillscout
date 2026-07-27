@@ -1,0 +1,11 @@
+{
+  "schema_version": "state-branch-conflict-matrix-v1",
+  "cases": [
+    {"name": "update_409", "status": 409, "writes_before_conflict": 4},
+    {"name": "update_422", "status": 422, "writes_before_conflict": 4},
+    {"name": "head_changed", "status": 200, "writes_before_conflict": 0},
+    {"name": "lying_mutation_response", "status": 200, "writes_before_conflict": 4},
+    {"name": "reread_mismatch", "status": 200, "writes_before_conflict": 4}
+  ],
+  "prohibited_followups": ["force", "merge", "prune", "retry"]
+}
