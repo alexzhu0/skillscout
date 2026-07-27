@@ -11,3 +11,11 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Fix:** Added the sole exact carve-out `adapters/github.py:urllib.parse` to both scanner predicates; added positive policy locking and negative mutations proving bare `urllib`, `urllib.request`, and off-owner `urllib.parse` remain forbidden; removed the resolved deferred item.
 - **Files changed:** tests/test_phase1_gap_closure.py, tools/verify_phase3_acceptance.py, tests/test_phase3_acceptance_tool.py, .planning/phases/05-automated-discovery-operations/deferred-items.md
 ---
+
+## phase5-state-httpx-scanner-drift — Historical scanners rejected the fixed state-branch HTTP owner
+- **Date:** 2026-07-27
+- **Error patterns:** security scanner, httpx importer, exact HTTP owner, state_branch.py, Phase 1 gap closure, Phase 3 acceptance, three failures
+- **Root cause:** Historical Phase 1 and Phase 3 import-capability scanners pinned the pre-Plan-05-06 set of `httpx` owners, so they rejected the planned fixed state-branch adapter by filename even though its reviewed capability is limited to one configured repository's Git objects and `refs/heads/skillscout-state`.
+- **Fix:** Added only `adapters/state_branch.py:httpx` to both exact-owner policies; pinned the StateBranchClient method, endpoint, fixed-ref, and non-force boundaries; added negative mutations for off-owner HTTP, catalog PR paths, default branches, and public catalog methods; removed the resolved deferred item.
+- **Files changed:** tests/test_phase1_gap_closure.py, tools/verify_phase3_acceptance.py, tests/test_phase3_acceptance_tool.py, .planning/phases/05-automated-discovery-operations/deferred-items.md
+---
