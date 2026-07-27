@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -276,3 +277,128 @@ def test_unexpected_health_failure_collapses_without_raw_exception() -> None:
         module.DiscoveryApplication(dependencies).run()
     assert failure.value.code is ErrorCode.PIPELINE_INTERRUPTED
     assert "SECRET_EXCEPTION_CANARY" not in str(failure.value)
+
+
+def _runtime_config(module, tmp_path: Path):
+    query_path = tmp_path / "discovery-queries-v1.json"
+    query_path.write_bytes(
+        (ROOT / "config" / "discovery-queries-v1.json").read_bytes()
+    )
+    return module.load_discovery_runtime_config(
+        state_repository_id="910001",
+        state_repository_full_name="skillscout/state",
+        state_ref="refs/heads/skillscout-state",
+        query_set_path=query_path,
+        pipeline_state=Path("state/databases/pipeline.sqlite3"),
+        operations_state=Path("state/databases/operations.sqlite3"),
+        publication_state=Path("state/databases/publication.sqlite3"),
+        semantic_provider="openai",
+        extractor_model_id="gpt-5.6-terra",
+        generator_model_id="gpt-5.6-terra",
+        reviewer_model_id="gpt-5.6-terra",
+        initial_state_root_digest="sha256:" + ("1" * 64),
+    )
+
+
+def test_bootstrap_rejects_invalid_config_before_credentials_or_state(
+    tmp_path: Path,
+) -> None:
+    module = importlib.import_module("skillscout.bootstrap")
+    effects: list[str] = []
+
+    class Environ(dict[str, str]):
+        def __getitem__(self, key: str) -> str:
+            effects.append(f"credential:{key}")
+            return super().__getitem__(key)
+
+    query_path = tmp_path / "queries.json"
+    query_path.write_text(json.dumps({"schema_version": "wrong"}))
+    with pytest.raises(ValueError):
+        module.load_discovery_runtime_config(
+            state_repository_id="not-an-id",
+            state_repository_full_name="skillscout/state",
+            state_ref="refs/heads/skillscout-state",
+            query_set_path=query_path,
+            pipeline_state=Path("state/databases/pipeline.sqlite3"),
+            operations_state=Path("state/databases/operations.sqlite3"),
+            publication_state=Path("state/databases/publication.sqlite3"),
+            semantic_provider="openai",
+            extractor_model_id="gpt-5.6-terra",
+            generator_model_id="gpt-5.6-terra",
+            reviewer_model_id="gpt-5.6-terra",
+            initial_state_root_digest="sha256:" + ("1" * 64),
+            environ=Environ(),
+        )
+    assert effects == []
+    assert not (tmp_path / "state.sqlite3").exists()
+
+
+def test_bootstrap_keeps_source_and_state_credentials_lazy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("skillscout.bootstrap")
+    config = _runtime_config(module, tmp_path)
+    events: list[str] = []
+
+    class Environ(dict[str, str]):
+        def __getitem__(self, key: str) -> str:
+            events.append(f"credential:{key}")
+            return "late-bound"
+
+        def get(self, key: str, default=None):
+            if key.startswith("SKILLSCOUT_CATALOG_"):
+                events.append(f"catalog:{key}")
+            return super().get(key, default)
+
+    class Search:
+        def __init__(self, *, token: str) -> None:
+            events.append(f"search:{token}")
+
+        def close(self) -> None:
+            events.append("search:close")
+
+    class StateClient:
+        def __init__(self, **kwargs: object) -> None:
+            events.append(f"state:{kwargs['token']}")
+
+        def close(self) -> None:
+            events.append("state:close")
+
+    class StateStore:
+        def __init__(self, remote: object) -> None:
+            self.remote = remote
+
+        def restore(self) -> object:
+            events.append("state:restore")
+            return object()
+
+    monkeypatch.setattr("skillscout.adapters.github.GitHubReadClient", Search)
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchClient", StateClient
+    )
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchStore", StateStore
+    )
+
+    application = module.build_discovery_application(
+        config,
+        environ=Environ(),
+        operations_store_factory=lambda: object(),
+        phase2_factory=lambda **_kwargs: object(),
+        phase3_factory=lambda **_kwargs: object(),
+    )
+    assert events == []
+    dependencies = application._dependencies
+    search = dependencies.search_factory()
+    search.close()
+    dependencies.state_restore()
+    assert events == [
+        "credential:SKILLSCOUT_SOURCE_GITHUB_TOKEN",
+        "search:late-bound",
+        "search:close",
+        "credential:SKILLSCOUT_STATE_GITHUB_TOKEN",
+        "state:late-bound",
+        "state:restore",
+        "state:close",
+    ]

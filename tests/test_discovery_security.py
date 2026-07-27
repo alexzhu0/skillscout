@@ -90,6 +90,22 @@ def test_discovery_module_has_no_publication_import_or_credential_lookup() -> No
     assert "SKILLSCOUT_CATALOG_" not in source
 
 
+def test_discovery_bootstrap_has_no_catalog_factory_or_publication_dependency() -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    signature = inspect.signature(bootstrap.build_discovery_application)
+    assert not any(
+        marker in name.casefold()
+        for name in signature.parameters
+        for marker in ("catalog", "publication", "publisher")
+    )
+    config = bootstrap.DiscoveryRuntimeConfig
+    assert not any(
+        marker in name.casefold()
+        for name in config.__annotations__
+        for marker in ("catalog", "token", "publication_authority", "publisher")
+    )
+
+
 @WORKFLOW_XFAIL
 def test_discovery_job_cannot_observe_catalog_secrets_or_candidate_shell() -> None:
     path = ROOT / ".github" / "workflows" / "discover.yml"
