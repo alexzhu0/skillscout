@@ -65,7 +65,6 @@ def test_crash_matrix_names_every_non_refundable_durability_seam() -> None:
     )
 
 
-@APPLICATION_XFAIL
 def test_discovery_dependency_surface_has_no_publication_authority() -> None:
     module = _module()
     dependencies = getattr(module, "DiscoveryDependencies")
@@ -89,7 +88,6 @@ def test_discovery_dependency_surface_has_no_publication_authority() -> None:
     assert fields.isdisjoint(forbidden)
 
 
-@APPLICATION_XFAIL
 def test_discovery_source_imports_phase2_phase3_but_never_phase4() -> None:
     module = _module()
     source_path = Path(inspect.getsourcefile(module) or "")
@@ -119,7 +117,6 @@ def test_discovery_source_imports_phase2_phase3_but_never_phase4() -> None:
     )
 
 
-@APPLICATION_XFAIL
 def test_application_contract_exposes_bounded_result_and_run_only() -> None:
     module = _module()
     application = getattr(module, "DiscoveryApplication")
@@ -148,7 +145,6 @@ def test_application_contract_exposes_bounded_result_and_run_only() -> None:
     )
 
 
-@APPLICATION_XFAIL
 def test_three_workflow_repository_uses_one_semantic_reservation() -> None:
     module = _module()
     scenario = module.DiscoveryScenario(
@@ -173,7 +169,6 @@ def test_three_workflow_repository_uses_one_semantic_reservation() -> None:
     "outcome",
     CONTINUABLE_OUTCOMES,
 )
-@APPLICATION_XFAIL
 def test_business_and_quarantine_outcomes_continue_later_candidates(
     outcome: str,
 ) -> None:
@@ -192,7 +187,6 @@ def test_business_and_quarantine_outcomes_continue_later_candidates(
 
 
 @pytest.mark.parametrize("outcome", FATAL_OUTCOMES)
-@APPLICATION_XFAIL
 def test_integrity_and_permanent_failures_stop_the_run(outcome: str) -> None:
     module = _module()
     result = module.evaluate_discovery_scenario(
