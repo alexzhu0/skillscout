@@ -13,7 +13,7 @@ import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable, NoReturn
+from typing import Callable, Iterable, Mapping, NoReturn
 
 _APPROVED_LOCK_DIGEST = (
     "b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
@@ -28,10 +28,307 @@ _MAX_LOCK_BYTES = 2_000_000
 _MAX_DISTRIBUTION_FILE_BYTES = 2_000_000
 _GENERATED_RECORD_NAMES = frozenset({"INSTALLER", "RECORD", "REQUESTED"})
 _VALIDATOR_MODULE_RECORD_PATH = "skills_ref/__init__.py"
+_DISCOVERY_QUERY_SET_NAME = "discovery-queries-v1.json"
+_DISCOVERY_STATE_REF = "refs/heads/skillscout-state"
+_DISCOVERY_DATABASE_LOCATORS = (
+    "state/databases/pipeline.sqlite3",
+    "state/databases/operations.sqlite3",
+    "state/databases/publication.sqlite3",
+)
+_DISCOVERY_DIGEST_BYTES = 65_536
 
 
 class PhaseThreeGateError(RuntimeError):
     """Sanitized fail-closed pre-import dependency authority failure."""
+
+
+@dataclass(frozen=True)
+class DiscoveryRuntimeConfig:
+    """Validated non-secret authority for the unprotected discovery graph."""
+
+    state_repository_id: int
+    state_repository_full_name: str
+    state_ref: str
+    query_set_path: Path
+    query_set: object
+    query_set_digest: str
+    pipeline_state: Path
+    operations_state: Path
+    publication_state: Path
+    semantic_provider: str
+    extractor_model_id: str
+    generator_model_id: str
+    reviewer_model_id: str
+    initial_state_root_digest: str
+    phase2_profile_version: str = "phase2-v1"
+    phase3_profile_version: str = "phase3-profile-v1"
+
+    def __post_init__(self) -> None:
+        from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+        if (
+            type(self.state_repository_id) is not int
+            or self.state_repository_id <= 0
+            or not _github_full_name(self.state_repository_full_name)
+            or self.state_ref != _DISCOVERY_STATE_REF
+            or not isinstance(self.query_set_path, Path)
+            or self.query_set_path.name != _DISCOVERY_QUERY_SET_NAME
+            or type(self.query_set) is not DiscoveryQuerySetV1
+            or self.query_set_digest != self.query_set.query_set_digest
+            or tuple(
+                os.fspath(path)
+                for path in (
+                    self.pipeline_state,
+                    self.operations_state,
+                    self.publication_state,
+                )
+            )
+            != _DISCOVERY_DATABASE_LOCATORS
+            or len(
+                {
+                    self.pipeline_state,
+                    self.operations_state,
+                    self.publication_state,
+                }
+            )
+            != 3
+            or self.semantic_provider not in {"openai", "deepseek"}
+            or not all(
+                _closed_identity(value)
+                for value in (
+                    self.extractor_model_id,
+                    self.generator_model_id,
+                    self.reviewer_model_id,
+                )
+            )
+            or self.phase2_profile_version != "phase2-v1"
+            or self.phase3_profile_version != "phase3-profile-v1"
+            or not _is_digest(self.initial_state_root_digest)
+        ):
+            raise ValueError("discovery runtime configuration rejected")
+
+
+def _is_digest(value: object) -> bool:
+    if type(value) is not str or len(value) != 71 or not value.startswith("sha256:"):
+        return False
+    return all(character in "0123456789abcdef" for character in value[7:])
+
+
+def _closed_identity(value: object) -> bool:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 256
+        and value.isascii()
+        and all(character.isalnum() or character in "._:/-" for character in value)
+    )
+
+
+def _github_full_name(value: object) -> bool:
+    if type(value) is not str or value.count("/") != 1 or len(value) > 201:
+        return False
+    return all(
+        part
+        and len(part) <= 100
+        and all(character.isalnum() or character in "._-" for character in part)
+        for part in value.split("/")
+    )
+
+
+def load_discovery_runtime_config(
+    *,
+    state_repository_id: str,
+    state_repository_full_name: str,
+    state_ref: str,
+    query_set_path: Path,
+    pipeline_state: Path,
+    operations_state: Path,
+    publication_state: Path,
+    semantic_provider: str,
+    extractor_model_id: str,
+    generator_model_id: str,
+    reviewer_model_id: str,
+    initial_state_root_digest: str,
+    query_set_digest: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> DiscoveryRuntimeConfig:
+    """Validate every non-secret fact before any credential or state access."""
+
+    del environ  # Deliberately accepted only to prove this phase never consults it.
+    try:
+        if (
+            type(state_repository_id) is not str
+            or not state_repository_id.isascii()
+            or not state_repository_id.isdecimal()
+            or state_repository_id.startswith("0")
+            or not isinstance(query_set_path, Path)
+            or query_set_path.name != _DISCOVERY_QUERY_SET_NAME
+        ):
+            raise ValueError
+        payload = _read_stable_private_file(
+            query_set_path,
+            max_bytes=_DISCOVERY_DIGEST_BYTES,
+        )
+        from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+        query_set = DiscoveryQuerySetV1.model_validate_json(payload, strict=True)
+        if (
+            query_set.query_set_digest is None
+            or (
+                query_set_digest is not None
+                and query_set_digest != query_set.query_set_digest
+            )
+        ):
+            raise ValueError
+        return DiscoveryRuntimeConfig(
+            state_repository_id=int(state_repository_id),
+            state_repository_full_name=state_repository_full_name,
+            state_ref=state_ref,
+            query_set_path=query_set_path,
+            query_set=query_set,
+            query_set_digest=query_set.query_set_digest,
+            pipeline_state=pipeline_state,
+            operations_state=operations_state,
+            publication_state=publication_state,
+            semantic_provider=semantic_provider,
+            extractor_model_id=extractor_model_id,
+            generator_model_id=generator_model_id,
+            reviewer_model_id=reviewer_model_id,
+            initial_state_root_digest=initial_state_root_digest,
+        )
+    except Exception:
+        raise ValueError("discovery runtime configuration rejected") from None
+
+
+def _required_credential(
+    source: Mapping[str, str],
+    name: str,
+) -> str:
+    try:
+        value = source[name]
+    except (KeyError, TypeError):
+        raise ValueError("discovery credential unavailable") from None
+    if type(value) is not str or not value:
+        raise ValueError("discovery credential unavailable")
+    return value
+
+
+class _LateStateDurabilityBarrier:
+    """Open the state writer only for one exact durability confirmation."""
+
+    def __init__(
+        self,
+        config: DiscoveryRuntimeConfig,
+        source: Mapping[str, str],
+    ) -> None:
+        self._config = config
+        self._source = source
+
+    def confirm(self, **arguments: object) -> object:
+        from skillscout.adapters.state_branch import (
+            StateBranchClient,
+            StateBranchDurabilityBarrier,
+            StateBranchStore,
+        )
+        from skillscout.domain.discovery import DiscoveryBudgetPolicyV1
+
+        client = StateBranchClient(
+            token=_required_credential(
+                self._source, "SKILLSCOUT_STATE_GITHUB_TOKEN"
+            ),
+            repository_id=self._config.state_repository_id,
+            repository_full_name=self._config.state_repository_full_name,
+        )
+        try:
+            barrier = StateBranchDurabilityBarrier(
+                state_store=StateBranchStore(client),
+                query_set_digest=self._config.query_set_digest,
+                budget_policy_digest=(
+                    DiscoveryBudgetPolicyV1().budget_policy_digest or ""
+                ),
+            )
+            return barrier.confirm(**arguments)
+        finally:
+            client.close()
+
+
+def build_discovery_application(
+    config: DiscoveryRuntimeConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+    operations_store_factory: Callable[[], object] | None = None,
+    phase2_factory: Callable[..., object] | None = None,
+    phase3_factory: Callable[..., object] | None = None,
+) -> object:
+    """Build a publication-incapable discovery application with lazy remotes."""
+
+    if type(config) is not DiscoveryRuntimeConfig:
+        raise ValueError("discovery runtime configuration rejected")
+    source = os.environ if environ is None else environ
+
+    def search_factory() -> object:
+        from skillscout.adapters.github import GitHubReadClient
+
+        return GitHubReadClient(
+            token=_required_credential(
+                source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
+            )
+        )
+
+    def state_restore() -> object:
+        from skillscout.adapters.state_branch import (
+            StateBranchClient,
+            StateBranchStore,
+        )
+
+        client = StateBranchClient(
+            token=_required_credential(
+                source, "SKILLSCOUT_STATE_GITHUB_TOKEN"
+            ),
+            repository_id=config.state_repository_id,
+            repository_full_name=config.state_repository_full_name,
+        )
+        try:
+            return StateBranchStore(client).restore()
+        finally:
+            client.close()
+
+    if operations_store_factory is None:
+        from skillscout.adapters.operations_state import OperationsStateStore
+
+        def default_operations_store_factory() -> object:
+            return OperationsStateStore(config.operations_state)
+
+        operations_store_factory = default_operations_store_factory
+    if phase2_factory is None:
+        from skillscout.application.pipeline import build_phase_two_runtime
+
+        def default_phase2_factory(state: object, processor: object) -> object:
+            return build_phase_two_runtime(state, processor).runner  # type: ignore[arg-type]
+
+        phase2_factory = default_phase2_factory
+    if phase3_factory is None:
+        from skillscout.application.phase3 import PhaseThreeApplication
+
+        def default_phase3_factory(**arguments: object) -> object:
+            return PhaseThreeApplication(**arguments)  # type: ignore[arg-type]
+
+        phase3_factory = default_phase3_factory
+
+    from skillscout.application.discovery import (
+        DiscoveryApplication,
+        DiscoveryDependencies,
+    )
+
+    return DiscoveryApplication(
+        DiscoveryDependencies(
+            search_factory=search_factory,
+            operations_store_factory=operations_store_factory,
+            state_restore=state_restore,
+            durability_barrier=_LateStateDurabilityBarrier(config, source),
+            phase2_factory=phase2_factory,
+            phase3_factory=phase3_factory,
+        )
+    )
 
 
 @dataclass(frozen=True)
