@@ -13,10 +13,6 @@ from skillscout.domain.discovery import DiscoveryStateRootV1
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "state_branch"
-STATE_XFAIL = pytest.mark.xfail(
-    strict=True,
-    reason="phase5-wave0-state-branch-missing",
-)
 SECRET_CANARIES = (
     "github_pat_STATE_BRANCH_CANARY",
     "-----BEGIN PRIVATE KEY-----",
@@ -69,7 +65,6 @@ def test_state_fixtures_are_bounded_and_contain_no_prose_or_secret_canary() -> N
             assert canary.encode() not in payload
 
 
-@STATE_XFAIL
 def test_state_client_exposes_only_fixed_git_object_capabilities() -> None:
     client_type = getattr(_state_module(), "StateBranchClient")
     public = {
@@ -102,7 +97,6 @@ def test_state_client_exposes_only_fixed_git_object_capabilities() -> None:
     )
 
 
-@STATE_XFAIL
 def test_absent_branch_bootstrap_and_valid_restore_are_distinct() -> None:
     module = _state_module()
     fixture = json.loads((FIXTURES / "valid_state.json").read_bytes())
@@ -135,7 +129,6 @@ def test_absent_branch_bootstrap_and_valid_restore_are_distinct() -> None:
         "prospective_secret",
     ),
 )
-@STATE_XFAIL
 def test_restore_and_prospective_tree_mutations_fail_before_authority(
     mutation: str,
 ) -> None:
@@ -159,7 +152,6 @@ def test_restore_and_prospective_tree_mutations_fail_before_authority(
         "reread_mismatch",
     ),
 )
-@STATE_XFAIL
 def test_parent_bound_non_force_conflict_stops_without_followup(
     case_name: str,
 ) -> None:
