@@ -1221,3 +1221,172 @@ def test_mixed_workflow_outcomes_persist_exact_handoff_and_degrade(
         item.outcome for item in snapshot.workflow_terminals
     ) == ("eligible_local_candidate", "semantic_outcome_unknown")
     assert snapshot.summary.status == "completed_degraded"
+
+
+@pytest.mark.parametrize(
+    "failing_close",
+    ("extractor", "github", "publication", "phase2_state"),
+)
+@pytest.mark.parametrize("primary_outcome", ("handled_terminal", "exception"))
+def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_close: str,
+    primary_outcome: str,
+) -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    discovery = importlib.import_module("skillscout.domain.discovery")
+    operations_module = importlib.import_module(
+        "skillscout.adapters.operations_state"
+    )
+    monkeypatch.chdir(tmp_path)
+    config = _runtime_config(bootstrap, tmp_path)
+    authority = bootstrap.discovery_run_authority(config)
+    closed: list[str] = []
+
+    class Resource:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.marker = True
+
+        @property
+        def effect_scope(self):
+            return importlib.import_module(
+                "skillscout.domain.enums"
+            ).EffectScope.REMOTE_READ
+
+        def export_owned_state(self) -> object:
+            return object()
+
+        def close(self) -> None:
+            closed.append(self.label)
+            if self.label == failing_close:
+                raise RuntimeError("SECRET cleanup failure")
+
+    class FakePhaseTwoState(Resource):
+        def __init__(self, _path: Path) -> None:
+            super().__init__("phase2_state")
+
+    class Barrier:
+        def confirm(self, **_kwargs: object) -> object:
+            raise AssertionError(
+                "handled failure does not confirm another transition"
+            )
+
+    class PrimaryFailure(RuntimeError):
+        pass
+
+    def build_runtime(_state, processor, *, semantic_durability, **_kwargs):
+        assert processor.github.marker
+        assert processor.openai.marker
+        semantic_durability._publication_store.export_owned_state()
+
+        class Runner:
+            def run(self, _subject, _output):
+                if primary_outcome == "exception":
+                    raise PrimaryFailure("SECRET primary failure")
+                raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
+
+        return SimpleNamespace(runner=Runner())
+
+    monkeypatch.setattr(
+        "skillscout.adapters.github.GitHubReadClient",
+        lambda **_kwargs: Resource("github"),
+    )
+    monkeypatch.setattr(
+        "skillscout.adapters.openai_extract.OpenAIExtractionClient",
+        lambda **_kwargs: Resource("extractor"),
+    )
+    monkeypatch.setattr(
+        "skillscout.adapters.publication_state.PublicationStateStore",
+        lambda _path: Resource("publication"),
+    )
+    monkeypatch.setattr(
+        "skillscout.adapters.state.SQLiteStateStore",
+        FakePhaseTwoState,
+    )
+    monkeypatch.setattr(
+        "skillscout.application.pipeline.build_phase_two_runtime",
+        build_runtime,
+    )
+
+    application = bootstrap.build_discovery_application(
+        config,
+        environ={"SKILLSCOUT_SOURCE_GITHUB_TOKEN": "bounded-test-token"},
+    )
+    factory = application._dependencies.phase2_factory
+    repository_values = {
+        "schema_version": "search-repository-observation-v1",
+        "repository_id": 101,
+        "owner": "example",
+        "name": "workflow",
+        "full_name": "example/workflow",
+        "private": False,
+        "visibility": "public",
+        "fork": False,
+        "archived": False,
+        "disabled": False,
+        "default_branch": "main",
+    }
+    repository = discovery.SearchRepositoryObservationV1(
+        **repository_values,
+        observation_digest=sha256_digest(repository_values),
+    )
+    candidate_values = {
+        "schema_version": "discovered-candidate-v1",
+        "discovery_run_authority_digest": authority.authority_digest,
+        "repository": repository,
+        "source_page_digest": "sha256:" + ("2" * 64),
+        "query_ordinal": 1,
+        "page": 1,
+        "item_ordinal": 1,
+        "dedup_disposition": "first_seen",
+        "discovery_ordinal": 1,
+        "first_seen_query_ordinal": 1,
+        "first_seen_page": 1,
+        "first_seen_item_ordinal": 1,
+    }
+    candidate = discovery.DiscoveredCandidateV1(
+        **candidate_values,
+        candidate_digest=sha256_digest(
+            {
+                key: (
+                    value.model_dump(mode="json", exclude_none=False)
+                    if hasattr(value, "model_dump")
+                    else value
+                )
+                for key, value in candidate_values.items()
+            }
+        ),
+    )
+    operations = operations_module.OperationsStateStore(
+        config.operations_state
+    )
+    try:
+        arguments = {
+            "candidate": candidate,
+            "discovery_authority": authority,
+            "operations_store": operations,
+            "durability_barrier": Barrier(),
+            "observed_head": "b" * 40,
+            "prior_root_digest": config.initial_state_root_digest,
+            "phase3_factory": lambda **_kwargs: object(),
+        }
+        if primary_outcome == "exception":
+            with pytest.raises(PrimaryFailure, match="primary failure"):
+                factory(**arguments)
+            execution = None
+        else:
+            execution = factory(**arguments)
+    finally:
+        operations.close()
+
+    if execution is not None:
+        assert execution.terminal.outcome == "permanent_failure"
+        assert execution.state_commit_sha == "b" * 40
+    assert set(closed) == {
+        "extractor",
+        "github",
+        "publication",
+        "phase2_state",
+    }

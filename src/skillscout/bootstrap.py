@@ -410,6 +410,18 @@ class _LazyDiscoveryCapability:
                 close()
 
 
+def _close_discovery_resources(*resources: object) -> None:
+    """Release every resource without replacing the classified primary outcome."""
+
+    for resource in resources:
+        try:
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
+
 def build_discovery_application(
     config: DiscoveryRuntimeConfig,
     *,
@@ -735,10 +747,12 @@ def build_discovery_application(
                     state_root_digest=state_root,
                 )
             finally:
-                extractor.close()
-                github.close()
-                publication.close()
-                phase2_state.close()
+                _close_discovery_resources(
+                    extractor,
+                    github,
+                    publication,
+                    phase2_state,
+                )
 
             candidate_source = SQLitePhaseTwoCandidateSource(config.pipeline_state)
             descriptors = derive_candidate_subject_descriptors(
