@@ -530,7 +530,11 @@ def build_discovery_application(
                 build_phase_two_runtime,
             )
             from skillscout.application.processors import PhaseTwoProcessor
-            from skillscout.application.ports import ErrorCode, SafeFailure
+            from skillscout.application.ports import (
+                CandidateSourceUnavailable,
+                ErrorCode,
+                SafeFailure,
+            )
             from skillscout.cli import (
                 CandidateValidationAdapter,
                 LocalCandidateArtifactProjector,
@@ -789,10 +793,36 @@ def build_discovery_application(
                 )
 
             candidate_source = SQLitePhaseTwoCandidateSource(config.pipeline_state)
-            descriptors = derive_candidate_subject_descriptors(
-                candidate_source,
-                phase2_run_id=phase2_summary.run_id,
-            )
+            try:
+                descriptors = derive_candidate_subject_descriptors(
+                    candidate_source,
+                    phase2_run_id=phase2_summary.run_id,
+                )
+            except CandidateSourceUnavailable:
+                terminal_values = {
+                    "schema_version": "discovery-candidate-terminal-v1",
+                    "discovery_run_authority_digest": (
+                        discovery_authority.authority_digest
+                    ),
+                    "repository_id": candidate.repository.repository_id,
+                    "semantic_reservation_digest": (
+                        semantic_reservation.reservation_digest
+                        if semantic_reservation is not None
+                        else None
+                    ),
+                    "outcome": "permanent_failure",
+                    "workflow_authority_digests": (),
+                    "recorded_at": _discovery_timestamp(),
+                }
+                return DiscoveryCandidateExecution(
+                    terminal=DiscoveryCandidateTerminalV1(
+                        **terminal_values,
+                        terminal_digest=sha256_digest(terminal_values),
+                    ),
+                    eligible_candidates=(),
+                    state_commit_sha=state_head,
+                    state_root_digest=state_root,
+                )
             workflow_executions: list[DiscoveryWorkflowExecution] = []
             if not descriptors:
                 filter_result = next(
@@ -823,9 +853,13 @@ def build_discovery_application(
                         descriptor_path = Path(directory) / "candidate.json"
                         descriptor_path.write_bytes(canonical_json_bytes(descriptor))
                         descriptor_path.chmod(0o600)
-                        resolved = load_candidate_subject(
-                            descriptor_path, candidate_source
-                        )
+                        try:
+                            resolved = load_candidate_subject(
+                                descriptor_path, candidate_source
+                            )
+                        except CandidateSourceUnavailable:
+                            fatal_outcome = "permanent_failure"
+                            break
                         workflow_authority = _execution_authority(
                             source=resolved, profile=profile
                         )

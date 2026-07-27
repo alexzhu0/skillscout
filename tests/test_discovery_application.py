@@ -1233,7 +1233,12 @@ def test_mixed_workflow_outcomes_persist_exact_handoff_and_degrade(
 )
 @pytest.mark.parametrize(
     "primary_outcome",
-    ("handled_terminal", "exception", "candidate_source_unavailable"),
+    (
+        "handled_terminal",
+        "exception",
+        "candidate_source_unavailable",
+        "descriptor_source_unavailable",
+    ),
 )
 def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
     tmp_path: Path,
@@ -1325,6 +1330,18 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
         monkeypatch.setattr(
             "skillscout.application.candidate_source."
             "derive_candidate_subject_descriptors",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                CandidateSourceUnavailable()
+            ),
+        )
+    elif primary_outcome == "descriptor_source_unavailable":
+        monkeypatch.setattr(
+            "skillscout.application.candidate_source."
+            "derive_candidate_subject_descriptors",
+            lambda *_args, **_kwargs: ({"bounded": "descriptor"},),
+        )
+        monkeypatch.setattr(
+            "skillscout.application.candidate_source.load_candidate_subject",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 CandidateSourceUnavailable()
             ),
