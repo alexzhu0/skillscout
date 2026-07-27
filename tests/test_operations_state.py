@@ -462,6 +462,79 @@ def test_outcome_unknown_attempt_is_consumed_and_blocks_automatic_reentry(
             )
 
 
+def test_semantic_attempt_identity_isolated_per_workflow_authority(
+    tmp_path: Path,
+) -> None:
+    """Sibling Phase 3 workflows must never share one attempt key."""
+
+    module = _operations_module()
+    workflow_a = sha256_digest({"workflow": "a"})
+    workflow_b = sha256_digest({"workflow": "b"})
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        store.seed_test_reservations(
+            run_id="discovery-siblings",
+            repository_id=910001,
+        )
+        first = store.record_semantic_attempt(
+            run_id="discovery-siblings",
+            repository_id=910001,
+            workflow_authority_digest=workflow_a,
+            stage="generator",
+            attempt_no=1,
+            status="started",
+            recorded_at="2026-07-27T12:00:00.000000Z",
+        )
+        second = store.record_semantic_attempt(
+            run_id="discovery-siblings",
+            repository_id=910001,
+            workflow_authority_digest=workflow_b,
+            stage="generator",
+            attempt_no=1,
+            status="started",
+            recorded_at="2026-07-27T12:00:01.000000Z",
+        )
+
+        assert first.workflow_authority_digest == workflow_a
+        assert second.workflow_authority_digest == workflow_b
+        assert first.attempt_digest != second.attempt_digest
+
+
+def test_operations_store_rejects_legacy_ambiguous_semantic_attempt_schema(
+    tmp_path: Path,
+) -> None:
+    """A database without workflow-bound attempt identity fails closed."""
+
+    module = _operations_module()
+    database = tmp_path / "legacy-operations.sqlite3"
+    with module.OperationsStateStore(database) as store:
+        store.seed_test_reservations(
+            run_id="discovery-legacy",
+            repository_id=910001,
+        )
+
+    connection = sqlite3.connect(":memory:")
+    connection.deserialize(database.read_bytes())
+    connection.execute("ALTER TABLE operations_semantic_attempts RENAME TO legacy_attempts")
+    connection.execute(
+        """CREATE TABLE operations_semantic_attempts (
+            attempt_digest TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            repository_id INTEGER NOT NULL,
+            stage TEXT NOT NULL,
+            attempt_no INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            attempt_json TEXT NOT NULL,
+            UNIQUE (run_id, repository_id, stage, attempt_no)
+        )"""
+    )
+    connection.commit()
+    database.write_bytes(connection.serialize())
+    connection.close()
+
+    with pytest.raises(module.OperationsIntegrityError):
+        module.OperationsStateStore(database)
+
+
 def test_owned_export_rebuild_and_projection_equality_fail_closed(
     tmp_path: Path,
 ) -> None:

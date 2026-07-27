@@ -1926,23 +1926,30 @@ def test_concurrent_publication_write_fails_closed_until_lock_holder_exits(
 
 class _SemanticOwner:
     def __init__(self) -> None:
-        self.records: list[tuple[str, int, str, int, str, str]] = []
+        self.records: list[tuple[str, int, str, str, int, str, str]] = []
 
     def record_semantic_attempt(
         self,
         *,
         run_id: str,
         repository_id: int,
+        workflow_authority_digest: str,
         stage: str,
         attempt_no: int,
         status: str,
         recorded_at: str,
     ):
-        key = (run_id, repository_id, stage, attempt_no)
-        existing = next((item for item in self.records if item[:4] == key), None)
+        key = (
+            run_id,
+            repository_id,
+            workflow_authority_digest,
+            stage,
+            attempt_no,
+        )
+        existing = next((item for item in self.records if item[:5] == key), None)
         if existing is not None:
-            if existing[4] == status:
-                recorded_at = existing[5]
+            if existing[5] == status:
+                recorded_at = existing[6]
             else:
                 self.records.remove(existing)
         value = (*key, status, recorded_at)
