@@ -179,6 +179,9 @@ IMPORT_CARVE_OUTS: dict[str, frozenset[str]] = {
     "adapters/openai_review.py": frozenset({"openai"}),
     "adapters/skills_ref.py": frozenset({"importlib"}),
 }
+EXACT_IMPORT_CARVE_OUTS: dict[str, frozenset[str]] = {
+    "adapters/github.py": frozenset({"urllib.parse"}),
+}
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -194,6 +197,17 @@ def _qualified_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
         parent = _qualified_name(node.value, aliases)
         return f"{parent}.{node.attr}" if parent else None
     return None
+
+
+def _is_forbidden_production_import(relative: str, imported_module: str) -> bool:
+    if imported_module in EXACT_IMPORT_CARVE_OUTS.get(relative, frozenset()):
+        return False
+    return any(
+        imported_module == forbidden
+        or imported_module.startswith(f"{forbidden}.")
+        for forbidden in FORBIDDEN_PRODUCTION_MODULES
+        - IMPORT_CARVE_OUTS.get(relative, frozenset())
+    )
 
 
 def _fixture_with_goal(source: Path, target: Path, goal: str) -> Path:
@@ -825,11 +839,7 @@ def test_production_capability_surface_remains_local_only() -> None:
         f"{relative}:{imported_module}"
         for relative, imported in module_imports.items()
         for imported_module in imported
-        if any(
-            imported_module == forbidden or imported_module.startswith(f"{forbidden}.")
-            for forbidden in FORBIDDEN_PRODUCTION_MODULES
-            - IMPORT_CARVE_OUTS.get(relative, frozenset())
-        )
+        if _is_forbidden_production_import(relative, imported_module)
     }
     assert forbidden_imports == set()
     assert forbidden_calls == []
@@ -849,6 +859,22 @@ def test_production_capability_surface_remains_local_only() -> None:
         "pytest==9.1.1",
         "ruff==0.15.21",
     }
+
+
+def test_production_capability_import_carveouts_are_exact() -> None:
+    assert EXACT_IMPORT_CARVE_OUTS == {
+        "adapters/github.py": frozenset({"urllib.parse"})
+    }
+    assert not _is_forbidden_production_import(
+        "adapters/github.py", "urllib.parse"
+    )
+    assert _is_forbidden_production_import("adapters/github.py", "urllib")
+    assert _is_forbidden_production_import(
+        "adapters/github.py", "urllib.request"
+    )
+    assert _is_forbidden_production_import(
+        "application/phase3.py", "urllib.parse"
+    )
 
 
 def test_phase3_acceptance_protects_repository_subject_and_loader_contract(

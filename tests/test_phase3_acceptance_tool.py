@@ -54,6 +54,9 @@ def _replace_once(repository: Path, relative: str, old: str, new: str) -> None:
 
 def test_acceptance_inspector_is_stdlib_only_and_current_tree_passes() -> None:
     assert inspector.verify_phase3_acceptance(PROJECT_ROOT) is None
+    assert inspector.EXACT_IMPORT_CARVE_OUTS == {
+        "adapters/github.py": frozenset({"urllib.parse"})
+    }
     imported = inspector.imported_top_level_modules(INSPECTOR_PATH)
     assert not imported & {"httpx", "openai", "pydantic", "pytest", "skillscout", "skills_ref"}
 
@@ -148,6 +151,8 @@ def test_fixed_registry_rejects_missing_duplicate_or_unexpected_checks(
         ("domain/models.py", "\nfrom skills_ref import validate\n"),
         ("application/phase3.py", "\nimport subprocess\n"),
         ("application/phase3.py", "\nimport requests\n"),
+        ("application/phase3.py", "\nfrom urllib.parse import urlsplit\n"),
+        ("adapters/github.py", "\nfrom urllib.request import urlopen\n"),
     ],
 )
 def test_import_and_capability_allowlists_reject_additions(

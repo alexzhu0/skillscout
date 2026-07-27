@@ -63,6 +63,9 @@ _FORBIDDEN_PRODUCTION_IMPORTS = frozenset(
         "urllib",
     }
 )
+EXACT_IMPORT_CARVE_OUTS = {
+    "adapters/github.py": frozenset({"urllib.parse"}),
+}
 _FORBIDDEN_CALLS = frozenset(
     {
         "compile",
@@ -282,6 +285,21 @@ def _imports_and_calls(tree: ast.Module) -> tuple[set[str], set[str]]:
     return imported, calls
 
 
+def _is_forbidden_production_import(
+    module_relative: str,
+    imported_module: str,
+) -> bool:
+    if imported_module in EXACT_IMPORT_CARVE_OUTS.get(
+        module_relative, frozenset()
+    ):
+        return False
+    return any(
+        imported_module == blocked
+        or imported_module.startswith(f"{blocked}.")
+        for blocked in _FORBIDDEN_PRODUCTION_IMPORTS
+    )
+
+
 def _check_import_capability_isolation(repository_root: Path) -> tuple[str, ...]:
     openai_importers: set[str] = set()
     skills_ref_importers: set[str] = set()
@@ -296,10 +314,7 @@ def _check_import_capability_isolation(repository_root: Path) -> tuple[str, ...]
                 skills_ref_importers.add(module_relative)
             if imported == "httpx" or imported.startswith("httpx."):
                 httpx_importers.add(module_relative)
-            if any(
-                imported == blocked or imported.startswith(f"{blocked}.")
-                for blocked in _FORBIDDEN_PRODUCTION_IMPORTS
-            ):
+            if _is_forbidden_production_import(module_relative, imported):
                 forbidden.append(f"{module_relative}:{imported}")
         forbidden.extend(
             f"{module_relative}:{call}" for call in calls if call in _FORBIDDEN_CALLS
