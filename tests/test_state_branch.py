@@ -7,6 +7,7 @@ import inspect
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from skillscout.domain.discovery import DiscoveryStateRootV1
@@ -170,3 +171,102 @@ def test_parent_bound_non_force_conflict_stops_without_followup(
         [],
         [(fixture["observed_head"],)],
     )
+
+
+def test_state_client_accepts_only_expected_recursive_tree_directories() -> None:
+    module = _state_module()
+    tree_sha = "a" * 40
+    root_sha = "b" * 40
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == f"/repos/source-org/source/git/trees/{tree_sha}"
+        assert request.url.params.get("recursive") == "1"
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/json",
+                "x-github-request-id": "STATE-TREE-1",
+            },
+            json={
+                "sha": tree_sha,
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": "state",
+                        "mode": "040000",
+                        "type": "tree",
+                        "sha": "c" * 40,
+                    },
+                    {
+                        "path": "state/databases",
+                        "mode": "040000",
+                        "type": "tree",
+                        "sha": "d" * 40,
+                    },
+                    {
+                        "path": "state/root.json",
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": root_sha,
+                        "size": 100,
+                    },
+                ],
+            },
+        )
+
+    client = module.StateBranchClient(
+        token="test-token",
+        repository_id=101,
+        repository_full_name="source-org/source",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        assert client.get_tree(tree_sha) == (
+            module.StateTreeEntry(
+                path="state/root.json",
+                sha=root_sha,
+                mode="100644",
+                size=100,
+            ),
+        )
+    finally:
+        client.close()
+
+
+def test_state_client_rejects_unexpected_recursive_tree_directory() -> None:
+    module = _state_module()
+    tree_sha = "a" * 40
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/json",
+                "x-github-request-id": "STATE-TREE-2",
+            },
+            json={
+                "sha": tree_sha,
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": "state/logs",
+                        "mode": "040000",
+                        "type": "tree",
+                        "sha": "c" * 40,
+                    }
+                ],
+            },
+        )
+
+    client = module.StateBranchClient(
+        token="test-token",
+        repository_id=101,
+        repository_full_name="source-org/source",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(Exception):
+            client.get_tree(tree_sha)
+    finally:
+        client.close()
