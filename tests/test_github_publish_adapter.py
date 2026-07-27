@@ -138,6 +138,24 @@ def test_tree_enumerates_only_owned_catalog_subtree_and_rejects_truncation() -> 
             client.get_tree(TREE, recursive=True)
 
 
+def test_only_exact_machine_ref_404_has_a_closed_not_found_result() -> None:
+    from skillscout.adapters.github_publish import RefNotFound
+    from skillscout.application.ports import SafeFailure
+
+    path = f"{REPOSITORY}/git/ref/heads/{HEAD}"
+    for status, expected in ((404, RefNotFound), (403, SafeFailure), (500, SafeFailure)):
+        routes = github_publish_routes()
+        routes[("GET", path)] = RecordedResponse(
+            status,
+            {"content-type": "application/json", "x-github-request-id": "REQ-REF"},
+            b'{"message":"provider text must stay closed"}',
+        )
+        recorded = RecordedTransport(routes)
+        with _adapter(recorded) as client, pytest.raises(expected):
+            client.get_ref()
+        assert [request.method for request in recorded.requests] == ["GET"]
+
+
 def test_review_observations_are_bounded_users_only_and_team_state_is_ambiguous() -> None:
     with _adapter(RecordedTransport(github_publish_routes())) as client:
         requested = client.get_requested_reviewers(number=42)

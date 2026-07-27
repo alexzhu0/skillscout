@@ -71,6 +71,10 @@ class PullObservation:
     body: str | None
 
 
+class RefNotFound(Exception):
+    """Closed signal emitted only for an exact machine-ref HTTP 404."""
+
+
 def _fail(code: ErrorCode = ErrorCode.STAGE_PERMANENT_FAILURE) -> None:
     raise SafeFailure(code)
 
@@ -162,7 +166,11 @@ class GitHubPublishClient:
 
     def get_ref(self, ref: str | None = None) -> RefObservation:
         branch = self._machine_branch(ref)
-        raw = self._json("GET", f"/repos/{self._repository}/git/ref/heads/{branch}")
+        raw = self._json(
+            "GET",
+            f"/repos/{self._repository}/git/ref/heads/{branch}",
+            allow_not_found=True,
+        )
         if not isinstance(raw, dict) or raw.get("ref") != f"refs/heads/{branch}" or not isinstance(raw.get("object"), dict):
             _fail()
         return RefObservation(raw["ref"], _sha(raw["object"].get("sha")))
@@ -326,7 +334,15 @@ class GitHubPublishClient:
             _fail()
         return RequestedReviewers(value)
 
-    def _json(self, method: str, path: str, payload: dict[str, object] | None = None, *, cap: int = _MAX_BODY) -> Any:
+    def _json(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None = None,
+        *,
+        cap: int = _MAX_BODY,
+        allow_not_found: bool = False,
+    ) -> Any:
         try:
             response = self._client.send(self._client.build_request(method, path, json=payload), stream=True)
         except httpx.TransportError:
@@ -339,6 +355,8 @@ class GitHubPublishClient:
                 _fail()
             if response.status_code == 429 or response.status_code >= 500:
                 _fail(ErrorCode.STAGE_TRANSIENT_FAILURE)
+            if response.status_code == 404 and allow_not_found:
+                raise RefNotFound
             if not 200 <= response.status_code < 300 or "application/json" not in response.headers.get("content-type", ""):
                 _fail()
             body = self._body(response, cap)

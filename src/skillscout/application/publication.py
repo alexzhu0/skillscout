@@ -90,12 +90,11 @@ class PublicationApplication:
 
     @staticmethod
     def _maybe_ref(remote: object) -> object | None:
+        from skillscout.adapters.github_publish import RefNotFound
+
         try:
             return remote.get_ref()
-        except Exception:
-            # The closed adapter converts a missing machine ref to a safe
-            # failure.  It is safe only while no PR claims the same identity;
-            # all other provider failures are rejected by later verification.
+        except RefNotFound:
             return None
 
     def _reconcile_existing(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, base_sha: str, ref: object | None, pull: object) -> PublicationApplicationResult | None:
