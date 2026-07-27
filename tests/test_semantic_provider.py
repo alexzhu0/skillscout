@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import openai
 import pytest
 
 from recorded_transport import RecordedResponse, RecordedTransport
@@ -132,12 +133,14 @@ def test_deepseek_chat_request_is_one_toolless_strict_json_call() -> None:
     )
     client = create_semantic_client(
         settings,
+        sdk=openai,
         api_key=CANARY_KEY,
         http_client=httpx.Client(transport=recorded.transport()),
     )
 
     result = request_deepseek_json(
         client,
+        sdk=openai,
         model=DEEPSEEK_MODEL,
         instructions="trusted instructions",
         user_payload="untrusted payload",
@@ -175,7 +178,7 @@ def test_deepseek_missing_secret_fails_closed_and_profile_stays_nonsecret() -> N
         }
     )
     with pytest.raises(SafeFailure) as failure:
-        create_semantic_client(settings, environ={})
+        create_semantic_client(settings, sdk=openai, environ={})
     assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
 
     profile = PhaseThreeRuntimeProfile.from_configured_models(
@@ -211,6 +214,7 @@ def test_deepseek_provider_errors_are_closed_without_hidden_retry(
     )
     client = create_semantic_client(
         settings,
+        sdk=openai,
         api_key=CANARY_KEY,
         http_client=httpx.Client(transport=recorded.transport()),
     )
@@ -218,6 +222,7 @@ def test_deepseek_provider_errors_are_closed_without_hidden_retry(
     with pytest.raises(SafeFailure) as failure:
         request_deepseek_json(
             client,
+            sdk=openai,
             model=DEEPSEEK_MODEL,
             instructions="trusted",
             user_payload="untrusted",
@@ -254,12 +259,14 @@ def test_deepseek_response_must_be_single_terminal_strict_schema(
     )
     client = create_semantic_client(
         settings,
+        sdk=openai,
         api_key=CANARY_KEY,
         http_client=httpx.Client(transport=recorded.transport()),
     )
 
     result = request_deepseek_json(
         client,
+        sdk=openai,
         model=DEEPSEEK_MODEL,
         instructions="trusted",
         user_payload="untrusted",

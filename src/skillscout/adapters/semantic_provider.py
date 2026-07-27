@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Generic, Literal, Mapping, TypeVar
 
-import openai
 from pydantic import BaseModel, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
@@ -94,10 +93,11 @@ def resolve_semantic_provider(
 def create_semantic_client(
     settings: SemanticProviderSettings,
     *,
+    sdk: Any,
     api_key: str | None = None,
     environ: Mapping[str, str] | None = None,
     http_client: Any = None,
-) -> openai.OpenAI:
+) -> Any:
     """Bind exactly one provider credential to a zero-retry SDK client."""
 
     if type(settings) is not SemanticProviderSettings:
@@ -115,12 +115,13 @@ def create_semantic_client(
         if settings.base_url != DEEPSEEK_OFFICIAL_BASE_URL:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         arguments["base_url"] = DEEPSEEK_OFFICIAL_BASE_URL
-    return openai.OpenAI(**arguments)
+    return sdk.OpenAI(**arguments)
 
 
 def request_deepseek_json(
-    client: openai.OpenAI,
+    client: Any,
     *,
+    sdk: Any,
     model: str,
     instructions: str,
     user_payload: str,
@@ -159,13 +160,13 @@ def request_deepseek_json(
             extra_body={"thinking": {"type": "disabled"}},
         )
     except (
-        openai.RateLimitError,
-        openai.InternalServerError,
-        openai.APITimeoutError,
-        openai.APIConnectionError,
+        sdk.RateLimitError,
+        sdk.InternalServerError,
+        sdk.APITimeoutError,
+        sdk.APIConnectionError,
     ):
         raise SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE) from None
-    except openai.APIError:
+    except sdk.APIError:
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
 
     choices = response.choices

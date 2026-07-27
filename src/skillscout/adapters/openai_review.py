@@ -90,6 +90,7 @@ class OpenAIReviewClient:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         self._client = create_semantic_client(
             settings,
+            sdk=openai,
             api_key=api_key,
             http_client=http_client,
         )
@@ -147,6 +148,7 @@ class OpenAIReviewClient:
         if self._provider is SemanticProvider.DEEPSEEK:
             deepseek = request_deepseek_json(
                 self._client,
+                sdk=openai,
                 model=self._model,
                 instructions=REVIEWER_INSTRUCTIONS_V1,
                 user_payload=envelope,

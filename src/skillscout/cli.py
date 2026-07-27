@@ -381,19 +381,33 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     )
 
     def generator_factory() -> object:
-        client = OpenAIGenerationClient(
-            model=profile.configured_generator_model_id,
-            max_output_tokens=profile.max_generator_output_tokens,
-            provider_settings=provider,
+        client = (
+            OpenAIGenerationClient(
+                model=profile.configured_generator_model_id,
+                max_output_tokens=profile.max_generator_output_tokens,
+            )
+            if provider.provider.value == "openai"
+            else OpenAIGenerationClient(
+                model=profile.configured_generator_model_id,
+                max_output_tokens=profile.max_generator_output_tokens,
+                provider_settings=provider,
+            )
         )
         clients.append(client)
         return client
 
     def reviewer_factory() -> object:
-        client = OpenAIReviewClient(
-            model=profile.configured_reviewer_model_id,
-            max_output_tokens=profile.max_reviewer_output_tokens,
-            provider_settings=provider,
+        client = (
+            OpenAIReviewClient(
+                model=profile.configured_reviewer_model_id,
+                max_output_tokens=profile.max_reviewer_output_tokens,
+            )
+            if provider.provider.value == "openai"
+            else OpenAIReviewClient(
+                model=profile.configured_reviewer_model_id,
+                max_output_tokens=profile.max_reviewer_output_tokens,
+                provider_settings=provider,
+            )
         )
         clients.append(client)
         return client
@@ -572,14 +586,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider = resolve_semantic_provider()
             subject = load_subject(arguments.subject)
             state = SQLiteStateStore(arguments.state)
+            extractor = (
+                OpenAIExtractionClient()
+                if provider.provider.value == "openai"
+                else OpenAIExtractionClient(
+                    model=provider.extract_model,
+                    provider_settings=provider,
+                )
+            )
             runtime = build_phase_two_runtime(
                 state,
                 PhaseTwoProcessor(
                     GitHubReadClient(),
-                    OpenAIExtractionClient(
-                        model=provider.extract_model,
-                        provider_settings=provider,
-                    ),
+                    extractor,
                 ),
             )
             payload = runtime.runner.run(
