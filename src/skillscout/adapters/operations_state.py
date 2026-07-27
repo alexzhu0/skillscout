@@ -2705,7 +2705,12 @@ def restore_three_store_bundle(
         budget_policy_digest=bundle.root.budget_policy_digest,
         created_at=bundle.root.created_at,
     )
-    if prospective != bundle or expected_projection != projection:
+    if (
+        prospective.root != bundle.root
+        or len(prospective.files) != len(bundle.files)
+        or prospective.content_by_path() != bundle.content_by_path()
+        or expected_projection != projection
+    ):
         raise OperationsIntegrityError("bundle projection equality failed")
 
     SQLiteStateStore.rebuild_owned_state(pipeline_path, pipeline)

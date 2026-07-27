@@ -843,6 +843,52 @@ def test_three_store_bundle_has_exact_paths_and_round_trips_owner_projections(
     ) == original
 
 
+def test_three_store_restore_accepts_state_branch_file_order(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    pipeline = SQLiteStateStore(tmp_path / "pipeline.sqlite3")
+    operations = module.OperationsStateStore(tmp_path / "operations.sqlite3")
+    publication = PublicationStateStore(tmp_path / "publication.sqlite3")
+    try:
+        bundle = module.assemble_three_store_bundle(
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=None,
+            state_parent_commit_sha="0" * 40,
+            query_set_digest=DIGEST_A,
+            budget_policy_digest=DIGEST_B,
+            created_at=TIMESTAMP,
+        )
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+    root_file = next(item for item in bundle.files if item.path == "state/root.json")
+    restored_files = (
+        root_file,
+        *sorted(
+            (item for item in bundle.files if item.path != "state/root.json"),
+            key=lambda item: item.path,
+        ),
+    )
+    restored_bundle = type(bundle)(bundle.root, restored_files)
+    assert restored_bundle != bundle
+    assert restored_bundle.root == bundle.root
+    assert restored_bundle.content_by_path() == bundle.content_by_path()
+
+    restored = tmp_path / "restored"
+    restored.mkdir(mode=0o700)
+    module.restore_three_store_bundle(
+        restored_bundle,
+        pipeline_path=restored / "pipeline.sqlite3",
+        operations_path=restored / "operations.sqlite3",
+        publication_path=restored / "publication.sqlite3",
+    )
+
+
 @pytest.mark.parametrize("damage", ("swapped_database", "object", "partial"))
 def test_three_store_restore_rejects_bundle_mismatch_before_reuse(
     tmp_path: Path,
