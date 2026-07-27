@@ -32,6 +32,7 @@ jobs:
       eligible_candidates_json: ${{ steps.handoff.outputs.eligible_candidates_json }}
       eligible_candidates_digest: ${{ steps.handoff.outputs.eligible_candidates_digest }}
     env:
+      UV_LINK_MODE: copy
       STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
       STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
       INITIAL_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST }}
@@ -119,6 +120,7 @@ jobs:
     permissions:
       contents: read
     env:
+      UV_LINK_MODE: copy
       DISCOVERY_RUN_ID: ${{ needs.discovery.outputs.discovery_run_id }}
       STATE_ROOT_DIGEST: ${{ needs.discovery.outputs.state_root_digest }}
       STATE_COMMIT_SHA: ${{ needs.discovery.outputs.state_commit_sha }}
