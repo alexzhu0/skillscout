@@ -54,6 +54,27 @@ def _replace_once(repository: Path, relative: str, old: str, new: str) -> None:
 
 def test_acceptance_inspector_is_stdlib_only_and_current_tree_passes() -> None:
     assert inspector.verify_phase3_acceptance(PROJECT_ROOT) is None
+    assert inspector.EXPECTED_HTTPX_IMPORTERS == frozenset(
+        {
+            "adapters/github.py",
+            "adapters/github_publish.py",
+            "adapters/state_branch.py",
+        }
+    )
+    assert inspector.EXPECTED_STATE_BRANCH_CLIENT_METHODS == frozenset(
+        {
+            "close",
+            "get_state_ref",
+            "get_commit",
+            "get_tree",
+            "get_blob",
+            "create_blob",
+            "create_tree",
+            "create_commit",
+            "create_state_ref",
+            "update_state_ref",
+        }
+    )
     assert inspector.EXACT_IMPORT_CARVE_OUTS == {
         "adapters/github.py": frozenset({"urllib.parse"})
     }
@@ -151,6 +172,7 @@ def test_fixed_registry_rejects_missing_duplicate_or_unexpected_checks(
         ("domain/models.py", "\nfrom skills_ref import validate\n"),
         ("application/phase3.py", "\nimport subprocess\n"),
         ("application/phase3.py", "\nimport requests\n"),
+        ("application/phase3.py", "\nimport httpx\n"),
         ("application/phase3.py", "\nfrom urllib.parse import urlsplit\n"),
         ("adapters/github.py", "\nfrom urllib.request import urlopen\n"),
     ],
@@ -189,7 +211,11 @@ def test_exact_openai_and_skills_ref_importer_sets_are_required(
 
 @pytest.mark.parametrize(
     "relative",
-    ("adapters/github.py", "adapters/github_publish.py"),
+    (
+        "adapters/github.py",
+        "adapters/github_publish.py",
+        "adapters/state_branch.py",
+    ),
 )
 def test_exact_httpx_importer_set_is_required(
     acceptance_repository: Path, relative: str
@@ -199,6 +225,43 @@ def test_exact_httpx_importer_set_is_required(
         f"src/skillscout/{relative}",
         "import httpx",
         "import json",
+    )
+
+    with pytest.raises(inspector.AcceptanceError):
+        inspector.verify_phase3_acceptance(acceptance_repository)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    (
+        (
+            'STATE_REF = "refs/heads/skillscout-state"',
+            'STATE_REF = "refs/heads/main"',
+        ),
+        (
+            'f"/repos/{self._repository}/git/refs",',
+            'f"/repos/{self._repository}/pulls",',
+        ),
+        (
+            'f"/repos/{self._repository}/git/refs/heads/skillscout-state",',
+            'f"/repos/{self._repository}/git/refs/heads/main",',
+        ),
+        (
+            "    def create_state_ref(",
+            "    def create_pull(",
+        ),
+    ),
+)
+def test_state_branch_http_owner_rejects_catalog_and_default_branch_mutations(
+    acceptance_repository: Path,
+    old: str,
+    new: str,
+) -> None:
+    _replace_once(
+        acceptance_repository,
+        "src/skillscout/adapters/state_branch.py",
+        old,
+        new,
     )
 
     with pytest.raises(inspector.AcceptanceError):

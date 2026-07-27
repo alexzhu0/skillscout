@@ -40,7 +40,25 @@ EXPECTED_OPENAI_IMPORTERS = frozenset(
 )
 EXPECTED_SKILLS_REF_IMPORTERS = frozenset({"adapters/skills_ref.py"})
 EXPECTED_HTTPX_IMPORTERS = frozenset(
-    {"adapters/github.py", "adapters/github_publish.py"}
+    {
+        "adapters/github.py",
+        "adapters/github_publish.py",
+        "adapters/state_branch.py",
+    }
+)
+EXPECTED_STATE_BRANCH_CLIENT_METHODS = frozenset(
+    {
+        "close",
+        "get_state_ref",
+        "get_commit",
+        "get_tree",
+        "get_blob",
+        "create_blob",
+        "create_tree",
+        "create_commit",
+        "create_state_ref",
+        "update_state_ref",
+    }
 )
 EXPECTED_CHECK_IDS = (
     "dependency_bootstrap_authority",
@@ -343,6 +361,60 @@ def _check_import_capability_isolation(repository_root: Path) -> tuple[str, ...]
         "timeline",
     ):
         _require(prohibited not in publisher)
+    state_relative = SOURCE_ROOT / "adapters/state_branch.py"
+    state_raw = _read_source(repository_root, state_relative)
+    state_source = state_raw.decode("utf-8")
+    state_tree = ast.parse(state_raw, filename=state_relative.as_posix())
+    state_clients = [
+        node
+        for node in state_tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "StateBranchClient"
+    ]
+    _require(len(state_clients) == 1)
+    state_public_methods = {
+        node.name
+        for node in state_clients[0].body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not node.name.startswith("_")
+    }
+    _require(state_public_methods == EXPECTED_STATE_BRANCH_CLIENT_METHODS)
+    state_refs = [
+        node.value.value
+        for node in state_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "STATE_REF"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and type(node.value.value) is str
+    ]
+    _require(state_refs == ["refs/heads/skillscout-state"])
+    _require(
+        state_source.count("/git/ref/heads/skillscout-state") == 1
+        and state_source.count("/git/refs/heads/skillscout-state") == 1
+        and state_source.count(
+            'f"/repos/{self._repository}/git/refs"'
+        )
+        == 1
+        and "if force is not False:" in state_source
+        and '"force": False' in state_source
+    )
+    for prohibited in (
+        "/pulls",
+        "requested_reviewers",
+        "refs/heads/main",
+        "refs/heads/master",
+        "def request(",
+        "graphql",
+        "merge",
+        "submit_review",
+        "approve",
+        "ready_for_review",
+        "delete_ref",
+        '"force": True',
+    ):
+        _require(prohibited not in state_source)
     cli = _read_source(repository_root, SOURCE_ROOT / "cli.py").decode("utf-8")
     for prohibited in (
         "--merge",
@@ -356,7 +428,7 @@ def _check_import_capability_isolation(repository_root: Path) -> tuple[str, ...]
     return (
         "exact three OpenAI importers",
         "sole skills_ref importer",
-        "closed read plus catalog-bound Draft publication capability surface",
+        "closed read, catalog-bound Draft publication and fixed-state-ref capability surfaces",
     )
 
 

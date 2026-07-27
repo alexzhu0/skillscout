@@ -174,6 +174,7 @@ IMPORT_CARVE_OUTS: dict[str, frozenset[str]] = {
     "bootstrap.py": frozenset({"importlib"}),
     "adapters/github.py": frozenset({"httpx"}),
     "adapters/github_publish.py": frozenset({"httpx"}),
+    "adapters/state_branch.py": frozenset({"httpx"}),
     "adapters/openai_extract.py": frozenset({"openai"}),
     "adapters/openai_generate.py": frozenset({"openai"}),
     "adapters/openai_review.py": frozenset({"openai"}),
@@ -862,9 +863,27 @@ def test_production_capability_surface_remains_local_only() -> None:
 
 
 def test_production_capability_import_carveouts_are_exact() -> None:
+    assert {
+        relative
+        for relative, modules in IMPORT_CARVE_OUTS.items()
+        if "httpx" in modules
+    } == {
+        "adapters/github.py",
+        "adapters/github_publish.py",
+        "adapters/state_branch.py",
+    }
     assert EXACT_IMPORT_CARVE_OUTS == {
         "adapters/github.py": frozenset({"urllib.parse"})
     }
+    assert not _is_forbidden_production_import(
+        "adapters/state_branch.py", "httpx"
+    )
+    assert _is_forbidden_production_import(
+        "application/phase3.py", "httpx"
+    )
+    assert _is_forbidden_production_import(
+        "adapters/state_branch.py", "requests"
+    )
     assert not _is_forbidden_production_import(
         "adapters/github.py", "urllib.parse"
     )
