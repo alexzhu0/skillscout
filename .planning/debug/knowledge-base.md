@@ -19,3 +19,11 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Fix:** Added only `adapters/state_branch.py:httpx` to both exact-owner policies; pinned the StateBranchClient method, endpoint, fixed-ref, and non-force boundaries; added negative mutations for off-owner HTTP, catalog PR paths, default branches, and public catalog methods; removed the resolved deferred item.
 - **Files changed:** tests/test_phase1_gap_closure.py, tools/verify_phase3_acceptance.py, tests/test_phase3_acceptance_tool.py, .planning/phases/05-automated-discovery-operations/deferred-items.md
 ---
+
+## phase5-state-request-id — Live GitHub colon request ID blocked missing-ref classification
+- **Date:** 2026-07-28
+- **Error patterns:** StateBranchClient, X-GitHub-Request-Id, colon-delimited request ID, 404, StateRefNotFound, SafeFailure
+- **Root cause:** The state adapter validated request IDs with a synthetic single-token grammar before classifying allowed 404 responses, so a valid live uppercase-hex colon-delimited GitHub ID raised SafeFailure before the missing state ref could become StateRefNotFound.
+- **Fix:** Preserved the 128-character bound and legacy safe-token alternative, added an exact two-or-more non-empty uppercase-hex colon-group alternative, and locked the boundary with the recorded live 404 plus missing, whitespace/control, malformed-group, non-hex, and oversized mutations without logging the value.
+- **Files changed:** src/skillscout/adapters/state_branch.py, tests/test_state_branch.py
+---
