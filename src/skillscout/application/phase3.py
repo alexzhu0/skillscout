@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Callable, Final, Mapping
 from uuid import uuid4
@@ -24,7 +25,12 @@ from skillscout.adapters.openai_review import (
     MAX_REVIEWER_OUTPUT_TOKENS,
     review_input_size_bytes,
 )
+from skillscout.adapters.semantic_provider import (
+    SemanticProviderFailure,
+    SemanticTransportDisposition,
+)
 from skillscout.application.candidate_source import load_candidate_subject
+from skillscout.application.pipeline import SemanticDurabilityGuard
 from skillscout.application.ports import (
     CandidateSourceUnavailable,
     ErrorCode,
@@ -172,6 +178,7 @@ class PhaseThreeDependencies:
     reviewer_factory: Callable[[], object]
     artifact_projector_factory: Callable[[], object]
     run_id_factory: Callable[[], str] = lambda: f"phase3-{uuid4().hex}"
+    semantic_durability: SemanticDurabilityGuard | None = None
 
 
 @dataclass(frozen=True)
@@ -498,6 +505,9 @@ class PhaseThreeRunner:
         self.profile = profile
         self.dependencies = dependencies
         self.projection_required = projection_required
+        self.semantic_durability = getattr(
+            dependencies, "semantic_durability", None
+        )
 
     @staticmethod
     def _require_configured_semantic_client(
@@ -662,6 +672,13 @@ class PhaseThreeRunner:
         }
         checkpoint_payloads: Mapping[str, bytes] = {}
         if len(chain.results) >= 2:
+            if len(chain.results) == 2 and self.semantic_durability is not None:
+                self._confirm_semantic(
+                    chain,
+                    stage=PhaseThreeStageV1.GENERATOR,
+                    attempt_no=chain.results[1].attempt_no,
+                    status="decided",
+                )
             checkpoint_payloads = self.state.read_candidate_checkpoint_payloads(
                 chain.identity.run_id
             )
@@ -881,6 +898,13 @@ class PhaseThreeRunner:
             "review_completed_eligible": "eligible_local_candidate",
         }
         if len(chain.results) == 4:
+            if self.semantic_durability is not None:
+                self._confirm_semantic(
+                    chain,
+                    stage=PhaseThreeStageV1.REVIEWER,
+                    attempt_no=chain.results[3].attempt_no,
+                    status="decided",
+                )
             review_payload = checkpoint_payloads.get("checkpoint_reviewer_payload")
             expected_payload_keys = {
                 "checkpoint_qualifier_payload",
@@ -1006,22 +1030,69 @@ class PhaseThreeRunner:
         if durable_attempts and durable_attempts[-1].status == "running":
             interrupted_payload = {
                 "attempt_no": durable_attempts[-1].attempt_no,
-                "error_code": "attempt_interrupted",
+                "error_code": (
+                    "semantic_provider_outcome_unknown"
+                    if self.semantic_durability is not None
+                    else "attempt_interrupted"
+                ),
             }
             chain = _record_semantic_attempt(
                 chain,
                 stage=stage,
                 attempt_no=durable_attempts[-1].attempt_no,
                 status="abandoned",
-                outcome_code="attempt_interrupted",
+                outcome_code=str(interrupted_payload["error_code"]),
                 payload=interrupted_payload,
             )
             self.state.persist_semantic_attempt(chain)
             durable_attempts[-1] = chain.attempts[-1]
+            if self.semantic_durability is not None:
+                self._confirm_semantic(
+                    chain,
+                    stage=stage,
+                    attempt_no=durable_attempts[-1].attempt_no,
+                    status="semantic_outcome_unknown",
+                )
+                raise SemanticProviderFailure(
+                    disposition=(
+                        SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                    ),
+                    code="semantic_provider_outcome_unknown",
+                )
 
         for prior_attempt in durable_attempts:
             if prior_attempt.status not in {"failed", "abandoned"}:
                 continue
+            if (
+                prior_attempt is durable_attempts[-1]
+                and self.semantic_durability is not None
+                and prior_attempt.outcome_code == "stage_transient_failure"
+            ):
+                self._confirm_semantic(
+                    chain,
+                    stage=stage,
+                    attempt_no=prior_attempt.attempt_no,
+                    status="confirmed_retryable",
+                )
+            if (
+                self.semantic_durability is not None
+                and prior_attempt is durable_attempts[-1]
+                and prior_attempt.status == "abandoned"
+                and prior_attempt.outcome_code == "attempt_interrupted"
+            ):
+                if self.semantic_durability is not None:
+                    self._confirm_semantic(
+                        chain,
+                        stage=stage,
+                        attempt_no=prior_attempt.attempt_no,
+                        status="semantic_outcome_unknown",
+                    )
+                raise SemanticProviderFailure(
+                    disposition=(
+                        SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                    ),
+                    code="semantic_provider_outcome_unknown",
+                )
             if prior_attempt.outcome_code in {
                 "stage_transient_failure",
                 "attempt_interrupted",
@@ -1073,7 +1144,15 @@ class PhaseThreeRunner:
             )
             self.state.persist_semantic_attempt(chain)
             running_attempt = chain.attempts[-1]
+            if self.semantic_durability is not None:
+                self._confirm_semantic(
+                    chain,
+                    stage=PhaseThreeStageV1.GENERATOR,
+                    attempt_no=attempt,
+                    status="started",
+                )
             failure: SafeFailure | None = None
+            semantic_failure: SemanticProviderFailure | None = None
             try:
                 result = generator.generate(request=request)
                 if type(result) is not GenerationResult:
@@ -1126,6 +1205,15 @@ class PhaseThreeRunner:
                     payload=evidence,
                     running_attempt=running_attempt,
                 )
+            except SemanticProviderFailure as caught:
+                semantic_failure = caught
+                if (
+                    caught.disposition
+                    is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                ):
+                    failure = SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+                else:
+                    failure = SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
             except SafeFailure as caught:
                 failure = caught
             except (TypeError, ValueError):
@@ -1146,23 +1234,62 @@ class PhaseThreeRunner:
                     recovery_artifacts=recovery_artifacts,
                     status="running",
                 )
+                if self.semantic_durability is not None:
+                    self._confirm_semantic(
+                        chain,
+                        stage=PhaseThreeStageV1.GENERATOR,
+                        attempt_no=attempt,
+                        status="decided",
+                    )
                 return result, evidence, package, chain
 
             if failure is None:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            outcome_code = failure.code.value
+            attempt_status = "failed"
+            durability_status = None
+            if semantic_failure is not None:
+                if (
+                    semantic_failure.disposition
+                    is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                ):
+                    outcome_code = ErrorCode.STAGE_TRANSIENT_FAILURE.value
+                    durability_status = "confirmed_retryable"
+                elif (
+                    semantic_failure.disposition
+                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                ):
+                    outcome_code = "attempt_interrupted"
+                    attempt_status = "abandoned"
+                    durability_status = "semantic_outcome_unknown"
+                else:
+                    durability_status = "decided"
             failure_payload = {
                 "attempt_no": attempt,
-                "error_code": failure.code.value,
+                "error_code": outcome_code,
             }
             chain = _record_semantic_attempt(
                 chain,
                 stage=PhaseThreeStageV1.GENERATOR,
                 attempt_no=attempt,
-                status="failed",
-                outcome_code=failure.code.value,
+                status=attempt_status,
+                outcome_code=outcome_code,
                 payload=failure_payload,
             )
             self.state.persist_semantic_attempt(chain)
+            if durability_status is not None and self.semantic_durability is not None:
+                self._confirm_semantic(
+                    chain,
+                    stage=PhaseThreeStageV1.GENERATOR,
+                    attempt_no=attempt,
+                    status=durability_status,
+                )
+            if (
+                semantic_failure is not None
+                and semantic_failure.disposition
+                is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+            ):
+                raise semantic_failure
             if failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE:
                 raise failure
             if attempt == self.profile.max_generator_attempts:
@@ -1209,7 +1336,15 @@ class PhaseThreeRunner:
             )
             self.state.persist_semantic_attempt(chain)
             running_attempt = chain.attempts[-1]
+            if self.semantic_durability is not None:
+                self._confirm_semantic(
+                    chain,
+                    stage=PhaseThreeStageV1.REVIEWER,
+                    attempt_no=attempt,
+                    status="started",
+                )
             failure: SafeFailure | None = None
+            semantic_failure: SemanticProviderFailure | None = None
             try:
                 result = reviewer.review(
                     workflow_spec=self.authority.workflow_spec_authority.workflow_spec,
@@ -1246,6 +1381,15 @@ class PhaseThreeRunner:
                     payload=attestation,
                     running_attempt=running_attempt,
                 )
+            except SemanticProviderFailure as caught:
+                semantic_failure = caught
+                if (
+                    caught.disposition
+                    is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                ):
+                    failure = SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+                else:
+                    failure = SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
             except SafeFailure as caught:
                 failure = caught
             except (TypeError, ValueError):
@@ -1257,23 +1401,62 @@ class PhaseThreeRunner:
                     recovery_artifacts={},
                     status="running",
                 )
+                if self.semantic_durability is not None:
+                    self._confirm_semantic(
+                        chain,
+                        stage=PhaseThreeStageV1.REVIEWER,
+                        attempt_no=attempt,
+                        status="decided",
+                    )
                 return result, disposition, attestation, chain
 
             if failure is None:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            outcome_code = failure.code.value
+            attempt_status = "failed"
+            durability_status = None
+            if semantic_failure is not None:
+                if (
+                    semantic_failure.disposition
+                    is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                ):
+                    outcome_code = ErrorCode.STAGE_TRANSIENT_FAILURE.value
+                    durability_status = "confirmed_retryable"
+                elif (
+                    semantic_failure.disposition
+                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+                ):
+                    outcome_code = "attempt_interrupted"
+                    attempt_status = "abandoned"
+                    durability_status = "semantic_outcome_unknown"
+                else:
+                    durability_status = "decided"
             failure_payload = {
                 "attempt_no": attempt,
-                "error_code": failure.code.value,
+                "error_code": outcome_code,
             }
             chain = _record_semantic_attempt(
                 chain,
                 stage=PhaseThreeStageV1.REVIEWER,
                 attempt_no=attempt,
-                status="failed",
-                outcome_code=failure.code.value,
+                status=attempt_status,
+                outcome_code=outcome_code,
                 payload=failure_payload,
             )
             self.state.persist_semantic_attempt(chain)
+            if durability_status is not None and self.semantic_durability is not None:
+                self._confirm_semantic(
+                    chain,
+                    stage=PhaseThreeStageV1.REVIEWER,
+                    attempt_no=attempt,
+                    status=durability_status,
+                )
+            if (
+                semantic_failure is not None
+                and semantic_failure.disposition
+                is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+            ):
+                raise semantic_failure
             if failure.code is not ErrorCode.STAGE_TRANSIENT_FAILURE:
                 raise failure
             failed_attempts.append(
@@ -1285,6 +1468,30 @@ class PhaseThreeRunner:
             if attempt == self.profile.max_reviewer_attempts:
                 raise SafeFailure(ErrorCode.RETRY_EXHAUSTED) from None
         raise SafeFailure(ErrorCode.RETRY_EXHAUSTED)
+
+    def _confirm_semantic(
+        self,
+        chain: VerifiedCandidateRunChain,
+        *,
+        stage: PhaseThreeStageV1,
+        attempt_no: int,
+        status: str,
+    ) -> None:
+        guard = self.semantic_durability
+        if guard is None:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        guard.confirm(
+            pipeline_store=self.state,
+            run_id=chain.identity.run_id,
+            stage=stage.value,  # type: ignore[arg-type]
+            attempt_no=attempt_no,
+            status=status,  # type: ignore[arg-type]
+            recorded_at=(
+                datetime.now(UTC)
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z")
+            ),
+        )
 
     def _terminal(
         self,

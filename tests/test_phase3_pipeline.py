@@ -3550,13 +3550,16 @@ class _PhaseThreeStaticOwner:
 
 
 class _PhaseThreeBarrier:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_on: set[int] | None = None) -> None:
         self.transitions = []
+        self.fail_on = fail_on or set()
 
     def confirm(self, *, transition, pipeline_store, operations_store, publication_store):
         del pipeline_store, operations_store, publication_store
         self.transitions.append(transition)
         ordinal = len(self.transitions)
+        if ordinal in self.fail_on:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
         return DurabilityReceipt.from_remote_verification(
             transition=transition,
             verified_state_head=f"{ordinal:040x}",
@@ -3572,14 +3575,18 @@ class _PhaseThreeBarrier:
         )
 
 
-def _phase_three_guard(barrier: _PhaseThreeBarrier) -> SemanticDurabilityGuard:
+def _phase_three_guard(
+    barrier: _PhaseThreeBarrier,
+    *,
+    provider: str = "deepseek",
+) -> SemanticDurabilityGuard:
     return SemanticDurabilityGuard(
         barrier=barrier,
         operations_store=_PhaseThreeSemanticOwner(),
         publication_store=_PhaseThreeStaticOwner(),
         repository_id=123,
         workflow_authority_digest=_digest("2"),
-        provider="deepseek",
+        provider=provider,  # type: ignore[arg-type]
         expected_prior_state_head="b" * 40,
         expected_prior_root_digest=_digest("c"),
     )
@@ -3633,10 +3640,12 @@ def test_generator_confirmed_retry_crosses_barriers_before_second_request(
     ]
 
 
+@pytest.mark.parametrize("provider", ("openai", "deepseek"))
 @pytest.mark.parametrize("semantic_stage", ("generator", "reviewer"))
 def test_phase_three_unknown_is_terminally_quarantined_across_restart(
     tmp_path: Path,
     semantic_stage: str,
+    provider: str,
 ) -> None:
     calls: list[str] = []
 
@@ -3674,7 +3683,7 @@ def test_phase_three_unknown_is_terminally_quarantined_across_restart(
         reviewer_factory=lambda: UnknownReviewer("unused", calls),
         artifact_projector_factory=lambda: object(),
         run_id_factory=lambda: f"{semantic_stage}-unknown",
-        semantic_durability=_phase_three_guard(barrier),
+        semantic_durability=_phase_three_guard(barrier, provider=provider),
     )
     application = PhaseThreeApplication(
         source=_CompositionSource(),
@@ -3690,3 +3699,46 @@ def test_phase_three_unknown_is_terminally_quarantined_across_restart(
             SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
         )
     assert calls.count(semantic_stage) == 1
+    assert {item.provider for item in barrier.transitions} == {provider}
+
+
+def test_generator_decided_result_barrier_recovers_without_second_request(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    barrier = _PhaseThreeBarrier(fail_on={2})
+    state_path = tmp_path / "generator-decided-barrier.sqlite3"
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: SQLiteStateStore(state_path),
+        generator_factory=lambda: _CascadeGenerator("refused", calls),
+        validator_factory=lambda: pytest.fail("validator must not run"),
+        reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+        artifact_projector_factory=lambda: object(),
+        run_id_factory=lambda: "generator-decided-barrier",
+        semantic_durability=_phase_three_guard(barrier),
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    with pytest.raises(SafeFailure) as blocked:
+        application.run(descriptor)
+    assert blocked.value.code is ErrorCode.STATE_OPERATION_FAILED
+    result = application.run(descriptor)
+
+    assert result.outcome == "generator_refusal"
+    assert calls.count("generator") == 1
+    assert [item.transition for item in barrier.transitions] == [
+        "attempt_started",
+        "result_decided",
+        "result_decided",
+    ]
