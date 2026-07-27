@@ -106,10 +106,11 @@ def test_deepseek_rejects_noncanonical_endpoints_without_echo(value: str) -> Non
                 "SKILLSCOUT_LLM_PROVIDER": "deepseek",
                 "DEEPSEEK_BASE_URL": value,
             }
-        )
+    )
 
     assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
-    assert value not in str(failure.value)
+    if value:
+        assert value not in str(failure.value)
 
 
 def test_unknown_provider_fails_closed_without_echo() -> None:
