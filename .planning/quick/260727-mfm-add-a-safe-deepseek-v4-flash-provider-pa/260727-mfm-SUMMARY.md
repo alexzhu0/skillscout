@@ -107,6 +107,7 @@ status: complete
 - Ruff checks for all modified Python files — passed.
 - `git diff --check` — passed before the Task 3 checkpoint.
 - Closed receipt schema, exact App/installation identity, timestamp window, source absence, Trash destination owner/mode, and scoped Git status checks — passed.
+- Post-verification live smoke against the official DeepSeek endpoint with `deepseek-v4-flash` and a fixed minimal JSON schema — passed; no repository content or credential value was emitted.
 
 ## Deviations from Plan
 
