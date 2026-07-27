@@ -25,7 +25,7 @@ CLI = Path("src/skillscout/cli.py")
 BOOTSTRAP = Path("src/skillscout/bootstrap.py")
 WORKFLOW = Path(".github/workflows/publish-candidate.yml")
 ACTION_AUDIT_DIGEST = "d3d5f8a3480d55b7cf7278505f92e8f96ccd6622683f95401dd739f916aae622"
-WORKFLOW_SHA256 = "99fded78508bd4f20303cb201942f7b22b2be10c6b65042909835789853c2a09"
+WORKFLOW_SHA256 = "224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c"
 RULESET_DIGEST = "sha256:e58e74403d890296e44105cb60b42abffe522f11d169884d6d51f285b63948b5"
 ACTION_PINS = (
     "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
@@ -341,7 +341,7 @@ def inspect_human_gates(root: Path) -> tuple[str, ...]:
             "Unauthorized private repository | 404 | not_found",
             "Repository secret access | 403 | denied",
             "Default SHA before and after all probes: `bd96c4fcfed5e7b2c94c79be7ec1aa6e333b71bb`",
-            "PRs `#1` and `#2` are closed, not merged.",
+            "PRs `#3` and `#4` are closed, not merged.",
             "Post-cleanup branches: only `main`.",
             "coarse `pull_requests: write` token may support ready-for-review outside SkillScout",
         ),

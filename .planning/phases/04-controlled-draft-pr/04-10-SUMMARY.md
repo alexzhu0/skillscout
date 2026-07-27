@@ -40,15 +40,16 @@ Gate B4 passed against the controlled public catalog. The exact GitHub App insta
 - Workflow action identities:
   - `actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683`
   - `actions/create-github-app-token@67018539274d69449ef7c8cde82c3ff073ffe3b5`
-- Workflow content SHA-256: `99fded78508bd4f20303cb201942f7b22b2be10c6b65042909835789853c2a09`.
+- Reviewed source HEAD: `3225afff21aa66ff6e03d53d67767d0139acffcd`.
+- Workflow content SHA-256: `224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c`.
 
 ## Positive evidence
 
-- Draft PR: catalog PR `#1`, created by `skillscout-catalog-test[bot]`.
-- Head: `skillscout/gate-b4-canary-20260727` at `87fab400e84d332bc88ca567399b80d17be1cc71`.
+- Draft PR: catalog PR `#3`, created by `skillscout-catalog-test[bot]`.
+- Head: `skillscout/gate-b4-canary-reviewfix-20260727` at `a81ee2052136abfaf11a26028c59338603388f05`.
 - Base: `main`.
 - Requested reviewers: exactly `alexzhu0`; teams empty.
-- Otherwise-mergeable negative-control PR: `#2`, head `skillscout/gate-b4-mergeable-20260727`.
+- Otherwise-mergeable negative-control PR: `#4`, head `skillscout/gate-b4-mergeable-reviewfix-20260727` at `3fd820a8e624e5be80319c0b97be394e2093e27d`.
 - Default SHA before and after all probes: `bd96c4fcfed5e7b2c94c79be7ec1aa6e333b71bb`.
 
 ## Causal probe evidence
@@ -78,15 +79,15 @@ The protected live command passed with `5 passed, 1 skipped`. Offline isolation 
 ## Separate-authority cleanup
 
 - Actor: `alexzhu0`, authenticated human/admin account; not the GitHub App installation token.
-- Attestation: `github-admin-cleanup-20260727-pr1-pr2`.
-- PRs `#1` and `#2` are closed, not merged.
-- Branches `skillscout/gate-b4-canary-20260727` and `skillscout/gate-b4-mergeable-20260727` were deleted.
+- Attestation: `github-admin-cleanup-20260727-pr3-pr4`.
+- PRs `#3` and `#4` are closed, not merged.
+- Branches `skillscout/gate-b4-canary-reviewfix-20260727` and `skillscout/gate-b4-mergeable-reviewfix-20260727` were deleted.
 - Post-cleanup branches: only `main`.
 - Post-cleanup default SHA: `bd96c4fcfed5e7b2c94c79be7ec1aa6e333b71bb`.
 
 ## Deviations
 
-The first live run revealed two test-contract defects: public ruleset metadata can be readable without Administration, and `/installation` requires App-JWT authentication rather than an installation token. Both were corrected without broadening privileges, then the protected live canary passed.
+The earlier PR `#1`/`#2` evidence was superseded after code-review remediation changed the protected workflow. The replacement canary bound the new workflow hash, passed without broadening privileges, and was separately cleaned as PR `#3`/`#4`.
 
 ## Self-check
 

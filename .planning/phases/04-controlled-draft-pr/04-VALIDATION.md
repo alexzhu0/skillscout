@@ -64,7 +64,7 @@ All commands run from the repository root. Offline commands use the repository-l
 ## Human Gate Evidence
 
 - Gate A4 is non-auto-approvable. It approved `actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683` and `actions/create-github-app-token@67018539274d69449ef7c8cde82c3ff073ffe3b5` at audit digest `d3d5f8a3480d55b7cf7278505f92e8f96ccd6622683f95401dd739f916aae622`.
-- Gate B4 is non-auto-approvable. The human-reviewed evidence records workflow SHA-256 `99fded78508bd4f20303cb201942f7b22b2be10c6b65042909835789853c2a09`, ruleset digest `sha256:e58e74403d890296e44105cb60b42abffe522f11d169884d6d51f285b63948b5`, stable Draft/reviewer identities, scoped denials, unchanged default SHA, and separate-authority cleanup.
+- Gate B4 is non-auto-approvable. The post-review-fix human-reviewed evidence records workflow SHA-256 `224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c`, ruleset digest `sha256:e58e74403d890296e44105cb60b42abffe522f11d169884d6d51f285b63948b5`, stable Draft/reviewer identities, scoped denials, unchanged default SHA, and separate-authority cleanup.
 
 ## Exact Final Locked Release Chain
 

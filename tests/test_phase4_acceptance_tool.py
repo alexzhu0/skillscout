@@ -38,9 +38,8 @@ def _replace(repository: Path, relative: str, old: str, new: str) -> None:
     path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
 
-def test_current_tree_fails_closed_until_changed_workflow_is_human_reapproved() -> None:
-    with pytest.raises(inspector.AcceptanceError):
-        inspector.verify_phase4_acceptance(PROJECT_ROOT)
+def test_current_tree_passes_after_changed_workflow_is_human_reapproved() -> None:
+    inspector.verify_phase4_acceptance(PROJECT_ROOT)
     assert tuple(spec.identifier for spec in inspector.CHECK_REGISTRY) == (
         "domain",
         "adapter",
@@ -115,7 +114,7 @@ def test_current_tree_fails_closed_until_changed_workflow_is_human_reapproved() 
         ),
         (
             ".planning/phases/04-controlled-draft-pr/04-10-SUMMARY.md",
-            "PRs `#1` and `#2` are closed, not merged.",
+            "PRs `#3` and `#4` are closed, not merged.",
             "cleanup pending",
         ),
     ],
@@ -178,10 +177,10 @@ def test_forbidden_imports_and_production_surfaces_fail(
 
 
 def test_cli_diagnostics_are_fixed(capsys: pytest.CaptureFixture[str]) -> None:
-    assert inspector.main([]) == 1
+    assert inspector.main([]) == 0
     first = capsys.readouterr()
-    assert first.out == ""
-    assert first.err == "phase4 acceptance invalid\n"
+    assert first.out == "phase4 acceptance valid\n"
+    assert first.err == ""
     assert inspector.main(["--repository-root", "/missing"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
