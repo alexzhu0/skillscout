@@ -209,6 +209,21 @@ def test_integrity_and_permanent_failures_stop_the_run(outcome: str) -> None:
     assert result.run_status in {"integrity_conflict", "permanent_failure"}
 
 
+def test_fatal_summary_counts_only_durably_reserved_candidates() -> None:
+    source = inspect.getsource(
+        _module().DiscoveryApplication._run_operations_store
+    )
+    assert (
+        'summary_values["selected_candidate_count"] = '
+        "len(durable_discovery_reservations)"
+    ) in source
+    assert (
+        "durable_discovery_reservations[\n"
+        "                candidate.repository.repository_id\n"
+        "            ] = reservation"
+    ) in source
+
+
 def test_unknown_outcome_consumes_once_without_automatic_replay() -> None:
     module = _module()
     result = module.evaluate_discovery_scenario(
