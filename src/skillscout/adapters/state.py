@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import json
 import os
@@ -10,9 +11,9 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Iterable, Mapping, TypeVar
+from typing import Annotated, Any, Callable, Iterable, Literal, Mapping, TypeVar
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.application.ports import (
@@ -56,6 +57,7 @@ from skillscout.domain.models import (
     ResumeEvent,
     RunIdentity,
     RunRecord,
+    StrictFrozenModel,
     StageAttempt,
     StageEnvelope,
     StageInput,
@@ -100,6 +102,23 @@ _T = TypeVar("_T")
 _PHASE3_ARTIFACT_MAX_BYTES = 8_388_608
 _LINEAGE_BINDING_KIND_PREFIX = "lineage_binding_"
 _LINEAGE_APPROVAL_KIND_PREFIX = "lineage_approval_"
+_PIPELINE_DATABASE_LOCATOR = "state/databases/pipeline.sqlite3"
+_PIPELINE_TABLE_ORDER = (
+    "runs",
+    "resume_events",
+    "stage_attempts",
+    "stage_results",
+    "checkpoints",
+    "phase3_runs",
+    "phase3_attempts",
+    "phase3_results",
+    "phase3_checkpoints",
+    "phase3_resume_events",
+    "phase3_artifacts",
+    "phase3_terminals",
+)
+_PIPELINE_RESOURCE_KINDS = ("manifest", "phase3_artifact")
+_PIPELINE_FACT_KINDS = frozenset((*_PIPELINE_TABLE_ORDER, *_PIPELINE_RESOURCE_KINDS))
 
 
 def _phase3_schema_statements() -> tuple[str, ...]:
@@ -671,6 +690,117 @@ _EXPECTED_INDEXES = MappingProxyType(
 )
 
 
+class PipelineOwnedFactV1(StrictFrozenModel):
+    """One canonical content-addressed fact owned by the pipeline ledger."""
+
+    schema_version: Literal["pipeline-owned-fact-v1"]
+    kind: Annotated[str, Field(min_length=1, max_length=64)]
+    sequence: Annotated[int, Field(ge=0, le=65_536)]
+    payload_json: Annotated[str, Field(min_length=2, max_length=12_000_000)]
+    object_digest: str
+
+    @model_validator(mode="after")
+    def validate_owned_fact(self) -> PipelineOwnedFactV1:
+        if self.kind not in _PIPELINE_FACT_KINDS:
+            raise ValueError("pipeline fact kind is not owned")
+        try:
+            decoded = json.loads(self.payload_json)
+        except json.JSONDecodeError:
+            raise ValueError("pipeline fact payload is invalid") from None
+        if (
+            type(decoded) is not dict
+            or canonical_json_bytes(decoded).decode("utf-8") != self.payload_json
+            or self.object_digest != sha256_digest(self.payload_json.encode("utf-8"))
+        ):
+            raise ValueError("pipeline fact payload is not canonical")
+        return self
+
+
+class PipelineStateProjectionV1(StrictFrozenModel):
+    """Closed shared-key projection independently recomputed from owned facts."""
+
+    schema_version: Literal["pipeline-state-projection-v1"]
+    phase1_run_ids: tuple[str, ...]
+    phase3_run_ids: tuple[str, ...]
+    phase3_authority_digests: tuple[str, ...]
+    phase3_terminal_summary_digests: tuple[str, ...]
+    projection_digest: str
+
+    @model_validator(mode="after")
+    def validate_projection(self) -> PipelineStateProjectionV1:
+        values = self.model_dump(mode="json", exclude={"projection_digest"})
+        sequences = (
+            self.phase1_run_ids,
+            self.phase3_run_ids,
+            self.phase3_authority_digests,
+            self.phase3_terminal_summary_digests,
+        )
+        if any(sequence != tuple(sorted(set(sequence))) for sequence in sequences):
+            raise ValueError("pipeline projection is not canonical")
+        if self.projection_digest != sha256_digest(values):
+            raise ValueError("pipeline projection digest mismatch")
+        return self
+
+
+class PipelineOwnedStateV1(StrictFrozenModel):
+    """Complete pipeline-owned JSON authority plus a disposable SQLite index."""
+
+    schema_version: Literal["pipeline-owned-state-v1"]
+    owner: Literal["pipeline"]
+    database_locator: Literal["state/databases/pipeline.sqlite3"]
+    schema_fingerprint: str
+    database_bytes: Annotated[bytes, Field(max_length=MAX_STATE_DB_BYTES)]
+    database_digest: str
+    facts: Annotated[tuple[PipelineOwnedFactV1, ...], Field(max_length=65_536)]
+    projection: PipelineStateProjectionV1
+    projection_digest: str
+    export_digest: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_facts(cls, value: object) -> object:
+        if isinstance(value, dict) and isinstance(value.get("facts"), list):
+            payload = dict(value)
+            payload["facts"] = tuple(payload["facts"])
+            return payload
+        return value
+
+    @model_validator(mode="after")
+    def validate_owned_state(self) -> PipelineOwnedStateV1:
+        if self.schema_fingerprint != _pipeline_schema_fingerprint():
+            raise ValueError("pipeline schema fingerprint mismatch")
+        if tuple(fact.sequence for fact in self.facts) != tuple(
+            range(len(self.facts))
+        ):
+            raise ValueError("pipeline facts are not canonically sequenced")
+        if len({fact.object_digest for fact in self.facts}) != len(self.facts):
+            raise ValueError("pipeline facts are not unique")
+        positions = {
+            kind: index
+            for index, kind in enumerate(
+                (*_PIPELINE_TABLE_ORDER, *_PIPELINE_RESOURCE_KINDS)
+            )
+        }
+        ordering = tuple(
+            (positions[fact.kind], fact.payload_json) for fact in self.facts
+        )
+        if ordering != tuple(sorted(ordering)):
+            raise ValueError("pipeline facts are reordered")
+        expected_projection = _pipeline_projection_from_facts(self.facts)
+        if (
+            self.projection != expected_projection
+            or self.projection_digest != expected_projection.projection_digest
+        ):
+            raise ValueError("pipeline projection disagrees with facts")
+        if self.export_digest != _pipeline_export_digest(
+            schema_fingerprint=self.schema_fingerprint,
+            facts=self.facts,
+            projection=self.projection,
+        ):
+            raise ValueError("pipeline export digest mismatch")
+        return self
+
+
 class CompletedCandidateProjectionV1(BaseModel):
     """Exact immutable projection of one fully verified completed candidate."""
 
@@ -1164,6 +1294,90 @@ class DescriptorAnchoredCompletedCandidateProjector:
         """Explicit projection alias retaining the same read-only contract."""
 
         return self.find_completed_candidate(authority)
+
+
+def _pipeline_schema_fingerprint() -> str:
+    return sha256_digest(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "pipeline": dict(_EXPECTED_SCHEMA_SQL),
+            "phase3": dict(_PHASE3_SCHEMA_SQL),
+        }
+    )
+
+
+def _pipeline_fact_payload(fact: PipelineOwnedFactV1) -> dict[str, object]:
+    try:
+        decoded = json.loads(fact.payload_json)
+    except json.JSONDecodeError:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+    if type(decoded) is not dict:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+    return decoded
+
+
+def _pipeline_projection_from_facts(
+    facts: tuple[PipelineOwnedFactV1, ...],
+) -> PipelineStateProjectionV1:
+    phase1_run_ids: set[str] = set()
+    phase3_run_ids: set[str] = set()
+    phase3_authorities: set[str] = set()
+    phase3_terminals: set[str] = set()
+    for fact in facts:
+        if fact.kind not in {"runs", "phase3_runs", "phase3_terminals"}:
+            continue
+        payload = _pipeline_fact_payload(fact)
+        if (
+            payload.get("schema_version") != "pipeline-rebuild-row-v1"
+            or payload.get("kind") != fact.kind
+            or type(payload.get("columns")) is not list
+            or type(payload.get("values")) is not list
+        ):
+            raise ValueError("pipeline row fact is malformed")
+        columns = payload["columns"]
+        values = payload["values"]
+        if len(columns) != len(values) or any(type(item) is not str for item in columns):
+            raise ValueError("pipeline row fact is malformed")
+        row = dict(zip(columns, values, strict=True))
+        if fact.kind == "runs":
+            phase1_run_ids.add(str(row["run_id"]))
+        elif fact.kind == "phase3_runs":
+            phase3_run_ids.add(str(row["run_id"]))
+            phase3_authorities.add(str(row["authority_digest"]))
+        else:
+            phase3_run_ids.add(str(row["run_id"]))
+            phase3_terminals.add(str(row["terminal_summary_digest"]))
+    values: dict[str, object] = {
+        "schema_version": "pipeline-state-projection-v1",
+        "phase1_run_ids": tuple(sorted(phase1_run_ids)),
+        "phase3_run_ids": tuple(sorted(phase3_run_ids)),
+        "phase3_authority_digests": tuple(sorted(phase3_authorities)),
+        "phase3_terminal_summary_digests": tuple(sorted(phase3_terminals)),
+    }
+    return PipelineStateProjectionV1(
+        **values,
+        projection_digest=sha256_digest(values),
+    )
+
+
+def _pipeline_export_digest(
+    *,
+    schema_fingerprint: str,
+    facts: tuple[PipelineOwnedFactV1, ...],
+    projection: PipelineStateProjectionV1,
+) -> str:
+    return sha256_digest(
+        {
+            "schema_version": "pipeline-owned-state-v1",
+            "owner": "pipeline",
+            "database_locator": _PIPELINE_DATABASE_LOCATOR,
+            "schema_fingerprint": schema_fingerprint,
+            "facts": tuple(
+                fact.model_dump(mode="json", exclude_none=False) for fact in facts
+            ),
+            "projection": projection.model_dump(mode="json", exclude_none=False),
+        }
+    )
 
 
 class SQLiteStateStore:
@@ -4227,6 +4441,432 @@ class SQLiteStateStore:
             if resolution.stable_slug == stable_slug and resolution.lineage_id is not None:
                 owners.append(resolution.lineage_id)
         return tuple(dict.fromkeys(owners))
+
+    @classmethod
+    def _pipeline_table_facts(
+        cls,
+        connection: sqlite3.Connection,
+    ) -> tuple[PipelineOwnedFactV1, ...]:
+        facts: list[PipelineOwnedFactV1] = []
+        for kind in _PIPELINE_TABLE_ORDER:
+            columns = tuple(
+                str(row["name"])
+                for row in connection.execute(f'PRAGMA table_info("{kind}")').fetchall()
+            )
+            if not columns:
+                raise SafeFailure(ErrorCode.STATE_SCHEMA_INCOMPATIBLE)
+            rows = tuple(
+                sorted(
+                    (tuple(row[column] for column in columns) for row in connection.execute(
+                        f'SELECT * FROM "{kind}"'
+                    ).fetchall()),
+                    key=canonical_json_bytes,
+                )
+            )
+            for values in rows:
+                payload_json = canonical_json_bytes(
+                    {
+                        "schema_version": "pipeline-rebuild-row-v1",
+                        "kind": kind,
+                        "columns": columns,
+                        "values": values,
+                    }
+                ).decode("utf-8")
+                facts.append(
+                    PipelineOwnedFactV1(
+                        schema_version="pipeline-owned-fact-v1",
+                        kind=kind,
+                        sequence=len(facts),
+                        payload_json=payload_json,
+                        object_digest=sha256_digest(payload_json.encode("utf-8")),
+                    )
+                )
+        return tuple(facts)
+
+    def _pipeline_resource_facts(
+        self,
+        *,
+        sequence: int,
+    ) -> tuple[PipelineOwnedFactV1, ...]:
+        resources: list[tuple[str, str, bytes]] = []
+        manifest_rows = self._db.execute(
+            """SELECT DISTINCT manifest_path FROM stage_results
+               ORDER BY manifest_path"""
+        ).fetchall()
+        for row in manifest_rows:
+            locator = str(row["manifest_path"])
+            resources.append(
+                (
+                    "manifest",
+                    locator,
+                    self._read_manifest_bytes(self.manifest_root / locator),
+                )
+            )
+        artifact_rows = self._db.execute(
+            """SELECT DISTINCT locator FROM phase3_artifacts
+               ORDER BY locator"""
+        ).fetchall()
+        for row in artifact_rows:
+            locator = str(row["locator"])
+            try:
+                payload = self._phase3_artifacts().read_bytes(
+                    locator,
+                    max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
+                )
+            except (DurableWriteError, OSError):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+            if payload is None:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            resources.append(("phase3_artifact", locator, payload))
+
+        payloads: list[tuple[str, str]] = []
+        for kind, locator, content in resources:
+            payload_json = canonical_json_bytes(
+                {
+                    "schema_version": "pipeline-rebuild-file-v1",
+                    "kind": kind,
+                    "locator": locator,
+                    "content_base64": base64.b64encode(content).decode("ascii"),
+                }
+            ).decode("utf-8")
+            payloads.append((kind, payload_json))
+        positions = {kind: index for index, kind in enumerate(_PIPELINE_RESOURCE_KINDS)}
+        payloads.sort(key=lambda item: (positions[item[0]], item[1]))
+        return tuple(
+            PipelineOwnedFactV1(
+                schema_version="pipeline-owned-fact-v1",
+                kind=kind,
+                sequence=sequence + index,
+                payload_json=payload_json,
+                object_digest=sha256_digest(payload_json.encode("utf-8")),
+            )
+            for index, (kind, payload_json) in enumerate(payloads)
+        )
+
+    @staticmethod
+    def _validated_pipeline_export(exported: object) -> PipelineOwnedStateV1:
+        try:
+            if isinstance(exported, PipelineOwnedStateV1):
+                raw = exported.model_dump(mode="python", exclude_none=False)
+            elif isinstance(exported, dict):
+                raw = exported
+            else:
+                raise TypeError("invalid pipeline export")
+            return PipelineOwnedStateV1.model_validate(raw, strict=True)
+        except (TypeError, ValueError, ValidationError):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    @staticmethod
+    def _pipeline_reader(connection: sqlite3.Connection) -> SQLiteStateStore:
+        reader = object.__new__(SQLiteStateStore)
+        reader.connection = connection
+        reader._poisoned = False
+        return reader
+
+    @classmethod
+    def _replay_pipeline_facts(
+        cls,
+        facts: tuple[PipelineOwnedFactV1, ...],
+    ) -> sqlite3.Connection:
+        candidate = cls._new_memory_connection()
+        reader = cls._pipeline_reader(candidate)
+        try:
+            candidate.execute("BEGIN IMMEDIATE")
+            candidate.execute("PRAGMA defer_foreign_keys = ON")
+            for statement in _schema_statements():
+                candidate.execute(statement)
+            for statement in _phase3_schema_statements():
+                candidate.execute(statement)
+            candidate.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            definitions = {
+                kind: tuple(
+                    str(row["name"])
+                    for row in candidate.execute(
+                        f'PRAGMA table_info("{kind}")'
+                    ).fetchall()
+                )
+                for kind in _PIPELINE_TABLE_ORDER
+            }
+            for fact in facts:
+                if fact.kind in _PIPELINE_RESOURCE_KINDS:
+                    continue
+                payload = _pipeline_fact_payload(fact)
+                columns = payload.get("columns")
+                values = payload.get("values")
+                if (
+                    payload.get("schema_version") != "pipeline-rebuild-row-v1"
+                    or payload.get("kind") != fact.kind
+                    or not isinstance(columns, list)
+                    or tuple(columns) != definitions[fact.kind]
+                    or not isinstance(values, list)
+                    or len(values) != len(columns)
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                placeholders = ", ".join("?" for _ in columns)
+                names = ", ".join(f'"{column}"' for column in columns)
+                candidate.execute(
+                    f'INSERT INTO "{fact.kind}" ({names}) VALUES ({placeholders})',
+                    tuple(values),
+                )
+            candidate.commit()
+            reader._validate_current_schema()
+            reader._validate_phase3_schema()
+            integrity = tuple(
+                tuple(row)
+                for row in candidate.execute("PRAGMA integrity_check").fetchall()
+            )
+            if integrity != (("ok",),):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            if candidate.execute("PRAGMA foreign_key_check").fetchall():
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            return candidate
+        except Exception:
+            try:
+                candidate.rollback()
+            except sqlite3.Error:
+                pass
+            candidate.close()
+            raise
+
+    @classmethod
+    def _pipeline_candidate_from_export(
+        cls,
+        exported: object,
+    ) -> tuple[sqlite3.Connection, PipelineOwnedStateV1]:
+        authority = cls._validated_pipeline_export(exported)
+        table_facts = tuple(
+            fact for fact in authority.facts if fact.kind in _PIPELINE_TABLE_ORDER
+        )
+        database: sqlite3.Connection | None = None
+        if authority.database_bytes:
+            try:
+                database = cls._new_memory_connection()
+                database.deserialize(authority.database_bytes)
+                database.execute("PRAGMA foreign_keys = ON")
+                reader = cls._pipeline_reader(database)
+                reader._validate_current_schema()
+                reader._validate_phase3_schema()
+                snapshot_facts = cls._pipeline_table_facts(database)
+                if (
+                    authority.database_digest
+                    != sha256_digest(authority.database_bytes)
+                    or snapshot_facts != table_facts
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                return database, authority
+            except SafeFailure as failure:
+                if database is not None:
+                    database.close()
+                if failure.code is ErrorCode.STATE_INTEGRITY_ERROR:
+                    raise
+            except (MemoryError, OverflowError, sqlite3.Error):
+                if database is not None:
+                    database.close()
+        candidate = cls._replay_pipeline_facts(authority.facts)
+        if cls._pipeline_table_facts(candidate) != table_facts:
+            candidate.close()
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return candidate, authority
+
+    @staticmethod
+    def _pipeline_resources(
+        facts: tuple[PipelineOwnedFactV1, ...],
+    ) -> tuple[tuple[str, str, bytes], ...]:
+        resources: list[tuple[str, str, bytes]] = []
+        seen: set[tuple[str, str]] = set()
+        for fact in facts:
+            if fact.kind not in _PIPELINE_RESOURCE_KINDS:
+                continue
+            payload = _pipeline_fact_payload(fact)
+            locator = payload.get("locator")
+            encoded = payload.get("content_base64")
+            if (
+                payload.get("schema_version") != "pipeline-rebuild-file-v1"
+                or payload.get("kind") != fact.kind
+                or type(locator) is not str
+                or type(encoded) is not str
+                or (fact.kind, locator) in seen
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+            if base64.b64encode(content).decode("ascii") != encoded:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            if fact.kind == "manifest":
+                parts = locator.split("/")
+                if len(parts) != 2:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                stage = PipelineStage(parts[0])
+                envelope = StageEnvelope.model_validate_json(content, strict=True)
+                if (
+                    envelope.stage is not stage
+                    or envelope.manifest_hash is None
+                    or SQLiteStateStore._manifest_locator(
+                        stage, envelope.manifest_hash
+                    )
+                    != locator
+                    or validate_manifest_bytes(content) != content
+                ):
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            else:
+                AnchoredDirectory.validate_child_name(locator)
+                if not content or len(content) > _PHASE3_ARTIFACT_MAX_BYTES:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            seen.add((fact.kind, locator))
+            resources.append((fact.kind, locator, content))
+        return tuple(resources)
+
+    def _install_pipeline_resources(
+        self,
+        facts: tuple[PipelineOwnedFactV1, ...],
+    ) -> None:
+        for kind, locator, content in self._pipeline_resources(facts):
+            try:
+                if kind == "manifest":
+                    stage_name, filename = locator.split("/", maxsplit=1)
+                    anchor = self._manifest_stage_anchor(
+                        PipelineStage(stage_name), create=True
+                    )
+                    existing = anchor.read_bytes(
+                        filename,
+                        max_bytes=MAX_MANIFEST_BYTES,
+                        missing_ok=True,
+                    )
+                    if existing is not None and existing != content:
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    if existing is None:
+                        anchor.atomic_write(
+                            filename,
+                            content,
+                            max_bytes=MAX_MANIFEST_BYTES,
+                            seam_prefix="pipeline_rebuild_manifest_",
+                        )
+                else:
+                    anchor = self._phase3_artifacts()
+                    existing = anchor.read_bytes(
+                        locator,
+                        max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
+                        missing_ok=True,
+                    )
+                    if existing is not None and existing != content:
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    if existing is None:
+                        anchor.atomic_write(
+                            locator,
+                            content,
+                            max_bytes=_PHASE3_ARTIFACT_MAX_BYTES,
+                            seam_prefix="pipeline_rebuild_artifact_",
+                        )
+            except SafeFailure:
+                raise
+            except (DurableWriteError, OSError, ValueError, ValidationError):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+    def _verify_all_owned_chains(self) -> None:
+        for row in self._db.execute("SELECT run_id FROM runs ORDER BY run_id"):
+            self.verify_run_chain(str(row["run_id"]))
+        for row in self._db.execute("SELECT run_id FROM phase3_runs ORDER BY run_id"):
+            self.verify_candidate_run_chain(str(row["run_id"]))
+
+    def export_owned_state(self) -> PipelineOwnedStateV1:
+        """Export one locked, canonical projection of all Phase 1/3 authority."""
+
+        table_facts = self._pipeline_table_facts(self._db)
+        resources = self._pipeline_resource_facts(sequence=len(table_facts))
+        facts = (*table_facts, *resources)
+        projection = _pipeline_projection_from_facts(facts)
+        database_bytes = self._serialize(self._db)
+        fingerprint = _pipeline_schema_fingerprint()
+        return PipelineOwnedStateV1(
+            schema_version="pipeline-owned-state-v1",
+            owner="pipeline",
+            database_locator=_PIPELINE_DATABASE_LOCATOR,
+            schema_fingerprint=fingerprint,
+            database_bytes=database_bytes,
+            database_digest=sha256_digest(database_bytes),
+            facts=facts,
+            projection=projection,
+            projection_digest=projection.projection_digest,
+            export_digest=_pipeline_export_digest(
+                schema_fingerprint=fingerprint,
+                facts=facts,
+                projection=projection,
+            ),
+        )
+
+    def _install_pipeline_candidate(
+        self,
+        candidate: sqlite3.Connection,
+        authority: PipelineOwnedStateV1,
+    ) -> None:
+        if self._poisoned or self._durable_bytes is None:
+            candidate.close()
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        self._install_pipeline_resources(authority.facts)
+        current = self.connection
+        self.connection = candidate
+        try:
+            self._verify_all_owned_chains()
+            reexported_tables = self._pipeline_table_facts(candidate)
+            authority_tables = tuple(
+                fact
+                for fact in authority.facts
+                if fact.kind in _PIPELINE_TABLE_ORDER
+            )
+            if reexported_tables != authority_tables:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        except Exception:
+            self.connection = current
+            candidate.close()
+            raise
+        self.connection = current
+
+        payload = self._serialize(candidate)
+        assert self._state_parent is not None
+        try:
+            self._state_parent.atomic_write(
+                self._state_name,
+                payload,
+                max_bytes=MAX_STATE_DB_BYTES,
+                restore_bytes=self._durable_bytes,
+                seam_prefix="pipeline_rebuild_state_",
+            )
+        except (DurableWriteError, OSError):
+            candidate.close()
+            self._poison()
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        self.connection = candidate
+        self._durable_bytes = payload
+        if current is not None:
+            current.close()
+
+    def restore_owned_state(self, exported: object) -> None:
+        candidate, authority = self._pipeline_candidate_from_export(exported)
+        self._install_pipeline_candidate(candidate, authority)
+        restored = self.export_owned_state()
+        if (
+            restored.facts != authority.facts
+            or restored.projection != authority.projection
+        ):
+            self._poison()
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+    @classmethod
+    def rebuild_owned_state(cls, path: Path, exported: object) -> None:
+        candidate, authority = cls._pipeline_candidate_from_export(exported)
+        store = cls(path)
+        try:
+            store._install_pipeline_candidate(candidate, authority)
+            restored = store.export_owned_state()
+            if (
+                restored.facts != authority.facts
+                or restored.projection != authority.projection
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        finally:
+            store.close()
 
     def _snapshot_transaction(self, mutation: Callable[[sqlite3.Connection], _T]) -> _T:
         if self._durable_bytes is None or self._poisoned:
