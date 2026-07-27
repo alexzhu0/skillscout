@@ -232,7 +232,15 @@ def test_run_authority_rejects_stale_digest_extra_and_checkpoint_head() -> None:
 
 
 def _self_hashed(model: type, field: str, **values: object) -> object:
-    return model(**values, **{field: sha256_digest(values)})
+    def json_value(value: object) -> object:
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json", exclude_none=False)
+        if isinstance(value, tuple):
+            return [json_value(item) for item in value]
+        return value
+
+    preimage = {key: json_value(value) for key, value in values.items()}
+    return model(**values, **{field: sha256_digest(preimage)})
 
 
 def _rate() -> SearchRateLimitFactsV1:
