@@ -1,4 +1,5 @@
 .tools/
+.env
 .venv/
 dist/
 .tmp/
