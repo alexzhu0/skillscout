@@ -139,7 +139,12 @@ def test_admission_is_deterministic_and_renders_complete_human_review_body() -> 
     assert publication.render_pull_request_title(admission) == (
         "Draft: add bounded-workflow skill"
     )
-    body = publication.render_pull_request_body(admission)
+    body = publication.render_pull_request_body(
+        admission,
+        machine_commit_sha="b" * 40,
+        machine_parent_sha="c" * 40,
+        prior_marker_digest=None,
+    )
     for field in (
         "source-org/bounded-workflow",
         "a" * 40,
@@ -152,7 +157,15 @@ def test_admission_is_deterministic_and_renders_complete_human_review_body() -> 
         "human review",
     ):
         assert field.casefold() in body.casefold()
-    assert body == publication.render_pull_request_body(admission)
+    assert body == publication.render_pull_request_body(
+        admission,
+        machine_commit_sha="b" * 40,
+        machine_parent_sha="c" * 40,
+        prior_marker_digest=None,
+    )
+    marker = publication.parse_publication_marker(body, catalog_authority=authority)
+    assert marker.machine_commit_sha == "b" * 40
+    assert marker.machine_parent_sha == "c" * 40
 
 
 @pytest.mark.parametrize(
@@ -246,4 +259,3 @@ def test_marker_recovery_keeps_stable_identity_and_updates_revision_evidence() -
     assert recovered.publication_key == marker.publication_key
     assert recovered.package_digest == marker.package_digest
     assert recovered.machine_parent_sha == "c" * 40
-

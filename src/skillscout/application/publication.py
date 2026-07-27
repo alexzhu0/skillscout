@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Literal
 
 from skillscout.adapters.publication_state import PublicationStateStore
-from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.publication import (
     PublicationAdmissionV1,
+    PublicationMarkerV1,
     PublicationRecordV1,
     parse_publication_marker,
     render_pull_request_body,
@@ -121,7 +121,7 @@ class PublicationApplication:
             store.append_checkpoint(admission.intent, step="remote_verified", status_class="success", remote_id=str(pull.number), remote_sha=ref.sha)
             store.complete(admission.intent, record)
             return PublicationApplicationResult("published", "reconstructed_remote_completion", record)
-        return self._update(admission, store, remote, base_sha, ref, pull, tree)
+        return self._update(admission, store, remote, base_sha, ref, pull, tree, marker)
 
     @staticmethod
     def _catalog_authority(admission: PublicationAdmissionV1) -> object:
@@ -149,29 +149,58 @@ class PublicationApplication:
         commit = self._write_commit(admission, store, remote, base_sha, base_commit.tree_sha, ())
         remote.create_machine_ref(commit)
         store.append_checkpoint(admission.intent, step="ref_visible", status_class="success", remote_sha=commit)
-        pull = remote.create_draft_pull(render_pull_request_title(admission), render_pull_request_body(admission))
+        marker = PublicationMarkerV1.from_admission(
+            admission=admission,
+            machine_commit_sha=commit,
+            machine_parent_sha=base_sha,
+            prior_marker_digest=None,
+        )
+        pull = remote.create_draft_pull(
+            render_pull_request_title(admission),
+            render_pull_request_body(
+                admission,
+                machine_commit_sha=commit,
+                machine_parent_sha=base_sha,
+                prior_marker_digest=None,
+            ),
+        )
         store.append_checkpoint(admission.intent, step="draft_visible", status_class="success", remote_id=str(pull.number), remote_sha=commit)
         remote.request_reviewers(pull.number, admission.intent.reviewers)
         requested = remote.get_requested_reviewers(pull.number).users
         if any(login not in requested for login in admission.intent.reviewers):
             return PublicationApplicationResult("manual_intervention_required", "reviewer_request_not_visible", remote_writes=1)
-        return self._finalize(admission, store, remote, pull.number, commit)
+        return self._finalize(admission, store, remote, pull.number, commit, marker)
 
-    def _update(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, base_sha: str, ref: object, pull: object, tree: Iterable[object]) -> PublicationApplicationResult:
+    def _update(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, base_sha: str, ref: object, pull: object, tree: Iterable[object], prior_marker: PublicationMarkerV1) -> PublicationApplicationResult:
         # Only a fast-forward from the exact verified machine head is allowed.
         commit = self._write_commit(admission, store, remote, ref.sha, remote.get_commit(ref.sha).tree_sha, tree)
         remote.update_machine_ref(commit)
         store.append_checkpoint(admission.intent, step="ref_visible", status_class="success", remote_sha=commit)
-        remote.update_draft_pull(pull.number, render_pull_request_title(admission), render_pull_request_body(admission))
+        marker = PublicationMarkerV1.from_admission(
+            admission=admission,
+            machine_commit_sha=commit,
+            machine_parent_sha=ref.sha,
+            prior_marker_digest=prior_marker.marker_digest,
+        )
+        remote.update_draft_pull(
+            pull.number,
+            render_pull_request_title(admission),
+            render_pull_request_body(
+                admission,
+                machine_commit_sha=commit,
+                machine_parent_sha=ref.sha,
+                prior_marker_digest=prior_marker.marker_digest,
+            ),
+        )
         store.append_checkpoint(admission.intent, step="draft_visible", status_class="success", remote_id=str(pull.number), remote_sha=commit)
-        return self._finalize(admission, store, remote, pull.number, commit)
+        return self._finalize(admission, store, remote, pull.number, commit, marker)
 
-    def _finalize(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, number: int, commit: str) -> PublicationApplicationResult:
+    def _finalize(self, admission: PublicationAdmissionV1, store: PublicationStateStore, remote: object, number: int, commit: str, marker: PublicationMarkerV1) -> PublicationApplicationResult:
         requested = remote.get_requested_reviewers(number).users
         completed = tuple(sorted({row[0] for row in remote.list_reviews(number)}))
         if any(login not in requested and login not in completed for login in admission.intent.reviewers):
             return PublicationApplicationResult("manual_intervention_required", "reviewer_evidence_missing")
-        record = PublicationRecordV1(schema_version="publication-record-v1", publication_key=admission.publication_key, desired_revision=admission.desired_revision, marker_digest=sha256_digest({"publication_key": admission.publication_key, "commit": commit}))
+        record = PublicationRecordV1(schema_version="publication-record-v1", publication_key=admission.publication_key, desired_revision=admission.desired_revision, marker_digest=marker.marker_digest)
         store.append_checkpoint(admission.intent, step="remote_verified", status_class="success", remote_id=str(number), remote_sha=commit)
         store.complete(admission.intent, record)
         return PublicationApplicationResult("published", "remote_verified", record, remote_writes=1)

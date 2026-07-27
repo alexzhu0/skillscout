@@ -277,11 +277,22 @@ def render_pull_request_title(admission: PublicationAdmissionV1) -> str:
     return f"Draft: add {admission.evidence.stable_slug} skill"
 
 
-def render_pull_request_body(admission: PublicationAdmissionV1) -> str:
+def render_pull_request_body(
+    admission: PublicationAdmissionV1,
+    *,
+    machine_commit_sha: str,
+    machine_parent_sha: str,
+    prior_marker_digest: str | None,
+) -> str:
     if type(admission) is not PublicationAdmissionV1:
         raise TypeError("rendering requires an admitted publication")
     e, i = admission.evidence, admission.intent
-    marker = PublicationMarkerV1.from_admission(admission=admission, machine_commit_sha="0" * 40, machine_parent_sha="0" * 40, prior_marker_digest=None).render()
+    marker = PublicationMarkerV1.from_admission(
+        admission=admission,
+        machine_commit_sha=machine_commit_sha,
+        machine_parent_sha=machine_parent_sha,
+        prior_marker_digest=prior_marker_digest,
+    ).render()
     return "\n".join(("## SkillScout Draft", "", "### Source", f"- Repository: {e.repository_full_name}", f"- Commit: {e.exact_commit_sha}", f"- License: {e.license_spdx}", f"- Workflow fingerprint: {e.workflow_fingerprint}", "", "### Qualification", "- qualification: passed", "", "### Validation", "- format and safety checks: 0 errors", "", "### Independent review", f"- independent review: {e.review_verdict} ({e.review_confidence:.2f})", "", "### Human review required", "- A human must review and merge this Draft PR; automation cannot approve or merge.", "", "### Publication identity", f"- Catalog: {i.catalog_full_name}", f"- Branch: {i.head_branch}", marker))
 
 
