@@ -17,9 +17,24 @@ import pytest
 
 from skillscout.adapters.fixtures import FixtureProcessor, load_fixture
 from skillscout.adapters.localfs import AnchoredDirectory
+from skillscout.adapters.semantic_provider import (
+    SemanticProviderFailure,
+    SemanticTransportDisposition,
+)
 from skillscout.adapters.state import SQLiteStateStore
-from skillscout.application.pipeline import PipelineRunner, RetryPolicy
-from skillscout.application.ports import ERROR_SUMMARIES, ErrorCode, SafeFailure, StateStore
+from skillscout.application.pipeline import (
+    PipelineRunner,
+    RetryPolicy,
+    SemanticDurabilityGuard,
+)
+from skillscout.application.ports import (
+    ERROR_SUMMARIES,
+    DurabilityReceipt,
+    ErrorCode,
+    SafeFailure,
+    StageOutcome,
+    StateStore,
+)
 from skillscout.domain.canonical import (
     reusable_key_digest,
     sha256_digest,
@@ -35,6 +50,7 @@ from skillscout.domain.models import (
     StageInput,
     VerifiedRunChain,
 )
+from skillscout.domain.subjects import RepositorySubject
 
 FROZEN_DATABASE = Path(__file__).parent / "fixtures" / "state" / "v1-cli.db"
 FROZEN_PROVENANCE = Path(__file__).parent / "fixtures" / "state" / "v1-cli-provenance.json"
@@ -1906,3 +1922,199 @@ def test_concurrent_publication_write_fails_closed_until_lock_holder_exits(
             process.join(timeout=10)
         parent_control.close()
         child_control.close()
+
+
+class _SemanticOwner:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, int, str, int, str, str]] = []
+
+    def record_semantic_attempt(
+        self,
+        *,
+        run_id: str,
+        repository_id: int,
+        stage: str,
+        attempt_no: int,
+        status: str,
+        recorded_at: str,
+    ):
+        key = (run_id, repository_id, stage, attempt_no)
+        existing = next((item for item in self.records if item[:4] == key), None)
+        if existing is not None:
+            if existing[4] == status:
+                recorded_at = existing[5]
+            else:
+                self.records.remove(existing)
+        value = (*key, status, recorded_at)
+        if value not in self.records:
+            self.records.append(value)
+        return type("Record", (), {"recorded_at": recorded_at})()
+
+    def export_owned_state(self):
+        return type(
+            "Export",
+            (),
+            {"export_digest": sha256_digest({"records": self.records})},
+        )()
+
+
+class _StaticOwner:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def export_owned_state(self):
+        return type(
+            "Export",
+            (),
+            {"export_digest": sha256_digest({"owner": self.label})},
+        )()
+
+
+class _RecordingBarrier:
+    def __init__(self, *, fail_on: set[int] | None = None) -> None:
+        self.transitions = []
+        self.fail_on = fail_on or set()
+
+    def confirm(self, *, transition, pipeline_store, operations_store, publication_store):
+        del pipeline_store, operations_store, publication_store
+        ordinal = len(self.transitions) + 1
+        self.transitions.append(transition)
+        if ordinal in self.fail_on:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        return DurabilityReceipt.from_remote_verification(
+            transition=transition,
+            verified_state_head=f"{ordinal:040x}",
+            state_root_digest=sha256_digest({"root": ordinal}),
+            pipeline_database_digest=sha256_digest({"pipeline": ordinal}),
+            operations_database_digest=sha256_digest({"operations": ordinal}),
+            publication_database_digest=sha256_digest({"publication": ordinal}),
+            pipeline_projection_digest=sha256_digest({"pipeline-projection": ordinal}),
+            operations_projection_digest=sha256_digest(
+                {"operations-projection": ordinal}
+            ),
+            publication_projection_digest=sha256_digest(
+                {"publication-projection": ordinal}
+            ),
+        )
+
+
+class _SemanticPhaseTwoProcessor:
+    producer_version = "phase2-v1"
+
+    def __init__(self, failures: list[SemanticProviderFailure]) -> None:
+        self.failures = failures
+        self.extractor_requests = 0
+
+    def process(self, stage_input: StageInput, _context) -> StageOutcome:
+        if stage_input.stage is PipelineStage.EXTRACTOR:
+            self.extractor_requests += 1
+            if self.failures:
+                raise self.failures.pop(0)
+            return StageOutcome(
+                payload={"outcome": "no_workflow", "workflows": []},
+                telemetry=None,
+            )
+        return StageOutcome(payload={"outcome": "accepted"}, telemetry=None)
+
+
+def _semantic_guard(barrier: _RecordingBarrier) -> SemanticDurabilityGuard:
+    return SemanticDurabilityGuard(
+        barrier=barrier,
+        operations_store=_SemanticOwner(),
+        publication_store=_StaticOwner("publication"),
+        repository_id=101,
+        workflow_authority_digest=sha256_digest({"workflow": 101}),
+        provider="openai",
+        expected_prior_state_head="a" * 40,
+        expected_prior_root_digest=sha256_digest({"prior": 101}),
+    )
+
+
+def _repository_subject() -> RepositorySubject:
+    return RepositorySubject(
+        schema_version="1",
+        subject_id="repo:example/semantic",
+        repository="https://github.com/example/semantic",
+    )
+
+
+def test_extractor_confirmed_retry_is_remotely_durable_before_next_request(
+    tmp_path: Path,
+) -> None:
+    processor = _SemanticPhaseTwoProcessor(
+        [
+            SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.CONFIRMED_RETRYABLE,
+                code="semantic_rate_limited",
+            )
+        ]
+    )
+    barrier = _RecordingBarrier()
+    store = SQLiteStateStore(tmp_path / "extractor-confirmed.sqlite3")
+    try:
+        with pytest.raises(SafeFailure) as first:
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "confirmed-first")
+        assert first.value.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+        PipelineRunner(
+            store, processor, semantic_durability=_semantic_guard(barrier)
+        ).run(_repository_subject(), tmp_path / "confirmed-second")
+    finally:
+        store.close()
+    assert processor.extractor_requests == 2
+    assert [item.transition for item in barrier.transitions] == [
+        "attempt_started",
+        "result_confirmed_retryable",
+        "attempt_started",
+        "result_decided",
+    ]
+
+
+def test_extractor_unknown_is_consumed_once_and_never_replayed(
+    tmp_path: Path,
+) -> None:
+    processor = _SemanticPhaseTwoProcessor(
+        [
+            SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+                code="semantic_provider_outcome_unknown",
+            )
+        ]
+    )
+    barrier = _RecordingBarrier()
+    store = SQLiteStateStore(tmp_path / "extractor-unknown.sqlite3")
+    try:
+        with pytest.raises(SemanticProviderFailure):
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "unknown-first")
+        with pytest.raises(SafeFailure) as resumed:
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "unknown-second")
+        assert resumed.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    finally:
+        store.close()
+    assert processor.extractor_requests == 1
+    assert [item.transition for item in barrier.transitions] == [
+        "attempt_started",
+        "result_outcome_unknown",
+    ]
+
+
+def test_extractor_pre_request_barrier_failure_issues_zero_requests(
+    tmp_path: Path,
+) -> None:
+    processor = _SemanticPhaseTwoProcessor([])
+    barrier = _RecordingBarrier(fail_on={1})
+    store = SQLiteStateStore(tmp_path / "extractor-pre-barrier.sqlite3")
+    try:
+        with pytest.raises(SafeFailure) as failure:
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "pre-barrier")
+        assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
+    finally:
+        store.close()
+    assert processor.extractor_requests == 0
