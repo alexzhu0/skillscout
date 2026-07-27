@@ -278,7 +278,7 @@ Plans:
 
 **Depends on:** Phase 4  
 **Requirements:** DISC-01, DISC-02, DISC-03, OPS-02, OPS-03  
-**Plans:** 8/14 plans executed
+**Plans:** 9/14 plans executed
 
 - [x] 05-01-PLAN.md
 - [x] 05-02-PLAN.md
@@ -293,7 +293,7 @@ Plans:
 - [x] 05-11-PLAN.md
 - [x] 05-12-PLAN.md
 - [ ] 05-13-PLAN.md
-- [ ] 05-14-PLAN.md
+- [x] 05-14-PLAN.md
 
 **Success Criteria:**
 
@@ -341,7 +341,7 @@ Plans:
 | 2. Safe Single-Repository Extraction | Complete | 14 | 2026-07-22 |
 | 3. Validated Skill Candidate | 14/14 | Complete   | 2026-07-23 |
 | 4. Controlled Draft PR | 11/11 | Complete    | 2026-07-27 |
-| 5. Automated Discovery Operations | 8/14 | In Progress|  |
+| 5. Automated Discovery Operations | 9/14 | In Progress|  |
 | 6. Adversarial MVP Acceptance | Not started | 4 | 0/4 |
 
 ## Milestone Exit Criteria
