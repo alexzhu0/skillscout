@@ -442,8 +442,8 @@ class DiscoveryRunSummaryV1(StrictFrozenModel):
     business_terminal_count: Annotated[int, Field(ge=0, le=100)]
     quarantined_candidate_count: Annotated[int, Field(ge=0, le=20)]
     confirmed_retryable_count: Annotated[int, Field(ge=0, le=100)]
-    integrity_conflict_count: Annotated[int, Field(ge=0, le=1)]
-    permanent_failure_count: Annotated[int, Field(ge=0, le=1)]
+    integrity_conflict_count: Annotated[int, Field(ge=0, le=100)]
+    permanent_failure_count: Annotated[int, Field(ge=0, le=100)]
     terminal_digests: Annotated[tuple[Digest, ...], Field(max_length=100)]
     completed_at: _Timestamp
     summary_digest: Digest

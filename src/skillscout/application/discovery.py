@@ -464,6 +464,11 @@ class DiscoveryApplication:
         terminal_repository_ids = {
             terminal.repository_id for terminal in terminals
         }
+        if any(
+            terminal.outcome in _FATAL_OUTCOMES
+            for terminal in terminals
+        ):
+            selected = []
         durable_discovery_reservations = {
             reservation.repository_id: reservation
             for reservation in snapshot.discovery_reservations
