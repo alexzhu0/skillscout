@@ -214,8 +214,9 @@ def test_fatal_summary_counts_only_durably_reserved_candidates() -> None:
         _module().DiscoveryApplication._run_operations_store
     )
     assert (
-        'summary_values["selected_candidate_count"] = '
-        "len(durable_discovery_reservations)"
+        '"selected_candidate_count": len(\n'
+        "                durable_discovery_reservations\n"
+        "            )"
     ) in source
     assert (
         "durable_discovery_reservations[\n"

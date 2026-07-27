@@ -479,6 +479,9 @@ class DiscoveryApplication:
                 candidate,
                 _timestamp(),
             )
+            durable_discovery_reservations[
+                candidate.repository.repository_id
+            ] = reservation
             if durable_reservation is not None:
                 if (
                     reservation != durable_reservation
@@ -556,7 +559,9 @@ class DiscoveryApplication:
             "schema_version": "discovery-run-summary-v1",
             "discovery_run_authority_digest": authority.authority_digest,
             "status": "completed",
-            "selected_candidate_count": len(selected),
+            "selected_candidate_count": len(
+                durable_discovery_reservations
+            ),
             "semantic_reservation_count": sum(
                 terminal.semantic_reservation_digest is not None
                 for terminal in terminals
