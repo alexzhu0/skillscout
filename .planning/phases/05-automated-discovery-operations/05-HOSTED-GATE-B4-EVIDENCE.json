@@ -1,0 +1,173 @@
+{
+  "action_pins": {
+    "actions/checkout": "11bd71901bbe5b1630ceea73d27597364c9af683",
+    "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
+    "approval_sha256": "b04b15c805cf92f1da40a13f468715ec92be9ed680fced4fe8fc0c70839c2e88",
+    "audit_sha256": "f33b1b47c20db6f728522a0e176687c78c19a1d748783f2376d6e28bb67209bb"
+  },
+  "canary": {
+    "catalog": {
+      "default_branch": "main",
+      "full_name": "alexzhu0/skillscout-catalog-test",
+      "repository_id": 1310876019
+    },
+    "default_ref": {
+      "after": "bd96c4fcfed5e7b2c94c79be7ec1aa6e333b71bb",
+      "before": "bd96c4fcfed5e7b2c94c79be7ec1aa6e333b71bb",
+      "unchanged": true
+    },
+    "installation": {
+      "id": 149272172,
+      "repository_count": 1
+    },
+    "merge_probe": {
+      "branch": "skillscout/gate-b4-30327184915-1-merge-probe",
+      "draft": false,
+      "otherwise_mergeable": true,
+      "pull_number": 8
+    },
+    "negative_probes": {
+      "default_ref_mutation": "validation_422",
+      "merge": "denied_405",
+      "ruleset_mutation": "denied_403",
+      "ruleset_read": "success_200",
+      "secret_metadata_read": "denied_403",
+      "unauthorized_private_repository": "not_found_404"
+    },
+    "positive_draft": {
+      "branch": "skillscout/gate-b4-30327184915-1-draft",
+      "draft": true,
+      "pull_number": 7,
+      "requested_reviewers": [
+        "alexzhu0"
+      ]
+    },
+    "run": {
+      "attempt": "1",
+      "conclusion": "success",
+      "head_sha": "49f74e16e221fbb9ae81ed2e00ed7652a4231794",
+      "id": "30327184915",
+      "job_id": "90174914533"
+    },
+    "unauthorized_private_target": {
+      "identity_digest": "sha256:dd9f96176f73c8edce513166020584b72fd15d0b98dbb3293747e183ff7a5a12",
+      "repository_id": 1279072637
+    }
+  },
+  "cleanup": {
+    "actor": "human-admin:alexzhu0",
+    "attestation_id": "sha256:ce6f67f7137fe176a231ec86020057f959d7c15ae4326689ebe2a6b944b9b818",
+    "branches_deleted": [
+      "skillscout/gate-b4-30327184915-1-draft",
+      "skillscout/gate-b4-30327184915-1-merge-probe"
+    ],
+    "default_sha_after": "bd96c4fcfed5e7b2c94c79be7ec1aa6e333b71bb",
+    "default_sha_before": "bd96c4fcfed5e7b2c94c79be7ec1aa6e333b71bb",
+    "pulls_closed_unmerged": [
+      7,
+      8
+    ],
+    "remaining_branches": [
+      "main"
+    ],
+    "ruleset_sha256_after": "sha256:e58e74403d890296e44105cb60b42abffe522f11d169884d6d51f285b63948b5",
+    "ruleset_sha256_before": "sha256:e58e74403d890296e44105cb60b42abffe522f11d169884d6d51f285b63948b5"
+  },
+  "concurrency": {
+    "conclusion": "success",
+    "head_sha": "129fdd353626acffc011f1f22559db242f984774",
+    "observed_behavior": "second run remained pending while the first run was active, was not cancelled, and started immediately after the first completed",
+    "runs": [
+      {
+        "discovery_finished_at": "2026-07-28T02:58:09Z",
+        "discovery_started_at": "2026-07-28T02:57:27Z",
+        "id": "30324567231",
+        "protected_finished_at": "2026-07-28T03:00:10Z",
+        "protected_started_at": "2026-07-28T02:59:07Z"
+      },
+      {
+        "discovery_finished_at": "2026-07-28T03:00:46Z",
+        "discovery_started_at": "2026-07-28T03:00:12Z",
+        "id": "30324568742",
+        "protected_finished_at": "2026-07-28T03:02:41Z",
+        "protected_started_at": "2026-07-28T03:01:44Z"
+      }
+    ]
+  },
+  "environment": {
+    "name": "skillscout-catalog-publish",
+    "reviewer": "alexzhu0"
+  },
+  "gate_b4_approval": {
+    "approved": false,
+    "status": "evidence_complete_human_gate_b4_required"
+  },
+  "independent_verification": {
+    "app_author": "app/skillscout-catalog-test",
+    "default_branch_unchanged": true,
+    "merge_probe_mergeable": true,
+    "positive_pull_draft": true,
+    "positive_pull_requested_reviewers": [
+      "alexzhu0"
+    ],
+    "pulls_closed_unmerged": true,
+    "ruleset": {
+      "bypass_actor_count": 0,
+      "enforcement": "active",
+      "id": 19790912,
+      "name": "protect-main-human-review",
+      "sha256": "sha256:e58e74403d890296e44105cb60b42abffe522f11d169884d6d51f285b63948b5"
+    }
+  },
+  "log_and_state_scans": {
+    "canary_run": {
+      "api_key_literal": false,
+      "authorization_unmasked": false,
+      "github_token_literal": false,
+      "pem_material": false,
+      "private_repository_value_unmasked": false
+    },
+    "concurrency_runs": {
+      "30324567231": {
+        "api_key_literal": false,
+        "authorization_unmasked": false,
+        "github_token_literal": false,
+        "pem_material": false
+      },
+      "30324568742": {
+        "api_key_literal": false,
+        "authorization_unmasked": false,
+        "github_token_literal": false,
+        "pem_material": false
+      }
+    },
+    "state_branch": {
+      "api_key_literal": false,
+      "authorization_header": false,
+      "bytes_scanned": 1047947,
+      "files_scanned": 243,
+      "github_token_literal": false,
+      "pem_material": false
+    }
+  },
+  "schema_version": "skillscout.phase5-hosted-gate-b4-evidence.v1",
+  "superseded_runs": [
+    {
+      "cleanup_completed": true,
+      "credit": "none",
+      "head_sha": "17d03320ab92d3df08c8ba40016b9a5ddcc66f01",
+      "pulls_closed_unmerged": [
+        5,
+        6
+      ],
+      "reason": "private target name appeared in hosted logs before the protected-secret masking fix",
+      "run_id": "30326806777",
+      "workflow_sha256": "2c1526b88c5e74c23fb8f6f2a2254ed0f6ce7723d77af559d137b3c3727f7f2b"
+    }
+  ],
+  "workflow_digests": {
+    "discover_sha256": "8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd",
+    "gate_b4_canary_sha256": "9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d",
+    "publish_candidate_sha256": "96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0"
+  }
+}
