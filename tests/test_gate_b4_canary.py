@@ -46,9 +46,7 @@ def _env() -> dict[str, str]:
         "SKILLSCOUT_CANARY_ACTUAL_INSTALLATION_ID": "4001",
         "SKILLSCOUT_CANARY_REVIEWER": "skill-maintainer",
         "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY": "other-org/private",
-        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID": str(
-            UNAUTHORIZED_REPOSITORY_ID
-        ),
+        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID": str(UNAUTHORIZED_REPOSITORY_ID),
         "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST": (
             UNAUTHORIZED_IDENTITY_DIGEST
         ),
@@ -215,7 +213,11 @@ def _transport(
                     raise httpx.ReadError("MUST_NOT_APPEAR", request=request)
                 if ruleset_post_mode == "malformed_success":
                     ruleset_created = True
-                    return httpx.Response(201, json={"id": "MUST_NOT_APPEAR"})
+                    return httpx.Response(
+                        201,
+                        content=b'{"id":',
+                        headers={"content-type": "application/json"},
+                    )
             if 200 <= status < 300:
                 if key == ("PATCH", "/repos/catalog-org/skills/git/refs/heads/main"):
                     default_sha = body["sha"]
@@ -658,20 +660,19 @@ def test_transport_failure_is_sanitized_and_keeps_both_branch_locators() -> None
         lambda env: (
             env | {"SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY": "catalog-org/skills"}
         ),
-        lambda env: env
-        | {"SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID": "0"},
-        lambda env: env
-        | {
-            "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST": (
-                "sha256:" + "0" * 64
-            )
-        },
-        lambda env: env
-        | {
-            "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY": (
-                "other-org/different-private"
-            )
-        },
+        lambda env: env | {"SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID": "0"},
+        lambda env: (
+            env
+            | {
+                "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST": (
+                    "sha256:" + "0" * 64
+                )
+            }
+        ),
+        lambda env: (
+            env
+            | {"SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY": ("other-org/different-private")}
+        ),
         lambda env: env | {"GITHUB_RUN_ID": "../../unsafe"},
     ],
 )

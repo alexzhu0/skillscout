@@ -26,15 +26,16 @@ ACTION_AUDIT_SHA256 = "f33b1b47c20db6f728522a0e176687c78c19a1d748783f2376d6e28bb
 SCHEMA_VERSION = "skillscout.gate-b4-canary-evidence.v1"
 MAX_RESPONSE_BYTES = 65_536
 MAX_EVIDENCE_BYTES = 8_192
-MAX_REQUESTS = 25
-MERGE_POLL_ATTEMPTS = 3
-MERGE_POLL_DELAY_SECONDS = 1.0
-MAX_MERGE_POLL_SLEEP_SECONDS = 2.0
+MAX_REQUESTS = 30
+MERGE_POLL_SCHEDULE_SECONDS = (1.0, 2.0, 4.0, 8.0, 8.0)
+MAX_MERGE_POLL_SLEEP_SECONDS = 30.0
 _SHA = re.compile(r"[0-9a-f]{40}")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _FULL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
 _OWNER_OR_REPOSITORY = re.compile(r"[A-Za-z0-9_.-]{1,100}")
 _LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 _RUN_COMPONENT = re.compile(r"[1-9][0-9]{0,19}")
+_PRIVATE_IDENTITY_SCHEMA = "skillscout.unauthorized-private-repository-identity.v1"
 
 
 class CanaryAdmissionError(ValueError):
@@ -68,6 +69,8 @@ class PreflightConfig(NamedTuple):
     expected_installation_id: int
     reviewer: str
     unauthorized_private_repository: str
+    unauthorized_private_repository_id: int
+    unauthorized_private_repository_identity_digest: str
     branch_prefix: str
 
 
@@ -122,6 +125,22 @@ def _workflow_sha256() -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _private_repository_identity_digest(repository_id: int, full_name: str) -> str:
+    preimage = {
+        "schema_version": _PRIVATE_IDENTITY_SCHEMA,
+        "repository_id": repository_id,
+        "repository_full_name": full_name.casefold(),
+        "visibility": "private",
+    }
+    canonical = json.dumps(
+        preimage,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
 def load_preflight_config(env: Mapping[str, str]) -> PreflightConfig:
     """Validate all non-secret authority before an App token can be minted."""
 
@@ -147,6 +166,19 @@ def load_preflight_config(env: Mapping[str, str]) -> PreflightConfig:
         "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY",
         limit=201,
     )
+    unauthorized_repository_id = _positive_integer(
+        _required(
+            env,
+            "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID",
+            limit=20,
+        )
+    )
+    unauthorized_identity_digest = _required(
+        env,
+        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST",
+        limit=71,
+    )
+    normalized_unauthorized = unauthorized.casefold()
     if (
         _FULL_NAME.fullmatch(full_name) is None
         or _OWNER_OR_REPOSITORY.fullmatch(owner) is None
@@ -154,7 +186,13 @@ def load_preflight_config(env: Mapping[str, str]) -> PreflightConfig:
         or full_name != f"{owner}/{repository}"
         or _LOGIN.fullmatch(reviewer) is None
         or _FULL_NAME.fullmatch(unauthorized) is None
-        or unauthorized == full_name
+        or normalized_unauthorized == full_name.casefold()
+        or _DIGEST.fullmatch(unauthorized_identity_digest) is None
+        or unauthorized_identity_digest
+        != _private_repository_identity_digest(
+            unauthorized_repository_id,
+            normalized_unauthorized,
+        )
     ):
         raise CanaryAdmissionError("canary configuration rejected")
     branch_prefix = f"skillscout/gate-b4-{run_id}-{run_attempt}"
@@ -169,7 +207,9 @@ def load_preflight_config(env: Mapping[str, str]) -> PreflightConfig:
         catalog_repository=repository,
         expected_installation_id=expected_installation_id,
         reviewer=reviewer,
-        unauthorized_private_repository=unauthorized,
+        unauthorized_private_repository=normalized_unauthorized,
+        unauthorized_private_repository_id=unauthorized_repository_id,
+        unauthorized_private_repository_identity_digest=(unauthorized_identity_digest),
         branch_prefix=branch_prefix,
     )
 
@@ -430,7 +470,8 @@ def _wait_until_mergeable(
     sleeper: Callable[[float], None],
 ) -> dict[str, Any]:
     path = f"{github.repository_path}/pulls/{number}"
-    for attempt in range(MERGE_POLL_ATTEMPTS):
+    attempts = len(MERGE_POLL_SCHEDULE_SECONDS) + 1
+    for attempt in range(attempts):
         observed = github.required_object("GET", path)
         _validate_pull_identity(
             observed,
@@ -441,8 +482,8 @@ def _wait_until_mergeable(
         )
         if observed.get("mergeable") is True:
             return observed
-        if attempt < MERGE_POLL_ATTEMPTS - 1:
-            sleeper(MERGE_POLL_DELAY_SECONDS)
+        if attempt < len(MERGE_POLL_SCHEDULE_SECONDS):
+            sleeper(MERGE_POLL_SCHEDULE_SECONDS[attempt])
     raise CanaryRunError("otherwise-mergeable pull observation exhausted")
 
 
@@ -503,6 +544,31 @@ def _recovery_pull(
     return locator
 
 
+def _recover_ruleset_id(
+    github: _CanaryGitHub,
+    *,
+    name: str,
+) -> int | None:
+    try:
+        observation = github._request("GET", f"{github.repository_path}/rulesets")
+    except CanaryRunError:
+        return None
+    if observation.status != 200 or not isinstance(observation.payload, list):
+        return None
+    if len(observation.payload) > 100:
+        return None
+    matches: list[int] = []
+    for item in observation.payload:
+        if not isinstance(item, Mapping) or item.get("name") != name:
+            continue
+        ruleset_id = item.get("id")
+        if type(ruleset_id) is int and ruleset_id > 0:
+            matches.append(ruleset_id)
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
 def _failure_evidence(
     *,
     config: RunConfig,
@@ -514,6 +580,7 @@ def _failure_evidence(
     draft_number: int | None,
     merge_number: int | None,
     unexpected_probe: str | None,
+    ruleset_attempted: bool,
     ruleset_name: str,
     ruleset_id: int | None,
 ) -> dict[str, object]:
@@ -524,12 +591,24 @@ def _failure_evidence(
         "workflow_revision": authority.workflow_revision,
         "workflow_sha256": authority.workflow_sha256,
         "run": {"id": authority.run_id, "attempt": authority.run_attempt},
+        "unauthorized_private_target": {
+            "repository_id": authority.unauthorized_private_repository_id,
+            "identity_digest": (authority.unauthorized_private_repository_identity_digest),
+        },
         "cleanup_manifest": _cleanup_manifest(authority, branches=branches, pulls=pulls),
     }
     if unexpected_probe is not None:
         evidence["unexpected_probe"] = unexpected_probe
-    if ruleset_id is not None:
-        evidence["ruleset_mutation"] = {"name": ruleset_name, "id": ruleset_id}
+    if ruleset_attempted:
+        recovered_ruleset_id = _recover_ruleset_id(github, name=ruleset_name)
+        stable_id = recovered_ruleset_id if recovered_ruleset_id is not None else ruleset_id
+        ruleset_evidence: dict[str, object] = {
+            "attempted": True,
+            "name": ruleset_name,
+        }
+        if stable_id is not None:
+            ruleset_evidence["id"] = stable_id
+        evidence["ruleset_mutation"] = ruleset_evidence
     recovered_pulls: list[dict[str, object]] = []
     default_after: str | None = None
     if base_branch is not None and default_before is not None:
@@ -589,6 +668,7 @@ def run_canary(
     draft_number: int | None = None
     merge_number: int | None = None
     ruleset_name = f"skillscout-gate-b4-{authority.run_id}-{authority.run_attempt}-denial-probe"
+    ruleset_attempted = False
     ruleset_id: int | None = None
     github = _CanaryGitHub(config, transport=transport)
     try:
@@ -598,6 +678,7 @@ def run_canary(
             repositories.get("total_count") != 1
             or not isinstance(installed, list)
             or len(installed) != 1
+            or not isinstance(installed[0], Mapping)
             or installed[0].get("id") != authority.catalog_repository_id
             or installed[0].get("full_name") != authority.catalog_full_name
         ):
@@ -698,6 +779,7 @@ def run_canary(
                 frozenset({200, 403, 404}),
             ).classification,
         }
+        ruleset_attempted = True
         ruleset_observation = github.probe(
             "ruleset_mutation",
             "POST",
@@ -740,6 +822,10 @@ def run_canary(
             "run": {
                 "id": authority.run_id,
                 "attempt": authority.run_attempt,
+            },
+            "unauthorized_private_target": {
+                "repository_id": authority.unauthorized_private_repository_id,
+                "identity_digest": (authority.unauthorized_private_repository_identity_digest),
             },
             "installation": {
                 "id": config.actual_installation_id,
@@ -795,6 +881,7 @@ def run_canary(
             draft_number=draft_number,
             merge_number=merge_number,
             unexpected_probe=unexpected_probe,
+            ruleset_attempted=ruleset_attempted,
             ruleset_name=ruleset_name,
             ruleset_id=ruleset_id,
         )
@@ -856,6 +943,12 @@ def main(argv: list[str] | None = None) -> int:
                         "action_audit_sha256": ACTION_AUDIT_SHA256,
                         "catalog_repository_id": config.catalog_repository_id,
                         "expected_installation_id": config.expected_installation_id,
+                        "unauthorized_private_target": {
+                            "repository_id": (config.unauthorized_private_repository_id),
+                            "identity_digest": (
+                                config.unauthorized_private_repository_identity_digest
+                            ),
+                        },
                     }
                 ),
                 end="",

@@ -76,14 +76,20 @@ def test_workflow_is_manual_protected_minimal_and_dependency_locked() -> None:
     assert "permission-administration" not in text
     assert "owner: ${{ vars.SKILLSCOUT_CANARY_CATALOG_OWNER }}" in text
     assert "repositories: ${{ vars.SKILLSCOUT_CANARY_CATALOG_REPOSITORY }}" in text
-    assert text.count(
-        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID: "
-        "${{ vars.SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID }}"
-    ) == 2
-    assert text.count(
-        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST: "
-        "${{ vars.SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST }}"
-    ) == 2
+    assert (
+        text.count(
+            "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID: "
+            "${{ vars.SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID }}"
+        )
+        == 2
+    )
+    assert (
+        text.count(
+            "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST: "
+            "${{ vars.SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST }}"
+        )
+        == 2
+    )
 
 
 def test_preflight_has_no_secret_projection_and_shell_blocks_are_fixed() -> None:
