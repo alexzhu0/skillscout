@@ -144,7 +144,7 @@ jobs:
           PY
       - name: Mint catalog-scoped installation token after protected admission
         id: app-token
-        uses: actions/create-github-app-token@67018539274d69449ef7c8cde82c3ff073ffe3b5
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ secrets.SKILLSCOUT_GITHUB_APP_ID }}
           private-key: ${{ secrets.SKILLSCOUT_GITHUB_APP_PRIVATE_KEY }}

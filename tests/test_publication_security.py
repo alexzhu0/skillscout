@@ -255,17 +255,21 @@ def _job_block(text: str, name: str) -> str:
     return match.group("body")
 
 
-def test_publish_workflow_has_exact_approved_pins_dispatch_and_minimum_permissions() -> None:
-    text = _workflow()
-    assert re.search(r"^on:\n  workflow_dispatch:\n", text, re.MULTILINE)
-    assert not re.search(r"^  (schedule|pull_request|push):", text, re.MULTILINE)
-    assert re.search(r"^permissions:\n  contents: read\n", text, re.MULTILINE)
+def _assert_approved_action_pins(text: str) -> None:
     assert f"actions/checkout@{_CHECKOUT_SHA}" in text
     assert f"actions/create-github-app-token@{_APP_TOKEN_SHA}" in text
     action_refs = re.findall(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", text, flags=re.MULTILINE)
     assert action_refs == [_CHECKOUT_SHA, _CHECKOUT_SHA, _APP_TOKEN_SHA]
     assert _OLD_APP_TOKEN_SHA not in text
     assert "@v" not in text
+
+
+def test_publish_workflow_has_exact_approved_pins_dispatch_and_minimum_permissions() -> None:
+    text = _workflow()
+    assert re.search(r"^on:\n  workflow_dispatch:\n", text, re.MULTILINE)
+    assert not re.search(r"^  (schedule|pull_request|push):", text, re.MULTILINE)
+    assert re.search(r"^permissions:\n  contents: read\n", text, re.MULTILINE)
+    _assert_approved_action_pins(text)
     assert not re.search(r"^\s*contents: write$", text, re.MULTILINE)
     assert not re.search(r"^\s*pull-requests: write$", text, re.MULTILINE)
 
@@ -278,10 +282,8 @@ def test_publish_workflow_rejects_unapproved_or_non_full_token_action_identity(
     replacement: str,
 ) -> None:
     text = _workflow().replace(_APP_TOKEN_SHA, replacement)
-    action_refs = re.findall(
-        r"^\s*uses:\s*[^@\s]+@([^\s#]+)", text, flags=re.MULTILINE
-    )
-    assert action_refs == [_CHECKOUT_SHA, _CHECKOUT_SHA, _APP_TOKEN_SHA]
+    with pytest.raises(AssertionError):
+        _assert_approved_action_pins(text)
 
 
 def test_publish_workflow_crosses_only_candidate_handoff_and_revalidates_before_token() -> None:
