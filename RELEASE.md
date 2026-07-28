@@ -5,7 +5,7 @@
 
 SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turns bounded, read-only evidence from public GitHub repositories into validated Agent Skill candidates and, through a separately controlled publication boundary, human-reviewable Draft Pull Requests.
 
-This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 4 live canary **Gate B4 passed** for the exact reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration; Phase 5 automated discovery operations and Phase 6 adversarial acceptance remain pending.
+This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including a fresh exact-byte **Gate B4** for the reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration; only Phase 6 adversarial MVP acceptance remains before whole-product production readiness.
 
 ## Implemented preview scope
 
@@ -37,13 +37,13 @@ The `verify-publication-admission` and `publish-candidate` commands implement a 
 
 The committed workflow is manually dispatched, separates unprivileged admission from the protected publication job, pins its approved third-party Actions to full commit SHAs, and mints a catalog-scoped installation token only after protected revalidation.
 
-The automated terminal state is always a **Draft PR**. SkillScout has no merge, approve, review-submission, auto-merge, ready-for-review, ruleset-administration, default-branch-write, or automated cleanup operation. A human must review and decide what happens next.
+Successful automated publication ends with a **Draft PR**; failures and ambiguous states fail closed or require manual intervention. SkillScout has no merge, approve, review-submission, auto-merge, ready-for-review, ruleset-administration, default-branch-write, or automated cleanup operation. A human must review and decide what happens next.
 
 ## Verification evidence
 
-The current observed baseline, recorded on **2026-07-27**, is:
+The current observed baseline, recorded on **2026-07-28**, includes a focused Phase 5 and cross-phase release suite of `920 passed`:
 
-- Locked full test suite: `1410 passed, 2 skipped`.
+- Locked full test suite: `1916 passed, 2 skipped`.
 - The two skipped cases are the separately authorized live-canary paths under ordinary offline configuration.
 - Offline tests cover stage contracts, public-repository filtering and bounded reads, semantic-provider boundaries, candidate generation and validation, resumability and tamper detection, publication reconciliation, Draft-only transport, forbidden production surfaces, and protected-workflow structure.
 
@@ -78,7 +78,7 @@ Do not enable `publish-candidate` from an ordinary developer shell. Follow [Conf
 ## Known limitations
 
 - Gate B4 evidence is identity- and byte-bound; any workflow, App scope, catalog, ruleset, reviewer, or installation change requires a fresh canary before publication is credited.
-- Automated GitHub Search discovery, scheduled operation, candidate budgets, and durable multi-run state-branch operations are not part of this preview.
+- Phase 5 implements and verifies versioned GitHub Search, daily and manual triggers, hard limits of 100 candidates and 20 semantic reservations per run, three-store state-branch recovery with non-force CAS, and credential-zone isolation. The fresh Gate B4 evidence is bound to the current workflow SHA-256 digests: discover `8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd`, publish `96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0`, and canary `9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d`; changing any bound workflow or control-plane identity invalidates that evidence.
 - The adversarial MVP acceptance run across five pinned real repositories has not been completed.
 - Publication supports configured individual reviewers only. Team reviewer targets fail closed to manual handling.
 - Live canary cleanup is intentionally not automated and must use separate human or administrator authority.
@@ -109,7 +109,7 @@ Do not enable `publish-candidate` from an ordinary developer shell. Follow [Conf
 
 The following gates remain before SkillScout can make a production-ready release claim:
 
-1. **Automated discovery operations:** bounded Search queries, daily/manual scheduling, hard candidate and semantic-call budgets, durable auditable state, concurrency control, and interruption/rate-limit recovery must be implemented and verified.
+1. **Phase 6 operational acceptance:** adversarially exercise the implemented discovery budgets, serialized three-store recovery, credential isolation, and exact Gate B4 binding across the pinned-repository MVP matrix; no additional implementation phase remains before that acceptance work.
 2. **Adversarial MVP acceptance:** five public repositories pinned to exact commits must exercise successful and rejected paths, prompt-injection samples, end-to-end idempotency, at least one real human-reviewed Draft PR, repeated platform canary evidence, secret scanning, and evidence for every release requirement.
 
 ## Production-ready release checklist
@@ -119,7 +119,7 @@ The following gates remain before SkillScout can make a production-ready release
 - [x] SkillScout's production code, CLI, transport, and workflow expose no merge, approve, auto-merge, ready-for-review, or automated cleanup path.
 - [x] The exact final locked Phase 4 validation chain passes, including Ruff, pytest, validation-map checks, Action audit, and acceptance inspectors.
 - [ ] A push/pull-request CI quality gate runs the locked offline checks on the reviewed revision.
-- [ ] Automated discovery and operational state persistence meet the documented hard budgets and recovery requirements.
+- [x] Automated discovery and operational state persistence meet the documented 100-candidate and 20-semantic-reservation hard budgets, three-store rebuild and non-force CAS requirements, serialized hosted-run behavior, and bounded recovery requirements.
 - [ ] Five pinned public repositories and the adversarial corpus complete the MVP acceptance matrix.
 - [ ] Repeated identical inputs produce no duplicate workflow, Skill, branch, reviewer notification, or Draft PR.
 - [ ] At least one real eligible candidate reaches a Draft PR and is reviewed by a human; automation does not merge it.

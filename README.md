@@ -7,7 +7,7 @@ SkillScout is an auditable Python pipeline for maintainers who turn reusable wor
 
 SkillScout 面向中央 Agent Skills 仓库的维护者：它以只读、可追溯的方式发现和分析公开 GitHub 仓库，并把通过安全门禁的工作流生成为仅供人工审核的 Draft PR。
 
-> **Preview:** The deterministic and semantic pipeline is implemented and tested locally. The separately authorized live-canary release gate is still pending, so this repository is not yet production-ready. See [RELEASE.md](RELEASE.md) for the current release scope and gates.
+> **Preview:** The bounded daily/manual discovery path, deterministic and semantic pipeline, durable state recovery, and controlled Draft publication boundary are implemented and independently verified. A fresh Gate B4 canary approved the exact reviewed workflow and hosted identities, but the five-repository adversarial acceptance run is still pending, so this repository is not yet production-ready. Any workflow, GitHub App scope, catalog, ruleset, reviewer, protected-environment, or installation-identity change invalidates that live evidence and requires a new Gate B4 run. See [RELEASE.md](RELEASE.md) for the current release scope and gates.
 
 ## Safety model
 
@@ -102,15 +102,30 @@ The installed `skillscout` command exposes these bounded workflows:
 | `inspect-run` | Inspect the durable JSON projection of a recorded run. |
 | `verify-publication-admission` | Revalidate the exact evidence handoff before publication authority is used. |
 | `publish-candidate` | Reconcile one admitted candidate into its controlled Draft PR. |
+| `discover` | Run the bounded, unprotected discovery graph and emit a non-authorizing metadata handoff. |
+| `publish-discovered` | Re-read exact persisted state, re-admit the discovery handoff, and publish eligible candidates as Draft PRs from the protected boundary. |
 
 Run the parser help for the exact arguments:
 
 ```bash
 .tools/uv-0.11.29/bin/uv run --locked skillscout --help
 .tools/uv-0.11.29/bin/uv run --locked skillscout dry-run --help
+.tools/uv-0.11.29/bin/uv run --locked skillscout discover --help
 ```
 
-Publication is intentionally separate from extraction and generation. Do not run `publish-candidate` until the protected environment and pending release gates described in [RELEASE.md](RELEASE.md) have been satisfied.
+Publication is intentionally separate from extraction and generation. Do not run `publish-candidate` or `publish-discovered` from an ordinary developer shell; the reviewed production path introduces catalog authority only inside the protected environment.
+
+## Daily and manual discovery
+
+The production entry point is [`.github/workflows/discover.yml`](.github/workflows/discover.yml). It starts automatically every day at `03:17 UTC` and also supports an authorized manual run through GitHub Actions:
+
+1. Open the repository's **Actions** tab and select **Discover and publish eligible Skill drafts**.
+2. Choose **Run workflow** and dispatch the exact reviewed revision.
+3. Monitor the unprotected `discovery` job, which runs the fixed query set through independent review and persists the exact three-store state bundle on `skillscout-state`.
+4. When GitHub requests access to the separately governed `skillscout-catalog-publish` environment, approve it only according to the operating policy. The protected job re-reads the exact state commit and re-derives every admission before a catalog-scoped token is minted.
+5. Review any resulting Draft PR manually. The workflow cannot approve, merge, or mark it ready for review.
+
+Scheduled and manual runs share the non-cancelling `skillscout-production` concurrency group. Each run is capped at 100 deduplicated repositories and 20 semantic reservations; retry and recovery do not expand those budgets. Configure the repository variables, protected secrets, and environment policy described in [Configuration](docs/CONFIGURATION.md) before dispatching this workflow. Never paste credentials into CLI arguments, workflow inputs, logs, or state.
 
 ## Testing
 
@@ -121,6 +136,8 @@ Run the complete locked test suite from the repository root:
 ```
 
 The ordinary suite is offline by default. The live canary is separately authorized and skips unless its complete protected configuration is present.
+
+The independently verified 2026-07-28 baseline is `1916 passed, 2 skipped`; the two skips are the expected live-only publication canaries. This is a dated observation, not a fixed test-count contract.
 
 ## Documentation
 

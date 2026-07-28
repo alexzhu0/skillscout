@@ -3,14 +3,14 @@
 
 # Configuration
 
-SkillScout is configured through command-line paths and a small, closed set of environment variables. It does not load a repository `.env` file or a general application config file. Keep local development settings, semantic-provider credentials, and protected publication authority separate.
+SkillScout is configured through command-line paths, a versioned discovery-query file, and a small, closed set of environment variables. It does not load a repository `.env` file or a general application config file. Keep local development settings, discovery/state credentials, semantic-provider credentials, and protected publication authority separate.
 
 ## Local development
 
 Install the locked Python 3.13 environment before running commands:
 
 ```bash
-uv sync --locked
+.tools/uv-0.11.29/bin/uv sync --locked
 ```
 
 Pass state, evidence, and output locations explicitly. The CLI does not define default paths.
@@ -23,6 +23,8 @@ Pass state, evidence, and output locations explicitly. The CLI does not define d
 | `skillscout inspect-run` | `--state` |
 | `skillscout verify-publication-admission` | `--candidate`, `--phase2-state`, `--phase3-state` |
 | `skillscout publish-candidate` | `--candidate`, `--phase2-state`, `--phase3-state`, `--publication-state` |
+| `skillscout discover` | `--state-repository-id`, `--state-repository-full-name`, `--initial-state-root-digest` |
+| `skillscout publish-discovered` | `--handoff` |
 
 Example with placeholders:
 
@@ -42,6 +44,17 @@ export SKILLSCOUT_GITHUB_TOKEN='<github-read-credential>'
 ```
 
 Do not store the value in source files, command output, state databases, prompts, or documentation.
+
+For a local discovery run, first inject the source-read, state-branch, and selected semantic-provider credentials into the process environment. Then run the locked command with non-secret identity arguments:
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked skillscout discover \
+  --state-repository-id <state-repository-id> \
+  --state-repository-full-name <state-owner>/<state-repository> \
+  --initial-state-root-digest sha256:<64-lowercase-hex-characters>
+```
+
+`publish-discovered` is the protected workflow handoff command, not an ordinary local-development command. It requires an exact persisted-state handoff and catalog authority that are introduced only after protected re-admission.
 
 ## Semantic provider
 
@@ -96,12 +109,89 @@ These limits are defined in source and are not environment-variable overrides.
 | Generator output tokens | 6,000 |
 | Reviewer input bytes | 262,144 |
 | Reviewer output tokens | 2,000 |
+| Discovery repositories admitted per run | 100 |
+| Discovery repositories reserved for semantic processing per run | 20 |
+| Protected discovery handoff candidates | 60 |
+| Protected discovery handoff bytes | 65,536 |
 
 Changing these values requires a code change and corresponding contract/test updates.
 
+## Automated discovery operations
+
+The hosted entry point is `.github/workflows/discover.yml`. It runs every day at `03:17 UTC` from cron expression `17 3 * * *` and also accepts `workflow_dispatch` with no candidate-controlled inputs. Scheduled and manual runs share concurrency group `skillscout-production` with `cancel-in-progress: false`; GitHub may replace a pending run, but it does not cancel the active production run.
+
+The workflow executes the reviewed query set in `config/discovery-queries-v1.json`: four fixed public, non-archived repository searches, 25 results per page, at most four pages per query, acquired round-robin and ordered by most recently updated. Runtime input cannot replace or extend these queries. Deterministic reservations cap each run at 100 deduplicated repositories and 20 repositories admitted to semantic processing; resume and confirmed retry reuse the recorded reservations and do not widen either budget.
+
+The hosted discovery job selects `deepseek`, fixes `DEEPSEEK_BASE_URL` to `https://api.deepseek.com`, and runs:
+
+```bash
+uv run --locked python -m skillscout.cli discover \
+  --state-repository-id "$STATE_REPOSITORY_ID" \
+  --state-repository-full-name "$STATE_REPOSITORY_FULL_NAME" \
+  --initial-state-root-digest "$INITIAL_STATE_ROOT_DIGEST"
+```
+
+The protected job accepts only a bounded metadata handoff, re-reads the exact state commit, re-derives every candidate admission, and then runs:
+
+```bash
+uv run --locked python -m skillscout.cli publish-discovered \
+  --handoff /tmp/skillscout-discovery-handoff.json
+```
+
+Do not treat the temporary handoff as publication authority. It contains canonical locators and digests only; the protected job independently reconstructs authority from the exact persisted state.
+
+### Discovery and state variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `SKILLSCOUT_STATE_REPOSITORY_ID` | Required for hosted state readback and protected publication | None | Positive decimal identity of the repository that owns the state branch. |
+| `SKILLSCOUT_STATE_REPOSITORY_FULL_NAME` | Required for hosted state readback and protected publication | None | State repository in `owner/repository` form. |
+| `SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST` | Required by the hosted discovery job | None | Trusted `sha256:` root digest used to bind the initial or expected state lineage. |
+| `SKILLSCOUT_SOURCE_GITHUB_TOKEN` | Required by `discover` | None | Source-zone credential used only for bounded public GitHub Search and repository reads. |
+| `SKILLSCOUT_STATE_GITHUB_TOKEN` | Required by `discover` and `publish-discovered` | None | State-zone credential used only for the fixed state repository and state ref. |
+
+The workflow maps the three non-secret repository settings to the shorter process-local names `STATE_REPOSITORY_ID`, `STATE_REPOSITORY_FULL_NAME`, and `INITIAL_STATE_ROOT_DIGEST` only for the `discover` command. The application-facing state names remain `SKILLSCOUT_STATE_REPOSITORY_ID` and `SKILLSCOUT_STATE_REPOSITORY_FULL_NAME` in the protected job.
+
+<!-- VERIFY: Confirm the actual state repository ID, full name, initial root digest, and repository-variable scoping in GitHub Actions settings. -->
+
+### Durable state branch
+
+Discovery state is fixed to `refs/heads/skillscout-state`; it is not a CLI-selectable ref. The branch contains:
+
+```text
+state/root.json
+state/databases/pipeline.sqlite3
+state/databases/operations.sqlite3
+state/databases/publication.sqlite3
+state/objects/sha256/<prefix>/<digest>.json
+```
+
+The three databases have separate owners: pipeline execution, operations/reservations, and publication reconciliation. Canonical JSON evidence is content-addressed under `state/objects/sha256/`, and `state/root.json` binds the database/object projection to its parent commit and policy digests. Synchronization uses non-force fast-forward updates and exact post-write readback; state conflicts fail closed.
+
+### Two credential zones
+
+1. The unprotected `discovery` job has repository `contents: write` so its workflow-scoped `github.token` can serve as both `SKILLSCOUT_SOURCE_GITHUB_TOKEN` and `SKILLSCOUT_STATE_GITHUB_TOKEN`. The DeepSeek credential is available only to this job's semantic stages. This zone can read public sources and advance the fixed state branch, but it receives no catalog GitHub App private key or catalog installation token.
+2. The `protected_publication` job uses the protected environment `skillscout-catalog-publish`, has repository `contents: read`, and uses `github.token` only as `SKILLSCOUT_STATE_GITHUB_TOKEN` to re-read the exact state commit. Only after re-admission does the pinned token action receive `SKILLSCOUT_GITHUB_APP_ID` and `SKILLSCOUT_GITHUB_APP_PRIVATE_KEY` and mint a catalog-repository installation token for `contents: write` and `pull-requests: write`. That short-lived token is exposed as `SKILLSCOUT_GITHUB_TOKEN` only to the final Draft-publication step.
+
+<!-- VERIFY: Confirm that the workflow token's repository identity matches the configured state repository and that job/environment secret scoping enforces the two documented credential zones. -->
+
+### Hosted identity and Gate B4 binding
+
+The current repository bytes have these SHA-256 identities:
+
+| Surface | SHA-256 |
+|---|---|
+| Automated discovery workflow | `8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd` |
+| Manual publication workflow | `96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0` |
+| Controlled Gate B4 canary workflow | `9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d` |
+
+The fresh hosted Gate B4 approval is bound to the exact workflow bytes plus the reviewed GitHub App scope, catalog, ruleset, protected environment, reviewer configuration, installation identity, causal denial results, and separate human/admin cleanup.
+
+Any change to the workflow, App scope, catalog, ruleset, protected-environment configuration, required-reviewer configuration, or installation identity invalidates that evidence and requires a fresh Gate B4 run.
+
 ## Protected publication configuration
 
-Live publication is isolated in `.github/workflows/publish-candidate.yml`. The `publish` job uses the protected GitHub environment named `skillscout-catalog-publish`; the earlier `admit` job has only repository read permission and does not receive publication credentials.
+Manual single-candidate publication is isolated in `.github/workflows/publish-candidate.yml`. Its `publish` job uses the protected GitHub environment named `skillscout-catalog-publish`; the earlier `admit` job has only repository read permission and does not receive publication credentials. Automated discovery uses the same protected environment in `.github/workflows/discover.yml`, but independently re-reads the exact persisted state before token minting.
 
 <!-- VERIFY: Confirm that the skillscout-catalog-publish GitHub environment has the intended required reviewers, deployment protections, and restricted variable/secret access in repository settings. -->
 
@@ -180,15 +270,17 @@ The complete workflow-generated comparison set is:
 - Local `dry-run` needs no remote credential.
 - `extract-repo` needs semantic-provider credentials and may use `SKILLSCOUT_GITHUB_TOKEN` for authenticated public GitHub reads.
 - `build-candidate` needs the selected provider credential.
+- `discover` needs `SKILLSCOUT_SOURCE_GITHUB_TOKEN`, `SKILLSCOUT_STATE_GITHUB_TOKEN`, the three state identity arguments, and the selected provider credential.
 - Selecting DeepSeek additionally requires the exact official `DEEPSEEK_BASE_URL`.
 - `verify-publication-admission` without `--compare-env` does not load publication authority or a publication token.
 - `verify-publication-admission --compare-env` requires the canonical `SKILLSCOUT_EXPECTED_*` handoff and catalog authority variables.
 - `publish-candidate` requires the protected authority variables and a non-empty `SKILLSCOUT_GITHUB_TOKEN`.
+- `publish-discovered` requires the exact protected handoff, state repository variables, `SKILLSCOUT_STATE_GITHUB_TOKEN`, protected catalog authority, and the late-minted `SKILLSCOUT_GITHUB_TOKEN`.
 
 Missing or malformed semantic and protected-publication configuration is intentionally converted to a sanitized failure rather than echoing the rejected value.
 
 ## Config files and per-environment overrides
 
-`pyproject.toml` pins the supported Python range and dependencies; `uv.lock` supplies reproducible dependency resolution. `.github/workflows/publish-candidate.yml` defines the protected publication job and its variable/secret bindings. There is no application YAML/JSON/TOML configuration schema beyond project metadata, and no checked-in development, test, staging, or production `.env` override mechanism.
+`pyproject.toml` pins the supported Python range and dependencies; `uv.lock` supplies reproducible dependency resolution. `config/discovery-queries-v1.json` is the only runtime policy JSON and must validate as the exact reviewed query set. `.github/workflows/discover.yml` defines daily/manual discovery, state persistence, and protected discovered-candidate publication; `.github/workflows/publish-candidate.yml` defines the manual single-candidate protected publication path. There is no general application YAML/JSON/TOML configuration schema and no checked-in development, test, staging, or production `.env` override mechanism.
 
-Use the host process environment for local semantic work and GitHub Actions environment/repository settings for publication. Do not commit local credential files. If a local shell setup is needed, keep it outside the repository and use only placeholder documentation.
+Use the host process environment for local semantic/discovery work and GitHub Actions repository variables, secrets, and protected-environment settings for hosted operation. Do not commit local credential files. If a local shell setup is needed, keep it outside the repository and use only placeholder documentation.

@@ -157,9 +157,9 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 
 ## Current Implementation Status
 
-The repository contains an installed Python 3.13 CLI exposed as `skillscout`. Its current commands are `dry-run`, `extract-repo`, `build-candidate`, `inspect-run`, `verify-publication-admission`, and `publish-candidate`.
+The repository contains an installed Python 3.13 CLI exposed as `skillscout`. Its current commands are `dry-run`, `extract-repo`, `build-candidate`, `inspect-run`, `verify-publication-admission`, `publish-candidate`, `discover`, and `publish-discovered`.
 
-Phases 1–4 are implemented and verified. Phase 4 controlled publication includes strict admission, dedicated publication state, bounded GitHub publishing, recovery, Draft-only handling, and a protected workflow. Gate B4 passed on 2026-07-27 against the exact workflow SHA-256 `224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c`, with causal denial probes, unchanged default branch, and separate human/admin cleanup. Any change to the workflow, App scope, catalog, ruleset, reviewer configuration, or installation identity invalidates that evidence and requires a fresh Gate B4 run. This does not make the whole product production-ready; Phase 5 operations and Phase 6 adversarial acceptance remain pending.
+Phases 1–5 are implemented and verified. Phase 4 controlled publication includes strict admission, dedicated publication state, bounded GitHub publishing, recovery, Draft-only handling, and a protected workflow. The 2026-07-27 Gate B4 result against workflow SHA-256 `224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c` is historical Phase 4 evidence only. Fresh Gate B4 authority was recorded on 2026-07-28 against the exact current discover workflow SHA-256 `8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd`, publish workflow SHA-256 `96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0`, and canary workflow SHA-256 `9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d`, with causal denial probes, unchanged default branch, and separate human/admin cleanup. Any change to a bound workflow, App scope, catalog, ruleset, protected environment, reviewer configuration, or installation identity invalidates that evidence and requires a fresh Gate B4 run. This does not make the whole product production-ready; Phase 6 adversarial acceptance remains pending.
 
 ## Semantic Provider Boundary
 
@@ -186,4 +186,4 @@ Do not read any repository `.env` file or any PEM, JWT, token, private-key, or o
 - [Configuration](docs/CONFIGURATION.md) — CLI paths, semantic-provider settings, and protected publication configuration.
 - [Development](docs/DEVELOPMENT.md) — local setup, commands, coding standards, and change-safety rules.
 - [Testing](docs/TESTING.md) — test suites, focused commands, coverage status, and CI integration.
-- [Release](RELEASE.md) — current verification status, release gates, and remaining live-canary work.
+- [Release](RELEASE.md) — historical preview status, release gates, and remaining acceptance work.
