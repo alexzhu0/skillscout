@@ -48,6 +48,8 @@ def _env() -> dict[str, str]:
 
 def _transport(
     requests: list[tuple[str, str, object | None]],
+    *,
+    fail_at: tuple[str, str] | None = None,
 ) -> httpx.MockTransport:
     draft_branch = "skillscout/gate-b4-12345-1-draft"
     merge_branch = "skillscout/gate-b4-12345-1-merge-probe"
@@ -55,13 +57,13 @@ def _transport(
     def respond(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
         requests.append((request.method, request.url.path, body))
+        if fail_at == (request.method, request.url.path):
+            return httpx.Response(500, json={"message": "MUST_NOT_APPEAR"})
         routes: dict[tuple[str, str], object] = {
             ("GET", "/installation"): {"id": 4001},
             ("GET", "/installation/repositories"): {
                 "total_count": 1,
-                "repositories": [
-                    {"id": 910001, "full_name": "catalog-org/skills"}
-                ],
+                "repositories": [{"id": 910001, "full_name": "catalog-org/skills"}],
             },
             ("GET", "/repos/catalog-org/skills"): {
                 "id": 910001,
@@ -78,8 +80,7 @@ def _transport(
             },
             (
                 "PUT",
-                "/repos/catalog-org/skills/contents/"
-                ".skillscout-gate-b4/gate-b4-12345-1-draft.md",
+                "/repos/catalog-org/skills/contents/.skillscout-gate-b4/gate-b4-12345-1-draft.md",
             ): {
                 "content": {"sha": "1" * 40},
                 "commit": {"sha": DRAFT_COMMIT_SHA},
@@ -123,9 +124,7 @@ def _transport(
         key = (request.method, request.url.path)
         if key == ("POST", "/repos/catalog-org/skills/git/refs"):
             ref = body["ref"]
-            return httpx.Response(
-                201, json={"ref": ref, "object": {"sha": DEFAULT_SHA}}
-            )
+            return httpx.Response(201, json={"ref": ref, "object": {"sha": DEFAULT_SHA}})
         if key == ("POST", "/repos/catalog-org/skills/pulls"):
             is_draft = body["draft"]
             branch = draft_branch if is_draft else merge_branch
@@ -193,8 +192,7 @@ def test_canary_uses_exact_fixed_route_allowlist_and_emits_bounded_evidence() ->
         ("POST", "/repos/catalog-org/skills/git/refs"),
         (
             "PUT",
-            "/repos/catalog-org/skills/contents/"
-            ".skillscout-gate-b4/gate-b4-12345-1-draft.md",
+            "/repos/catalog-org/skills/contents/.skillscout-gate-b4/gate-b4-12345-1-draft.md",
         ),
         ("POST", "/repos/catalog-org/skills/pulls"),
         ("POST", "/repos/catalog-org/skills/pulls/78/requested_reviewers"),
@@ -203,8 +201,7 @@ def test_canary_uses_exact_fixed_route_allowlist_and_emits_bounded_evidence() ->
         ("POST", "/repos/catalog-org/skills/git/refs"),
         (
             "PUT",
-            "/repos/catalog-org/skills/contents/"
-            ".skillscout-gate-b4/gate-b4-12345-1-merge-probe.md",
+            "/repos/catalog-org/skills/contents/.skillscout-gate-b4/gate-b4-12345-1-merge-probe.md",
         ),
         ("POST", "/repos/catalog-org/skills/pulls"),
         ("GET", "/repos/catalog-org/skills/pulls/79"),
@@ -216,6 +213,33 @@ def test_canary_uses_exact_fixed_route_allowlist_and_emits_bounded_evidence() ->
         ("GET", "/repos/catalog-org/skills/actions/secrets"),
         ("GET", "/repos/catalog-org/skills/git/ref/heads/main"),
     ]
+    bodies = [body for _, _, body in requests]
+    assert bodies[4] == {
+        "ref": "refs/heads/skillscout/gate-b4-12345-1-draft",
+        "sha": DEFAULT_SHA,
+    }
+    assert bodies[6] == {
+        "title": "SkillScout controlled Gate B4 draft canary",
+        "body": (
+            "Fixed, non-production Gate B4 evidence. "
+            "Human/admin cleanup is required; automation will not merge."
+        ),
+        "head": "skillscout/gate-b4-12345-1-draft",
+        "base": "main",
+        "draft": True,
+        "maintainer_can_modify": False,
+    }
+    assert bodies[7] == {
+        "reviewers": ["skill-maintainer"],
+        "team_reviewers": [],
+    }
+    assert bodies[10] == {
+        "ref": "refs/heads/skillscout/gate-b4-12345-1-merge-probe",
+        "sha": DEFAULT_SHA,
+    }
+    assert bodies[12]["draft"] is False
+    assert bodies[14] == {"sha": MERGE_COMMIT_SHA, "force": False}
+    assert bodies[15] == {"merge_method": "squash"}
     assert result["positive_draft"] == {
         "branch": "skillscout/gate-b4-12345-1-draft",
         "pull_number": 78,
@@ -274,10 +298,34 @@ def test_canary_request_surface_has_no_cleanup_approve_review_or_ready_routes() 
     )
     assert not any(marker in path for _, path, _ in requests for marker in forbidden)
     assert not any(
-        isinstance(body, dict)
-        and body.get("event") in {"APPROVE", "REQUEST_CHANGES", "COMMENT"}
+        isinstance(body, dict) and body.get("event") in {"APPROVE", "REQUEST_CHANGES", "COMMENT"}
         for _, _, body in requests
     )
+
+
+def test_mid_run_failure_exposes_only_created_locators_for_human_cleanup() -> None:
+    module = _module()
+    requests: list[tuple[str, str, object | None]] = []
+    failing_path = (
+        "PUT",
+        "/repos/catalog-org/skills/contents/.skillscout-gate-b4/gate-b4-12345-1-merge-probe.md",
+    )
+    with pytest.raises(module.CanaryRunError) as raised:
+        module.run_canary(
+            module.load_run_config(_env()),
+            transport=_transport(requests, fail_at=failing_path),
+        )
+    assert raised.value.cleanup_manifest == {
+        "repository": "catalog-org/skills",
+        "branches": [
+            "skillscout/gate-b4-12345-1-draft",
+            "skillscout/gate-b4-12345-1-merge-probe",
+        ],
+        "pulls": [78],
+    }
+    assert TOKEN not in repr(raised.value)
+    assert "MUST_NOT_APPEAR" not in repr(raised.value)
+    assert not any(method == "DELETE" for method, _, _ in requests)
 
 
 @pytest.mark.parametrize(
@@ -285,10 +333,9 @@ def test_canary_request_surface_has_no_cleanup_approve_review_or_ready_routes() 
     [
         lambda env: env | {"SKILLSCOUT_CANARY_ACTUAL_INSTALLATION_ID": "4002"},
         lambda env: env | {"SKILLSCOUT_CANARY_CATALOG_OWNER": "other-org"},
-        lambda env: env | {
-            "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY":
-            "catalog-org/skills"
-        },
+        lambda env: (
+            env | {"SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY": "catalog-org/skills"}
+        ),
         lambda env: env | {"GITHUB_RUN_ID": "../../unsafe"},
     ],
 )
@@ -298,4 +345,3 @@ def test_canary_rejects_identity_or_path_widening_before_http(
     module = _module()
     with pytest.raises(module.CanaryAdmissionError):
         module.load_run_config(mutate(_env()))
-

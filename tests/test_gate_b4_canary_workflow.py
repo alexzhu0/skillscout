@@ -14,9 +14,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "gate-b4-canary.yml"
 CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 APP_TOKEN_SHA = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
-ACTION_AUDIT_SHA256 = (
-    "f33b1b47c20db6f728522a0e176687c78c19a1d748783f2376d6e28bb67209bb"
-)
+ACTION_AUDIT_SHA256 = "f33b1b47c20db6f728522a0e176687c78c19a1d748783f2376d6e28bb67209bb"
 
 
 def _source() -> str:
@@ -32,9 +30,7 @@ def _assert_trigger_and_authority(text: str) -> None:
     assert "inputs:" not in text
     assert re.search(r"^permissions:\n  contents: read$", text, re.MULTILINE)
     assert text.count("environment: skillscout-catalog-publish") == 1
-    assert re.search(
-        r"^    permissions:\n      contents: read$", text, re.MULTILINE
-    )
+    assert re.search(r"^    permissions:\n      contents: read$", text, re.MULTILINE)
     assert "administration:" not in text
     assert "actions/cache" not in text
     assert "upload-artifact" not in text
@@ -55,8 +51,7 @@ def _assert_ordering(text: str) -> None:
     assert "SKILLSCOUT_GITHUB_APP_PRIVATE_KEY" not in pretoken
     assert "SKILLSCOUT_CANARY_APP_TOKEN: ${{ steps.app-token.outputs.token }}" in text
     assert (
-        "SKILLSCOUT_CANARY_ACTUAL_INSTALLATION_ID: "
-        "${{ steps.app-token.outputs.installation-id }}"
+        "SKILLSCOUT_CANARY_ACTUAL_INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}"
     ) in text
 
 
@@ -65,7 +60,7 @@ def test_workflow_is_manual_protected_minimal_and_dependency_locked() -> None:
     _assert_trigger_and_authority(text)
     _assert_ordering(text)
     assert f"# action-audit-sha256: {ACTION_AUDIT_SHA256}" in text
-    actions = re.findall(r"uses:\s*([^@\\s]+)@([^\\s#]+)", text)
+    actions = re.findall(r"uses:\s*([^@\s]+)@([^\s#]+)", text)
     assert actions == [
         ("actions/checkout", CHECKOUT_SHA),
         ("astral-sh/setup-uv", SETUP_UV_SHA),
@@ -80,9 +75,7 @@ def test_workflow_is_manual_protected_minimal_and_dependency_locked() -> None:
     assert "permission-pull-requests: write" in text
     assert "permission-administration" not in text
     assert "owner: ${{ vars.SKILLSCOUT_CANARY_CATALOG_OWNER }}" in text
-    assert (
-        "repositories: ${{ vars.SKILLSCOUT_CANARY_CATALOG_REPOSITORY }}" in text
-    )
+    assert "repositories: ${{ vars.SKILLSCOUT_CANARY_CATALOG_REPOSITORY }}" in text
 
 
 def test_preflight_has_no_secret_projection_and_shell_blocks_are_fixed() -> None:
@@ -91,7 +84,7 @@ def test_preflight_has_no_secret_projection_and_shell_blocks_are_fixed() -> None
     pretoken = text[:token]
     assert "${{ secrets." not in pretoken
     assert "env:" in pretoken
-    for block in re.findall(r"run:\s*\\|\n((?:\s{8,}.*\n?)*)", text):
+    for block in re.findall(r"run:\s*\|\n((?:\s{8,}.*\n?)*)", text):
         assert "${{" not in block
         assert "set -euo pipefail" in block
     assert "github.event.inputs" not in text
@@ -120,10 +113,8 @@ def test_preflight_has_no_secret_projection_and_shell_blocks_are_fixed() -> None
             _assert_ordering,
         ),
         (
-            f"actions/create-github-app-token@{APP_TOKEN_SHA}",
-            f"actions/create-github-app-token@{APP_TOKEN_SHA}\n"
-            "        env:\n"
-            "          EARLY: ${{ secrets.SKILLSCOUT_GITHUB_APP_PRIVATE_KEY }}",
+            "gate_b4_canary.py preflight",
+            "${{ secrets.SKILLSCOUT_GITHUB_APP_PRIVATE_KEY }} gate_b4_canary.py preflight",
             _assert_ordering,
         ),
     ],
