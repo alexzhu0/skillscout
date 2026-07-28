@@ -90,13 +90,24 @@ def test_workflow_is_manual_protected_minimal_and_dependency_locked() -> None:
         )
         == 2
     )
+    private_name_secret = (
+        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY: "
+        "${{ secrets.SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY }}"
+    )
+    assert text.count(private_name_secret) == 2
+    assert (
+        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY: "
+        "${{ vars.SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY }}"
+    ) not in text
 
 
-def test_preflight_has_no_secret_projection_and_shell_blocks_are_fixed() -> None:
+def test_preflight_has_only_reviewed_identity_secret_and_shell_blocks_are_fixed() -> None:
     text = _source()
     token = text.index(f"actions/create-github-app-token@{APP_TOKEN_SHA}")
     pretoken = text[:token]
-    assert "${{ secrets." not in pretoken
+    assert set(re.findall(r"\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}", pretoken)) == {
+        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY"
+    }
     assert "env:" in pretoken
     for block in re.findall(r"run:\s*\|\n((?:\s{8,}.*\n?)*)", text):
         assert "${{" not in block
