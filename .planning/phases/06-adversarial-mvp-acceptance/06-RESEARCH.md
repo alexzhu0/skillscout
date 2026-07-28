@@ -604,27 +604,27 @@ Keep this registry in the independent verifier and cross-check it against the pr
 
 No assumed package, compliance target, retention duration, benchmark repository, or live outcome is treated as decided. Human selection and hosted capability checks remain explicit open questions/checkpoints.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Which exact five repository names and commit SHAs will be locked?**
+1. **RESOLVED — Which exact five repository names and commit SHAs will be locked?**
    - What we know: The distribution, identity fields, license rule, real-Search provenance, and human-lock requirement are fixed. [VERIFIED: `06-CONTEXT.md`, codebase grep]
    - What's unclear: The actual candidates cannot be selected by research without running the product nomination lane and obtaining human approval.
-   - Recommendation: Make nomination output the first executable phase checkpoint; the planner must not hard-code internet-search picks as release evidence.
+   - Disposition: Resolve the values at runtime from the real Search nomination output, then require the benchmark-lock human checkpoint to select and attest the exact five identities before any live semantic run. The planner must not hard-code internet-search picks as release evidence.
 
-2. **Which hosted kernel-enforced network-denial mechanism is available in the exact Actions runner?**
+2. **RESOLVED — Which hosted kernel-enforced network-denial mechanism is available in the exact Actions runner?**
    - What we know: Local research found `sandbox-exec` but not Docker, `unshare`, or `strace`; GitHub-hosted Ubuntu images document Docker tooling, and Docker’s none network provides container isolation except loopback. [CITED: https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md] [CITED: https://docs.docker.com/engine/network/drivers/none/]
    - What's unclear: The exact permissions and pinned base image/runtime path in the project’s protected workflow have not been exercised.
-   - Recommendation: Add a Wave 0 hosted probe. Prefer an ephemeral, dependency-prepared container with `--network none`; fail closed if the probe cannot demonstrate denial.
+   - Disposition: Run the Wave 0 hosted probe and prefer an ephemeral, dependency-prepared container with `--network none`; fail closed and block the adversarial campaign if the exact runner cannot demonstrate both direct-process and child-process denial. No Python-only fallback receives release credit.
 
-3. **What bounded raw-artifact retention duration should be selected?**
+3. **RESOLVED — What bounded raw-artifact retention duration should be selected?**
    - What we know: Raw diagnostic artifacts are non-canonical and must have bounded retention; GitHub allows repository/org/enterprise retention configuration and per-artifact limits. [CITED: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/remove-workflow-artifacts]
    - What's unclear: The project has not locked a Phase 6 duration.
-   - Recommendation: Use the shortest operationally useful duration, record it in the workflow/report, and keep release reconstruction independent of artifact availability.
+   - Disposition: Set every Phase 6 raw diagnostic Actions artifact to `retention-days: 1`. Raw artifacts remain non-canonical; release reconstruction depends only on redacted content-addressed state-branch facts.
 
-4. **What human attestation transport will be used?**
+4. **RESOLVED — What human attestation transport will be used?**
    - What we know: The evidence must bind the exact Draft head and D-17 checklist, while automation cannot approve or merge. [VERIFIED: `06-CONTEXT.md`, codebase grep]
    - What's unclear: Whether the human will provide a structured PR comment, a separately reviewed JSON file, or a protected workflow input.
-   - Recommendation: Choose a strict JSON attestation ingested by a protected read-only verification workflow; treat GitHub review/comment identity as corroboration and reject stale PR heads.
+   - Disposition: Use a strict exact-head JSON attestation ingested by the pre-finalized protected read-only verification workflow. Corroborate reviewer identity against GitHub review/comment observations and reject any stale Draft head, marker, package, source, or lineage binding.
 
 ## Environment Availability
 
