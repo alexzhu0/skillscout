@@ -12,6 +12,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).parents[1]
 CHECKER = PROJECT_ROOT / "tools/verify_phase5_validation_map.py"
 PHASE = Path(".planning/phases/05-automated-discovery-operations")
+COMPLETION_EVIDENCE = ("05-10-SUMMARY.md", "05-VERIFICATION.md")
 
 
 @pytest.fixture
@@ -23,6 +24,8 @@ def planning_repository(tmp_path: Path) -> Path:
     for path in source.glob("05-??-PLAN.md"):
         shutil.copy2(path, target / path.name)
     shutil.copy2(source / "05-VALIDATION.md", target / "05-VALIDATION.md")
+    for name in COMPLETION_EVIDENCE:
+        shutil.copy2(source / name, target / name)
     return repository
 
 
@@ -162,12 +165,28 @@ def test_release_prohibition_action_and_hosted_identity_mutations_fail(
     _assert_invalid(planning_repository)
 
 
-def test_planning_flag_cannot_claim_execution_or_phase6(
-    planning_repository: Path,
+@pytest.mark.parametrize("name", COMPLETION_EVIDENCE)
+def test_completed_map_requires_summary_and_verification(
+    planning_repository: Path, name: str
 ) -> None:
-    _replace(
-        _validation(planning_repository),
-        "execution_status: pending",
-        "execution_status: complete",
-    )
+    (planning_repository / PHASE / name).unlink()
+    _assert_invalid(planning_repository)
+
+
+@pytest.mark.parametrize(
+    ("name", "old", "new"),
+    [
+        ("05-10-SUMMARY.md", "status: complete", "status: incomplete"),
+        ("05-VERIFICATION.md", "status: passed", "status: failed"),
+        (
+            "05-VALIDATION.md",
+            "- [x] Plan 05-10 release-chain execution",
+            "- [ ] Plan 05-10 release-chain execution",
+        ),
+    ],
+)
+def test_false_completion_evidence_fails(
+    planning_repository: Path, name: str, old: str, new: str
+) -> None:
+    _replace(planning_repository / PHASE / name, old, new)
     _assert_invalid(planning_repository)
