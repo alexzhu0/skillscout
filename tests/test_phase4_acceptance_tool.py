@@ -15,6 +15,9 @@ assert SPEC is not None and SPEC.loader is not None
 inspector = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(inspector)
 
+OLD_APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
+REFRESHED_APP_TOKEN_SHA = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
+
 
 @pytest.fixture
 def acceptance_repository(tmp_path: Path) -> Path:
@@ -28,6 +31,13 @@ def acceptance_repository(tmp_path: Path) -> Path:
             PROJECT_ROOT / ".planning/phases/04-controlled-draft-pr" / name,
             phase / name,
         )
+    workflow = repository / ".github/workflows/publish-candidate.yml"
+    source = workflow.read_text(encoding="utf-8")
+    assert source.count(REFRESHED_APP_TOKEN_SHA) == 1
+    workflow.write_text(
+        source.replace(REFRESHED_APP_TOKEN_SHA, OLD_APP_TOKEN_SHA),
+        encoding="utf-8",
+    )
     return repository
 
 
@@ -38,8 +48,9 @@ def _replace(repository: Path, relative: str, old: str, new: str) -> None:
     path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
 
-def test_current_tree_passes_after_changed_workflow_is_human_reapproved() -> None:
-    inspector.verify_phase4_acceptance(PROJECT_ROOT)
+def test_current_tree_fails_closed_until_fresh_gate_b4_evidence_is_recorded() -> None:
+    with pytest.raises(inspector.AcceptanceError):
+        inspector.verify_phase4_acceptance(PROJECT_ROOT)
     assert tuple(spec.identifier for spec in inspector.CHECK_REGISTRY) == (
         "domain",
         "adapter",
@@ -177,10 +188,10 @@ def test_forbidden_imports_and_production_surfaces_fail(
 
 
 def test_cli_diagnostics_are_fixed(capsys: pytest.CaptureFixture[str]) -> None:
-    assert inspector.main([]) == 0
+    assert inspector.main([]) == 1
     first = capsys.readouterr()
-    assert first.out == "phase4 acceptance valid\n"
-    assert first.err == ""
+    assert first.out == ""
+    assert first.err == "phase4 acceptance invalid\n"
     assert inspector.main(["--repository-root", "/missing"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
