@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -12,11 +13,29 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-candidate.yml"
 DISCOVER_WORKFLOW = ROOT / ".github" / "workflows" / "discover.yml"
+ACTION_REFRESH_AUDIT = (
+    ROOT
+    / ".planning"
+    / "phases"
+    / "05-automated-discovery-operations"
+    / "05-ACTION-AUDIT-REFRESH.md"
+)
+ACTION_REFRESH_APPROVAL = (
+    ROOT
+    / ".planning"
+    / "phases"
+    / "05-automated-discovery-operations"
+    / "05-ACTION-PIN-REFRESH-APPROVAL.json"
+)
 PUBLISH_WORKFLOW_SHA256 = (
     "224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c"
 )
+ACTION_REFRESH_AUDIT_SHA256 = (
+    "f33b1b47c20db6f728522a0e176687c78c19a1d748783f2376d6e28bb67209bb"
+)
 CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
-APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
+APP_TOKEN_SHA = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
+OLD_APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 
 
@@ -34,8 +53,52 @@ def _job(text: str, name: str) -> str:
     return match.group("body")
 
 
-def test_phase4_gate_b4_baseline_workflow_bytes_remain_exact() -> None:
-    assert hashlib.sha256(PUBLISH_WORKFLOW.read_bytes()).hexdigest() == (
+def test_action_refresh_approval_is_bound_to_exact_audit_bytes_and_commits() -> None:
+    assert hashlib.sha256(ACTION_REFRESH_AUDIT.read_bytes()).hexdigest() == (
+        ACTION_REFRESH_AUDIT_SHA256
+    )
+    assert ACTION_REFRESH_APPROVAL.is_file()
+    approval = json.loads(ACTION_REFRESH_APPROVAL.read_text(encoding="utf-8"))
+    assert approval == {
+        "schema_version": "skillscout.action-pin-refresh-approval.v1",
+        "decision": "approve-exact-shas",
+        "audit": {
+            "locator": ".planning/phases/05-automated-discovery-operations/"
+            "05-ACTION-AUDIT-REFRESH.md",
+            "sha256": ACTION_REFRESH_AUDIT_SHA256,
+        },
+        "approved_actions": [
+            {
+                "repository_id": 197814629,
+                "repository_full_name": "actions/checkout",
+                "commit_sha": CHECKOUT_SHA,
+            },
+            {
+                "repository_id": 595047935,
+                "repository_full_name": "actions/create-github-app-token",
+                "commit_sha": APP_TOKEN_SHA,
+            },
+        ],
+        "reviewer": "human requester via execute-phase orchestrator",
+        "recorded_at": "2026-07-28T02:51:49Z",
+        "human_response": "approve-exact-shas "
+        f"audit_digest={ACTION_REFRESH_AUDIT_SHA256} "
+        f"actions/checkout@{CHECKOUT_SHA} "
+        f"actions/create-github-app-token@{APP_TOKEN_SHA}",
+    }
+
+
+def test_phase4_gate_b4_record_remains_historical_after_live_workflow_change() -> None:
+    record = (
+        ROOT
+        / ".planning"
+        / "phases"
+        / "04-controlled-draft-pr"
+        / "04-10-SUMMARY.md"
+    ).read_text(encoding="utf-8")
+    assert PUBLISH_WORKFLOW_SHA256 in record
+    assert OLD_APP_TOKEN_SHA in record
+    assert hashlib.sha256(PUBLISH_WORKFLOW.read_bytes()).hexdigest() != (
         PUBLISH_WORKFLOW_SHA256
     )
 
@@ -65,6 +128,7 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
         ("actions/create-github-app-token", APP_TOKEN_SHA),
     ]
     assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for _, ref in actions)
+    assert OLD_APP_TOKEN_SHA not in text
     assert re.search(r"^permissions:\n  contents: read$", text, re.MULTILINE)
     discovery = _job(text, "discovery")
     publication = _job(text, "protected_publication")

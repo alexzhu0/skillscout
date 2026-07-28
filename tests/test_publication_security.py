@@ -224,7 +224,8 @@ def test_publication_models_and_rendering_do_not_echo_secrets_or_candidate_prose
 
 
 _CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
-_APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
+_APP_TOKEN_SHA = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
+_OLD_APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
 _HANDOFF_FIELDS = (
     "candidate_descriptor_locator",
     "phase2_state_locator",
@@ -263,9 +264,24 @@ def test_publish_workflow_has_exact_approved_pins_dispatch_and_minimum_permissio
     assert f"actions/create-github-app-token@{_APP_TOKEN_SHA}" in text
     action_refs = re.findall(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", text, flags=re.MULTILINE)
     assert action_refs == [_CHECKOUT_SHA, _CHECKOUT_SHA, _APP_TOKEN_SHA]
+    assert _OLD_APP_TOKEN_SHA not in text
     assert "@v" not in text
     assert not re.search(r"^\s*contents: write$", text, re.MULTILINE)
     assert not re.search(r"^\s*pull-requests: write$", text, re.MULTILINE)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (_OLD_APP_TOKEN_SHA, _APP_TOKEN_SHA[:12], "v3.2.0"),
+)
+def test_publish_workflow_rejects_unapproved_or_non_full_token_action_identity(
+    replacement: str,
+) -> None:
+    text = _workflow().replace(_APP_TOKEN_SHA, replacement)
+    action_refs = re.findall(
+        r"^\s*uses:\s*[^@\s]+@([^\s#]+)", text, flags=re.MULTILINE
+    )
+    assert action_refs == [_CHECKOUT_SHA, _CHECKOUT_SHA, _APP_TOKEN_SHA]
 
 
 def test_publish_workflow_crosses_only_candidate_handoff_and_revalidates_before_token() -> None:
