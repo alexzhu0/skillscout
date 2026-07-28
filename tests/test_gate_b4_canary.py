@@ -18,6 +18,10 @@ TOKEN = "github_pat_NEVER_RENDER_GATE_B4"
 DEFAULT_SHA = "a" * 40
 DRAFT_COMMIT_SHA = "b" * 40
 MERGE_COMMIT_SHA = "c" * 40
+UNAUTHORIZED_REPOSITORY_ID = 920002
+UNAUTHORIZED_IDENTITY_DIGEST = (
+    "sha256:7bad64ee3b278bcaba4d0bb9b7290092ddb75115f23d76a26906d95312f9eefe"
+)
 
 
 def _module() -> ModuleType:
@@ -42,6 +46,12 @@ def _env() -> dict[str, str]:
         "SKILLSCOUT_CANARY_ACTUAL_INSTALLATION_ID": "4001",
         "SKILLSCOUT_CANARY_REVIEWER": "skill-maintainer",
         "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY": "other-org/private",
+        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID": str(
+            UNAUTHORIZED_REPOSITORY_ID
+        ),
+        "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST": (
+            UNAUTHORIZED_IDENTITY_DIGEST
+        ),
         "SKILLSCOUT_CANARY_APP_TOKEN": TOKEN,
     }
 
@@ -55,6 +65,8 @@ def _transport(
     status_overrides: dict[tuple[str, str], int] | None = None,
     reviewer_users: tuple[str, ...] = ("skill-maintainer",),
     reviewer_teams: tuple[str, ...] = (),
+    installed_entry: object = None,
+    ruleset_post_mode: str = "response",
 ) -> httpx.MockTransport:
     draft_branch = "skillscout/gate-b4-12345-1-draft"
     merge_branch = "skillscout/gate-b4-12345-1-merge-probe"
@@ -70,9 +82,14 @@ def _transport(
     merge_poll_index = 0
     default_sha = DEFAULT_SHA
     merge_succeeded = False
+    ruleset_attempted = False
+    ruleset_created = False
+    if installed_entry is None:
+        installed_entry = {"id": 910001, "full_name": "catalog-org/skills"}
 
     def respond(request: httpx.Request) -> httpx.Response:
         nonlocal default_sha, merge_poll_index, merge_succeeded
+        nonlocal ruleset_attempted, ruleset_created
         body = json.loads(request.content) if request.content else None
         requests.append((request.method, request.url.path, body))
         key = (request.method, request.url.path)
@@ -83,7 +100,7 @@ def _transport(
         routes: dict[tuple[str, str], object] = {
             ("GET", "/installation/repositories"): {
                 "total_count": 1,
-                "repositories": [{"id": 910001, "full_name": "catalog-org/skills"}],
+                "repositories": [installed_entry],
             },
             ("GET", "/repos/catalog-org/skills"): {
                 "id": 910001,
@@ -179,6 +196,26 @@ def _transport(
             )
         if key in statuses:
             status = statuses[key]
+            if key == ("GET", "/repos/catalog-org/skills/rulesets"):
+                payload = (
+                    [
+                        {
+                            "id": 555,
+                            "name": "skillscout-gate-b4-12345-1-denial-probe",
+                        }
+                    ]
+                    if ruleset_attempted and ruleset_created
+                    else []
+                )
+                return httpx.Response(status, json=payload)
+            if key == ("POST", "/repos/catalog-org/skills/rulesets"):
+                ruleset_attempted = True
+                if ruleset_post_mode == "commit_disconnect":
+                    ruleset_created = True
+                    raise httpx.ReadError("MUST_NOT_APPEAR", request=request)
+                if ruleset_post_mode == "malformed_success":
+                    ruleset_created = True
+                    return httpx.Response(201, json={"id": "MUST_NOT_APPEAR"})
             if 200 <= status < 300:
                 if key == ("PATCH", "/repos/catalog-org/skills/git/refs/heads/main"):
                     default_sha = body["sha"]
@@ -190,6 +227,7 @@ def _transport(
                     merge_succeeded = True
                     return httpx.Response(status, json={"merged": True, "sha": MERGE_COMMIT_SHA})
                 if key == ("POST", "/repos/catalog-org/skills/rulesets"):
+                    ruleset_created = True
                     return httpx.Response(status, json={"id": 555})
                 return httpx.Response(status, json=[])
             return httpx.Response(
@@ -310,6 +348,10 @@ def test_canary_uses_exact_fixed_route_allowlist_and_emits_bounded_evidence() ->
         "secret_metadata_read": "denied_403",
         "unauthorized_private_repository": "not_found_404",
     }
+    assert result["unauthorized_private_target"] == {
+        "repository_id": UNAUTHORIZED_REPOSITORY_ID,
+        "identity_digest": UNAUTHORIZED_IDENTITY_DIGEST,
+    }
     assert result["cleanup_manifest"] == {
         "repository": "catalog-org/skills",
         "branches": [
@@ -331,6 +373,8 @@ def test_canary_uses_exact_fixed_route_allowlist_and_emits_bounded_evidence() ->
         if forbidden == "denied":
             continue
         assert forbidden not in encoded.casefold()
+    assert "other-org/private" not in encoded
+    assert UNAUTHORIZED_IDENTITY_DIGEST in encoded
 
 
 def test_canary_request_surface_has_no_cleanup_approve_review_or_ready_routes() -> None:
@@ -388,17 +432,17 @@ def test_mergeable_poll_is_bounded_and_accepts_only_eventual_true() -> None:
     sleeps: list[float] = []
     result = module.run_canary(
         module.load_run_config(_env()),
-        transport=_transport(requests, mergeable=(None, None, True)),
+        transport=_transport(requests, mergeable=(None, None, None, None, None, True)),
         sleeper=sleeps.append,
     )
     assert result["merge_probe"]["otherwise_mergeable"] is True
-    assert sleeps == [module.MERGE_POLL_DELAY_SECONDS] * 2
+    assert sleeps == list(module.MERGE_POLL_SCHEDULE_SECONDS)
     assert sum(sleeps) <= module.MAX_MERGE_POLL_SLEEP_SECONDS
     assert [
         path
         for method, path, _ in requests
         if method == "GET" and path == "/repos/catalog-org/skills/pulls/79"
-    ] == ["/repos/catalog-org/skills/pulls/79"] * 3
+    ] == ["/repos/catalog-org/skills/pulls/79"] * 6
     assert len(requests) <= module.MAX_REQUESTS
 
 
@@ -409,10 +453,13 @@ def test_mergeable_poll_exhaustion_fails_closed_with_recovery_observations() -> 
     with pytest.raises(module.CanaryRunError) as raised:
         module.run_canary(
             module.load_run_config(_env()),
-            transport=_transport(requests, mergeable=(None, None, None, None)),
+            transport=_transport(
+                requests,
+                mergeable=(None, None, None, None, None, None, None),
+            ),
             sleeper=sleeps.append,
         )
-    assert sleeps == [module.MERGE_POLL_DELAY_SECONDS] * 2
+    assert sleeps == list(module.MERGE_POLL_SCHEDULE_SECONDS)
     evidence = raised.value.evidence
     assert evidence["status"] == "failed_closed"
     assert evidence["default_ref"] == {
@@ -501,10 +548,60 @@ def test_unexpected_ruleset_creation_records_run_specific_id_then_recovers() -> 
             sleeper=lambda _: None,
         )
     assert raised.value.evidence["ruleset_mutation"] == {
+        "attempted": True,
         "name": "skillscout-gate-b4-12345-1-denial-probe",
         "id": 555,
     }
     assert raised.value.evidence["remote_recovery"]["pulls"]
+
+
+@pytest.mark.parametrize("mode", ["commit_disconnect", "malformed_success"])
+def test_ruleset_attempt_recovery_locates_commit_after_lost_or_bad_response(
+    mode: str,
+) -> None:
+    module = _module()
+    requests: list[tuple[str, str, object | None]] = []
+    with pytest.raises(module.CanaryRunError) as raised:
+        module.run_canary(
+            module.load_run_config(_env()),
+            transport=_transport(
+                requests,
+                status_overrides={
+                    ("POST", "/repos/catalog-org/skills/rulesets"): 201,
+                },
+                ruleset_post_mode=mode,
+            ),
+            sleeper=lambda _: None,
+        )
+    assert raised.value.evidence["ruleset_mutation"] == {
+        "attempted": True,
+        "name": "skillscout-gate-b4-12345-1-denial-probe",
+        "id": 555,
+    }
+    ruleset_requests = [
+        (method, path)
+        for method, path, _ in requests
+        if path == "/repos/catalog-org/skills/rulesets"
+    ]
+    assert ruleset_requests[-2:] == [
+        ("POST", "/repos/catalog-org/skills/rulesets"),
+        ("GET", "/repos/catalog-org/skills/rulesets"),
+    ]
+    assert not any(method == "DELETE" for method, _, _ in requests)
+    assert "MUST_NOT_APPEAR" not in module.canonical_evidence(raised.value.evidence)
+
+
+def test_malformed_installation_repository_entry_fails_closed_without_raw_error() -> None:
+    module = _module()
+    with pytest.raises(module.CanaryRunError) as raised:
+        module.run_canary(
+            module.load_run_config(_env()),
+            transport=_transport([], installed_entry="MUST_NOT_APPEAR"),
+            sleeper=lambda _: None,
+        )
+    encoded = module.canonical_evidence(raised.value.evidence)
+    assert '"status":"failed_closed"' in encoded
+    assert "MUST_NOT_APPEAR" not in encoded
 
 
 @pytest.mark.parametrize(
@@ -561,6 +658,20 @@ def test_transport_failure_is_sanitized_and_keeps_both_branch_locators() -> None
         lambda env: (
             env | {"SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY": "catalog-org/skills"}
         ),
+        lambda env: env
+        | {"SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_ID": "0"},
+        lambda env: env
+        | {
+            "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY_IDENTITY_DIGEST": (
+                "sha256:" + "0" * 64
+            )
+        },
+        lambda env: env
+        | {
+            "SKILLSCOUT_CANARY_UNAUTHORIZED_PRIVATE_REPOSITORY": (
+                "other-org/different-private"
+            )
+        },
         lambda env: env | {"GITHUB_RUN_ID": "../../unsafe"},
     ],
 )
