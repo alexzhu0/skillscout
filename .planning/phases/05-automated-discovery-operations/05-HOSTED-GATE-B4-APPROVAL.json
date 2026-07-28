@@ -1,0 +1,31 @@
+{
+  "schema_version": "skillscout.phase5-hosted-gate-b4-approval.v1",
+  "decision": "approved-gate-b4",
+  "evidence": {
+    "locator": ".planning/phases/05-automated-discovery-operations/05-HOSTED-GATE-B4-EVIDENCE.json",
+    "sha256": "1ee162ea47cf86b7faec68bfba37b7a9b2af3b25472066312b43c4a5e4414cdd"
+  },
+  "approved_hosted_runs": {
+    "concurrency": [
+      "30324567231",
+      "30324568742"
+    ],
+    "gate_b4_canary": "30327184915"
+  },
+  "approved_workflow_digests": {
+    "discover_sha256": "8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd",
+    "publish_candidate_sha256": "96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0",
+    "gate_b4_canary_sha256": "9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d"
+  },
+  "cleanup_attestation": "sha256:ce6f67f7137fe176a231ec86020057f959d7c15ae4326689ebe2a6b944b9b818",
+  "scope": {
+    "grants": "phase-05-discover-protected-publication-credit",
+    "requires_exact_evidence_bytes": true,
+    "requires_exact_workflow_bytes": true,
+    "concurrency_evidence_is_not_gate_b4": true,
+    "automatic_merge_or_approval": false
+  },
+  "reviewer": "human requester via execute-phase orchestrator",
+  "recorded_at": "2026-07-28T05:32:42Z",
+  "human_response": "approved-gate-b4 evidence_digest=1ee162ea47cf86b7faec68bfba37b7a9b2af3b25472066312b43c4a5e4414cdd concurrency_runs=30324567231,30324568742 canary_run=30327184915 discover_sha256=8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd publish_sha256=96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0 canary_sha256=9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d cleanup_attestation=sha256:ce6f67f7137fe176a231ec86020057f959d7c15ae4326689ebe2a6b944b9b818"
+}
