@@ -310,7 +310,22 @@ Plans:
 
 **Depends on:** Phase 5  
 **Requirements:** TEST-01, TEST-02, TEST-03, TEST-04  
-**Plans:** To be created with phase planning
+**Plans:** 14 plans
+
+- [ ] `06-01-PLAN.md` — Freeze Wave 0 acceptance contracts and exact validation task map.
+- [ ] `06-02-PLAN.md` — Freeze adversarial/report contracts and prove hosted kernel isolation capability.
+- [ ] `06-03-PLAN.md` — Enforce the closed DeepSeek Flash/Flash/Pro semantic policy.
+- [ ] `06-04-PLAN.md` — Implement strict acceptance models and canonical operations-owned facts.
+- [ ] `06-05-PLAN.md` — Compose the acceptance application, CLI, and protected workflow authority zones.
+- [ ] `06-06-PLAN.md` — Run controlled adversarial scenarios under kernel isolation and synthetic-secret scans.
+- [ ] `06-07-PLAN.md` — Produce Search-derived nominations and human-lock the five-repository benchmark.
+- [ ] `06-08-PLAN.md` — Run the live five-repository campaign and exact semantic replay.
+- [ ] `06-09-PLAN.md` — Approve and reevaluate one changed source with explicit prior lineage.
+- [ ] `06-10-PLAN.md` — Run fresh Gate B4 and create/replay/update one open value Draft.
+- [ ] `06-11-PLAN.md` — Record exact-head human review and calibrate the Pro Reviewer.
+- [ ] `06-12-PLAN.md` — Complete separate human/admin probe cleanup and attest it.
+- [ ] `06-13-PLAN.md` — Rebuild and independently verify the report and all-44 requirement map.
+- [ ] `06-14-PLAN.md` — Update documentation, rebuild release bytes, and run the full locked chain.
 
 **Success Criteria:**
 
