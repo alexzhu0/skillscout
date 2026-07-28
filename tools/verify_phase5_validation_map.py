@@ -16,6 +16,8 @@ from typing import NamedTuple
 PHASE_DIRECTORY = Path(".planning/phases/05-automated-discovery-operations")
 PLAN_NAMES = tuple(f"05-{number:02d}-PLAN.md" for number in range(1, 15))
 VALIDATION_NAME = "05-VALIDATION.md"
+SUMMARY_NAME = "05-10-SUMMARY.md"
+VERIFICATION_NAME = "05-VERIFICATION.md"
 MAX_INPUT_BYTES = 512_000
 SUCCESS_DIAGNOSTIC = "phase5 validation map valid"
 FAILURE_DIAGNOSTIC = "phase5 validation map invalid"
@@ -266,6 +268,70 @@ def _verify_inverse(rows: tuple[MapRow, ...], source: str) -> None:
         )
 
 
+def _frontmatter(source: str) -> str:
+    _require(source.startswith("---\n"))
+    end = source.find("\n---\n", 4)
+    _require(end != -1)
+    return source[4:end]
+
+
+def _frontmatter_has(source: str, key: str, value: str) -> bool:
+    return (
+        re.search(
+            rf"(?m)^{re.escape(key)}: {re.escape(value)}$",
+            _frontmatter(source),
+        )
+        is not None
+    )
+
+
+def _verify_completion(phase: Path, validation: str) -> None:
+    summary = _read(phase / SUMMARY_NAME)
+    verification = _read(phase / VERIFICATION_NAME)
+    _require(
+        _frontmatter_has(validation, "phase", "05")
+        and _frontmatter_has(validation, "status", "complete")
+        and _frontmatter_has(validation, "execution_status", "complete")
+        and validation.count(
+            "- [x] Plan 05-10 release-chain execution is recorded in "
+            "`05-10-SUMMARY.md`."
+        )
+        == 1
+        and "Execution completion is established separately by the Plan 05-10 "
+        "release chain and `05-VERIFICATION.md`;" in validation
+        and "**Validation result:** Nyquist-compliant, exact release chain passed, "
+        "hosted Gate B4 approved, and Phase 05 independently verified."
+        in validation
+    )
+    _require(
+        _frontmatter_has(summary, "phase", "05-automated-discovery-operations")
+        and _frontmatter_has(summary, "plan", '"10"')
+        and _frontmatter_has(summary, "status", "complete")
+        and _frontmatter_has(
+            summary,
+            "requirements-completed",
+            "[DISC-01, DISC-02, DISC-03, OPS-02, OPS-03]",
+        )
+        and summary.count("\n        status: pass\n") == 5
+        and 'ref: "05-10-PLAN.md Task 05-10-02 exact automated command"' in summary
+        and "## Self-Check: PASSED" in summary
+        and all(identity in summary for identity in HOSTED_IDENTITIES)
+    )
+    _require(
+        _frontmatter_has(verification, "phase", "05-automated-discovery-operations")
+        and _frontmatter_has(verification, "status", "passed")
+        and _frontmatter_has(verification, "score", "6/6 must-haves verified")
+        and _frontmatter_has(verification, "behavior_unverified", "0")
+        and _frontmatter_has(verification, "overrides_applied", "0")
+        and _frontmatter_has(verification, "gaps", "[]")
+        and _frontmatter_has(verification, "human_verification", "[]")
+        and "| Independent validation-map integrity |" in verification
+        and "| Phase 5 and cross-phase focused release set |" in verification
+        and "**No goal-blocking gaps found.**" in verification
+        and all(identity in verification for identity in HOSTED_IDENTITIES)
+    )
+
+
 def verify_validation_map(repository_root: Path) -> None:
     root = Path(os.path.abspath(os.fspath(repository_root)))
     phase = root / PHASE_DIRECTORY
@@ -325,13 +391,12 @@ def verify_validation_map(repository_root: Path) -> None:
     ):
         _require(required_suite in EXPECTED_RELEASE_COMMAND)
     _require(
-        "status: ready" in source
-        and "nyquist_compliant: true" in source
+        "nyquist_compliant: true" in source
         and "wave_0_complete: true" in source
-        and "execution_status: pending" in source
         and "hosted_gate_b4_status: approved" in source
         and "Phase 6 real-repository acceptance is not claimed." in source
     )
+    _verify_completion(phase, source)
 
 
 def _parser() -> argparse.ArgumentParser:
