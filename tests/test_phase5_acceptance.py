@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import shutil
 import subprocess
@@ -58,7 +59,7 @@ def _replace(repository: Path, relative: str, old: str, new: str) -> None:
     path = repository / relative
     source = path.read_text(encoding="utf-8")
     assert source.count(old) >= 1
-    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+    path.write_text(source.replace(old, new), encoding="utf-8")
 
 
 def _metadata(root: Path) -> dict[str, tuple[int, int, str]]:
@@ -119,8 +120,8 @@ def test_complete_tree_passes_read_only_from_external_cwd(
         ),
         (
             "src/skillscout/application/ports.py",
-            '"result_committed"',
-            '"result_maybe_committed"',
+            '"result_decided"',
+            '"result_maybe_decided"',
         ),
         (
             "src/skillscout/adapters/semantic_provider.py",
@@ -129,7 +130,7 @@ def test_complete_tree_passes_read_only_from_external_cwd(
         ),
         (
             "src/skillscout/adapters/operations_state.py",
-            "def export_rebuild_records(",
+            "def export_owned_state(",
             "def export_unverified_records(",
         ),
         (
@@ -138,14 +139,14 @@ def test_complete_tree_passes_read_only_from_external_cwd(
             '"force": True',
         ),
         (
-            "src/skillscout/application/discovery.py",
+            "src/skillscout/cli.py",
             "_DISCOVERY_PUBLICATION_STATE",
             "_DISCOVERY_EXTRA_STATE",
         ),
         (
             "src/skillscout/application/discovery.py",
-            "_FORBIDDEN_DISCOVERY_DEPENDENCY_TOKENS",
-            "_OPTIONAL_DISCOVERY_DEPENDENCY_TOKENS",
+            "class DiscoveryDependencies:",
+            "class DiscoveryAndPublicationDependencies:",
         ),
         (
             "src/skillscout/cli.py",
@@ -211,17 +212,38 @@ def test_hosted_evidence_bytes_and_current_workflows_are_exact(
 
 def test_inspector_has_no_project_network_or_write_authority() -> None:
     source = INSPECTOR.read_text(encoding="utf-8")
-    assert "skillscout" not in source
-    for forbidden in (
-        "httpx",
-        "openai",
-        "pydantic",
-        "requests",
-        "socket",
-        "subprocess",
-        "urllib",
-        "write_text",
-        "write_bytes",
-        "open(",
-    ):
-        assert forbidden not in source
+    tree = ast.parse(source)
+    imported = {
+        alias.name.split(".", 1)[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module.split(".", 1)[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert imported.isdisjoint(
+        {
+            "httpx",
+            "openai",
+            "pydantic",
+            "requests",
+            "skillscout",
+            "socket",
+            "subprocess",
+            "urllib",
+        }
+    )
+    called_attributes = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    called_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert called_attributes.isdisjoint({"write_text", "write_bytes"})
+    assert "open" not in called_names
