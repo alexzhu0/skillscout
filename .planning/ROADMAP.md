@@ -16,7 +16,7 @@ SkillScout v1 通过六个递进的纵向切片交付。第一阶段先打通可
 - [x] **Phase 2: Safe Single-Repository Extraction** — 从一个指定公共仓库安全地产出 `WorkflowSpec` 或结构化拒绝。 (completed 2026-07-22)
 - [x] **Phase 3: Validated Skill Candidate** — 把合格 `WorkflowSpec` 转为经过格式、安全和独立审核的本地 Skill 候选。 (completed 2026-07-23)
 - [x] **Phase 4: Controlled Draft PR** — 在平台权限硬约束下创建或更新一个可追溯 Draft PR。 (completed 2026-07-27)
-- [ ] **Phase 5: Automated Discovery Operations** — 将已验证的单仓库路径扩展到定时/手动 GitHub Search 和持久状态。
+- [x] **Phase 5: Automated Discovery Operations** — 将已验证的单仓库路径扩展到定时/手动 GitHub Search 和持久状态。 (completed 2026-07-28)
 - [ ] **Phase 6: Adversarial MVP Acceptance** — 用五个真实仓库、注入样本和权限 canary 证明 MVP 达标。
 
 ## Phase Details
@@ -278,7 +278,7 @@ Plans:
 
 **Depends on:** Phase 4  
 **Requirements:** DISC-01, DISC-02, DISC-03, OPS-02, OPS-03  
-**Plans:** 12/14 plans executed
+**Plans:** 14/14 plans complete
 
 - [x] 05-01-PLAN.md
 - [x] 05-02-PLAN.md
@@ -288,8 +288,8 @@ Plans:
 - [x] 05-06-PLAN.md
 - [x] 05-07-PLAN.md
 - [x] 05-08-PLAN.md
-- [ ] 05-09-PLAN.md
-- [ ] 05-10-PLAN.md
+- [x] 05-09-PLAN.md
+- [x] 05-10-PLAN.md
 - [x] 05-11-PLAN.md
 - [x] 05-12-PLAN.md
 - [x] 05-13-PLAN.md
@@ -341,7 +341,7 @@ Plans:
 | 2. Safe Single-Repository Extraction | Complete | 14 | 2026-07-22 |
 | 3. Validated Skill Candidate | 14/14 | Complete   | 2026-07-23 |
 | 4. Controlled Draft PR | 11/11 | Complete    | 2026-07-27 |
-| 5. Automated Discovery Operations | 12/14 | In Progress|  |
+| 5. Automated Discovery Operations | 14/14 | Complete    | 2026-07-28 |
 | 6. Adversarial MVP Acceptance | Not started | 4 | 0/4 |
 
 ## Milestone Exit Criteria

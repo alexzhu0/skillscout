@@ -2,32 +2,32 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 5
-current_phase_name: Automated Discovery Operations
-status: executing
-stopped_at: Completed 05-08-PLAN.md
-last_updated: "2026-07-27T17:05:16.395Z"
-last_activity: 2026-07-27
+current_phase: 6
+current_phase_name: Adversarial MVP Acceptance
+status: planning
+stopped_at: Phase 05 verified complete; ready to plan Phase 06
+last_updated: "2026-07-28T06:08:10.582Z"
+last_activity: 2026-07-28
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 61
-  completed_plans: 59
-  percent: 67
+  completed_plans: 61
+  percent: 83
 ---
 
 # Project State: SkillScout
 
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-28
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
-**Status:** Ready to execute
+**Status:** Ready to plan
 
 ## Current Position
 
-**Phase:** 5 — Automated Discovery Operations
-**Plan:** 12 of 14
-**Verification:** 13/13 requirements verified; clean Round-4 code review; exact release gate passed 1247 tests
-**Next command:** `$gsd-plan-phase 4`
+**Phase:** 6 — Adversarial MVP Acceptance
+**Plan:** Not started
+**Verification:** Phase 5 passed 6/6 roadmap criteria and 5/5 requirements; exact release chain passed 1,916 tests with 2 expected live-only skips
+**Next command:** `$gsd-plan-phase 6`
 
 ## Progress
 
@@ -40,6 +40,9 @@ Phase 1 verification    [██████████] 100%
 Phase 2 extraction      [██████████] 100%
 Phase 3 implementation  [██████████] 100%
 Phase 3 verification    [██████████] 100%
+Phase 4 publication     [██████████] 100%
+Phase 5 operations      [██████████] 100%
+Phase 6 acceptance      [░░░░░░░░░░]   0%
 ```
 
 | Metric | Value |
@@ -47,15 +50,15 @@ Phase 3 verification    [██████████] 100%
 | MVP requirements | 44 |
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
-| Phases completed | 3/6 |
-| Plans completed | 36/36 authored plans |
+| Phases completed | 5/6 |
+| Plans completed | 61/61 authored plans |
 
 ## Project Reference
 
 See: `.planning/PROJECT.md` (updated 2026-07-22)
 
 **Core value:** 安全、可追溯地把公开仓库中的可复用 AI 工作流转化为值得人类审核的标准 Agent Skill Draft PR。
-**Current focus:** Phase 04 — controlled-draft-pr
+**Current focus:** Phase 06 — adversarial-mvp-acceptance
 
 ## Accumulated Context
 
@@ -104,7 +107,7 @@ These decisions must preserve the approved requirements and may not broaden remo
 
 ## Blockers
 
-None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, and the exact release chain passed 1247 tests with terminal Gate B3. Three Phase 2 Info-level review notes remain non-blocking (`02-REVIEW.md`: IN-01 diagnostic-path consistency, IN-02 defense-in-depth branch, IN-03 reuse reporting projection). Phase 1's authority-bound evidence document remains stale by design after the Gate-B2 lock change; this does not weaken later fresh verification. OS/syscall network-denial remains explicitly deferred to Phase 6.
+None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips, and fresh Gate B4 evidence is bound to the exact current discover, publish, and canary workflow bytes. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
 
 ### Quick Tasks Completed
 
@@ -114,15 +117,15 @@ None. Phase 3 goal verification passed 13/13, the Round-4 code review is clean, 
 
 ## Session Continuity
 
-**Last activity:** 2026-07-27
+**Last activity:** 2026-07-28
 **Last session:** 2026-07-27T17:05:16.390Z
-**Stopped at:** Completed 05-08-PLAN.md
+**Stopped at:** Phase 05 verified complete; ready to plan Phase 06
 **Resume file:** None
 
 ### Next
 
-1. Plan Phase 4 — Draft PR Publishing (`$gsd-plan-phase 4`).
-2. Run a real local Phase 3 canary only after injecting `OPENAI_API_KEY`; no live key is required for the verified fixture-backed suite.
+1. Plan Phase 6 — Adversarial MVP Acceptance (`$gsd-plan-phase 6`).
+2. Run the fixed five-repository and prompt-injection acceptance campaign without widening the verified publication authority.
 
 ---
 *State initialized: 2026-07-16*

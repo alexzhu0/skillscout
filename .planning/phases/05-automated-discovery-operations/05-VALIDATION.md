@@ -1,10 +1,10 @@
 ---
 phase: 05
 slug: automated-discovery-operations
-status: ready
+status: complete
 nyquist_compliant: true
 wave_0_complete: true
-execution_status: pending
+execution_status: complete
 hosted_gate_b4_status: approved
 created: 2026-07-27
 updated: 2026-07-28
@@ -12,7 +12,7 @@ updated: 2026-07-28
 
 # Phase 05 — Validation Strategy
 
-`nyquist_compliant: true` records complete planning coverage only. It does not assert execution completion or hosted approval. The exact hosted Gate B4 approval is recorded separately below; the release chain remains execution evidence owned by Plan 05-10. Phase 6 real-repository acceptance is not claimed.
+`nyquist_compliant: true` records complete planning coverage. Execution completion is established separately by the Plan 05-10 release chain and `05-VERIFICATION.md`; hosted approval is established by the exact Gate B4 evidence and approval records below. Phase 6 real-repository acceptance is not claimed.
 
 ## Test Infrastructure
 
@@ -105,6 +105,6 @@ The release command is intentionally duplicated from Task 05-10-02 and is execut
 - [x] All five requirement inverse maps are complete and mutation-tested.
 - [x] D-01 through D-09 and exact hosted evidence identities are pinned separately.
 - [x] Wave 0 tests were executed and all named production capabilities are green.
-- [ ] Plan 05-10 release-chain execution is recorded in `05-10-SUMMARY.md`.
+- [x] Plan 05-10 release-chain execution is recorded in `05-10-SUMMARY.md`.
 
-**Planning approval:** Nyquist-compliant; exact execution evidence remains separate.
+**Validation result:** Nyquist-compliant, exact release chain passed, hosted Gate B4 approved, and Phase 05 independently verified.
