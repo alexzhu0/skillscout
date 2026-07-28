@@ -94,6 +94,22 @@ def test_preflight_has_no_secret_projection_and_shell_blocks_are_fixed() -> None
     assert "set -x" not in text
 
 
+def test_failure_evidence_is_printed_and_summarized_before_nonzero_exit() -> None:
+    text = _source()
+    run_step = text[text.index("gate_b4_canary.py run"):]
+    assert "| tee" not in run_step
+    assert "set +e" in run_step
+    assert 'status="$?"' in run_step
+    assert 'cat "$evidence_file"' in run_step
+    assert '>> "$GITHUB_STEP_SUMMARY"' in run_step
+    assert 'exit "$status"' in run_step
+    run_index = run_step.index("gate_b4_canary.py run")
+    print_index = run_step.index('cat "$evidence_file"')
+    summary_index = run_step.index('>> "$GITHUB_STEP_SUMMARY"')
+    exit_index = run_step.index('exit "$status"')
+    assert run_index < print_index < summary_index < exit_index
+
+
 @pytest.mark.parametrize(
     ("needle", "replacement", "audit"),
     [
