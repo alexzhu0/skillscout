@@ -96,7 +96,8 @@ def test_preflight_has_no_secret_projection_and_shell_blocks_are_fixed() -> None
 
 def test_failure_evidence_is_printed_and_summarized_before_nonzero_exit() -> None:
     text = _source()
-    run_step = text[text.index("gate_b4_canary.py run"):]
+    command_index = text.index("gate_b4_canary.py run")
+    run_step = text[text.rfind("run: |", 0, command_index) :]
     assert "| tee" not in run_step
     assert "set +e" in run_step
     assert 'status="$?"' in run_step

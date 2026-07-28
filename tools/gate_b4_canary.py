@@ -12,7 +12,8 @@ import base64
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple, NoReturn
 
@@ -25,13 +26,15 @@ ACTION_AUDIT_SHA256 = "f33b1b47c20db6f728522a0e176687c78c19a1d748783f2376d6e28bb
 SCHEMA_VERSION = "skillscout.gate-b4-canary-evidence.v1"
 MAX_RESPONSE_BYTES = 65_536
 MAX_EVIDENCE_BYTES = 8_192
-MAX_REQUESTS = 24
+MAX_REQUESTS = 25
+MERGE_POLL_ATTEMPTS = 3
+MERGE_POLL_DELAY_SECONDS = 1.0
+MAX_MERGE_POLL_SLEEP_SECONDS = 2.0
 _SHA = re.compile(r"[0-9a-f]{40}")
 _FULL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
 _OWNER_OR_REPOSITORY = re.compile(r"[A-Za-z0-9_.-]{1,100}")
 _LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 _RUN_COMPONENT = re.compile(r"[1-9][0-9]{0,19}")
-_SAFE_DENIALS = frozenset({"denied", "not_found", "conflict", "validation"})
 
 
 class CanaryAdmissionError(ValueError):
@@ -46,9 +49,11 @@ class CanaryRunError(RuntimeError):
         message: str,
         *,
         cleanup_manifest: Mapping[str, object] | None = None,
+        evidence: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__(message)
         self.cleanup_manifest = dict(cleanup_manifest or {})
+        self.evidence = dict(evidence or {})
 
 
 class PreflightConfig(NamedTuple):
@@ -70,6 +75,19 @@ class RunConfig(NamedTuple):
     preflight: PreflightConfig
     actual_installation_id: int
     app_token: str
+
+
+class _ResponseObservation(NamedTuple):
+    status: int
+    classification: str
+    payload: object | None
+
+
+class _ProbeError(CanaryRunError):
+    def __init__(self, probe: str, observation: _ResponseObservation) -> None:
+        super().__init__("causal probe status rejected")
+        self.probe = probe
+        self.observation = observation
 
 
 def _required(values: Mapping[str, str], name: str, *, limit: int = 256) -> str:
@@ -175,16 +193,18 @@ def load_run_config(env: Mapping[str, str]) -> RunConfig:
 
 def _classification(status_code: int) -> str:
     if status_code in {401, 403, 405}:
-        return "denied"
+        return f"denied_{status_code}"
     if status_code == 404:
-        return "not_found"
+        return "not_found_404"
     if status_code == 409:
-        return "conflict"
+        return "conflict_409"
     if status_code == 422:
-        return "validation"
+        return "validation_422"
     if 200 <= status_code < 300:
-        return "success"
-    raise CanaryRunError("unexpected GitHub status class")
+        return f"success_{status_code}"
+    if 100 <= status_code <= 599:
+        return f"unexpected_{status_code}"
+    raise CanaryRunError("invalid GitHub status")
 
 
 class _CanaryGitHub:
@@ -216,7 +236,7 @@ class _CanaryGitHub:
         method: str,
         path: str,
         payload: object | None = None,
-    ) -> tuple[str, object | None]:
+    ) -> _ResponseObservation:
         self.requests += 1
         if (
             self.requests > MAX_REQUESTS
@@ -227,23 +247,29 @@ class _CanaryGitHub:
         ):
             raise CanaryRunError("closed canary request surface rejected")
         request = self.client.build_request(method, path, json=payload)
-        response = self.client.send(request, stream=True)
+        try:
+            response = self.client.send(request, stream=True)
+        except httpx.TransportError as error:
+            raise CanaryRunError("GitHub transport failed closed") from error
         try:
             classification = _classification(response.status_code)
             chunks: list[bytes] = []
             size = 0
-            for chunk in response.iter_bytes():
-                size += len(chunk)
-                if size > MAX_RESPONSE_BYTES:
-                    raise CanaryRunError("bounded GitHub response rejected")
-                chunks.append(chunk)
-            if classification != "success":
-                return classification, None
+            try:
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    if size > MAX_RESPONSE_BYTES:
+                        raise CanaryRunError("bounded GitHub response rejected")
+                    chunks.append(chunk)
+            except httpx.TransportError as error:
+                raise CanaryRunError("GitHub transport failed closed") from error
+            if not classification.startswith("success_"):
+                return _ResponseObservation(response.status_code, classification, None)
             try:
                 decoded = json.loads(b"".join(chunks))
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise CanaryRunError("GitHub response shape rejected") from error
-            return classification, decoded
+            return _ResponseObservation(response.status_code, classification, decoded)
         finally:
             response.close()
 
@@ -253,21 +279,23 @@ class _CanaryGitHub:
         path: str,
         payload: object | None = None,
     ) -> dict[str, Any]:
-        classification, decoded = self._request(method, path, payload)
-        if classification != "success" or not isinstance(decoded, dict):
+        observation = self._request(method, path, payload)
+        if not 200 <= observation.status < 300 or not isinstance(observation.payload, dict):
             raise CanaryRunError("required GitHub observation rejected")
-        return decoded
+        return observation.payload
 
-    def denial(
+    def probe(
         self,
+        name: str,
         method: str,
         path: str,
+        allowed_statuses: frozenset[int],
         payload: object | None = None,
-    ) -> str:
-        classification, _ = self._request(method, path, payload)
-        if classification not in _SAFE_DENIALS:
-            raise CanaryRunError("required GitHub denial not observed")
-        return classification
+    ) -> _ResponseObservation:
+        observation = self._request(method, path, payload)
+        if observation.status not in allowed_statuses:
+            raise _ProbeError(name, observation)
+        return observation
 
 
 def _nested_sha(payload: Mapping[str, Any], field: str = "object") -> str:
@@ -354,36 +382,216 @@ def _create_pull(
     return number
 
 
-def _reviewers(payload: Mapping[str, Any]) -> list[str]:
+def _reviewers(payload: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     users = payload.get("users")
-    if not isinstance(users, list):
+    teams = payload.get("teams")
+    if not isinstance(users, list) or not isinstance(teams, list):
         raise CanaryRunError("reviewer observation rejected")
-    result: list[str] = []
+    user_logins: list[str] = []
     for user in users:
         login = user.get("login") if isinstance(user, dict) else None
         if not isinstance(login, str) or _LOGIN.fullmatch(login) is None:
             raise CanaryRunError("reviewer observation rejected")
-        result.append(login)
-    return result
+        user_logins.append(login)
+    team_slugs: list[str] = []
+    for team in teams:
+        slug = team.get("slug") if isinstance(team, dict) else None
+        if not isinstance(slug, str) or _OWNER_OR_REPOSITORY.fullmatch(slug) is None:
+            raise CanaryRunError("reviewer observation rejected")
+        team_slugs.append(slug)
+    return user_logins, team_slugs
+
+
+def _validate_pull_identity(
+    payload: Mapping[str, Any],
+    *,
+    number: int,
+    draft: bool,
+    branch: str,
+    base_branch: str,
+) -> None:
+    if (
+        payload.get("number") != number
+        or payload.get("draft") is not draft
+        or not isinstance(payload.get("head"), dict)
+        or payload["head"].get("ref") != branch
+        or not isinstance(payload.get("base"), dict)
+        or payload["base"].get("ref") != base_branch
+    ):
+        raise CanaryRunError("pull identity observation rejected")
+
+
+def _wait_until_mergeable(
+    github: _CanaryGitHub,
+    *,
+    number: int,
+    branch: str,
+    base_branch: str,
+    sleeper: Callable[[float], None],
+) -> dict[str, Any]:
+    path = f"{github.repository_path}/pulls/{number}"
+    for attempt in range(MERGE_POLL_ATTEMPTS):
+        observed = github.required_object("GET", path)
+        _validate_pull_identity(
+            observed,
+            number=number,
+            draft=False,
+            branch=branch,
+            base_branch=base_branch,
+        )
+        if observed.get("mergeable") is True:
+            return observed
+        if attempt < MERGE_POLL_ATTEMPTS - 1:
+            sleeper(MERGE_POLL_DELAY_SECONDS)
+    raise CanaryRunError("otherwise-mergeable pull observation exhausted")
+
+
+def _cleanup_manifest(
+    authority: PreflightConfig,
+    *,
+    branches: list[str],
+    pulls: list[int],
+) -> dict[str, object]:
+    return {
+        "repository": authority.catalog_full_name,
+        "branches": list(branches),
+        "pulls": list(pulls),
+    }
+
+
+def _recovery_pull(
+    github: _CanaryGitHub,
+    *,
+    number: int,
+    branch: str,
+    base_branch: str,
+    draft: bool,
+) -> dict[str, object]:
+    locator: dict[str, object] = {"number": number, "head": branch}
+    try:
+        observed = github.required_object("GET", f"{github.repository_path}/pulls/{number}")
+        _validate_pull_identity(
+            observed,
+            number=number,
+            draft=draft,
+            branch=branch,
+            base_branch=base_branch,
+        )
+        state = observed.get("state")
+        merged = observed.get("merged")
+        merged_at = observed.get("merged_at")
+        if (
+            state not in {"open", "closed"}
+            or not isinstance(merged, bool)
+            or (
+                merged_at is not None
+                and (
+                    not isinstance(merged_at, str) or not merged_at.isascii() or len(merged_at) > 64
+                )
+            )
+        ):
+            raise CanaryRunError("pull recovery observation rejected")
+        locator.update(
+            {
+                "state": state,
+                "merged": merged,
+                "merged_at": merged_at,
+            }
+        )
+    except CanaryRunError:
+        locator["observation"] = "unavailable"
+    return locator
+
+
+def _failure_evidence(
+    *,
+    config: RunConfig,
+    github: _CanaryGitHub,
+    branches: list[str],
+    pulls: list[int],
+    base_branch: str | None,
+    default_before: str | None,
+    draft_number: int | None,
+    merge_number: int | None,
+    unexpected_probe: str | None,
+    ruleset_name: str,
+    ruleset_id: int | None,
+) -> dict[str, object]:
+    authority = config.preflight
+    evidence: dict[str, object] = {
+        "schema_version": "skillscout.gate-b4-canary-error.v1",
+        "status": "failed_closed",
+        "workflow_revision": authority.workflow_revision,
+        "workflow_sha256": authority.workflow_sha256,
+        "run": {"id": authority.run_id, "attempt": authority.run_attempt},
+        "cleanup_manifest": _cleanup_manifest(authority, branches=branches, pulls=pulls),
+    }
+    if unexpected_probe is not None:
+        evidence["unexpected_probe"] = unexpected_probe
+    if ruleset_id is not None:
+        evidence["ruleset_mutation"] = {"name": ruleset_name, "id": ruleset_id}
+    recovered_pulls: list[dict[str, object]] = []
+    default_after: str | None = None
+    if base_branch is not None and default_before is not None:
+        try:
+            default_after = _nested_sha(
+                github.required_object(
+                    "GET",
+                    f"{github.repository_path}/git/ref/heads/{base_branch}",
+                )
+            )
+        except CanaryRunError:
+            default_after = None
+        evidence["default_ref"] = {
+            "before": default_before,
+            "after": default_after,
+            "unchanged": (default_after == default_before if default_after is not None else None),
+        }
+        if draft_number is not None:
+            recovered_pulls.append(
+                _recovery_pull(
+                    github,
+                    number=draft_number,
+                    branch=branches[0],
+                    base_branch=base_branch,
+                    draft=True,
+                )
+            )
+        if merge_number is not None:
+            recovered_pulls.append(
+                _recovery_pull(
+                    github,
+                    number=merge_number,
+                    branch=branches[1],
+                    base_branch=base_branch,
+                    draft=False,
+                )
+            )
+    evidence["remote_recovery"] = {"pulls": recovered_pulls}
+    return evidence
 
 
 def run_canary(
     config: RunConfig,
     *,
     transport: httpx.BaseTransport | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
     """Create two fixed canaries, prove denials, and return sanitized evidence."""
 
     authority = config.preflight
     draft_branch = f"{authority.branch_prefix}-draft"
     merge_branch = f"{authority.branch_prefix}-merge-probe"
-    created_branches: list[str] = []
+    branch_locators = [draft_branch, merge_branch]
     created_pulls: list[int] = []
+    base_branch: str | None = None
+    default_before: str | None = None
+    draft_number: int | None = None
+    merge_number: int | None = None
+    ruleset_name = f"skillscout-gate-b4-{authority.run_id}-{authority.run_attempt}-denial-probe"
+    ruleset_id: int | None = None
     github = _CanaryGitHub(config, transport=transport)
     try:
-        installation = github.required_object("GET", "/installation")
-        if installation.get("id") != config.actual_installation_id:
-            raise CanaryRunError("installation identity mismatch")
         repositories = github.required_object("GET", "/installation/repositories?per_page=100")
         installed = repositories.get("repositories")
         if (
@@ -407,7 +615,6 @@ def run_canary(
         default_before = _nested_sha(github.required_object("GET", default_path))
 
         _create_branch(github, branch=draft_branch, base_sha=default_before)
-        created_branches.append(draft_branch)
         _write_fixed_content(
             github,
             branch=draft_branch,
@@ -430,23 +637,23 @@ def run_canary(
         observed_draft = github.required_object(
             "GET", f"{github.repository_path}/pulls/{draft_number}"
         )
-        observed_reviewers = _reviewers(
+        _validate_pull_identity(
+            observed_draft,
+            number=draft_number,
+            draft=True,
+            branch=draft_branch,
+            base_branch=base_branch,
+        )
+        observed_users, observed_teams = _reviewers(
             github.required_object(
                 "GET",
                 f"{github.repository_path}/pulls/{draft_number}/requested_reviewers",
             )
         )
-        if (
-            observed_draft.get("number") != draft_number
-            or observed_draft.get("draft") is not True
-            or not isinstance(observed_draft.get("head"), dict)
-            or observed_draft["head"].get("ref") != draft_branch
-            or observed_reviewers != [authority.reviewer]
-        ):
+        if observed_users != [authority.reviewer] or observed_teams != []:
             raise CanaryRunError("positive Draft/reviewer evidence rejected")
 
         _create_branch(github, branch=merge_branch, base_sha=default_before)
-        created_branches.append(merge_branch)
         merge_commit = _write_fixed_content(
             github,
             branch=merge_branch,
@@ -461,52 +668,67 @@ def run_canary(
             mode="merge-probe",
         )
         created_pulls.append(merge_number)
-        observed_merge = github.required_object(
-            "GET", f"{github.repository_path}/pulls/{merge_number}"
+        _wait_until_mergeable(
+            github,
+            number=merge_number,
+            branch=merge_branch,
+            base_branch=base_branch,
+            sleeper=sleeper,
         )
-        if (
-            observed_merge.get("number") != merge_number
-            or observed_merge.get("draft") is not False
-            or observed_merge.get("mergeable") is not True
-        ):
-            raise CanaryRunError("otherwise-mergeable pull evidence rejected")
 
-        denials = {
-            "default_ref_mutation": github.denial(
+        observations = {
+            "default_ref_mutation": github.probe(
+                "default_ref_mutation",
                 "PATCH",
                 f"{github.repository_path}/git/refs/heads/{base_branch}",
+                frozenset({403, 422}),
                 {"sha": merge_commit, "force": False},
-            ),
-            "merge": github.denial(
+            ).classification,
+            "merge": github.probe(
+                "merge",
                 "PUT",
                 f"{github.repository_path}/pulls/{merge_number}/merge",
+                frozenset({403, 405}),
                 {"merge_method": "squash"},
-            ),
-            "ruleset_read": github.denial("GET", f"{github.repository_path}/rulesets"),
-            "ruleset_mutation": github.denial(
-                "POST",
-                f"{github.repository_path}/rulesets",
-                {
-                    "name": "skillscout-gate-b4-denial-probe",
-                    "target": "branch",
-                    "enforcement": "active",
-                    "conditions": {
-                        "ref_name": {
-                            "include": ["~DEFAULT_BRANCH"],
-                            "exclude": [],
-                        }
-                    },
-                    "rules": [],
-                },
-            ),
-            "unauthorized_private_repository": github.denial(
+            ).classification,
+            "ruleset_read": github.probe(
+                "ruleset_read",
                 "GET",
-                f"/repos/{authority.unauthorized_private_repository}",
-            ),
-            "secret_metadata_read": github.denial(
-                "GET", f"{github.repository_path}/actions/secrets"
-            ),
+                f"{github.repository_path}/rulesets",
+                frozenset({200, 403, 404}),
+            ).classification,
         }
+        ruleset_observation = github.probe(
+            "ruleset_mutation",
+            "POST",
+            f"{github.repository_path}/rulesets",
+            frozenset({403}),
+            {
+                "name": ruleset_name,
+                "target": "branch",
+                "enforcement": "active",
+                "conditions": {
+                    "ref_name": {
+                        "include": ["~DEFAULT_BRANCH"],
+                        "exclude": [],
+                    }
+                },
+                "rules": [],
+            },
+        )
+        observations["ruleset_mutation"] = ruleset_observation.classification
+        observations["unauthorized_private_repository"] = github.probe(
+            "unauthorized_private_repository",
+            "GET",
+            f"/repos/{authority.unauthorized_private_repository}",
+            frozenset({404}),
+        ).classification
+        observations["secret_metadata_read"] = github.probe(
+            "secret_metadata_read",
+            "GET",
+            f"{github.repository_path}/actions/secrets",
+            frozenset({403, 404}),
+        ).classification
         default_after = _nested_sha(github.required_object("GET", default_path))
         if default_after != default_before:
             raise CanaryRunError("default ref changed during canary")
@@ -532,7 +754,7 @@ def run_canary(
                 "branch": draft_branch,
                 "pull_number": draft_number,
                 "draft": True,
-                "requested_reviewers": observed_reviewers,
+                "requested_reviewers": observed_users,
             },
             "merge_probe": {
                 "branch": merge_branch,
@@ -540,26 +762,46 @@ def run_canary(
                 "draft": False,
                 "otherwise_mergeable": True,
             },
-            "negative_probes": denials,
+            "negative_probes": observations,
             "default_ref": {
                 "before": default_before,
                 "after": default_after,
                 "unchanged": True,
             },
-            "cleanup_manifest": {
-                "repository": authority.catalog_full_name,
-                "branches": created_branches,
-                "pulls": created_pulls,
-            },
+            "cleanup_manifest": _cleanup_manifest(
+                authority,
+                branches=branch_locators,
+                pulls=created_pulls,
+            ),
         }
     except CanaryRunError as error:
+        unexpected_probe: str | None = None
+        if isinstance(error, _ProbeError):
+            unexpected_probe = error.probe
+            if (
+                error.probe == "ruleset_mutation"
+                and isinstance(error.observation.payload, dict)
+                and type(error.observation.payload.get("id")) is int
+                and error.observation.payload["id"] > 0
+            ):
+                ruleset_id = error.observation.payload["id"]
+        evidence = _failure_evidence(
+            config=config,
+            github=github,
+            branches=branch_locators,
+            pulls=created_pulls,
+            base_branch=base_branch,
+            default_before=default_before,
+            draft_number=draft_number,
+            merge_number=merge_number,
+            unexpected_probe=unexpected_probe,
+            ruleset_name=ruleset_name,
+            ruleset_id=ruleset_id,
+        )
         raise CanaryRunError(
             "controlled canary failed closed",
-            cleanup_manifest={
-                "repository": authority.catalog_full_name,
-                "branches": created_branches,
-                "pulls": created_pulls,
-            },
+            cleanup_manifest=evidence["cleanup_manifest"],
+            evidence=evidence,
         ) from error
     finally:
         github.close()
@@ -585,14 +827,15 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _fail(cleanup_manifest: Mapping[str, object] | None = None) -> NoReturn:
-    evidence: dict[str, object] = {
-        "schema_version": "skillscout.gate-b4-canary-error.v1",
-        "status": "failed_closed",
-    }
-    if cleanup_manifest:
-        evidence["cleanup_manifest"] = dict(cleanup_manifest)
-    print(canonical_evidence(evidence), end="")
+def _fail(evidence: Mapping[str, object] | None = None) -> NoReturn:
+    failure = dict(
+        evidence
+        or {
+            "schema_version": "skillscout.gate-b4-canary-error.v1",
+            "status": "failed_closed",
+        }
+    )
+    print(canonical_evidence(failure), end="")
     raise SystemExit(1)
 
 
@@ -621,7 +864,7 @@ def main(argv: list[str] | None = None) -> int:
         print(canonical_evidence(run_canary(load_run_config(environ))), end="")
         return 0
     except CanaryRunError as error:
-        _fail(error.cleanup_manifest)
+        _fail(error.evidence)
     except (CanaryAdmissionError, SystemExit):
         _fail()
 

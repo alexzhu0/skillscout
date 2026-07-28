@@ -72,7 +72,14 @@ jobs:
           set -euo pipefail
           evidence_file="$(mktemp)"
           trap 'rm -f "$evidence_file"' EXIT
-          uv run --locked python tools/gate_b4_canary.py run | tee "$evidence_file"
+          set +e
+          uv run --locked python tools/gate_b4_canary.py run > "$evidence_file" 2>/dev/null
+          status="$?"
+          set -e
+          if [ ! -s "$evidence_file" ]; then
+            echo '{"schema_version":"skillscout.gate-b4-canary-error.v1","status":"failed_closed"}' > "$evidence_file"
+          fi
+          cat "$evidence_file"
           {
             echo '### Controlled Gate B4 canary evidence'
             echo
@@ -80,3 +87,4 @@ jobs:
             cat "$evidence_file"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

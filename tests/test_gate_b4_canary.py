@@ -395,7 +395,8 @@ def test_mergeable_poll_is_bounded_and_accepts_only_eventual_true() -> None:
     assert sleeps == [module.MERGE_POLL_DELAY_SECONDS] * 2
     assert sum(sleeps) <= module.MAX_MERGE_POLL_SLEEP_SECONDS
     assert [
-        path for method, path, _ in requests
+        path
+        for method, path, _ in requests
         if method == "GET" and path == "/repos/catalog-org/skills/pulls/79"
     ] == ["/repos/catalog-org/skills/pulls/79"] * 3
     assert len(requests) <= module.MAX_REQUESTS
@@ -426,14 +427,12 @@ def test_mergeable_poll_exhaustion_fails_closed_with_recovery_observations() -> 
 @pytest.mark.parametrize(
     ("status_overrides", "unexpected_probe"),
     [
-        ({("PATCH", "/repos/catalog-org/skills/git/refs/heads/main"): 409},
-         "default_ref_mutation"),
+        ({("PATCH", "/repos/catalog-org/skills/git/refs/heads/main"): 409}, "default_ref_mutation"),
         ({("PUT", "/repos/catalog-org/skills/pulls/79/merge"): 422}, "merge"),
         ({("GET", "/repos/catalog-org/skills/rulesets"): 422}, "ruleset_read"),
         ({("POST", "/repos/catalog-org/skills/rulesets"): 404}, "ruleset_mutation"),
         ({("GET", "/repos/other-org/private"): 403}, "unauthorized_private_repository"),
-        ({("GET", "/repos/catalog-org/skills/actions/secrets"): 422},
-         "secret_metadata_read"),
+        ({("GET", "/repos/catalog-org/skills/actions/secrets"): 422}, "secret_metadata_read"),
     ],
 )
 def test_each_probe_rejects_false_positive_statuses_and_recovers(
@@ -480,7 +479,7 @@ def test_unexpected_default_mutation_success_stops_and_reads_back_remote_state()
         for index, request in enumerate(requests)
         if request[:2] == ("PATCH", "/repos/catalog-org/skills/git/refs/heads/main")
     )
-    assert [(method, path) for method, path, _ in requests[patch_index + 1:]] == [
+    assert [(method, path) for method, path, _ in requests[patch_index + 1 :]] == [
         ("GET", "/repos/catalog-org/skills/git/ref/heads/main"),
         ("GET", "/repos/catalog-org/skills/pulls/78"),
         ("GET", "/repos/catalog-org/skills/pulls/79"),
