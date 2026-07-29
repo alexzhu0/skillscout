@@ -22,6 +22,7 @@ tech-stack:
   patterns:
     - Same-job full-SHA checkout, exact setup-uv, repository-local materialization, and direct run --locked
     - Constrained ordered workflow parser with closed authoritative-entry grammar
+    - Failure-only bounded diagnostic artifact with closed stage/status schema and no evidence authority
 
 key-files:
   created:
@@ -119,6 +120,8 @@ status: complete
 - Extended publication, discovery, and Phase 6 workflow tests so older security contracts continue to validate the stricter local-source baseline.
 - Corrected all 15 authoritative toolchain guards to accept the pinned uv binary's official trailing build metadata while still rejecting wrong, missing, malformed, or spoofed program/version tokens.
 - Closed the hosted empty-rootfs runtime gap by validating the exact canonical `.venv` Python base prefix under `${RUNNER_TOOL_CACHE}/Python/` and mounting only that prefix read-only at the identical path in all six network-none invocations.
+- Added failure-only campaign observability: a closed seven-stage diagnostic initialized before runtime preflight, updated without raw output, and uploaded as exactly one pinned one-day artifact only when the campaign step fails.
+- Extended the independent four-workflow verifier to reject diagnostic enum/schema/status widening, extra free-text/path/log fields, retention or Action-pin drift, broadened upload conditions, and any evidence/canonical naming.
 
 ## Task Commits
 
@@ -140,6 +143,11 @@ The third post-merge correction was committed under strict TDD:
 
 6. **RED: expose the absent hosted Python runtime mount** - `e86c809` (test; the current workflow failed the exact mount contract)
 7. **GREEN: mount the validated hosted Python base prefix** - `b48e1fd` (fix; six exact read-only same-path mounts plus independent verifier enforcement)
+
+The fourth post-merge correction was committed under strict TDD:
+
+8. **RED: freeze bounded campaign diagnostic contracts** - `1a6d668` (test; stable step ID, closed state machine, failure upload, and independent mutations were absent)
+9. **GREEN: retain bounded campaign failure diagnostics** - `7d94188` (fix; original nonzero status preserved, exact failure-only artifact, and independent verifier enforcement)
 
 ## Files Created/Modified
 
@@ -163,6 +171,7 @@ The third post-merge correction was committed under strict TDD:
 - Both failed hosted runs `30430010273` and `30441596331` stopped at the same locked-toolchain verification boundary before campaign execution or artifact upload. Their locators remain failure facts only.
 - This correction changes all four authoritative workflow byte sequences. Every prior workflow digest, approval, dispatch authorization, and Gate B4 binding is stale and grants no authority to retry, publish, or record canonical acceptance facts.
 - The empty-rootfs containers may receive only the canonical `sys.base_prefix` proven to be an absolute strict descendant of the exact hosted `${RUNNER_TOOL_CACHE}/Python` root; the cache root, `/opt`, arbitrary host paths, writable mounts, destination remapping, newline-bearing output, and unvalidated variables all fail closed.
+- Failure diagnostics are never campaign evidence: they contain only the fixed schema, source/workflow identities, hosted run identity, one closed stage, four integer statuses, and retention value `1`; the existing offline-evidence upload remains success-only and canonical state admission remains unchanged.
 
 ## Deviations from Plan
 
@@ -208,10 +217,18 @@ The third post-merge correction was committed under strict TDD:
 - **Verification:** The RED suite failed on the missing mount; after GREEN, 70 focused workflow/source-execution tests and the independent verifier passed. Full locked pytest classified 2,138 passed, 14 skipped, and the one pre-existing planned `verify_repository` RED failure. Ruff check and changed-file format checks passed.
 - **Committed in:** `e86c809` (RED), `b48e1fd` (GREEN)
 
+**6. [Rule 2 - Missing critical functionality] Added bounded failure diagnostics before any third hosted hypothesis**
+- **Found during:** Plan 06-06 hosted run `30446151495`
+- **Issue:** The campaign step failed after locked-toolchain verification, but its success-only evidence upload was skipped and raw logs were prohibited, leaving no bounded way to distinguish the internal campaign substage.
+- **Fix:** Initialize a strict diagnostic JSON before runtime preflight; advance only through seven closed stages; retain integer overall/control/direct/child statuses with `-1` as the only not-run sentinel; preserve the original nonzero exit in the EXIT trap; and upload only that exact file for one day when the stable campaign step reports failure. The independent verifier rejects every tested widening and the diagnostic cannot enter evidence or canonical state.
+- **Files modified:** `.github/workflows/phase6-acceptance.yml`, `tools/verify_phase6_source_execution.py`, `tests/test_phase6_workflow.py`, `tests/test_phase6_source_execution.py`
+- **Verification:** RED failed on the absent stable campaign ID and absent verifier result. GREEN passed 124 affected tests plus the independent verifier; full locked pytest classified 2,156 passed, 14 skipped, and only the unchanged planned Phase 6 repository-verifier RED failure. Full Ruff lint passed and all changed Python files passed Ruff format.
+- **Committed in:** `1a6d668` (RED), `7d94188` (GREEN)
+
 ---
 
-**Total deviations:** 5 auto-fixed (4 bugs, 1 blocking issue)
-**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The first post-merge fix restored historical Phase 5 fixture correctness. The second made the pinned official uv executable admissible without widening its authority. The third restores only the exact hosted Python runtime required by the already-locked repository venv while keeping the empty rootfs, no-network boundary, source invocation, and all campaign semantics unchanged. Every workflow-byte authorization remains stale.
+**Total deviations:** 6 auto-fixed (4 bugs, 1 blocking issue, 1 missing critical diagnostic boundary)
+**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The first post-merge fix restored historical Phase 5 fixture correctness. The second made the pinned official uv executable admissible without widening its authority. The third restores only the exact hosted Python runtime required by the already-locked repository venv. The fourth adds bounded diagnostic observability without changing mounts, commands, probes, scenarios, persistence, dependencies, or campaign authority. Every workflow-byte authorization remains stale.
 
 ## Issues Encountered
 
@@ -220,7 +237,8 @@ The third post-merge correction was committed under strict TDD:
 - Wave 3 post-merge verification exposed a test-harness lifecycle mismatch: historical Phase 5 evidence had been paired with current Phase 6 workflow bytes. The verifier correctly failed closed; no production verifier, evidence, approval, or workflow byte was changed.
 - Hosted runs `30430010273` and `30441596331` both failed at repository-local locked-toolchain verification and produced zero artifacts. No raw logs or artifact content were opened, and no canonical hosted-isolation or offline-campaign fact exists.
 - Hosted run `30443794922` passed checkout, pinned uv materialization, and locked sync, then failed inside the kernel-isolated campaign because the repository-visible venv referenced an unmounted hosted Python base prefix. It produced zero artifacts and no canonical facts; no retry is authorized.
-- The current workflow SHA-256 values are `7fafb18b11d82e9a65581f1658123dd5558e7279474b502c590fe84e73147373` (discover), `19c34f87c0d3934ccba3be677511118185e3421e7ec86b371e2c08f0afa42daa` (publish), `78061cb777d97381f79fd2f9a4653fa2a11d93553822ddf079cf6bc44e1a00d4` (canary), and `6a25a68d98cb8d796b8619bdb6e4922c28d575a4d0955aa80f8eb28dbc78981f` (Phase 6 acceptance). All earlier workflow approvals, exact-source authorizations, dispatch approvals, and digest bindings are stale.
+- Hosted run `30446151495` passed checkout, pinned uv materialization, and locked-toolchain verification, then failed in the campaign step. Its success-only evidence upload was skipped, artifact count was zero, raw logs were not opened, and no canonical facts were written. This correction adds diagnostics only; it does not explain or fix that failure.
+- The current workflow SHA-256 values are `7fafb18b11d82e9a65581f1658123dd5558e7279474b502c590fe84e73147373` (discover), `19c34f87c0d3934ccba3be677511118185e3421e7ec86b371e2c08f0afa42daa` (publish), `78061cb777d97381f79fd2f9a4653fa2a11d93553822ddf079cf6bc44e1a00d4` (canary), and `43238b31922d703142845aaa4ab8625dbf9c450221e4c7de21bc7118919eb6ac` (Phase 6 acceptance). All earlier workflow approvals, exact-source authorizations, dispatch approvals, and digest bindings are stale.
 
 ## Authentication Gates
 
@@ -236,8 +254,8 @@ None - no new dependency or external service configuration is required by this p
 
 ## Next Phase Readiness
 
-- Plan 06-06 Task 3 remains incomplete. Do not create `06-06-SUMMARY.md` or grant campaign credit from either failed run.
-- Any retry requires a new human authorization bound to the exact final local HEAD and Phase 6 workflow SHA-256 `6a25a68d98cb8d796b8619bdb6e4922c28d575a4d0955aa80f8eb28dbc78981f`; it cannot inherit any prior dispatch approval.
+- Plan 06-06 Task 3 remains incomplete. Do not create `06-06-SUMMARY.md` or grant campaign credit from any failed run.
+- Any diagnostic-only retry requires a new human authorization bound to the exact final local HEAD and Phase 6 workflow SHA-256 `43238b31922d703142845aaa4ab8625dbf9c450221e4c7de21bc7118919eb6ac`; it cannot inherit any prior dispatch approval and grants no functional-fix, Gate B4, publication, artifact-read, or canonical-state authority.
 - Plans 06-07 through 06-14 remain blocked from treating the workflow as hosted evidence until an authorized exact run succeeds and its bounded facts rebuild canonically.
 - Fresh Gate B4 and value publication remain unauthorized until later checkpoints bind the corrected exact workflow bytes and fixed catalog identity.
 
@@ -261,6 +279,10 @@ None - no new dependency or external service configuration is required by this p
 - All 70 focused Phase 6 workflow/source-execution tests passed, and the independent verifier reported `phase6 source execution valid`.
 - Full locked pytest completed with 2,138 passed and 14 skipped; its only failure is the unchanged pre-existing planned `verify_repository` RED node.
 - Full Ruff check, changed-file Ruff format check, and `git diff --check` passed; the repository-wide format check reports only the pre-existing 87-file formatting baseline outside this correction.
+- Diagnostic RED commit `1a6d668` and GREEN commit `7d94188` exist and contain no file deletions.
+- All 124 affected workflow/source-execution/adversarial tests passed, the independent verifier reported `phase6 source execution valid`, and the extracted campaign shell passed `bash -n`.
+- Full locked pytest classified 2,156 passed, 14 skipped, and only the unchanged planned `test_required_phase6_repository_verifier_is_missing` RED failure.
+- Full Ruff lint passed; the three changed Python files passed Ruff format, while the repository-wide format check retained the same pre-existing 87-file baseline.
 
 ---
 *Phase: 06-adversarial-mvp-acceptance*
