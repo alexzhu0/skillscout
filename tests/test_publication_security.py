@@ -45,7 +45,9 @@ def _source(path: Path) -> tuple[str, ast.Module]:
 def _public_call_names(tree: ast.Module) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith(
+            "_"
+        ):
             names.add(node.name.casefold())
     return names
 
@@ -66,7 +68,15 @@ def test_publish_adapter_has_closed_named_operations_and_no_forbidden_surface() 
     literals = {literal.casefold() for literal in _string_literals(tree)}
     assert not any(
         marker in literal
-        for marker in ("/graphql", "/merge", "/reviews", "/update-branch", "/ready-for-review", "/auto-merge", "/rulesets")
+        for marker in (
+            "/graphql",
+            "/merge",
+            "/reviews",
+            "/update-branch",
+            "/ready-for-review",
+            "/auto-merge",
+            "/rulesets",
+        )
         for literal in literals
     )
 
@@ -206,8 +216,18 @@ def test_publication_state_locator_is_confined_before_token_or_state(
 def test_publication_models_and_rendering_do_not_echo_secrets_or_candidate_prose() -> None:
     from skillscout.domain import publication
 
-    model_fields = set(publication.PublicationRecordV1.model_fields) | set(publication.PublicationResultV1.model_fields)
-    forbidden = {"token", "authorization", "headers", "private_key", "response_body", "exception", "candidate_text"}
+    model_fields = set(publication.PublicationRecordV1.model_fields) | set(
+        publication.PublicationResultV1.model_fields
+    )
+    forbidden = {
+        "token",
+        "authorization",
+        "headers",
+        "private_key",
+        "response_body",
+        "exception",
+        "candidate_text",
+    }
     assert model_fields.isdisjoint(forbidden)
     safe = publication.safe_public_failure(
         code="publication_transport_failure",
@@ -224,8 +244,10 @@ def test_publication_models_and_rendering_do_not_echo_secrets_or_candidate_prose
 
 
 _CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
+_SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 _APP_TOKEN_SHA = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
 _OLD_APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
+_LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
 _HANDOFF_FIELDS = (
     "candidate_descriptor_locator",
     "phase2_state_locator",
@@ -257,9 +279,16 @@ def _job_block(text: str, name: str) -> str:
 
 def _assert_approved_action_pins(text: str) -> None:
     assert f"actions/checkout@{_CHECKOUT_SHA}" in text
+    assert f"astral-sh/setup-uv@{_SETUP_UV_SHA}" in text
     assert f"actions/create-github-app-token@{_APP_TOKEN_SHA}" in text
     action_refs = re.findall(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", text, flags=re.MULTILINE)
-    assert action_refs == [_CHECKOUT_SHA, _CHECKOUT_SHA, _APP_TOKEN_SHA]
+    assert action_refs == [
+        _CHECKOUT_SHA,
+        _SETUP_UV_SHA,
+        _CHECKOUT_SHA,
+        _SETUP_UV_SHA,
+        _APP_TOKEN_SHA,
+    ]
     assert _OLD_APP_TOKEN_SHA not in text
     assert "@v" not in text
 
@@ -299,28 +328,73 @@ def test_publish_workflow_crosses_only_candidate_handoff_and_revalidates_before_
         assert f"SKILLSCOUT_EXPECTED_{field.upper()}" in publish
     assert "publication_intent_digest" not in admit
     assert "admission_digest" not in admit
-    assert "publication_intent_digest" not in re.search(r"^    outputs:\n(?P<body>.*?)(?=^    [a-z]|^  [a-z]|\Z)", admit, re.MULTILINE | re.DOTALL).group("body")
-    assert "admission_digest" not in re.search(r"^    outputs:\n(?P<body>.*?)(?=^    [a-z]|^  [a-z]|\Z)", admit, re.MULTILINE | re.DOTALL).group("body")
+    assert "publication_intent_digest" not in re.search(
+        r"^    outputs:\n(?P<body>.*?)(?=^    [a-z]|^  [a-z]|\Z)", admit, re.MULTILINE | re.DOTALL
+    ).group("body")
+    assert "admission_digest" not in re.search(
+        r"^    outputs:\n(?P<body>.*?)(?=^    [a-z]|^  [a-z]|\Z)", admit, re.MULTILINE | re.DOTALL
+    ).group("body")
     assert re.search(r"^    needs: admit$", publish, re.MULTILINE)
     assert re.search(r"^    environment: skillscout-catalog-publish$", publish, re.MULTILINE)
-    assert "verify-publication-admission --candidate \"$CANDIDATE_LOCATOR\" --phase2-state \"$PHASE2_STATE_LOCATOR\" --phase3-state \"$PHASE3_STATE_LOCATOR\" --compare-env" in publish
-    assert publish.index("verify-publication-admission") < publish.index("actions/create-github-app-token")
+    assert (
+        'verify-publication-admission --candidate "$CANDIDATE_LOCATOR" --phase2-state "$PHASE2_STATE_LOCATOR" --phase3-state "$PHASE3_STATE_LOCATOR" --compare-env'
+        in publish
+    )
+    assert publish.index("verify-publication-admission") < publish.index(
+        "actions/create-github-app-token"
+    )
     assert "validate_publication_state_locator" in publish
-    assert publish.index("validate_publication_state_locator") < publish.index("actions/create-github-app-token")
+    assert publish.index("validate_publication_state_locator") < publish.index(
+        "actions/create-github-app-token"
+    )
     assert "SKILLSCOUT_CATALOG_TEAM_REVIEWERS" in publish
     assert "permission-contents: write" in publish
     assert "permission-pull-requests: write" in publish
 
 
-def test_publish_workflow_has_no_candidate_shell_interpolation_or_forbidden_publication_surface() -> None:
+def test_publish_workflow_has_no_candidate_shell_interpolation_or_forbidden_publication_surface() -> (
+    None
+):
     text = _workflow()
     run_blocks = re.findall(r"run:\s*\|\n((?:\s{8,}.*\n?)*)", text)
     assert run_blocks
     assert all("${{" not in block for block in run_blocks)
-    assert all(marker not in text for marker in ("/merge", "approve", "ready-for-review", "graphql", "rulesets", "gh pr"))
+    assert all(
+        marker not in text
+        for marker in ("/merge", "approve", "ready-for-review", "graphql", "rulesets", "gh pr")
+    )
     assert "--locked python -m skillscout.cli publish-candidate" in text
-    assert "--publication-state \"$PUBLICATION_STATE_LOCATOR\"" in text
+    assert '--publication-state "$PUBLICATION_STATE_LOCATOR"' in text
     token_index = text.index("actions/create-github-app-token")
     assert "uses:" not in text[token_index + 1 :]
     assert "actions/cache" not in text
     assert "upload-artifact" not in text
+
+
+def test_publish_workflow_uses_same_job_locked_checked_out_source() -> None:
+    text = _workflow()
+    for job_name in ("admit", "publish"):
+        job = _job_block(text, job_name)
+        checkout = job.index(f"actions/checkout@{_CHECKOUT_SHA}")
+        setup = job.index(f"astral-sh/setup-uv@{_SETUP_UV_SHA}")
+        materialized = job.index(f"test -x {_LOCAL_UV}")
+        invocation = job.index(f"{_LOCAL_UV} run --locked")
+        assert checkout < setup < materialized < invocation
+        assert "ref: ${{ github.sha }}" in job
+        assert "persist-credentials: false" in job
+        assert "version: 0.11.29" in job
+        assert "enable-cache: false" in job
+        assert f'test "$({_LOCAL_UV} --version)" = "uv 0.11.29"' in job
+        assert f"{_LOCAL_UV} sync --locked --no-install-project" in job
+    assert not any(
+        marker in text
+        for marker in (
+            "pip install",
+            "download-artifact",
+            "uvx ",
+            "uv tool ",
+            "uv run --with",
+            "dist/",
+            "working-directory:",
+        )
+    )

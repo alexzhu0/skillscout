@@ -52,13 +52,21 @@ jobs:
         with:
           version: 0.11.29
           enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
       - name: Run bounded discovery through independent review
         id: handoff
         run: |
           set -euo pipefail
           result_file="$(mktemp)"
           trap 'rm -f "$result_file"' EXIT
-          uv run --locked python -m skillscout.cli discover --state-repository-id "$STATE_REPOSITORY_ID" --state-repository-full-name "$STATE_REPOSITORY_FULL_NAME" --initial-state-root-digest "$INITIAL_STATE_ROOT_DIGEST" > "$result_file"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli discover --state-repository-id "$STATE_REPOSITORY_ID" --state-repository-full-name "$STATE_REPOSITORY_FULL_NAME" --initial-state-root-digest "$INITIAL_STATE_ROOT_DIGEST" > "$result_file"
           python - "$result_file" "$GITHUB_OUTPUT" <<'PY'
           import hashlib
           import json
@@ -146,6 +154,14 @@ jobs:
         with:
           version: 0.11.29
           enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
       - name: Reconstruct and validate the bounded metadata handoff
         run: |
           set -euo pipefail
@@ -206,7 +222,7 @@ jobs:
       - name: Re-read exact state commit and re-derive every admission
         run: |
           set -euo pipefail
-          uv run --locked python - /tmp/skillscout-discovery-handoff.json <<'PY'
+          .tools/uv-0.11.29/bin/uv run --locked python - /tmp/skillscout-discovery-handoff.json <<'PY'
           import sys
           from pathlib import Path
 
@@ -261,4 +277,4 @@ jobs:
           set -euo pipefail
           publication_result="$(mktemp)"
           trap 'rm -f "$publication_result" /tmp/skillscout-discovery-handoff.json' EXIT
-          uv run --locked python -m skillscout.cli publish-discovered --handoff /tmp/skillscout-discovery-handoff.json > "$publication_result"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli publish-discovered --handoff /tmp/skillscout-discovery-handoff.json > "$publication_result"

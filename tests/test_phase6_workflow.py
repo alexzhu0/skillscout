@@ -76,7 +76,16 @@ def _assert_isolation_workflow(source: str) -> None:
     jobs = source.partition("\njobs:\n")[2]
     assert jobs
     assert set(re.findall(r"^  ([a-z][a-z0-9_-]*):\n", jobs, re.MULTILINE)) == {
-        "isolation_probe"
+        "isolation_probe",
+        "nominate",
+        "offline_adversarial",
+        "live_benchmark",
+        "changed_source",
+        "fresh_gate_b4",
+        "value_publication",
+        "human_attestation",
+        "cleanup_attestation",
+        "rebuild_report",
     }
     job = _job(source, "isolation_probe")
     assert "runs-on: ubuntu-24.04" in job
@@ -96,29 +105,37 @@ def _assert_isolation_workflow(source: str) -> None:
     assert "child_network_outcome" in job
     assert "control_outcome" in job
     assert "synthetic_canary_hit_count" in job
-    assert len(
-        re.findall(
-            rf"^\s+{re.escape(LOCAL_UV)} run --locked",
-            job,
-            re.MULTILINE,
+    assert (
+        len(
+            re.findall(
+                rf"^\s+{re.escape(LOCAL_UV)} run --locked",
+                job,
+                re.MULTILINE,
+            )
         )
-    ) == 4
+        == 4
+    )
     evidence_match = re.search(
         r"^          evidence = \{\n(?P<body>.*?)^          \}\n",
         job,
         re.MULTILINE | re.DOTALL,
     )
     assert evidence_match is not None
-    assert tuple(
-        re.findall(
-            r'^              "([a-z][a-z0-9_]*)":',
-            evidence_match.group("body"),
-            re.MULTILINE,
+    assert (
+        tuple(
+            re.findall(
+                r'^              "([a-z][a-z0-9_]*)":',
+                evidence_match.group("body"),
+                re.MULTILINE,
+            )
         )
-    ) == EVIDENCE_FIELDS
-    assert job.index(f"actions/checkout@{CHECKOUT_SHA}") < job.index(
-        f"astral-sh/setup-uv@{SETUP_UV_SHA}"
-    ) < job.index(f"{LOCAL_UV} run --locked")
+        == EVIDENCE_FIELDS
+    )
+    assert (
+        job.index(f"actions/checkout@{CHECKOUT_SHA}")
+        < job.index(f"astral-sh/setup-uv@{SETUP_UV_SHA}")
+        < job.index(f"{LOCAL_UV} run --locked")
+    )
 
 
 def test_phase6_isolation_probe_workflow_is_required() -> None:
@@ -128,6 +145,7 @@ def test_phase6_isolation_probe_workflow_is_required() -> None:
 def test_isolation_probe_workflow_is_secretless_least_privilege_and_non_cancelling() -> None:
     source = _source(required=False)
     _assert_isolation_workflow(source)
+    isolation = _job(source, "isolation_probe")
     forbidden = (
         "DEEPSEEK",
         "OPENAI",
@@ -142,8 +160,8 @@ def test_isolation_probe_workflow_is_secretless_least_privilege_and_non_cancelli
         "mark-ready",
         "cleanup",
     )
-    assert all(token not in source for token in forbidden)
-    assert "${{ secrets." not in source
+    assert all(token not in isolation for token in forbidden)
+    assert "${{ secrets." not in isolation
 
 
 def test_isolation_probe_uses_locked_checked_out_source_without_an_execution_selector() -> None:
@@ -171,6 +189,96 @@ def test_isolation_probe_shell_blocks_do_not_interpolate_repository_or_user_inpu
         assert "${{ inputs." not in block
         assert "${{ vars." not in block
         assert "${{ secrets." not in block
+
+
+def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
+    source = _source(required=False)
+    options = re.search(
+        r"^        options:\n(?P<body>(?:          - [a-z0-9-]+\n)+)",
+        source,
+        re.MULTILINE,
+    )
+    assert options is not None
+    assert tuple(
+        re.findall(r"^          - ([a-z0-9-]+)$", options.group("body"), re.MULTILINE)
+    ) == (
+        "isolation-probe",
+        "nominate",
+        "offline-adversarial",
+        "run-benchmark",
+        "run-replay",
+        "run-changed-source",
+        "gate-b4-and-publish",
+        "record-human-review",
+        "record-probe-cleanup",
+        "rebuild-report",
+    )
+
+    nomination = _job(source, "nominate")
+    offline = _job(source, "offline_adversarial")
+    live = _job(source, "live_benchmark")
+    changed = _job(source, "changed_source")
+    fresh_gate = _job(source, "fresh_gate_b4")
+    publication = _job(source, "value_publication")
+    human = _job(source, "human_attestation")
+    cleanup = _job(source, "cleanup_attestation")
+    rebuild = _job(source, "rebuild_report")
+
+    assert "contents: write" in nomination
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in nomination
+    assert "DEEPSEEK" not in nomination
+    assert "SKILLSCOUT_CATALOG" not in nomination
+    assert "${{ secrets." not in nomination
+
+    assert "contents: read" in offline
+    assert "contents: write" not in offline
+    assert "${{ secrets." not in offline
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in offline
+
+    for semantic_job in (live, changed):
+        assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in semantic_job
+        assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in semantic_job
+        assert "SKILLSCOUT_CATALOG" not in semantic_job
+        assert "SKILLSCOUT_GITHUB_APP" not in semantic_job
+        assert "--state-commit-sha" in semantic_job
+        assert "--state-root-digest" in semantic_job
+
+    assert "${{ secrets." not in fresh_gate
+    assert "SKILLSCOUT_CATALOG" not in fresh_gate
+    assert re.search(r"^    needs: fresh_gate_b4$", publication, re.MULTILINE)
+    assert "environment: skillscout-catalog-publish" in publication
+    assert "SKILLSCOUT_CATALOG_FULL_NAME: alexzhu0/skillscout-catalog-test" in publication
+    assert publication.index("run-acceptance") < publication.index(
+        "actions/create-github-app-token"
+    )
+    assert "permission-contents: write" in publication
+    assert "permission-pull-requests: write" in publication
+
+    non_publication = source.replace(publication, "", 1)
+    assert "actions/create-github-app-token" not in non_publication
+    assert "SKILLSCOUT_GITHUB_APP_PRIVATE_KEY" not in non_publication
+    assert "alexzhu0/skillscout-catalog-test" not in non_publication
+
+    for attestation in (human, cleanup):
+        assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in attestation
+        assert "DEEPSEEK" not in attestation
+        assert "SKILLSCOUT_CATALOG" not in attestation
+        assert "record-acceptance-attestation" in attestation
+    assert "--kind human-review" in human
+    assert "--kind probe-cleanup" in cleanup
+
+    assert "contents: read" in rebuild
+    assert "contents: write" not in rebuild
+    assert "${{ secrets." not in rebuild
+    assert "rebuild-acceptance" in rebuild
+
+    upload_blocks = re.findall(
+        r"uses: actions/upload-artifact@[0-9a-f]{40}\n(?P<body>(?:\s{8,}.*\n?)*)",
+        source,
+    )
+    assert upload_blocks
+    assert all("if-no-files-found: error" in block for block in upload_blocks)
+    assert all("retention-days: 1" in block for block in upload_blocks)
 
 
 @pytest.mark.parametrize(

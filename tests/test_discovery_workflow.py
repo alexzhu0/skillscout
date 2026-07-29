@@ -27,12 +27,8 @@ ACTION_REFRESH_APPROVAL = (
     / "05-automated-discovery-operations"
     / "05-ACTION-PIN-REFRESH-APPROVAL.json"
 )
-PUBLISH_WORKFLOW_SHA256 = (
-    "224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c"
-)
-ACTION_REFRESH_AUDIT_SHA256 = (
-    "f33b1b47c20db6f728522a0e176687c78c19a1d748783f2376d6e28bb67209bb"
-)
+PUBLISH_WORKFLOW_SHA256 = "224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c"
+ACTION_REFRESH_AUDIT_SHA256 = "f33b1b47c20db6f728522a0e176687c78c19a1d748783f2376d6e28bb67209bb"
 CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 APP_TOKEN_SHA = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
 OLD_APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
@@ -90,17 +86,11 @@ def test_action_refresh_approval_is_bound_to_exact_audit_bytes_and_commits() -> 
 
 def test_phase4_gate_b4_record_remains_historical_after_live_workflow_change() -> None:
     record = (
-        ROOT
-        / ".planning"
-        / "phases"
-        / "04-controlled-draft-pr"
-        / "04-10-SUMMARY.md"
+        ROOT / ".planning" / "phases" / "04-controlled-draft-pr" / "04-10-SUMMARY.md"
     ).read_text(encoding="utf-8")
     assert PUBLISH_WORKFLOW_SHA256 in record
     assert OLD_APP_TOKEN_SHA in record
-    assert hashlib.sha256(PUBLISH_WORKFLOW.read_bytes()).hexdigest() != (
-        PUBLISH_WORKFLOW_SHA256
-    )
+    assert hashlib.sha256(PUBLISH_WORKFLOW.read_bytes()).hexdigest() != (PUBLISH_WORKFLOW_SHA256)
 
 
 def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> None:
@@ -117,9 +107,7 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
         re.MULTILINE,
     )
     assert "@v" not in text
-    actions = re.findall(
-        r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", text, re.MULTILINE
-    )
+    actions = re.findall(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", text, re.MULTILINE)
     assert actions == [
         ("actions/checkout", CHECKOUT_SHA),
         ("astral-sh/setup-uv", SETUP_UV_SHA),
@@ -142,14 +130,20 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
     )
     assert discovery.count(setup) == 1
     assert publication.count(setup) == 1
-    assert discovery.index(setup) < discovery.index("uv run --locked")
-    assert publication.index(setup) < publication.index("uv run --locked")
+    local_uv = ".tools/uv-0.11.29/bin/uv"
+    assert discovery.index(setup) < discovery.index(f"{local_uv} run --locked")
+    assert publication.index(setup) < publication.index(f"{local_uv} run --locked")
     assert text.count("uv run --locked") == 3
-    assert ".tools/uv-" not in text
+    assert text.count(f"{local_uv} run --locked") == 3
     assert text.count("UV_LINK_MODE: copy") == 2
     for job in (discovery, publication):
         assert "      UV_LINK_MODE: copy" in job
-        assert job.index("UV_LINK_MODE: copy") < job.index("uv run --locked")
+        assert job.index("UV_LINK_MODE: copy") < job.index(f"{local_uv} run --locked")
+        assert "ref: ${{ github.sha }}" in job
+        assert "persist-credentials: false" in job
+        assert f"test -x {local_uv}" in job
+        assert f'test "$({local_uv} --version)" = "uv 0.11.29"' in job
+        assert f"{local_uv} sync --locked --no-install-project" in job
     assert "UV_LINK_MODE: hardlink" not in text
     assert "--link-mode hardlink" not in text
 
@@ -169,9 +163,7 @@ def _assert_separate_authority_zones(text: str) -> None:
     assert "state = read_exact_discovery_state(" in publication
     assert "admissions = derive_discovery_publication_admissions(" in publication
     admission_index = publication.index("state = read_exact_discovery_state(")
-    derivation_index = publication.index(
-        "admissions = derive_discovery_publication_admissions("
-    )
+    derivation_index = publication.index("admissions = derive_discovery_publication_admissions(")
     token_index = publication.index("actions/create-github-app-token")
     invocation_index = publication.index("skillscout.cli publish-discovered")
     assert admission_index < derivation_index < token_index < invocation_index
@@ -182,12 +174,8 @@ def _assert_separate_authority_zones(text: str) -> None:
     ):
         assert forbidden not in discovery
         assert forbidden not in publication[:token_index]
-    assert publication.count(
-        "actions/create-github-app-token"
-    ) == 1
-    assert publication.count(
-        "skillscout.cli publish-discovered"
-    ) == 1
+    assert publication.count("actions/create-github-app-token") == 1
+    assert publication.count("skillscout.cli publish-discovered") == 1
     assert re.search(
         r"needs:\s*discovery",
         publication,
@@ -215,14 +203,17 @@ def _assert_bounded_handoff(text: str) -> None:
         re.MULTILINE | re.DOTALL,
     )
     assert output_block
-    actual = set(
-        re.findall(r"^      ([a-z][a-z0-9_]+):", output_block.group("body"), re.MULTILINE)
-    )
+    actual = set(re.findall(r"^      ([a-z][a-z0-9_]+):", output_block.group("body"), re.MULTILINE))
     assert actual == expected
-    assert 'set(payload) != {"run_id", "state_root_digest", "state_commit_sha", "eligible_count", "eligible_candidates"}' in discovery
+    assert (
+        'set(payload) != {"run_id", "state_root_digest", "state_commit_sha", "eligible_count", "eligible_candidates"}'
+        in discovery
+    )
     assert "len(candidates) > 60" in discovery
     assert "len(canonical) > 65_536" in discovery
-    assert 'set(candidate) != {"locator", "authority_digest", "workflow_identity_digest"}' in discovery
+    assert (
+        'set(candidate) != {"locator", "authority_digest", "workflow_identity_digest"}' in discovery
+    )
     publication = _job(text, "protected_publication")
     for output in expected:
         assert f"${{{{ needs.discovery.outputs.{output} }}}}" in publication
@@ -256,7 +247,7 @@ def test_workflow_handoff_is_bounded_and_shell_never_interpolates_candidates() -
             _assert_bounded_handoff,
         ),
         (
-            'run: |\n          set -euo pipefail',
+            "run: |\n          set -euo pipefail",
             'run: |\n          echo "${{ needs.discovery.outputs.eligible_candidates_json }}"\n          set -euo pipefail',
             _assert_bounded_handoff,
         ),
@@ -276,7 +267,13 @@ def test_workflow_security_audit_rejects_boundary_mutations(
 
 def test_queue_grammar_requires_recorded_hosted_validation_or_fixed_fallback() -> None:
     text = _workflow()
-    evidence = ROOT / ".planning" / "phases" / "05-automated-discovery-operations" / "05-HOSTED-CONCURRENCY.json"
+    evidence = (
+        ROOT
+        / ".planning"
+        / "phases"
+        / "05-automated-discovery-operations"
+        / "05-HOSTED-CONCURRENCY.json"
+    )
     if re.search(r"^  queue: max$", text, re.MULTILINE):
         assert evidence.is_file()
         assert '"queue_max_accepted": true' in evidence.read_text()

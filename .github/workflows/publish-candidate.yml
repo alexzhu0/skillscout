@@ -50,7 +50,21 @@ jobs:
       - name: Check out the fixed workflow revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Install the exact locked uv tool
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
       - name: Re-read candidate evidence and emit only canonical handoff
         id: admission
         shell: bash
@@ -117,7 +131,21 @@ jobs:
       - name: Check out the fixed workflow revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Install the exact locked uv tool
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
       - name: Revalidate candidate and derive protected-local admission
         shell: bash
         run: |
@@ -125,7 +153,7 @@ jobs:
           protected_admission="$(mktemp)"
           trap 'rm -f "$protected_admission"' EXIT
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-publication-admission --candidate "$CANDIDATE_LOCATOR" --phase2-state "$PHASE2_STATE_LOCATOR" --phase3-state "$PHASE3_STATE_LOCATOR" --compare-env > "$protected_admission"
-          python - "$protected_admission" "$GITHUB_ENV" "$PUBLICATION_STATE_LOCATOR" <<'PY'
+          .tools/uv-0.11.29/bin/uv run --locked python - "$protected_admission" "$GITHUB_ENV" "$PUBLICATION_STATE_LOCATOR" <<'PY'
           import json
           import re
           import sys

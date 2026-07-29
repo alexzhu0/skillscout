@@ -4,11 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       phase6_action:
-        description: Select the only admitted no-credential probe
+        description: Select one closed Phase 6 authority transition
         required: true
         type: choice
         options:
           - isolation-probe
+          - nominate
+          - offline-adversarial
+          - run-benchmark
+          - run-replay
+          - run-changed-source
+          - gate-b4-and-publish
+          - record-human-review
+          - record-probe-cleanup
+          - rebuild-report
 
 permissions:
   contents: read
@@ -246,3 +255,354 @@ jobs:
           path: ${{ runner.temp }}/phase6-isolation-probe/evidence.json
           if-no-files-found: error
           retention-days: 1
+
+  nominate:
+    if: ${{ inputs.phase6_action == 'nominate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
+      SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST }}
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Nominate the bounded Search-derived benchmark
+        run: |
+          set -euo pipefail
+          umask 077
+          result_file="${RUNNER_TEMP}/phase6-nomination.json"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli nominate-benchmark --state-repository-id "$SKILLSCOUT_STATE_REPOSITORY_ID" --state-repository-full-name "$SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" --initial-state-root-digest "$SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST" > "$result_file"
+          test -s "$result_file"
+      - name: Upload the bounded nomination result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: phase6-nomination-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phase6-nomination.json
+          if-no-files-found: error
+          retention-days: 1
+
+  offline_adversarial:
+    if: ${{ inputs.phase6_action == 'offline-adversarial' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Run only controlled credential-free adversarial fixtures
+        run: |
+          set -euo pipefail
+          .tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_adversarial.py tests/test_phase6_workflow.py -x
+
+  live_benchmark:
+    if: ${{ inputs.phase6_action == 'run-benchmark' || inputs.phase6_action == 'run-replay' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_LLM_PROVIDER: deepseek
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      PHASE6_MANIFEST: evidence/phase6/locked-benchmark.json
+      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
+      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Run the locked benchmark or exact replay
+        run: |
+          set -euo pipefail
+          test -f "$PHASE6_MANIFEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+
+  changed_source:
+    if: ${{ inputs.phase6_action == 'run-changed-source' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_LLM_PROVIDER: deepseek
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      PHASE6_MANIFEST: evidence/phase6/changed-source.json
+      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
+      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Run the one approved changed-source pair
+        run: |
+          set -euo pipefail
+          test -f "$PHASE6_MANIFEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+
+  fresh_gate_b4:
+    if: ${{ inputs.phase6_action == 'gate-b4-and-publish' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Verify exact frozen source bytes before protected authority
+        run: |
+          set -euo pipefail
+          .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_source_execution.py
+
+  value_publication:
+    if: ${{ inputs.phase6_action == 'gate-b4-and-publish' }}
+    needs: fresh_gate_b4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: skillscout-catalog-publish
+    permissions:
+      contents: read
+    env:
+      PHASE6_MANIFEST: evidence/phase6/gate-b4-and-publish.json
+      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
+      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      SKILLSCOUT_CATALOG_REPOSITORY_ID: ${{ vars.SKILLSCOUT_CATALOG_REPOSITORY_ID }}
+      SKILLSCOUT_CATALOG_FULL_NAME: alexzhu0/skillscout-catalog-test
+      SKILLSCOUT_CATALOG_BASE_BRANCH: ${{ vars.SKILLSCOUT_CATALOG_BASE_BRANCH }}
+      SKILLSCOUT_CATALOG_REVIEWERS: ${{ vars.SKILLSCOUT_CATALOG_REVIEWERS }}
+      SKILLSCOUT_PUBLICATION_POLICY_VERSION: ${{ vars.SKILLSCOUT_PUBLICATION_POLICY_VERSION }}
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Revalidate the fixed publication authority before token minting
+        run: |
+          set -euo pipefail
+          test -f "$PHASE6_MANIFEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+      - name: Mint the fixed-catalog token after fresh source admission
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ secrets.SKILLSCOUT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.SKILLSCOUT_GITHUB_APP_PRIVATE_KEY }}
+          owner: alexzhu0
+          repositories: skillscout-catalog-test
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Publish only the re-admitted value Draft
+        env:
+          SKILLSCOUT_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+
+  human_attestation:
+    if: ${{ inputs.phase6_action == 'record-human-review' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      PHASE6_ATTESTATION: evidence/phase6/human-review.json
+      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
+      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Record only the bounded human review attestation
+        run: |
+          set -euo pipefail
+          test -f "$PHASE6_ATTESTATION"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-acceptance-attestation --attestation "$PHASE6_ATTESTATION" --kind human-review --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+
+  cleanup_attestation:
+    if: ${{ inputs.phase6_action == 'record-probe-cleanup' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      PHASE6_ATTESTATION: evidence/phase6/probe-cleanup.json
+      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
+      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Record only the separate cleanup attestation
+        run: |
+          set -euo pipefail
+          test -f "$PHASE6_ATTESTATION"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-acceptance-attestation --attestation "$PHASE6_ATTESTATION" --kind probe-cleanup --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+
+  rebuild_report:
+    if: ${{ inputs.phase6_action == 'rebuild-report' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
+      PHASE6_EVIDENCE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_EVIDENCE_ROOT_DIGEST }}
+      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
+      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+      - name: Rebuild the report from verified state only
+        run: |
+          set -euo pipefail
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli rebuild-acceptance --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --evidence-root-digest "$PHASE6_EVIDENCE_ROOT_DIGEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
