@@ -5,29 +5,29 @@ milestone_name: milestone
 current_phase: 6
 current_phase_name: Adversarial MVP Acceptance
 status: executing
-stopped_at: Phase 6 context gathered
+stopped_at: Phase 6 planned and independently verified; ready to execute
 last_updated: "2026-07-29T05:59:35.543Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 61
+  total_plans: 76
   completed_plans: 61
   percent: 83
 ---
 
 # Project State: SkillScout
 
-**Last updated:** 2026-07-28
+**Last updated:** 2026-07-29
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
 **Status:** Ready to execute
 
 ## Current Position
 
 **Phase:** 6 — Adversarial MVP Acceptance
-**Plan:** Not started
-**Verification:** Phase 5 passed 6/6 roadmap criteria and 5/5 requirements; exact release chain passed 1,916 tests with 2 expected live-only skips
-**Next command:** `$gsd-plan-phase 6`
+**Plan:** 15 plans across 13 waves; execution not started
+**Verification:** Phase 6 plan checker passed with TEST-01..04, D-01..D-27, 38/38 task-map, dependency, threat-model, workflow-freeze, and post-planning gap gates green
+**Next command:** `$gsd-execute-phase 6`
 
 ## Progress
 
@@ -51,7 +51,7 @@ Phase 6 acceptance      [░░░░░░░░░░]   0%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 5/6 |
-| Plans completed | 61/61 authored plans |
+| Plans completed | 61/76 authored plans |
 
 ## Project Reference
 
@@ -96,14 +96,13 @@ See: `.planning/PROJECT.md` (updated 2026-07-22)
 
 ## Open Decisions
 
-No product-scope blocker remains. Phase planning will choose implementation-level details such as:
+No product-scope blocker remains. Phase 6 execution retains explicit human checkpoints for:
 
-- Concrete GitHub Search query set.
-- Target controlled catalog repository and human reviewer/team identifiers for live canary.
-- Qualification scoring weights, excerpt limit, similarity threshold, and policy versioning process.
-- Exact OpenAI model snapshot after fixture evaluation.
+- Selecting and locking the five Search-derived public repositories and fixed commit SHAs.
+- Accepting only a fail-closed hosted kernel/network isolation mechanism proven by the capability probe.
+- Authorizing the exact DeepSeek/GitHub live runs, changed-source lineage, fresh Gate B4, exact-head Skill review, and separate human/admin cleanup.
 
-These decisions must preserve the approved requirements and may not broaden remote permissions or execution authority.
+Live acceptance uses DeepSeek Flash for extraction/generation and Pro for independent review. A live OpenAI credential is not required. The target catalog remains fixed to `alexzhu0/skillscout-catalog-test`, and no checkpoint may broaden remote permissions or execution authority.
 
 ## Blockers
 
@@ -119,13 +118,13 @@ None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requ
 
 **Last activity:** 2026-07-29
 **Last session:** 2026-07-28T07:35:52.535Z
-**Stopped at:** Phase 6 context gathered
-**Resume file:** .planning/phases/06-adversarial-mvp-acceptance/06-CONTEXT.md
+**Stopped at:** Phase 6 planned and independently verified; ready to execute
+**Resume file:** .planning/phases/06-adversarial-mvp-acceptance/06-01-PLAN.md
 
 ### Next
 
-1. Plan Phase 6 — Adversarial MVP Acceptance (`$gsd-plan-phase 6`).
-2. Run the fixed five-repository and prompt-injection acceptance campaign without widening the verified publication authority.
+1. Execute Phase 6 — Adversarial MVP Acceptance (`$gsd-execute-phase 6`).
+2. Follow the plan checkpoints for the fixed benchmark, hosted isolation, live credentials, Gate B4, human Skill verdict, and separate cleanup without widening verified publication authority.
 
 ---
 *State initialized: 2026-07-16*
