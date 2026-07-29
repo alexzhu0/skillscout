@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,35 @@ def _replace_first(repository: Path, needle: str, replacement: str) -> None:
     raise AssertionError(f"mutation needle not found: {needle}")
 
 
+def _version_guards(repository: Path) -> tuple[str, ...]:
+    module = _module()
+    guards: list[str] = []
+    for relative in WORKFLOW_PATHS:
+        source = (repository / relative).read_text(encoding="utf-8")
+        for job in module._parse_jobs(source):
+            for step in job.steps:
+                if step.name != "Verify the repository-local locked toolchain":
+                    continue
+                assert step.run is not None
+                lines = step.run.splitlines()
+                start = lines.index("test -x .tools/uv-0.11.29/bin/uv") + 1
+                end = lines.index(
+                    ".tools/uv-0.11.29/bin/uv sync --locked --no-install-project"
+                )
+                guards.append("\n".join(lines[start:end]))
+    return tuple(guards)
+
+
+def _run_guard(repository: Path, guard: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + guard],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def test_required_phase6_source_execution_verifier_is_missing() -> None:
     _module(skip_if_missing=False)
 
@@ -88,6 +118,26 @@ def test_source_execution_verifier_discovers_every_authoritative_entry_point(
     assert result.authoritative_step_count > 0
     assert result.authoritative_step_count == len(result.authoritative_steps)
     assert all(step.checkout_sha and step.invocation_digest for step in result.authoritative_steps)
+
+
+def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_versions(
+    tmp_path: Path,
+) -> None:
+    guards = _version_guards(ROOT)
+    assert len(guards) == 15
+    assert all(_run_guard(ROOT, guard).returncode == 0 for guard in guards)
+
+    fake_repository = tmp_path / "repository"
+    fake_uv = fake_repository / ".tools/uv-0.11.29/bin/uv"
+    fake_uv.parent.mkdir(parents=True)
+    for output in (
+        "uv 0.11.28 (901092ee1 2026-07-15 aarch64-apple-darwin)",
+        "uv",
+        "uv 0.11.29 malformed",
+    ):
+        fake_uv.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
+        fake_uv.chmod(0o755)
+        assert all(_run_guard(fake_repository, guard).returncode != 0 for guard in guards)
 
 
 @pytest.mark.parametrize(
