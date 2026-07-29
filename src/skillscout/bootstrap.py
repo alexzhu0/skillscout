@@ -32,12 +32,15 @@ _GENERATED_RECORD_NAMES = frozenset({"INSTALLER", "RECORD", "REQUESTED"})
 _VALIDATOR_MODULE_RECORD_PATH = "skills_ref/__init__.py"
 _DISCOVERY_QUERY_SET_NAME = "discovery-queries-v1.json"
 _DISCOVERY_STATE_REF = "refs/heads/skillscout-state"
+_ACCEPTANCE_MANIFEST_NAME = "06-BENCHMARK-MANIFEST.json"
+_ACCEPTANCE_MANIFEST_BYTES = 1_048_576
 _DISCOVERY_DATABASE_LOCATORS = (
     "state/databases/pipeline.sqlite3",
     "state/databases/operations.sqlite3",
     "state/databases/publication.sqlite3",
 )
 _DISCOVERY_DIGEST_BYTES = 65_536
+ACCEPTANCE_CATALOG_FULL_NAME = "alexzhu0/skillscout-catalog-test"
 
 
 def _discovery_timestamp() -> str:
@@ -116,6 +119,229 @@ class DiscoveryRuntimeConfig:
             or not _is_digest(self.initial_state_root_digest)
         ):
             raise ValueError("discovery runtime configuration rejected")
+
+
+@dataclass(frozen=True)
+class AcceptanceRuntimeConfig:
+    """Validated, non-secret authority for one locked acceptance campaign."""
+
+    manifest_path: Path
+    manifest: object
+    state_commit_sha: str
+    state_root_digest: str
+    catalog_full_name: str
+    semantic_provider: str
+    extractor_model_id: str
+    generator_model_id: str
+    reviewer_model_id: str
+
+    def __post_init__(self) -> None:
+        from skillscout.domain.acceptance import LockedBenchmarkManifestV1
+
+        if (
+            not isinstance(self.manifest_path, Path)
+            or self.manifest_path.name != _ACCEPTANCE_MANIFEST_NAME
+            or type(self.manifest) is not LockedBenchmarkManifestV1
+            or not _is_commit_sha(self.state_commit_sha)
+            or not _is_digest(self.state_root_digest)
+            or self.catalog_full_name != ACCEPTANCE_CATALOG_FULL_NAME
+            or self.semantic_provider not in {"openai", "deepseek"}
+            or not all(
+                _closed_identity(value)
+                for value in (
+                    self.extractor_model_id,
+                    self.generator_model_id,
+                    self.reviewer_model_id,
+                )
+            )
+        ):
+            raise ValueError("acceptance runtime configuration rejected")
+
+
+@dataclass(frozen=True)
+class NominationRuntimeConfig:
+    """Search-only authority with no semantic or publication configuration."""
+
+    state_repository_id: int
+    state_repository_full_name: str
+    query_set_path: Path
+    query_set: object
+    query_set_digest: str
+    operations_state: Path
+    initial_state_root_digest: str
+
+    def __post_init__(self) -> None:
+        from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+        if (
+            type(self.state_repository_id) is not int
+            or self.state_repository_id <= 0
+            or not _github_full_name(self.state_repository_full_name)
+            or not isinstance(self.query_set_path, Path)
+            or self.query_set_path.name != _DISCOVERY_QUERY_SET_NAME
+            or type(self.query_set) is not DiscoveryQuerySetV1
+            or self.query_set_digest != self.query_set.query_set_digest
+            or os.fspath(self.operations_state)
+            != _DISCOVERY_DATABASE_LOCATORS[1]
+            or not _is_digest(self.initial_state_root_digest)
+        ):
+            raise ValueError("nomination runtime configuration rejected")
+
+
+def _is_commit_sha(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def load_nomination_runtime_config(
+    *,
+    state_repository_id: str,
+    state_repository_full_name: str,
+    query_set_path: Path,
+    operations_state: Path,
+    initial_state_root_digest: str,
+) -> NominationRuntimeConfig:
+    """Validate the complete Search-only nomination authority."""
+
+    try:
+        if (
+            type(state_repository_id) is not str
+            or not state_repository_id.isascii()
+            or not state_repository_id.isdecimal()
+            or state_repository_id.startswith("0")
+            or not isinstance(query_set_path, Path)
+            or query_set_path.name != _DISCOVERY_QUERY_SET_NAME
+        ):
+            raise ValueError
+        payload = _read_stable_private_file(
+            query_set_path,
+            max_bytes=_DISCOVERY_DIGEST_BYTES,
+        )
+        from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+        query_set = DiscoveryQuerySetV1.model_validate_json(payload, strict=True)
+        if query_set.query_set_digest is None:
+            raise ValueError
+        return NominationRuntimeConfig(
+            state_repository_id=int(state_repository_id),
+            state_repository_full_name=state_repository_full_name,
+            query_set_path=query_set_path,
+            query_set=query_set,
+            query_set_digest=query_set.query_set_digest,
+            operations_state=operations_state,
+            initial_state_root_digest=initial_state_root_digest,
+        )
+    except Exception:
+        raise ValueError("nomination runtime configuration rejected") from None
+
+
+def load_acceptance_runtime_config(
+    *,
+    manifest_path: Path,
+    state_commit_sha: str,
+    state_root_digest: str,
+    environ: Mapping[str, str] | None = None,
+) -> AcceptanceRuntimeConfig:
+    """Re-admit locked facts and provider identity before credential lookup."""
+
+    try:
+        if (
+            not isinstance(manifest_path, Path)
+            or manifest_path.name != _ACCEPTANCE_MANIFEST_NAME
+            or not _is_commit_sha(state_commit_sha)
+            or not _is_digest(state_root_digest)
+        ):
+            raise ValueError
+        payload = _read_stable_private_file(
+            manifest_path,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+        )
+        from skillscout.adapters.semantic_provider import resolve_semantic_provider
+        from skillscout.domain.acceptance import LockedBenchmarkManifestV1
+        from skillscout.domain.canonical import canonical_json_bytes
+
+        manifest = LockedBenchmarkManifestV1.model_validate_json(
+            payload,
+            strict=True,
+        )
+        canonical = canonical_json_bytes(manifest)
+        if payload not in {canonical, canonical + b"\n"}:
+            raise ValueError
+
+        source = os.environ if environ is None else environ
+        configured_catalog = source.get(
+            "SKILLSCOUT_CATALOG_FULL_NAME",
+            ACCEPTANCE_CATALOG_FULL_NAME,
+        )
+        if configured_catalog != ACCEPTANCE_CATALOG_FULL_NAME:
+            raise ValueError
+        provider = resolve_semantic_provider(source)
+        return AcceptanceRuntimeConfig(
+            manifest_path=manifest_path,
+            manifest=manifest,
+            state_commit_sha=state_commit_sha,
+            state_root_digest=state_root_digest,
+            catalog_full_name=ACCEPTANCE_CATALOG_FULL_NAME,
+            semantic_provider=provider.provider.value,
+            extractor_model_id=provider.extract_model,
+            generator_model_id=provider.generator_model,
+            reviewer_model_id=provider.reviewer_model,
+        )
+    except Exception:
+        raise ValueError("acceptance runtime configuration rejected") from None
+
+
+def load_acceptance_attestation(
+    *,
+    attestation_path: Path,
+    kind: str,
+) -> object:
+    """Read one canonical, typed human-owned acceptance attestation."""
+
+    try:
+        if (
+            not isinstance(attestation_path, Path)
+            or not attestation_path.name
+            or kind not in {"human-review", "probe-cleanup"}
+        ):
+            raise ValueError
+        payload = _read_stable_private_file(
+            attestation_path,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+        )
+        from skillscout.domain.acceptance import (
+            HumanSkillReviewAttestationV1,
+            ProbeCleanupAttestationV1,
+        )
+        from skillscout.domain.canonical import canonical_json_bytes
+
+        model = (
+            HumanSkillReviewAttestationV1
+            if kind == "human-review"
+            else ProbeCleanupAttestationV1
+        )
+        attestation = model.model_validate_json(payload, strict=True)
+        canonical = canonical_json_bytes(attestation)
+        if payload not in {canonical, canonical + b"\n"}:
+            raise ValueError
+        return attestation
+    except Exception:
+        raise ValueError("acceptance attestation rejected") from None
+
+
+def validate_acceptance_state_authority(
+    *,
+    state_commit_sha: str,
+    state_root_digest: str,
+) -> tuple[str, str]:
+    """Validate immutable state identity without consulting the environment."""
+
+    if not _is_commit_sha(state_commit_sha) or not _is_digest(state_root_digest):
+        raise ValueError("acceptance state authority rejected")
+    return state_commit_sha, state_root_digest
 
 
 def _is_digest(value: object) -> bool:

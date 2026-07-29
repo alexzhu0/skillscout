@@ -13,15 +13,20 @@ from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
 from skillscout.bootstrap import (
+    ACCEPTANCE_CATALOG_FULL_NAME,
     build_discovery_application,
     build_publication_application,
     derive_discovery_publication_admissions,
     discovery_run_authority,
+    load_acceptance_attestation,
+    load_acceptance_runtime_config,
     load_discovery_runtime_config,
+    load_nomination_runtime_config,
     load_publication_authority_config,
     read_exact_discovery_state,
     require_phase3_gate_b3,
     run_protected_discovery_publication,
+    validate_acceptance_state_authority,
     verify_publication_admission_handoff,
 )
 
@@ -136,6 +141,28 @@ def build_parser() -> SafeArgumentParser:
     discover.add_argument("--initial-state-root-digest", required=True)
     publish_discovered = commands.add_parser("publish-discovered")
     publish_discovered.add_argument("--handoff", required=True, type=Path)
+    nominate_benchmark = commands.add_parser("nominate-benchmark")
+    nominate_benchmark.add_argument("--state-repository-id", required=True)
+    nominate_benchmark.add_argument("--state-repository-full-name", required=True)
+    nominate_benchmark.add_argument("--initial-state-root-digest", required=True)
+    run_acceptance = commands.add_parser("run-acceptance")
+    run_acceptance.add_argument("--manifest", required=True, type=Path)
+    run_acceptance.add_argument("--state-commit-sha", required=True)
+    run_acceptance.add_argument("--state-root-digest", required=True)
+    record_attestation = commands.add_parser("record-acceptance-attestation")
+    record_attestation.add_argument("--attestation", required=True, type=Path)
+    record_attestation.add_argument(
+        "--kind",
+        required=True,
+        choices=("human-review", "probe-cleanup"),
+    )
+    record_attestation.add_argument("--state-commit-sha", required=True)
+    record_attestation.add_argument("--state-root-digest", required=True)
+    rebuild_acceptance = commands.add_parser("rebuild-acceptance")
+    rebuild_acceptance.add_argument("--acceptance-run-id", required=True)
+    rebuild_acceptance.add_argument("--evidence-root-digest", required=True)
+    rebuild_acceptance.add_argument("--state-commit-sha", required=True)
+    rebuild_acceptance.add_argument("--state-root-digest", required=True)
     return parser
 
 
@@ -641,6 +668,214 @@ def _run_discover(arguments: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _run_nominate_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
+    """Construct the bounded Search authority without semantic or publication clients."""
+
+    config = load_nomination_runtime_config(
+        state_repository_id=arguments.state_repository_id,
+        state_repository_full_name=arguments.state_repository_full_name,
+        query_set_path=_DISCOVERY_QUERY_PATH,
+        operations_state=_DISCOVERY_OPERATIONS_STATE,
+        initial_state_root_digest=arguments.initial_state_root_digest,
+    )
+    authority_digest = sha256_digest(
+        {
+            "schema_version": "acceptance-nomination-authority-v1",
+            "state_repository_id": config.state_repository_id,
+            "state_repository_full_name": config.state_repository_full_name,
+            "query_set_digest": config.query_set_digest,
+            "initial_state_root_digest": config.initial_state_root_digest,
+        }
+    )
+    return {
+        "nomination_run_id": (
+            "nomination-"
+            f"{authority_digest.removeprefix('sha256:')[:32]}"
+        ),
+        "query_set_digest": config.query_set_digest,
+        "search_run_authority_digest": authority_digest,
+        "state_root_digest": config.initial_state_root_digest,
+        "status": "search_authority_validated",
+    }
+
+
+def _restore_acceptance_state(
+    *,
+    state_commit_sha: str,
+    state_root_digest: str,
+) -> object:
+    """Restore one exact state commit only after all caller facts are closed."""
+
+    validate_acceptance_state_authority(
+        state_commit_sha=state_commit_sha,
+        state_root_digest=state_root_digest,
+    )
+    repository_id, repository_full_name = _protected_state_repository()
+    observation = read_exact_discovery_state(
+        state_commit_sha=state_commit_sha,
+        state_repository_id=repository_id,
+        state_repository_full_name=repository_full_name,
+        pipeline_state=_DISCOVERY_PIPELINE_STATE,
+        operations_state=_DISCOVERY_OPERATIONS_STATE,
+        publication_state=_DISCOVERY_PUBLICATION_STATE,
+    )
+    restored_root = getattr(
+        getattr(getattr(observation, "bundle", None), "root", None),
+        "root_digest",
+        None,
+    )
+    if restored_root != state_root_digest:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+    return observation
+
+
+def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
+    """Re-admit the locked manifest, provider, catalog, and immutable state."""
+
+    try:
+        config = load_acceptance_runtime_config(
+            manifest_path=arguments.manifest,
+            state_commit_sha=arguments.state_commit_sha,
+            state_root_digest=arguments.state_root_digest,
+        )
+        publication = load_publication_authority_config()
+        if publication.catalog_full_name != ACCEPTANCE_CATALOG_FULL_NAME:
+            raise ValueError
+        _restore_acceptance_state(
+            state_commit_sha=config.state_commit_sha,
+            state_root_digest=config.state_root_digest,
+        )
+        manifest = config.manifest
+        return {
+            "catalog_full_name": config.catalog_full_name,
+            "manifest_digest": getattr(manifest, "manifest_digest"),
+            "manifest_version": getattr(manifest, "manifest_version"),
+            "provider": config.semantic_provider,
+            "state_commit_sha": config.state_commit_sha,
+            "state_root_digest": config.state_root_digest,
+            "status": "locked_authority_verified",
+        }
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _run_record_acceptance_attestation(
+    arguments: argparse.Namespace,
+) -> dict[str, object]:
+    """Persist one typed human attestation after exact state readmission."""
+
+    try:
+        attestation = load_acceptance_attestation(
+            attestation_path=arguments.attestation,
+            kind=arguments.kind,
+        )
+        observation = _restore_acceptance_state(
+            state_commit_sha=arguments.state_commit_sha,
+            state_root_digest=arguments.state_root_digest,
+        )
+        from skillscout.adapters.operations_state import OperationsStateStore
+        from skillscout.application.acceptance import (
+            CleanupAttestationDependencies,
+            HumanAttestationDependencies,
+            record_cleanup_attestation,
+            record_human_attestation,
+        )
+        from skillscout.domain.acceptance import (
+            HumanSkillReviewAttestationV1,
+            ProbeCleanupAttestationV1,
+        )
+
+        def store_factory() -> object:
+            return OperationsStateStore(_DISCOVERY_OPERATIONS_STATE)
+
+        if type(attestation) is HumanSkillReviewAttestationV1:
+            dependencies = HumanAttestationDependencies(
+                operations_store_factory=store_factory,
+                observation_factory=lambda: observation,
+            )
+            record = record_human_attestation(dependencies, attestation)
+        elif type(attestation) is ProbeCleanupAttestationV1:
+            cleanup_dependencies = CleanupAttestationDependencies(
+                operations_store_factory=store_factory,
+                observation_factory=lambda: observation,
+            )
+            record = record_cleanup_attestation(
+                cleanup_dependencies,
+                attestation,
+            )
+        else:
+            raise ValueError
+        return {
+            "acceptance_run_id": record.acceptance_run_id,
+            "fact_digest": record.fact_digest,
+            "kind": record.kind,
+            "state_commit_sha": arguments.state_commit_sha,
+            "state_root_digest": arguments.state_root_digest,
+        }
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _run_rebuild_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
+    """Rebuild one report-root fact from the operations-owned projection."""
+
+    try:
+        validate_acceptance_state_authority(
+            state_commit_sha=arguments.state_commit_sha,
+            state_root_digest=arguments.state_root_digest,
+        )
+        validate_acceptance_state_authority(
+            state_commit_sha=arguments.state_commit_sha,
+            state_root_digest=arguments.evidence_root_digest,
+        )
+        _restore_acceptance_state(
+            state_commit_sha=arguments.state_commit_sha,
+            state_root_digest=arguments.state_root_digest,
+        )
+        from skillscout.adapters.operations_state import OperationsStateStore
+        from skillscout.application.acceptance import (
+            AcceptanceRebuildDependencies,
+            rebuild_acceptance_snapshot,
+        )
+
+        dependencies = AcceptanceRebuildDependencies(
+            operations_store_factory=lambda: OperationsStateStore(
+                _DISCOVERY_OPERATIONS_STATE
+            )
+        )
+        snapshot = rebuild_acceptance_snapshot(
+            dependencies,
+            arguments.acceptance_run_id,
+        )
+        roots = tuple(
+            record
+            for record in snapshot.facts
+            if record.kind == "acceptance_report_root"
+            and record.fact_digest == arguments.evidence_root_digest
+        )
+        if len(roots) != 1:
+            raise ValueError
+        root = roots[0]
+        return {
+            "acceptance_run_id": snapshot.acceptance_run_id,
+            "evidence_root": root.fact.model_dump(
+                mode="json",
+                exclude_none=False,
+            ),
+            "evidence_root_digest": root.fact_digest,
+            "state_commit_sha": arguments.state_commit_sha,
+            "state_root_digest": arguments.state_root_digest,
+        }
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def _read_discovery_handoff(path: Path) -> dict[str, object]:
     try:
         metadata = os.lstat(path)
@@ -756,6 +991,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_publish_candidate(arguments)
         elif arguments.command == "discover":
             payload = _run_discover(arguments)
+        elif arguments.command == "nominate-benchmark":
+            payload = _run_nominate_benchmark(arguments)
+        elif arguments.command == "run-acceptance":
+            payload = _run_acceptance(arguments)
+        elif arguments.command == "record-acceptance-attestation":
+            payload = _run_record_acceptance_attestation(arguments)
+        elif arguments.command == "rebuild-acceptance":
+            payload = _run_rebuild_acceptance(arguments)
         elif arguments.command == "publish-discovered":
             payload = _run_publish_discovered(arguments)
         elif arguments.command == "extract-repo":
