@@ -241,6 +241,32 @@ def test_system_failures_block_instead_of_satisfying_scenario_coverage(
     assert result["coverage_credited"] is False
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda scenario: {key: value for key, value in scenario.items() if key != "payload"},
+        lambda scenario: {
+            **scenario,
+            "payload": {"fixture_id": "synthetic-unknown", "mutation": "unknown"},
+        },
+    ),
+)
+def test_missing_or_malformed_scenario_blocks_as_harness_failure(
+    mutation: Any,
+) -> None:
+    application = _application(skip_if_missing=False)
+    error = getattr(application, "AcceptanceApplicationError")
+    scenario = mutation(_matrix()["negative_filter"])
+    with pytest.raises(error) as raised:
+        _runner()(
+            scenario_name="negative_filter",
+            scenario=scenario,
+            fixture_bytes=b"synthetic controlled fixture",
+            synthetic_canary=SYNTHETIC_CANARY,
+        )
+    assert raised.value.code == "harness_failed"
+
+
 def test_python_socket_sentinel_is_not_kernel_isolation_authority(
     outbound_socket_sentinel: list[object],
 ) -> None:

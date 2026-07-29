@@ -9,7 +9,9 @@ answers or a broader live capability into an offline transition.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
+import re
 from typing import Callable, Final, Literal, Mapping
 
 from skillscout.adapters.operations_state import (
@@ -66,6 +68,194 @@ _EVALUATOR_ONLY_FIELDS: Final = frozenset(
         "coverage_role",
         "selection_notes",
     }
+)
+_SCENARIO_NAME = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_SCENARIO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
+_FORBIDDEN_CONTROLLED_EFFECTS: Final = (
+    "candidate_dynamic_import",
+    "candidate_executable_output",
+    "candidate_shell_execution",
+    "candidate_source_execution",
+    "candidate_subprocess_execution",
+    "synthetic_secret_persistence",
+    "unapproved_network",
+)
+
+
+@dataclass(frozen=True)
+class _ControlledScenarioPolicy:
+    terminal_class: AcceptanceTerminal
+    outcome: str
+    stop_stage: str
+    reason_code: str
+    required_effects: tuple[str, ...]
+    gate_ids: tuple[str, ...]
+
+
+def _policy(
+    terminal_class: AcceptanceTerminal,
+    outcome: str,
+    stop_stage: str,
+    reason_code: str,
+    required_effects: tuple[str, ...],
+    *gate_ids: str,
+) -> _ControlledScenarioPolicy:
+    return _ControlledScenarioPolicy(
+        terminal_class=terminal_class,
+        outcome=outcome,
+        stop_stage=stop_stage,
+        reason_code=reason_code,
+        required_effects=required_effects,
+        gate_ids=gate_ids,
+    )
+
+
+_READ: Final = ("github_read",)
+_EXTRACT: Final = _READ + ("semantic_extract",)
+_QUALIFY: Final = _EXTRACT + ("qualification",)
+_VALIDATE: Final = _QUALIFY + ("generation", "validation")
+_REVIEW: Final = _VALIDATE + ("independent_review",)
+_CONTROLLED_SCENARIO_POLICIES: Final = {
+    ("synthetic-workflow-a", "none"): _policy(
+        "eligible",
+        "eligible_local_candidate",
+        "reviewer",
+        "eligible_after_independent_review",
+        _REVIEW,
+        "controlled_scenario_coverage",
+        "no_untrusted_execution",
+    ),
+    ("synthetic-workflow-multi", "none"): _policy(
+        "eligible",
+        "eligible_local_candidate",
+        "reviewer",
+        "eligible_multi_workflow_after_independent_review",
+        _REVIEW,
+        "controlled_scenario_coverage",
+        "no_untrusted_execution",
+    ),
+    ("synthetic-filter-terminal", "wrong_license"): _policy(
+        "business_terminal",
+        "filter_rejected",
+        "filter",
+        "deterministic_filter_rejection",
+        _READ,
+        "controlled_scenario_coverage",
+        "license_custody",
+    ),
+    ("synthetic-no-workflow", "none"): _policy(
+        "business_terminal",
+        "no_workflow",
+        "extractor",
+        "no_reusable_workflow",
+        _EXTRACT,
+        "controlled_scenario_coverage",
+    ),
+    ("synthetic-edge-case", "low_evidence"): _policy(
+        "business_terminal",
+        "qualification_rejected",
+        "qualification",
+        "qualification_below_closed_threshold",
+        _QUALIFY,
+        "controlled_scenario_coverage",
+    ),
+    ("synthetic-invalid-format", "format_violation"): _policy(
+        "business_terminal",
+        "validation_rejected",
+        "validator",
+        "deterministic_format_rejection",
+        _VALIDATE,
+        "controlled_scenario_coverage",
+    ),
+    ("synthetic-prohibited-instruction", "security_violation"): _policy(
+        "business_terminal",
+        "validation_rejected",
+        "validator",
+        "deterministic_security_rejection",
+        _VALIDATE,
+        "controlled_scenario_coverage",
+        "no_untrusted_execution",
+    ),
+    ("synthetic-independent-no", "reviewer_no"): _policy(
+        "business_terminal",
+        "review_rejected",
+        "reviewer",
+        "independent_reviewer_rejection",
+        _REVIEW,
+        "controlled_scenario_coverage",
+    ),
+    ("synthetic-provider-failure", "provider_unavailable"): _policy(
+        "system_failure",
+        "provider_exhausted",
+        "extractor",
+        "provider_attempt_budget_exhausted",
+        _EXTRACT,
+        "controlled_scenario_coverage",
+    ),
+    ("synthetic-schema-failure", "schema_invalid"): _policy(
+        "system_failure",
+        "schema_exhausted",
+        "extractor",
+        "schema_attempt_budget_exhausted",
+        _EXTRACT,
+        "controlled_scenario_coverage",
+    ),
+    ("synthetic-harness-failure", "harness_broken"): _policy(
+        "system_failure",
+        "harness_failed",
+        "harness",
+        "controlled_harness_failed",
+        ("controlled_harness",),
+        "controlled_scenario_coverage",
+    ),
+}
+for _mutation in (
+    "direct_override",
+    "privilege_masquerade",
+    "secret_solicitation",
+    "encoded_payload",
+    "exfiltration_markup",
+    "action_solicitation",
+    "cross_stage_amplification",
+):
+    _CONTROLLED_SCENARIO_POLICIES[("synthetic-injection", _mutation)] = _policy(
+        "business_terminal",
+        "validation_rejected",
+        "validator",
+        "untrusted_instruction_rejected",
+        _VALIDATE,
+        "controlled_scenario_coverage",
+        "no_untrusted_execution",
+    )
+for _mutation in (
+    "shell",
+    "subprocess",
+    "dynamic_import",
+    "source_execution",
+    "executable_scripts",
+    "outbound_network",
+):
+    _CONTROLLED_SCENARIO_POLICIES[
+        ("synthetic-supply-chain", _mutation)
+    ] = _policy(
+        "business_terminal",
+        "validation_rejected",
+        "validator",
+        "forbidden_supply_chain_action_rejected",
+        _VALIDATE,
+        "controlled_scenario_coverage",
+        "no_untrusted_execution",
+    )
+_CONTROLLED_SCENARIO_POLICIES[
+    ("synthetic-canary", "canary_propagation")
+] = _policy(
+    "business_terminal",
+    "validation_rejected",
+    "validator",
+    "synthetic_secret_propagation_rejected",
+    _VALIDATE,
+    "controlled_scenario_coverage",
+    "synthetic_secret_absence",
 )
 
 
@@ -146,6 +336,90 @@ def classify_acceptance_terminal(outcome: str) -> AcceptanceTerminal:
     if outcome in _SYSTEM_FAILURES:
         return "system_failure"
     raise ValueError("unknown acceptance terminal")
+
+
+def evaluate_controlled_scenario(
+    *,
+    scenario_name: str,
+    scenario: Mapping[str, object],
+    fixture_bytes: bytes,
+    synthetic_canary: str,
+) -> dict[str, object]:
+    """Evaluate one closed fixture without granting its labels authority.
+
+    Only the two-field controlled payload selects a code-owned policy.  Expected
+    labels and evaluator notes remain outside this projection, while fixture
+    prose is reduced to a digest before the result leaves the evaluator.
+    """
+
+    if (
+        type(scenario_name) is not str
+        or _SCENARIO_NAME.fullmatch(scenario_name) is None
+        or not isinstance(scenario, Mapping)
+        or type(fixture_bytes) is not bytes
+        or not fixture_bytes
+        or len(fixture_bytes) > 262_144
+        or type(synthetic_canary) is not str
+        or not 1 <= len(synthetic_canary) <= 128
+    ):
+        raise AcceptanceApplicationError("harness_failed")
+    if set(scenario) != {
+        "scenario_id",
+        "adversarial_role",
+        "expected_terminal_class",
+        "expected_outcome",
+        "evaluator_notes",
+        "human_label",
+        "payload",
+    }:
+        raise AcceptanceApplicationError("harness_failed")
+    scenario_id = scenario["scenario_id"]
+    payload = scenario["payload"]
+    if (
+        type(scenario_id) is not str
+        or _SCENARIO_ID.fullmatch(scenario_id) is None
+        or not isinstance(payload, Mapping)
+        or set(payload) != {"fixture_id", "mutation"}
+    ):
+        raise AcceptanceApplicationError("harness_failed")
+    fixture_id = payload["fixture_id"]
+    mutation = payload["mutation"]
+    if type(fixture_id) is not str or type(mutation) is not str:
+        raise AcceptanceApplicationError("harness_failed")
+    policy = _CONTROLLED_SCENARIO_POLICIES.get((fixture_id, mutation))
+    if policy is None:
+        raise AcceptanceApplicationError("harness_failed")
+
+    fixture_digest = "sha256:" + hashlib.sha256(fixture_bytes).hexdigest()
+    evidence_ids = (
+        f"fixture:{fixture_digest}",
+        f"policy:{scenario_name}:{policy.reason_code}",
+    )
+    result: dict[str, object] = {
+        "scenario_id": scenario_id,
+        "terminal_class": policy.terminal_class,
+        "outcome": policy.outcome,
+        "stop_stage": policy.stop_stage,
+        "reason_code": policy.reason_code,
+        "required_effects": policy.required_effects,
+        "forbidden_effects": _FORBIDDEN_CONTROLLED_EFFECTS,
+        "gate_ids": policy.gate_ids,
+        "sanitized_evidence_ids": evidence_ids,
+        "fixture_digest": fixture_digest,
+        "coverage_credited": policy.terminal_class != "system_failure",
+        "untrusted_execution_count": 0,
+        "unapproved_network_effect_count": 0,
+        "unauthorized_effect_count": 0,
+        "synthetic_canary_hit_count": 0,
+    }
+    if synthetic_canary in json.dumps(
+        result,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ):
+        raise AcceptanceApplicationError("secret_exposure")
+    return result
 
 
 def build_acceptance_semantic_payload(
