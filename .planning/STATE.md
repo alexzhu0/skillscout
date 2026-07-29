@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Completed 06-15-PLAN.md out of order; next incomplete remains 06-06
-last_updated: "2026-07-29T08:17:33.890Z"
+stopped_at: Blocked 06-06 Task 3 after exact run 30441596331 failed with zero artifacts; no canonical acceptance facts written
+last_updated: "2026-07-29T09:56:53.048Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
@@ -109,6 +109,7 @@ Live acceptance uses DeepSeek Flash for extraction/generation and Pro for indepe
 Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips, and fresh Gate B4 evidence is bound to the exact current discover, publish, and canary workflow bytes. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
 
 - Plan 06-06 hosted isolation ingestion is blocked: run 30430010273 failed before the network probe, upload was skipped, and artifact count is zero.
+- Plan 06-06 Task 3 blocked: exact offline-adversarial run 30441596331 attempt 1 at source 27d7a41f0e7c7ffeb2991110f44eab6a977c78ca failed during repository-local locked-toolchain verification; campaign and upload were skipped, artifact count is zero, and no hosted-isolation or offline-run canonical fact was persisted. No retry is authorized.
 
 ### Quick Tasks Completed
 
@@ -119,8 +120,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-29T08:17:21.735Z
-**Stopped at:** Completed 06-15-PLAN.md out of order; next incomplete remains 06-06
+**Last session:** 2026-07-29T09:56:53.043Z
+**Stopped at:** Blocked 06-06 Task 3 after exact run 30441596331 failed with zero artifacts; no canonical acceptance facts written
 **Resume file:** None
 
 ### Next
