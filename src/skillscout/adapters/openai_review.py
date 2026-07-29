@@ -13,6 +13,7 @@ from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.adapters.semantic_provider import (
     SemanticProvider,
     SemanticProviderSettings,
+    SemanticStage,
     classify_semantic_provider_failure,
     create_semantic_client,
     request_deepseek_json,
@@ -85,7 +86,10 @@ class OpenAIReviewClient:
             or max_output_tokens < 1
             or (
                 settings.provider is SemanticProvider.DEEPSEEK
-                and selected_model != settings.reviewer_model
+                and (
+                    selected_model != settings.reviewer_model
+                    or max_output_tokens != MAX_REVIEWER_OUTPUT_TOKENS
+                )
             )
         ):
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
@@ -150,6 +154,7 @@ class OpenAIReviewClient:
             deepseek = request_deepseek_json(
                 self._client,
                 sdk=openai,
+                stage=SemanticStage.REVIEW,
                 model=self._model,
                 instructions=REVIEWER_INSTRUCTIONS_V1,
                 user_payload=envelope,

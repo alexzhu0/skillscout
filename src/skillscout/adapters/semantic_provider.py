@@ -326,6 +326,11 @@ def request_deepseek_json(
     except sdk.APIError as error:
         raise classify_semantic_provider_failure(error, sdk=sdk) from None
 
+    if getattr(response, "model", None) != model:
+        raise SemanticProviderFailure(
+            disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+            code="semantic_provider_outcome_unknown",
+        )
     choices = response.choices
     if len(choices) != 1:
         return _closed_deepseek_result("schema_invalid", response)
