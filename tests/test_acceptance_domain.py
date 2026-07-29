@@ -237,6 +237,9 @@ def test_scenario_matrix_is_bounded_canonical_and_evaluator_only() -> None:
         "negative_filter",
         "negative_no_workflow",
         "borderline_qualification",
+        "negative_format_validation",
+        "negative_security_validation",
+        "negative_reviewer",
         "injection_direct_override",
         "injection_privilege_masquerade",
         "injection_secret_solicitation",
@@ -248,8 +251,12 @@ def test_scenario_matrix_is_bounded_canonical_and_evaluator_only() -> None:
         "supply_chain_subprocess",
         "supply_chain_dynamic_import",
         "supply_chain_source_execution",
+        "supply_chain_executable_scripts",
         "supply_chain_network",
         "supply_chain_synthetic_canary",
+        "system_provider_exhausted",
+        "system_schema_exhausted",
+        "system_harness_failed",
     )
     scenario_ids = tuple(item["scenario_id"] for item in matrix.values())
     assert scenario_ids == tuple(sorted(scenario_ids, key=scenario_ids.index))
@@ -277,12 +284,16 @@ def test_scenario_matrix_is_bounded_canonical_and_evaluator_only() -> None:
             item["human_label"],
         ):
             assert evaluator_only.encode("utf-8") not in serialized_request
-        assert item["expected_outcome"] not in {
+        system_failures = {
             "provider_exhausted",
             "schema_exhausted",
             "evidence_missing",
             "harness_failed",
         }
+        if item["expected_terminal_class"] == "system_failure":
+            assert item["expected_outcome"] in system_failures
+        else:
+            assert item["expected_outcome"] not in system_failures
     forbidden_keys = {
         "repository_body",
         "raw_log",
