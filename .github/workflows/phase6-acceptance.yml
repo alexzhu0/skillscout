@@ -1,0 +1,248 @@
+name: Phase 6 adversarial MVP acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase6_action:
+        description: Select the only admitted no-credential probe
+        required: true
+        type: choice
+        options:
+          - isolation-probe
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skillscout-phase6-acceptance
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  isolation_probe:
+    if: ${{ inputs.phase6_action == 'isolation-probe' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+
+      - name: Run the fail-closed network-isolation probe
+        env:
+          PHASE6_SOURCE_COMMIT: ${{ github.sha }}
+          PHASE6_RUN_ID: ${{ github.run_id }}
+          PHASE6_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          probe_root="${RUNNER_TEMP}/phase6-isolation-probe"
+          mkdir -p "${probe_root}"
+          docker_server_version="$(docker version --format '{{.Server.Version}}')"
+          kernel_identity="$(uname -srvmo)"
+          repository_root="$(pwd -P)"
+          image_tag="phase6-host-runtime:${PHASE6_SOURCE_COMMIT}"
+          tar -cf "${probe_root}/empty-rootfs.tar" --files-from /dev/null
+          docker_image_id="$(
+            docker import "${probe_root}/empty-rootfs.tar" "${image_tag}"
+          )"
+          trap 'docker image rm -f "${image_tag}" >/dev/null 2>&1 || true; rm -f "${probe_root}/control.log" "${probe_root}/direct.log" "${probe_root}/child.log" "${probe_root}/direct_probe.py" "${probe_root}/child_probe.py" "${probe_root}/empty-rootfs.tar"' EXIT
+
+          cat >"${probe_root}/direct_probe.py" <<'PY'
+          import errno
+          import socket
+          import sys
+
+          sock = socket.socket()
+          sock.settimeout(5)
+          result = sock.connect_ex(("192.0.2.1", 443))
+          denied = {
+              errno.EACCES,
+              errno.EHOSTUNREACH,
+              errno.ENETDOWN,
+              errno.ENETUNREACH,
+              errno.EPERM,
+          }
+          raise SystemExit(0 if result == 0 else 97 if result in denied else 98)
+          PY
+
+          cat >"${probe_root}/child_probe.py" <<'PY'
+          import subprocess
+          import sys
+
+          child = subprocess.run(
+              [sys.executable, "/probe/direct_probe.py"],
+              check=False,
+          )
+          raise SystemExit(child.returncode)
+          PY
+
+          set +e
+          # Docker's private loopback remains available; external success is forbidden.
+          docker run --network none --rm \
+            --volume /bin:/bin:ro \
+            --volume /etc:/etc:ro \
+            --volume /lib:/lib:ro \
+            --volume /lib64:/lib64:ro \
+            --volume /usr:/usr:ro \
+            --volume "${repository_root}:${repository_root}:ro" \
+            --workdir "${repository_root}" \
+            "${image_tag}" \
+            .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync \
+            pytest -q tests/test_phase6_workflow.py \
+            -k "isolation or workflow or permission or secret" -x \
+            >"${probe_root}/control.log" 2>&1
+          control_status=$?
+
+          docker run --network none --rm \
+            --volume /bin:/bin:ro \
+            --volume /etc:/etc:ro \
+            --volume /lib:/lib:ro \
+            --volume /lib64:/lib64:ro \
+            --volume /usr:/usr:ro \
+            --volume "${repository_root}:${repository_root}:ro" \
+            --volume "${probe_root}:/probe:ro" \
+            --workdir "${repository_root}" \
+            "${image_tag}" \
+            .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync \
+            python /probe/direct_probe.py \
+            >"${probe_root}/direct.log" 2>&1
+          direct_status=$?
+
+          docker run --network none --rm \
+            --volume /bin:/bin:ro \
+            --volume /etc:/etc:ro \
+            --volume /lib:/lib:ro \
+            --volume /lib64:/lib64:ro \
+            --volume /usr:/usr:ro \
+            --volume "${repository_root}:${repository_root}:ro" \
+            --volume "${probe_root}:/probe:ro" \
+            --workdir "${repository_root}" \
+            "${image_tag}" \
+            .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync \
+            python /probe/child_probe.py \
+            >"${probe_root}/child.log" 2>&1
+          child_status=$?
+          set -e
+
+          test "${control_status}" -eq 0
+          test "${direct_status}" -eq 97
+          test "${child_status}" -eq 97
+
+          export PHASE6_PROBE_ROOT="${probe_root}"
+          export PHASE6_DOCKER_IMAGE_ID="${docker_image_id}"
+          export PHASE6_DOCKER_SERVER_VERSION="${docker_server_version}"
+          export PHASE6_KERNEL_IDENTITY="${kernel_identity}"
+          export PHASE6_CONTROL_OUTCOME="passed"
+          export PHASE6_DIRECT_OUTCOME="denied"
+          export PHASE6_CHILD_OUTCOME="denied"
+          export PHASE6_SYNTHETIC_CANARY="phase6-synthetic-canary-do-not-persist"
+          export PHASE6_WORKFLOW_SHA256
+          PHASE6_WORKFLOW_SHA256="$(
+            sha256sum .github/workflows/phase6-acceptance.yml | cut -d' ' -f1
+          )"
+
+          .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PHASE6_PROBE_ROOT"])
+          scanned = tuple(root / name for name in ("control.log", "direct.log", "child.log"))
+          canary = os.environ["PHASE6_SYNTHETIC_CANARY"].encode()
+          hit_count = sum(path.read_bytes().count(canary) for path in scanned)
+          if hit_count:
+              raise SystemExit("synthetic canary reached an allowlisted diagnostic")
+
+          control_command = (
+              ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync "
+              "pytest -q tests/test_phase6_workflow.py "
+              '-k "isolation or workflow or permission or secret" -x'
+          )
+          direct_command = (
+              ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync "
+              "python /probe/direct_probe.py\n"
+          ).encode() + (root / "direct_probe.py").read_bytes()
+          child_command = (
+              ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync "
+              "python /probe/child_probe.py\n"
+          ).encode() + (root / "child_probe.py").read_bytes()
+          evidence = {
+              "schema_version": "phase6.hosted-isolation-evidence.v1",
+              "non_authoritative": True,
+              "workflow_sha256": os.environ["PHASE6_WORKFLOW_SHA256"],
+              "source_commit_sha": os.environ["PHASE6_SOURCE_COMMIT"],
+              "hosted_run_id": os.environ["PHASE6_RUN_ID"],
+              "run_attempt": int(os.environ["PHASE6_RUN_ATTEMPT"]),
+              "runner_image": (
+                  os.environ.get("ImageOS", "ubuntu24")
+                  + "-"
+                  + os.environ.get("ImageVersion", "unknown")
+              )[:128],
+              "kernel_identity": os.environ["PHASE6_KERNEL_IDENTITY"][:256],
+              "docker_server_version": os.environ["PHASE6_DOCKER_SERVER_VERSION"][:64],
+              "docker_image_id": os.environ["PHASE6_DOCKER_IMAGE_ID"][:128],
+              "isolation_mechanism": "docker_network_none",
+              "control_command_digest": hashlib.sha256(
+                  control_command.encode()
+              ).hexdigest(),
+              "direct_probe_command_digest": hashlib.sha256(
+                  direct_command
+              ).hexdigest(),
+              "child_probe_command_digest": hashlib.sha256(
+                  child_command
+              ).hexdigest(),
+              "control_outcome": os.environ["PHASE6_CONTROL_OUTCOME"],
+              "direct_network_outcome": os.environ["PHASE6_DIRECT_OUTCOME"],
+              "child_network_outcome": os.environ["PHASE6_CHILD_OUTCOME"],
+              "credential_count": 0,
+              "state_write_capability": False,
+              "synthetic_scan_manifest_digest": hashlib.sha256(
+                  json.dumps(
+                      [path.name for path in scanned],
+                      separators=(",", ":"),
+                  ).encode()
+              ).hexdigest(),
+              "synthetic_canary_hit_count": hit_count,
+              "artifact_retention_days": 1,
+          }
+          destination = root / "evidence.json"
+          destination.write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          chmod 600 "${probe_root}/evidence.json"
+
+      - name: Upload the bounded noncanonical evidence
+        id: upload-probe
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: phase6-isolation-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phase6-isolation-probe/evidence.json
+          if-no-files-found: error
+          retention-days: 1

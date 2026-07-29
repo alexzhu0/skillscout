@@ -13,7 +13,32 @@ WORKFLOW = ROOT / ".github/workflows/phase6-acceptance.yml"
 SUMMARY = ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-02-SUMMARY.md"
 CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
+UPLOAD_ARTIFACT_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
+EVIDENCE_FIELDS = (
+    "schema_version",
+    "non_authoritative",
+    "workflow_sha256",
+    "source_commit_sha",
+    "hosted_run_id",
+    "run_attempt",
+    "runner_image",
+    "kernel_identity",
+    "docker_server_version",
+    "docker_image_id",
+    "isolation_mechanism",
+    "control_command_digest",
+    "direct_probe_command_digest",
+    "child_probe_command_digest",
+    "control_outcome",
+    "direct_network_outcome",
+    "child_network_outcome",
+    "credential_count",
+    "state_write_capability",
+    "synthetic_scan_manifest_digest",
+    "synthetic_canary_hit_count",
+    "artifact_retention_days",
+)
 
 
 def _source(*, required: bool = True) -> str:
@@ -48,7 +73,9 @@ def _assert_isolation_workflow(source: str) -> None:
         re.MULTILINE,
     )
     assert re.search(r"^permissions:\n  contents: read$", source, re.MULTILINE)
-    assert set(re.findall(r"^  ([a-z][a-z0-9_-]*):\n", source, re.MULTILINE)) == {
+    jobs = source.partition("\njobs:\n")[2]
+    assert jobs
+    assert set(re.findall(r"^  ([a-z][a-z0-9_-]*):\n", jobs, re.MULTILINE)) == {
         "isolation_probe"
     }
     job = _job(source, "isolation_probe")
@@ -61,15 +88,34 @@ def _assert_isolation_workflow(source: str) -> None:
     assert f"astral-sh/setup-uv@{SETUP_UV_SHA}" in job
     assert "version: 0.11.29" in job
     assert "enable-cache: false" in job
-    assert "docker run --network none" in job
+    assert job.count("docker run --network none") == 3
     assert "retention-days: 1" in job
-    assert "actions/upload-artifact@" in job
+    assert f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}" in job
     assert "non_authoritative" in job
     assert "direct_network_outcome" in job
     assert "child_network_outcome" in job
     assert "control_outcome" in job
     assert "synthetic_canary_hit_count" in job
-    assert job.count(f"{LOCAL_UV} run --locked") >= 2
+    assert len(
+        re.findall(
+            rf"^\s+{re.escape(LOCAL_UV)} run --locked",
+            job,
+            re.MULTILINE,
+        )
+    ) == 4
+    evidence_match = re.search(
+        r"^          evidence = \{\n(?P<body>.*?)^          \}\n",
+        job,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert evidence_match is not None
+    assert tuple(
+        re.findall(
+            r'^              "([a-z][a-z0-9_]*)":',
+            evidence_match.group("body"),
+            re.MULTILINE,
+        )
+    ) == EVIDENCE_FIELDS
     assert job.index(f"actions/checkout@{CHECKOUT_SHA}") < job.index(
         f"astral-sh/setup-uv@{SETUP_UV_SHA}"
     ) < job.index(f"{LOCAL_UV} run --locked")
@@ -136,7 +182,12 @@ def test_isolation_probe_shell_blocks_do_not_interpolate_repository_or_user_inpu
         ("retention-days: 1", "retention-days: 30"),
         ("cancel-in-progress: false", "cancel-in-progress: true"),
         (f"actions/checkout@{CHECKOUT_SHA}", "actions/checkout@main"),
+        (
+            f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}",
+            "actions/upload-artifact@main",
+        ),
         (f"{LOCAL_UV} run --locked", "uv run"),
+        ("control_command_digest", "command_digest"),
         ("synthetic_canary_hit_count", "secret_value"),
     ),
 )
@@ -154,4 +205,3 @@ def test_hosted_isolation_locator_remains_absent_or_explicitly_non_authoritative
     assert "non-authoritative" in source.casefold()
     assert "artifact" in source.casefold()
     assert re.search(r"\b[0-9a-f]{64}\b", source)
-
