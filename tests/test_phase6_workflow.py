@@ -278,6 +278,7 @@ def _assert_offline_adversarial_workflow(source: str) -> None:
         )
         == OFFLINE_EVIDENCE_FIELDS
     )
+    _assert_offline_failure_diagnostic(job)
 
 
 def _assert_offline_failure_diagnostic(job: str) -> None:
@@ -340,9 +341,12 @@ def _assert_offline_failure_diagnostic(job: str) -> None:
     assert 'overall_status="$campaign_exit_status"' in campaign
     assert 'exit "$campaign_exit_status"' in campaign
     assert "diagnostic_write_status" in campaign
-    assert campaign.index("diagnostic_format=") < campaign.index(
-        "python_base_prefix_output="
-    )
+    assert (
+        'case "$diagnostic_stage" in '
+        "runtime-preflight|control|direct-probe|child-probe|campaign-report|"
+        "synthetic-scan|complete) ;;"
+    ) in campaign
+    assert campaign.index("diagnostic_format=") < campaign.index("python_base_prefix_output=")
 
     diagnostic_upload = re.search(
         r"^      - name: Upload the bounded noncanonical campaign diagnostic\n"
@@ -355,13 +359,9 @@ def _assert_offline_failure_diagnostic(job: str) -> None:
     assert "if: ${{ always() && steps.offline_campaign.outcome == 'failure' }}" in upload
     assert f"uses: actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}" in upload
     assert (
-        "name: phase6-offline-adversarial-diagnostic-${{ github.run_id }}-"
-        "${{ github.run_attempt }}"
+        "name: phase6-offline-adversarial-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}"
     ) in upload
-    assert (
-        "path: ${{ runner.temp }}/phase6-offline-adversarial/"
-        "failure-diagnostic.json"
-    ) in upload
+    assert ("path: ${{ runner.temp }}/phase6-offline-adversarial/failure-diagnostic.json") in upload
     assert "if-no-files-found: error" in upload
     assert "retention-days: 1" in upload
     assert all(
@@ -377,9 +377,7 @@ def _assert_offline_failure_diagnostic(job: str) -> None:
     )
     assert job.count(f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}") == 2
 
-    evidence_upload = job.partition(
-        "- name: Upload the bounded noncanonical offline evidence"
-    )[2]
+    evidence_upload = job.partition("- name: Upload the bounded noncanonical offline evidence")[2]
     assert evidence_upload
     assert "if: always()" not in evidence_upload
 

@@ -19,8 +19,10 @@ WORKFLOW_PATHS = (
 )
 CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
+UPLOAD_ARTIFACT_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 CHECKOUT = f"actions/checkout@{CHECKOUT_SHA}"
 SETUP_UV = f"astral-sh/setup-uv@{SETUP_UV_SHA}"
+UPLOAD_ARTIFACT = f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
 LOCAL_LOCKED = f"{LOCAL_UV} run --locked"
 PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
@@ -60,6 +62,28 @@ ALLOWED_NETWORK_NONE_VOLUMES = frozenset(
     }
 )
 EXPECTED_NETWORK_NONE_INVOCATIONS = 6
+OFFLINE_DIAGNOSTIC_STAGES = (
+    "runtime-preflight",
+    "control",
+    "direct-probe",
+    "child-probe",
+    "campaign-report",
+    "synthetic-scan",
+    "complete",
+)
+OFFLINE_DIAGNOSTIC_FORMAT = (
+    '{"schema_version":"%s","source_commit_sha":"%s",'
+    '"workflow_sha256":"%s","hosted_run_id":%d,"run_attempt":%d,'
+    '"stage":"%s","overall_status":%d,"control_status":%d,'
+    '"direct_status":%d,"child_status":%d,"artifact_retention_days":1}'
+)
+OFFLINE_DIAGNOSTIC_CONDITION = "if: ${{ always() && steps.offline_campaign.outcome == 'failure' }}"
+OFFLINE_DIAGNOSTIC_ARTIFACT_NAME = (
+    "name: phase6-offline-adversarial-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}"
+)
+OFFLINE_DIAGNOSTIC_PATH = (
+    "path: ${{ runner.temp }}/phase6-offline-adversarial/failure-diagnostic.json"
+)
 MAX_WORKFLOW_BYTES = 1_000_000
 SUCCESS_DIAGNOSTIC = "phase6 source execution valid"
 FAILURE_DIAGNOSTIC = "phase6 source execution invalid"
@@ -91,6 +115,7 @@ class SourceExecutionResult(NamedTuple):
     authoritative_step_count: int
     authoritative_steps: tuple[AuthoritativeStep, ...]
     network_none_invocation_count: int
+    diagnostic_upload_count: int
 
 
 class _Step(NamedTuple):
@@ -324,15 +349,125 @@ def _closed_network_none_invocation_count(run: str) -> int:
     return len(invocations)
 
 
+def _closed_offline_diagnostic_upload_count(jobs: tuple[_Job, ...]) -> int:
+    offline_jobs = tuple(job for job in jobs if job.name == "offline_adversarial")
+    _require(len(offline_jobs) == 1)
+    offline = offline_jobs[0]
+    campaign_steps = tuple(
+        step
+        for step in offline.steps
+        if step.name == "Run the fresh kernel-isolated adversarial campaign"
+    )
+    _require(len(campaign_steps) == 1)
+    campaign_step = campaign_steps[0]
+    _require(campaign_step.run is not None)
+    _require(re.search(r"(?m)^\s+id: offline_campaign$", campaign_step.source) is not None)
+    campaign = campaign_step.run
+    format_matches = re.findall(
+        r"(?m)^diagnostic_format='(\{.*\})\\n'$",
+        campaign,
+    )
+    _require(format_matches == [OFFLINE_DIAGNOSTIC_FORMAT])
+    _require(
+        tuple(
+            re.findall(
+                r'(?m)^diagnostic_stage="([a-z-]+)"$',
+                campaign,
+            )
+        )
+        == OFFLINE_DIAGNOSTIC_STAGES
+    )
+    for required in (
+        'diagnostic_path="${campaign_root}/failure-diagnostic.json"',
+        'diagnostic_schema_version="phase6.offline-diagnostic.v1"',
+        'diagnostic_workflow_sha256="absent"',
+        "overall_status=1",
+        "control_status=-1",
+        "direct_status=-1",
+        "child_status=-1",
+        (
+            'case "$diagnostic_stage" in '
+            "runtime-preflight|control|direct-probe|child-probe|campaign-report|"
+            "synthetic-scan|complete) ;;"
+        ),
+        "campaign_exit_status=$?",
+        'overall_status="$campaign_exit_status"',
+        'exit "$campaign_exit_status"',
+        "diagnostic_write_status",
+        'diagnostic_workflow_sha256="sha256:${PHASE6_WORKFLOW_SHA256}"',
+        (
+            'if [[ "$campaign_exit_status" -ne 0 ]]; then '
+            'exit "$campaign_exit_status"; fi; exit "$diagnostic_write_status"'
+        ),
+    ):
+        _require(required in campaign)
+    _require(campaign.count('printf "$diagnostic_format"') == 2)
+    _require(campaign.count("diagnostic_path") == 3)
+    _require(campaign.count("diagnostic_stage=") == len(OFFLINE_DIAGNOSTIC_STAGES))
+    _require(campaign.count("diagnostic_workflow_sha256=") == 2)
+    _require(campaign.count("overall_status=") == 3)
+    _require(campaign.count("control_status=") == 2)
+    _require(campaign.count("direct_status=") == 2)
+    _require(campaign.count("child_status=") == 2)
+    _require("continue-on-error" not in campaign_step.source)
+    _require(campaign.index("diagnostic_format=") < campaign.index("python_base_prefix_output="))
+    _require(
+        campaign.index('printf "$diagnostic_format"') < campaign.index("python_base_prefix_output=")
+    )
+
+    diagnostic_uploads = tuple(
+        step
+        for step in offline.steps
+        if step.name == "Upload the bounded noncanonical campaign diagnostic"
+    )
+    _require(len(diagnostic_uploads) == 1)
+    diagnostic_upload = diagnostic_uploads[0]
+    _require(diagnostic_upload.run is None)
+    for required in (
+        OFFLINE_DIAGNOSTIC_CONDITION,
+        f"uses: {UPLOAD_ARTIFACT}",
+        OFFLINE_DIAGNOSTIC_ARTIFACT_NAME,
+        OFFLINE_DIAGNOSTIC_PATH,
+        "if-no-files-found: error",
+        "retention-days: 1",
+    ):
+        _require(required in diagnostic_upload.source)
+    lowered_upload = diagnostic_upload.source.casefold()
+    for forbidden in (
+        ".log",
+        "offline-evidence",
+        "state",
+        "credential",
+        "secret",
+    ):
+        _require(forbidden not in lowered_upload)
+
+    evidence_uploads = tuple(
+        step
+        for step in offline.steps
+        if step.name == "Upload the bounded noncanonical offline evidence"
+    )
+    _require(len(evidence_uploads) == 1)
+    _require(re.search(r"(?m)^\s+if:", evidence_uploads[0].source) is None)
+    upload_steps = tuple(
+        step for step in offline.steps if "actions/upload-artifact@" in step.source
+    )
+    _require(len(upload_steps) == 2)
+    return len(diagnostic_uploads)
+
+
 def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     root = Path(os.path.abspath(os.fspath(repository_root)))
     _require(root.is_dir())
     findings: list[AuthoritativeStep] = []
     network_none_invocation_count = 0
+    diagnostic_upload_count = 0
     for relative in WORKFLOW_PATHS:
         source = _read(root, relative)
         jobs = _parse_jobs(source)
         _reject_forbidden_sources(source, jobs)
+        if relative == Path(".github/workflows/phase6-acceptance.yml"):
+            diagnostic_upload_count += _closed_offline_diagnostic_upload_count(jobs)
         for job in jobs:
             checkout_indexes = tuple(
                 index for index, step in enumerate(job.steps) if CHECKOUT in step.source
@@ -376,11 +511,13 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                 )
     _require(bool(findings))
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
+    _require(diagnostic_upload_count == 1)
     return SourceExecutionResult(
         workflow_paths=tuple(path.as_posix() for path in WORKFLOW_PATHS),
         authoritative_step_count=len(findings),
         authoritative_steps=tuple(findings),
         network_none_invocation_count=network_none_invocation_count,
+        diagnostic_upload_count=diagnostic_upload_count,
     )
 
 

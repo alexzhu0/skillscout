@@ -369,9 +369,24 @@ jobs:
           fi
           .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
       - name: Run the fresh kernel-isolated adversarial campaign
+        id: offline_campaign
         run: |
           set -euo pipefail
           umask 077
+          campaign_root="${RUNNER_TEMP}/phase6-offline-adversarial"
+          mkdir -p "${campaign_root}"
+          diagnostic_path="${campaign_root}/failure-diagnostic.json"
+          diagnostic_format='{"schema_version":"%s","source_commit_sha":"%s","workflow_sha256":"%s","hosted_run_id":%d,"run_attempt":%d,"stage":"%s","overall_status":%d,"control_status":%d,"direct_status":%d,"child_status":%d,"artifact_retention_days":1}\n'
+          diagnostic_schema_version="phase6.offline-diagnostic.v1"
+          diagnostic_workflow_sha256="absent"
+          diagnostic_stage="runtime-preflight"
+          overall_status=1
+          control_status=-1
+          direct_status=-1
+          child_status=-1
+          image_tag=""
+          trap 'campaign_exit_status=$?; overall_status="$campaign_exit_status"; diagnostic_write_status=0; case "$diagnostic_stage" in runtime-preflight|control|direct-probe|child-probe|campaign-report|synthetic-scan|complete) ;; *) diagnostic_write_status=1 ;; esac; if [[ "$diagnostic_write_status" -eq 0 ]]; then printf "$diagnostic_format" "$diagnostic_schema_version" "$PHASE6_SOURCE_COMMIT" "$diagnostic_workflow_sha256" "$PHASE6_RUN_ID" "$PHASE6_RUN_ATTEMPT" "$diagnostic_stage" "$overall_status" "$control_status" "$direct_status" "$child_status" >"$diagnostic_path" || diagnostic_write_status=$?; fi; if [[ -n "$image_tag" ]]; then docker image rm -f "$image_tag" >/dev/null 2>&1 || true; fi; rm -f "${campaign_root}/direct_probe.py" "${campaign_root}/child_probe.py" "${campaign_root}/empty-rootfs.tar" || true; if [[ "$campaign_exit_status" -ne 0 ]]; then exit "$campaign_exit_status"; fi; exit "$diagnostic_write_status"' EXIT
+          printf "$diagnostic_format" "$diagnostic_schema_version" "$PHASE6_SOURCE_COMMIT" "$diagnostic_workflow_sha256" "$PHASE6_RUN_ID" "$PHASE6_RUN_ATTEMPT" "$diagnostic_stage" "$overall_status" "$control_status" "$direct_status" "$child_status" >"$diagnostic_path"
           test -n "${RUNNER_TOOL_CACHE:-}"
           test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"
           python_base_prefix_output="$(
@@ -399,13 +414,16 @@ jobs:
           test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
           PHASE6_PRIOR_FAILED_PROBE_RUN_ID="30430010273"
           # The prior run's observed artifact count was zero; it grants no authority.
-          campaign_root="${RUNNER_TEMP}/phase6-offline-adversarial"
-          mkdir -p "${campaign_root}"
           repository_root="$(pwd -P)"
+          export PHASE6_WORKFLOW_SHA256
+          PHASE6_WORKFLOW_SHA256="$(
+            sha256sum .github/workflows/phase6-acceptance.yml | cut -d' ' -f1
+          )"
+          [[ "$PHASE6_WORKFLOW_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          diagnostic_workflow_sha256="sha256:${PHASE6_WORKFLOW_SHA256}"
           image_tag="phase6-offline-runtime:${PHASE6_SOURCE_COMMIT}"
           tar -cf "${campaign_root}/empty-rootfs.tar" --files-from /dev/null
           docker import "${campaign_root}/empty-rootfs.tar" "${image_tag}" >/dev/null
-          trap 'docker image rm -f "${image_tag}" >/dev/null 2>&1 || true; rm -f "${campaign_root}/direct_probe.py" "${campaign_root}/child_probe.py" "${campaign_root}/empty-rootfs.tar"' EXIT
 
           cat >"${campaign_root}/direct_probe.py" <<'PY'
           import errno
@@ -437,6 +455,7 @@ jobs:
 
           export PHASE6_SYNTHETIC_HEADER_CANARY="phase6-synthetic-header-canary-${PHASE6_RUN_ID}-${PHASE6_RUN_ATTEMPT}"
           export PHASE6_SYNTHETIC_PAYLOAD_CANARY="phase6-synthetic-payload-canary-${PHASE6_RUN_ID}-${PHASE6_RUN_ATTEMPT}"
+          diagnostic_stage="control"
           set +e
           docker run --network none --rm \
             --volume /bin:/bin:ro \
@@ -457,6 +476,7 @@ jobs:
             >"${campaign_root}/control.log" 2>&1
           control_status=$?
 
+          diagnostic_stage="direct-probe"
           docker run --network none --rm \
             --volume /bin:/bin:ro \
             --volume /etc:/etc:ro \
@@ -473,6 +493,7 @@ jobs:
             >"${campaign_root}/direct.log" 2>&1
           direct_status=$?
 
+          diagnostic_stage="child-probe"
           docker run --network none --rm \
             --volume /bin:/bin:ro \
             --volume /etc:/etc:ro \
@@ -490,20 +511,18 @@ jobs:
           child_status=$?
           set -e
 
+          diagnostic_stage="campaign-report"
           test "${control_status}" -eq 0
           test "${direct_status}" -eq 97
           test "${child_status}" -eq 97
           test -s "${campaign_root}/campaign-report.json"
 
+          diagnostic_stage="synthetic-scan"
           export PHASE6_CAMPAIGN_ROOT="${campaign_root}"
           export PHASE6_PRIOR_FAILED_PROBE_RUN_ID
           export PHASE6_CONTROL_OUTCOME="passed"
           export PHASE6_DIRECT_OUTCOME="denied"
           export PHASE6_CHILD_OUTCOME="denied"
-          export PHASE6_WORKFLOW_SHA256
-          PHASE6_WORKFLOW_SHA256="$(
-            sha256sum .github/workflows/phase6-acceptance.yml | cut -d' ' -f1
-          )"
 
           .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync python - <<'PY'
           import hashlib
@@ -629,6 +648,17 @@ jobs:
           PY
 
           chmod 600 "${campaign_root}/offline-evidence.json"
+          diagnostic_stage="complete"
+          overall_status=0
+
+      - name: Upload the bounded noncanonical campaign diagnostic
+        if: ${{ always() && steps.offline_campaign.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: phase6-offline-adversarial-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phase6-offline-adversarial/failure-diagnostic.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload the bounded noncanonical offline evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

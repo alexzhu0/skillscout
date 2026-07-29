@@ -22,9 +22,7 @@ WORKFLOW_PATHS = (
 LOCAL_LOCKED = ".tools/uv-0.11.29/bin/uv run --locked"
 CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV = "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9"
-UPLOAD_ARTIFACT = (
-    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-)
+UPLOAD_ARTIFACT = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
 
 
