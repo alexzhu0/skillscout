@@ -32,6 +32,18 @@ DOMAIN_CONTRACTS = (
     "AcceptanceEvidenceRootV1",
     "AcceptanceReleaseVerdictV1",
 )
+APPLICATION_CONTRACTS = (
+    "NominationDependencies",
+    "LockedCampaignDependencies",
+    "ReplayUpdateDependencies",
+    "HumanAttestationDependencies",
+    "CleanupAttestationDependencies",
+    "AcceptanceRebuildDependencies",
+)
+PROVIDER_CONTRACTS = (
+    "SemanticStage",
+    "DEEPSEEK_MODEL_BY_STAGE",
+)
 
 SUITES = {
     "domain": {
@@ -44,6 +56,34 @@ SUITES = {
             for name in DOMAIN_CONTRACTS
         ),
         "message_prefix": "phase6-missing-domain-contract:",
+    },
+    "application-provider": {
+        "files": (
+            "tests/test_acceptance_application.py",
+            "tests/test_semantic_provider.py",
+        ),
+        "expected": (
+            *tuple(
+                (
+                    "tests/test_acceptance_application.py::"
+                    f"test_required_phase6_application_contract_is_missing[{name}]"
+                )
+                for name in APPLICATION_CONTRACTS
+            ),
+            *tuple(
+                (
+                    "tests/test_semantic_provider.py::"
+                    f"test_required_phase6_provider_contract_is_missing[{name}]"
+                )
+                for name in PROVIDER_CONTRACTS
+            ),
+        ),
+        "message_prefixes": {
+            "tests/test_acceptance_application.py": (
+                "phase6-missing-application-contract:"
+            ),
+            "tests/test_semantic_provider.py": "phase6-missing-provider-contract:",
+        },
     },
 }
 
@@ -121,10 +161,15 @@ def verify_suite(name: str) -> int:
             *(f"missing: {node}" for node in sorted(absent)),
         ]
         return _fail("failure-node set is not exact", output="\n".join(details))
-    prefix = str(config["message_prefix"])
-    expected_messages = {
-        f"{prefix}{node.rsplit('[', 1)[-1].removesuffix(']')}" for node in expected
-    }
+    if "message_prefix" in config:
+        prefixes = {str(file): str(config["message_prefix"]) for file in files}
+    else:
+        prefixes = dict(config["message_prefixes"])
+    expected_messages = set()
+    for node in expected:
+        file = node.split("::", 1)[0]
+        contract = node.rsplit("[", 1)[-1].removesuffix("]")
+        expected_messages.add(f"{prefixes[file]}{contract}")
     failure_messages = set(FAILED_MESSAGE_LINE.findall(output))
     if failure_messages != expected_messages:
         return _fail(
@@ -133,7 +178,8 @@ def verify_suite(name: str) -> int:
         )
     for node in failed_nodes:
         contract = node.rsplit("[", 1)[-1].removesuffix("]")
-        if f"{prefix}{contract}" not in failure_messages:
+        file = node.split("::", 1)[0]
+        if f"{prefixes[file]}{contract}" not in failure_messages:
             return _fail(f"missing failure text for {node}")
 
     print(

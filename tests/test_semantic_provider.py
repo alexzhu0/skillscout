@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 
 import httpx
 import openai
@@ -27,6 +28,10 @@ from skillscout.domain.models import StrictFrozenModel
 CHAT_COMPLETIONS = ("POST", "/chat/completions")
 CANARY_KEY = "deepseek-canary-key-do-not-disclose"
 CANARY_BASE_URL = "https://api.deepseek.com"
+REQUIRED_PHASE6_PROVIDER_CONTRACTS = (
+    "SemanticStage",
+    "DEEPSEEK_MODEL_BY_STAGE",
+)
 
 
 class _Answer(StrictFrozenModel):
@@ -394,4 +399,112 @@ def test_deepseek_response_must_be_single_terminal_strict_schema(
 
     assert result.status == expected
     assert result.parsed is None
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+def _future_provider_symbol(name: str, *, skip_if_missing: bool = True) -> object:
+    module = importlib.import_module("skillscout.adapters.semantic_provider")
+    value = getattr(module, name, None)
+    if value is None:
+        if skip_if_missing:
+            pytest.skip("phase6-provider-contracts-not-yet-implemented")
+        pytest.fail(f"phase6-missing-provider-contract:{name}", pytrace=False)
+    return value
+
+
+@pytest.mark.parametrize(
+    "contract",
+    REQUIRED_PHASE6_PROVIDER_CONTRACTS,
+    ids=REQUIRED_PHASE6_PROVIDER_CONTRACTS,
+)
+def test_required_phase6_provider_contract_is_missing(contract: str) -> None:
+    _future_provider_symbol(contract, skip_if_missing=False)
+
+
+def test_phase6_deepseek_stage_map_is_exact_flash_flash_pro() -> None:
+    stage = _future_provider_symbol("SemanticStage")
+    mapping = _future_provider_symbol("DEEPSEEK_MODEL_BY_STAGE")
+    assert tuple(item.value for item in stage) == (
+        "extraction",
+        "generation",
+        "review",
+    )
+    assert dict(mapping) == {
+        stage.EXTRACTION: "deepseek-v4-flash",
+        stage.GENERATION: "deepseek-v4-flash",
+        stage.REVIEW: "deepseek-v4-pro",
+    }
+    settings = resolve_semantic_provider(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": CANARY_BASE_URL,
+        }
+    )
+    assert settings.extract_model == "deepseek-v4-flash"
+    assert settings.generator_model == "deepseek-v4-flash"
+    assert settings.reviewer_model == "deepseek-v4-pro"
+
+
+@pytest.mark.parametrize(
+    ("stage_name", "model"),
+    (
+        ("extraction", "deepseek-v4-pro"),
+        ("generation", "deepseek-v4-pro"),
+        ("review", "deepseek-v4-flash"),
+        ("review", "caller-selected-model"),
+    ),
+)
+def test_wrong_stage_model_pair_fails_before_transport(
+    stage_name: str, model: str
+) -> None:
+    stage = _future_provider_symbol("SemanticStage")
+
+    class RejectingClient:
+        @property
+        def chat(self) -> object:
+            raise AssertionError("invalid stage/model reached HTTP transport")
+
+    with pytest.raises(SafeFailure) as failure:
+        request_deepseek_json(
+            RejectingClient(),
+            sdk=openai,
+            stage=stage(stage_name),
+            model=model,
+            instructions="trusted",
+            user_payload="untrusted",
+            response_model=_Answer,
+            max_tokens=32,
+        )
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+
+def test_phase6_provider_policy_remains_no_tools_and_zero_sdk_retries() -> None:
+    stage = _future_provider_symbol("SemanticStage")
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _chat_response('{"value":"ok"}')})
+    settings = resolve_semantic_provider(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": CANARY_BASE_URL,
+        }
+    )
+    client = create_semantic_client(
+        settings,
+        sdk=openai,
+        api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+    )
+    result = request_deepseek_json(
+        client,
+        sdk=openai,
+        stage=stage.EXTRACTION,
+        model="deepseek-v4-flash",
+        instructions="trusted",
+        user_payload="untrusted",
+        response_model=_Answer,
+        max_tokens=32,
+    )
+    assert result.status == "parsed"
+    body = json.loads(recorded.requests[0].content)
+    assert "tools" not in body
+    assert "tool_choice" not in body
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
