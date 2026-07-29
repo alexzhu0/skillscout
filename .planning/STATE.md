@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Completed 06-04-PLAN.md
-last_updated: "2026-07-29T07:46:25.891Z"
+stopped_at: Completed 06-05-PLAN.md
+last_updated: "2026-07-29T08:03:57.703Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 76
-  completed_plans: 65
+  completed_plans: 66
   percent: 83
 ---
 
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 06 (adversarial-mvp-acceptance) — EXECUTING
-**Plan:** 5 of 15
+**Plan:** 6 of 15
 **Verification:** Phase 6 plan checker passed with TEST-01..04, D-01..D-27, 38/38 task-map, dependency, threat-model, workflow-freeze, and post-planning gap gates green
 **Next command:** `$gsd-execute-phase 6`
 
@@ -119,8 +119,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-29T07:46:12.185Z
-**Stopped at:** Completed 06-04-PLAN.md
+**Last session:** 2026-07-29T08:03:57.699Z
+**Stopped at:** Completed 06-05-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -191,6 +191,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 | Phase 06 P02 | 32 min | 3 tasks | 5 files |
 | Phase 06 P03 | 10min | 2 tasks | 8 files |
 | Phase 06 P04 | 18min | 2 tasks | 4 files |
+| Phase 06 P05 | 12min | 2 tasks | 6 files |
 
 ## Decisions
 
@@ -339,3 +340,6 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - [Phase 06]: Project replay and changed-source intent separately from their post-publication completion facts so both immutable scopes coexist.
 - [Phase 06]: Revalidate canonical JSON through the exact model registry and require post-parse byte equality before any fact receives authority.
 - [Phase 06]: Restore a valid owned SQLite image byte-for-byte after JSON/projection agreement; rebuild corrupt database bytes only from canonical facts.
+- [Phase 06]: Phase 6 acceptance uses distinct frozen capability types for nomination, locked campaigns, replay/update, attestations, and rebuild.
+- [Phase 06]: Acceptance CLI authority excludes runtime model, endpoint, catalog, ref, secret, cleanup, merge, approval, and ready-for-review selection.
+- [Phase 06]: Acceptance fixes the catalog to alexzhu0/skillscout-catalog-test and validates immutable facts before environment-backed credentials.
