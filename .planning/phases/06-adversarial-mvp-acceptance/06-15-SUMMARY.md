@@ -31,6 +31,7 @@ key-files:
     - .github/workflows/discover.yml
     - .github/workflows/publish-candidate.yml
     - .github/workflows/gate-b4-canary.yml
+    - tests/test_phase5_acceptance.py
     - tests/test_publication_security.py
     - tests/test_phase6_workflow.py
     - tests/test_discovery_workflow.py
@@ -80,6 +81,17 @@ coverage:
         ref: "ruff check and ruff format --check over changed Python files"
         status: pass
     human_judgment: false
+  - id: D4
+    description: Historical Phase 5 acceptance is tested against its exact Gate-B4-bound workflow bytes while the current Phase 6 tree fails closed pending fresh evidence.
+    requirement: TEST-01
+    verification:
+      - kind: integration
+        ref: "tests/test_phase5_acceptance.py (25 passed)"
+        status: pass
+      - kind: integration
+        ref: "full locked pytest (2080 passed, 32 skipped, 2 planned future Phase 6 RED failures)"
+        status: pass
+    human_judgment: false
 
 duration: 9min
 completed: 2026-07-29
@@ -110,6 +122,11 @@ status: complete
 The task was committed atomically:
 
 1. **Task 06-15-01 GREEN: protected workflow zones and locked source execution** - `bd8f749` (feat; RED inherited from the 06-02 Wave 0 contract)
+
+Post-merge regression repair was committed separately under strict TDD:
+
+2. **RED: expose the mixed Phase 5 workflow/evidence lifecycle** - `279c7f0` (test; observed failing exact-digest contract)
+3. **GREEN: separate historical and current workflow lifecycles** - `1fa3f49` (fix; test-harness-only)
 
 ## Files Created/Modified
 
@@ -149,15 +166,24 @@ The task was committed atomically:
 - **Verification:** The affected workflow regression passed with 86 tests; the plan command passed with 52 tests and 12 unrelated deselections.
 - **Committed in:** `bd8f749`
 
+**3. [Rule 1 - Bug] Restored the historical Phase 5 acceptance fixture lifecycle**
+- **Found during:** Wave 3 post-merge full-suite verification
+- **Issue:** `tests/test_phase5_acceptance.py` copied the current Phase 6-modified workflow bytes while retaining Phase 5 Gate B4 evidence bound to the prior discover, publish, and canary digests, so the positive fixture mixed two valid but incompatible lifecycles.
+- **Fix:** Added a RED exact-digest fixture contract, restored only the three historical Gate-B4-bound workflow byte sequences inside the positive fixture, and added a separate current-tree test that fails closed until fresh Gate B4 evidence exists.
+- **Files modified:** `tests/test_phase5_acceptance.py`
+- **Verification:** The RED test failed with all three current digests, then passed after the fix; all 25 Phase 5 acceptance tests and all 29 Phase 6 source-execution tests passed; the independent Phase 6 verifier reported `phase6 source execution valid`; full locked pytest reported 2,080 passed, 32 skipped, and only the two planned future Phase 6 RED failures.
+- **Committed in:** `279c7f0` (RED), `1fa3f49` (GREEN)
+
 ---
 
-**Total deviations:** 2 auto-fixed (1 bug, 1 blocking issue)
-**Impact on plan:** Both fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline; no dependency, remote effect, credential scope, or candidate execution authority was added.
+**Total deviations:** 3 auto-fixed (2 bugs, 1 blocking issue)
+**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The post-merge fix restores historical Phase 5 fixture correctness without changing the verifier, evidence, approval, or current workflow bytes. No dependency, remote effect, credential scope, or candidate execution authority was added.
 
 ## Issues Encountered
 
 - The sandbox initially denied uv cache and Git index-lock access. The exact locked commands and normal commit hooks were rerun with approved filesystem access; no dependency was installed or changed.
 - Workflow byte changes intentionally stale historical Phase 5 Gate B4 digests. No Gate B4, publication, remote dispatch, candidate repository execution, or credential inspection occurred in this plan.
+- Wave 3 post-merge verification exposed a test-harness lifecycle mismatch: historical Phase 5 evidence had been paired with current Phase 6 workflow bytes. The verifier correctly failed closed; no production verifier, evidence, approval, or workflow byte was changed.
 
 ## Authentication Gates
 
@@ -186,6 +212,10 @@ None - no new dependency or external service configuration is required by this p
 - The independent source-execution verifier reported `phase6 source execution valid`.
 - Ruff check, Ruff format check, and `git diff --check` passed.
 - Stub and threat-surface scans found no untracked placeholder or threat outside the plan's T-06-47, T-06-48, T-06-49, and T-06-SC register.
+- Post-merge RED commit `279c7f0` and GREEN commit `1fa3f49` exist and modify only `tests/test_phase5_acceptance.py`.
+- The targeted lifecycle test and all 25 Phase 5 acceptance tests passed while preserving the external-cwd and read-only metadata assertions.
+- All 29 Phase 6 source-execution tests passed, and the independent verifier reported `phase6 source execution valid`.
+- Full locked pytest completed with 2,080 passed, 32 skipped, and only the two planned future Phase 6 RED nodes failing; no Phase 5 regression remains.
 
 ---
 *Phase: 06-adversarial-mvp-acceptance*
