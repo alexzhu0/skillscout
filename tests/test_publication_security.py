@@ -248,6 +248,17 @@ _SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 _APP_TOKEN_SHA = "bcd2ba49218906704ab6c1aa796996da409d3eb1"
 _OLD_APP_TOKEN_SHA = "67018539274d69449ef7c8cde82c3ff073ffe3b5"
 _LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
+_MANAGED_PYTHON_INSTALL = (
+    'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
+    f"{_LOCAL_UV} python install 3.13.14 "
+    '--install-dir "${managed_python_root}" --no-bin'
+)
+_MANAGED_PYTHON_SYNC = (
+    'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
+    f"UV_PYTHON_DOWNLOADS=never {_LOCAL_UV} sync --locked "
+    '--no-install-project --python "${managed_python_executable}" '
+    "--managed-python --no-python-downloads"
+)
 _HANDOFF_FIELDS = (
     "candidate_descriptor_locator",
     "phase2_state_locator",
@@ -390,7 +401,29 @@ def test_publish_workflow_uses_same_job_locked_checked_out_source() -> None:
             '! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then'
             in job
         )
-        assert f"{_LOCAL_UV} sync --locked --no-install-project" in job
+        assert 'repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"' in job
+        assert 'managed_python_root="${tools_root}/python"' in job
+        assert (
+            'test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"'
+            in job
+        )
+        assert 'if [[ -L "${managed_python_root}" ]]; then' in job
+        assert _MANAGED_PYTHON_INSTALL in job
+        assert _MANAGED_PYTHON_SYNC in job
+        assert (
+            "test \"$(.venv/bin/python -I -c 'import sys; "
+            "print(sys.implementation.name)')\" = \"cpython\""
+            in job
+        )
+        assert (
+            "test \"$(.venv/bin/python -I -c 'import sys; "
+            "print('.'.join(map(str, sys.version_info[:3])))')\" = \"3.13.14\""
+            in job
+        )
+        assert "UV_PYTHON_INSTALL_DIR" in job
+        assert "UV_MANAGED_PYTHON=1" in job
+        assert "UV_PYTHON_DOWNLOADS=never" in job
+        assert "RUNNER_TOOL_CACHE" not in job
     assert not any(
         marker in text
         for marker in (

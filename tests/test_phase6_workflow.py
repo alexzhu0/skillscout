@@ -16,10 +16,23 @@ CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 UPLOAD_ARTIFACT_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
-PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
+MANAGED_PYTHON_INSTALL = (
+    'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
+    ".tools/uv-0.11.29/bin/uv python install 3.13.14 "
+    '--install-dir "${managed_python_root}" --no-bin'
+)
+MANAGED_PYTHON_SYNC = (
+    'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
+    'UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked '
+    '--no-install-project --python "${managed_python_executable}" '
+    "--managed-python --no-python-downloads"
+)
 PYTHON_BASE_PREFIX_PREFLIGHT = (
-    'test -n "${RUNNER_TOOL_CACHE:-}"',
-    'test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"',
+    'repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"',
+    'test "${repository_root}" = "${GITHUB_WORKSPACE}"',
+    'test "${repository_root}" = "$(pwd -P)"',
+    'managed_python_root="$(realpath -e -- "${repository_root}/.tools/python")"',
+    'test "${managed_python_root}" = "${repository_root}/.tools/python"',
     ".venv/bin/python -I -c 'import sys; print(sys.base_prefix, "
     'end="\\n__PHASE6_BASE_PREFIX_END__")\'',
     "python_base_prefix_sentinel=$'\\n__PHASE6_BASE_PREFIX_END__'",
@@ -27,17 +40,25 @@ PYTHON_BASE_PREFIX_PREFLIGHT = (
     'python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"',
     '[[ -n "$python_base_prefix" && "$python_base_prefix" != *$\'\\n\'* '
     '&& "$python_base_prefix" == /* ]]',
-    'runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"',
-    'test "${runner_python_root}" = "${RUNNER_TOOL_CACHE}/Python"',
     'python_base_prefix="$(realpath -e -- "${python_base_prefix}")"',
-    '"${runner_python_root}"/*)',
+    '"${managed_python_root}"/*)',
     'python_executable="$(realpath -e -- .venv/bin/python)"',
     '"${python_base_prefix}"/bin/python*)',
     'test -x "${python_executable}"',
+    "test \"$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')\" "
+    '= "cpython"',
+    "test \"$(.venv/bin/python -I -c 'import sys; "
+    "print('.'.join(map(str, sys.version_info[:3])))')\" = \"3.13.14\"",
     'test -d "${python_base_prefix}/lib/python3.13"',
     'test -f "${python_base_prefix}/lib/python3.13/os.py"',
     'test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"',
 )
+CONTAINER_MANAGED_ENV = {
+    '--env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python"',
+    "--env UV_MANAGED_PYTHON=1",
+    "--env UV_PYTHON_DOWNLOADS=never",
+}
+REPOSITORY_MOUNT = '--volume "${repository_root}:${repository_root}:ro"'
 EVIDENCE_FIELDS = (
     "schema_version",
     "non_authoritative",
@@ -139,7 +160,11 @@ def _job(source: str, name: str) -> str:
 
 
 def _assert_network_none_python_runtime_mounts(job: str) -> None:
+    assert MANAGED_PYTHON_INSTALL in job
+    assert MANAGED_PYTHON_SYNC in job
     assert all(token in job for token in PYTHON_BASE_PREFIX_PREFLIGHT)
+    assert "RUNNER_TOOL_CACHE" not in job
+    assert '--volume "${python_base_prefix}:${python_base_prefix}:ro"' not in job
     invocations = job.split("docker run --network none --rm \\")[1:]
     assert invocations
     allowed_volumes = {
@@ -148,8 +173,7 @@ def _assert_network_none_python_runtime_mounts(job: str) -> None:
         "--volume /lib:/lib:ro",
         "--volume /lib64:/lib64:ro",
         "--volume /usr:/usr:ro",
-        PYTHON_BASE_PREFIX_MOUNT,
-        '--volume "${repository_root}:${repository_root}:ro"',
+        REPOSITORY_MOUNT,
         '--volume "${probe_root}:/probe:ro"',
         '--volume "${campaign_root}:/probe:ro"',
         '--volume "${campaign_root}:/probe:rw"',
@@ -162,8 +186,13 @@ def _assert_network_none_python_runtime_mounts(job: str) -> None:
             for line in options.splitlines()
             if line.strip().startswith("--volume ")
         }
-        assert PYTHON_BASE_PREFIX_MOUNT in volume_lines
+        assert REPOSITORY_MOUNT in volume_lines
         assert volume_lines <= allowed_volumes
+        assert CONTAINER_MANAGED_ENV <= {
+            line.strip().removesuffix(" \\")
+            for line in options.splitlines()
+            if line.strip().startswith("--env ")
+        }
 
 
 def _assert_isolation_workflow(source: str) -> None:
@@ -473,14 +502,14 @@ def test_offline_adversarial_synthetic_scan_manifest_is_explicit_and_path_closed
 @pytest.mark.parametrize(
     "replacement",
     (
-        "",
-        "--volume /opt:/opt:ro \\\n            " + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${python_base_prefix}:${python_base_prefix}:ro" \\\n            '
+        + REPOSITORY_MOUNT,
         '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro" \\\n            '
-        + PYTHON_BASE_PREFIX_MOUNT,
-        "--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            " + PYTHON_BASE_PREFIX_MOUNT,
-        '--volume "${python_base_prefix}:${python_base_prefix}:rw"',
-        '--volume "${python_base_prefix}:/runtime:ro"',
-        '--volume "${unvalidated_base}:${unvalidated_base}:ro"',
+        + REPOSITORY_MOUNT,
+        "--volume /opt:/opt:ro \\\n            " + REPOSITORY_MOUNT,
+        "--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            " + REPOSITORY_MOUNT,
+        '--volume "${repository_root}:${repository_root}:rw"',
+        '--volume "${repository_root}:/runtime:ro"',
     ),
 )
 def test_network_none_python_runtime_mount_mutations_fail_closed(
@@ -488,8 +517,8 @@ def test_network_none_python_runtime_mount_mutations_fail_closed(
 ) -> None:
     source = _source(required=False)
     job = _job(source, "offline_adversarial")
-    assert PYTHON_BASE_PREFIX_MOUNT in job
-    mutated = job.replace(PYTHON_BASE_PREFIX_MOUNT, replacement, 1)
+    assert REPOSITORY_MOUNT in job
+    mutated = job.replace(REPOSITORY_MOUNT, replacement, 1)
     with pytest.raises(AssertionError):
         _assert_network_none_python_runtime_mounts(mutated)
 
@@ -500,8 +529,8 @@ def test_network_none_python_runtime_mount_requires_validated_base_prefix() -> N
         job = _job(source, name)
         _assert_network_none_python_runtime_mounts(job)
         mutated = job.replace(
-            'runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"',
-            'runner_python_root="${RUNNER_TOOL_CACHE}/Python"',
+            'managed_python_root="$(realpath -e -- "${repository_root}/.tools/python")"',
+            'managed_python_root="${repository_root}/.tools/python"',
             1,
         )
         with pytest.raises(AssertionError):

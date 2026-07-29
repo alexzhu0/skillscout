@@ -23,7 +23,28 @@ LOCAL_LOCKED = ".tools/uv-0.11.29/bin/uv run --locked"
 CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV = "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9"
 UPLOAD_ARTIFACT = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
+MANAGED_PYTHON_VERSION = "3.13.14"
+MANAGED_PYTHON_ROOT = '${GITHUB_WORKSPACE}/.tools/python'
+MANAGED_PYTHON_INSTALL = (
+    'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
+    ".tools/uv-0.11.29/bin/uv python install 3.13.14 "
+    '--install-dir "${managed_python_root}" --no-bin'
+)
+MANAGED_PYTHON_SYNC = (
+    'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
+    'UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked '
+    '--no-install-project --python "${managed_python_executable}" '
+    "--managed-python --no-python-downloads"
+)
+MANAGED_PYTHON_TOOLCHAIN_START = (
+    'repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"'
+)
+CONTAINER_MANAGED_ENV = (
+    '--env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python"',
+    "--env UV_MANAGED_PYTHON=1",
+    "--env UV_PYTHON_DOWNLOADS=never",
+)
+REPOSITORY_MOUNT = '--volume "${repository_root}:${repository_root}:ro"'
 
 
 def _module(*, skip_if_missing: bool = True) -> Any:
@@ -80,7 +101,7 @@ def _version_guards(repository: Path) -> tuple[str, ...]:
                 assert step.run is not None
                 lines = step.run.splitlines()
                 start = lines.index("test -x .tools/uv-0.11.29/bin/uv") + 1
-                end = lines.index(".tools/uv-0.11.29/bin/uv sync --locked --no-install-project")
+                end = lines.index(MANAGED_PYTHON_TOOLCHAIN_START)
                 guards.append("\n".join(lines[start:end]))
     return tuple(guards)
 
@@ -120,11 +141,14 @@ def test_source_execution_verifier_discovers_every_authoritative_entry_point(
     assert all(step.checkout_sha and step.invocation_digest for step in result.authoritative_steps)
 
 
-def test_source_execution_verifier_requires_closed_python_runtime_mounts(
+def test_source_execution_verifier_requires_repo_managed_cpython_for_every_job(
     tmp_path: Path,
 ) -> None:
     module = _module()
     result = module.verify_source_execution(_copy_workflows(tmp_path))
+    assert result.managed_python_job_count == 15
+    assert result.managed_python_version == MANAGED_PYTHON_VERSION
+    assert result.managed_python_root == MANAGED_PYTHON_ROOT
     assert result.network_none_invocation_count == 6
 
 
@@ -193,39 +217,110 @@ def test_source_execution_verifier_rejects_diagnostic_mutations(
 
 
 @pytest.mark.parametrize(
-    "replacement",
+    ("needle", "replacement"),
     (
-        "",
-        "--volume /opt:/opt:ro \\\n            " + PYTHON_BASE_PREFIX_MOUNT,
-        '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro" \\\n            '
-        + PYTHON_BASE_PREFIX_MOUNT,
-        "--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            " + PYTHON_BASE_PREFIX_MOUNT,
-        '--volume "${python_base_prefix}:${python_base_prefix}:rw"',
-        '--volume "${python_base_prefix}:/runtime:ro"',
-        '--volume "${unvalidated_base}:${unvalidated_base}:ro"',
+        (MANAGED_PYTHON_INSTALL, MANAGED_PYTHON_INSTALL.replace("3.13.14", "3.13.13")),
+        (
+            MANAGED_PYTHON_INSTALL,
+            MANAGED_PYTHON_INSTALL.replace(
+                ' --install-dir "${managed_python_root}"',
+                "",
+            ),
+        ),
+        (
+            'managed_python_root="${tools_root}/python"',
+            'managed_python_root="${RUNNER_TOOL_CACHE}/Python"',
+        ),
+        (
+            'managed_python_root="${tools_root}/python"',
+            'managed_python_root="${HOME}/.local/share/uv/python"',
+        ),
+        (
+            'managed_python_root="${tools_root}/python"',
+            'managed_python_root="/usr/local/python"',
+        ),
+        (
+            'managed_python_root="${tools_root}/python"',
+            'managed_python_root="${GITHUB_WORKSPACE}/../python"',
+        ),
+        (
+            'test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"',
+            ":",
+        ),
+        ('if [[ -L "${managed_python_root}" ]]; then', "if false; then"),
+        (
+            MANAGED_PYTHON_INSTALL,
+            MANAGED_PYTHON_INSTALL.replace("UV_MANAGED_PYTHON=1 ", ""),
+        ),
+        (
+            MANAGED_PYTHON_SYNC,
+            MANAGED_PYTHON_SYNC.replace(
+                '--python "${managed_python_executable}"',
+                "--python /usr/bin/python3",
+            ),
+        ),
+        (
+            MANAGED_PYTHON_SYNC,
+            MANAGED_PYTHON_SYNC.replace("UV_MANAGED_PYTHON=1 ", ""),
+        ),
+        (
+            MANAGED_PYTHON_INSTALL,
+            MANAGED_PYTHON_INSTALL.replace("3.13.14", "3.13"),
+        ),
     ),
 )
-def test_source_execution_verifier_rejects_python_runtime_mount_mutations(
+def test_source_execution_verifier_rejects_managed_python_mutations(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    _replace_first(repository, needle, replacement)
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        '--volume "${python_base_prefix}:${python_base_prefix}:ro" \\\n            '
+        + REPOSITORY_MOUNT,
+        '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro" \\\n            '
+        + REPOSITORY_MOUNT,
+        "--volume /opt:/opt:ro \\\n            " + REPOSITORY_MOUNT,
+        "--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            " + REPOSITORY_MOUNT,
+        '--volume "${repository_root}:${repository_root}:rw"',
+        '--volume "${repository_root}:/workspace:ro"',
+    ),
+)
+def test_source_execution_verifier_rejects_external_runtime_and_broad_mounts(
     tmp_path: Path,
     replacement: str,
 ) -> None:
     module = _module()
     repository = _copy_workflows(tmp_path)
-    _replace_first(repository, PYTHON_BASE_PREFIX_MOUNT, replacement)
+    _replace_first(repository, REPOSITORY_MOUNT, replacement)
     with pytest.raises(module.SourceExecutionError):
         module.verify_source_execution(repository)
 
 
-def test_source_execution_verifier_rejects_unvalidated_python_base_prefix(
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        (CONTAINER_MANAGED_ENV[0], '--env "UV_PYTHON_INSTALL_DIR=/usr/local/python"'),
+        (CONTAINER_MANAGED_ENV[1], "--env UV_MANAGED_PYTHON=0"),
+        (CONTAINER_MANAGED_ENV[2], "--env UV_PYTHON_DOWNLOADS=automatic"),
+    ),
+)
+def test_source_execution_verifier_rejects_unmanaged_container_runtime(
     tmp_path: Path,
+    needle: str,
+    replacement: str,
 ) -> None:
     module = _module()
     repository = _copy_workflows(tmp_path)
-    _replace_first(
-        repository,
-        'runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"',
-        'runner_python_root="${RUNNER_TOOL_CACHE}/Python"',
-    )
+    _replace_first(repository, needle, replacement)
     with pytest.raises(module.SourceExecutionError):
         module.verify_source_execution(repository)
 
