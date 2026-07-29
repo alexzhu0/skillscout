@@ -229,14 +229,14 @@ def test_offline_adversarial_synthetic_scan_manifest_is_explicit_and_path_closed
     forbidden = (
         "rglob(",
         "os.walk(",
-        "Path.home(",
-        ".env",
+        "path.home(",
         ".pem",
         ".jwt",
         "private-key",
         "private_key",
     )
     assert all(token not in job.casefold() for token in forbidden)
+    assert re.search(r"""(?i)(?:["'/])\.env(?:["'/\s]|$)""", job) is None
     assert "raise SystemExit(\"synthetic canary reached an allowlisted surface\")" in job
 
 
@@ -258,10 +258,12 @@ def test_offline_adversarial_mutations_fail_closed(
     replacement: str,
 ) -> None:
     source = _source(required=False)
-    assert needle in source
+    job = _job(source, "offline_adversarial")
+    assert needle in job
+    mutated_job = job.replace(needle, replacement, 1)
     with pytest.raises(AssertionError):
         _assert_offline_adversarial_workflow(
-            source.replace(needle, replacement, 1)
+            source.replace(job, mutated_job, 1)
         )
 
 

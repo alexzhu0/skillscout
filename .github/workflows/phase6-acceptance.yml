@@ -308,6 +308,10 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    env:
+      PHASE6_SOURCE_COMMIT: ${{ github.sha }}
+      PHASE6_RUN_ID: ${{ github.run_id }}
+      PHASE6_RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
       - name: Check out the dispatched commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -327,10 +331,247 @@ jobs:
           test -x .tools/uv-0.11.29/bin/uv
           test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
           .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
-      - name: Run only controlled credential-free adversarial fixtures
+      - name: Run the fresh kernel-isolated adversarial campaign
         run: |
           set -euo pipefail
-          .tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_adversarial.py tests/test_phase6_workflow.py -x
+          umask 077
+          PHASE6_PRIOR_FAILED_PROBE_RUN_ID="30430010273"
+          # The prior run's observed artifact count was zero; it grants no authority.
+          campaign_root="${RUNNER_TEMP}/phase6-offline-adversarial"
+          mkdir -p "${campaign_root}"
+          repository_root="$(pwd -P)"
+          image_tag="phase6-offline-runtime:${PHASE6_SOURCE_COMMIT}"
+          tar -cf "${campaign_root}/empty-rootfs.tar" --files-from /dev/null
+          docker import "${campaign_root}/empty-rootfs.tar" "${image_tag}" >/dev/null
+          trap 'docker image rm -f "${image_tag}" >/dev/null 2>&1 || true; rm -f "${campaign_root}/direct_probe.py" "${campaign_root}/child_probe.py" "${campaign_root}/empty-rootfs.tar"' EXIT
+
+          cat >"${campaign_root}/direct_probe.py" <<'PY'
+          import errno
+          import socket
+
+          sock = socket.socket()
+          sock.settimeout(5)
+          result = sock.connect_ex(("192.0.2.1", 443))
+          denied = {
+              errno.EACCES,
+              errno.EHOSTUNREACH,
+              errno.ENETDOWN,
+              errno.ENETUNREACH,
+              errno.EPERM,
+          }
+          raise SystemExit(0 if result == 0 else 97 if result in denied else 98)
+          PY
+
+          cat >"${campaign_root}/child_probe.py" <<'PY'
+          import subprocess
+          import sys
+
+          child = subprocess.run(
+              [sys.executable, "/probe/direct_probe.py"],
+              check=False,
+          )
+          raise SystemExit(child.returncode)
+          PY
+
+          export PHASE6_SYNTHETIC_HEADER_CANARY="phase6-synthetic-header-canary-${PHASE6_RUN_ID}-${PHASE6_RUN_ATTEMPT}"
+          export PHASE6_SYNTHETIC_PAYLOAD_CANARY="phase6-synthetic-payload-canary-${PHASE6_RUN_ID}-${PHASE6_RUN_ATTEMPT}"
+          set +e
+          docker run --network none --rm \
+            --volume /bin:/bin:ro \
+            --volume /etc:/etc:ro \
+            --volume /lib:/lib:ro \
+            --volume /lib64:/lib64:ro \
+            --volume /usr:/usr:ro \
+            --volume "${repository_root}:${repository_root}:ro" \
+            --volume "${campaign_root}:/probe:rw" \
+            --env PHASE6_OFFLINE_REPORT=/probe/campaign-report.json \
+            --env PHASE6_SYNTHETIC_HEADER_CANARY \
+            --env PHASE6_SYNTHETIC_PAYLOAD_CANARY \
+            --workdir "${repository_root}" \
+            "${image_tag}" \
+            .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync \
+            pytest -q tests/test_phase6_adversarial.py -x \
+            >"${campaign_root}/control.log" 2>&1
+          control_status=$?
+
+          docker run --network none --rm \
+            --volume /bin:/bin:ro \
+            --volume /etc:/etc:ro \
+            --volume /lib:/lib:ro \
+            --volume /lib64:/lib64:ro \
+            --volume /usr:/usr:ro \
+            --volume "${repository_root}:${repository_root}:ro" \
+            --volume "${campaign_root}:/probe:ro" \
+            --workdir "${repository_root}" \
+            "${image_tag}" \
+            .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync \
+            python /probe/direct_probe.py \
+            >"${campaign_root}/direct.log" 2>&1
+          direct_status=$?
+
+          docker run --network none --rm \
+            --volume /bin:/bin:ro \
+            --volume /etc:/etc:ro \
+            --volume /lib:/lib:ro \
+            --volume /lib64:/lib64:ro \
+            --volume /usr:/usr:ro \
+            --volume "${repository_root}:${repository_root}:ro" \
+            --volume "${campaign_root}:/probe:ro" \
+            --workdir "${repository_root}" \
+            "${image_tag}" \
+            .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync \
+            python /probe/child_probe.py \
+            >"${campaign_root}/child.log" 2>&1
+          child_status=$?
+          set -e
+
+          test "${control_status}" -eq 0
+          test "${direct_status}" -eq 97
+          test "${child_status}" -eq 97
+          test -s "${campaign_root}/campaign-report.json"
+
+          export PHASE6_CAMPAIGN_ROOT="${campaign_root}"
+          export PHASE6_PRIOR_FAILED_PROBE_RUN_ID
+          export PHASE6_CONTROL_OUTCOME="passed"
+          export PHASE6_DIRECT_OUTCOME="denied"
+          export PHASE6_CHILD_OUTCOME="denied"
+          export PHASE6_WORKFLOW_SHA256
+          PHASE6_WORKFLOW_SHA256="$(
+            sha256sum .github/workflows/phase6-acceptance.yml | cut -d' ' -f1
+          )"
+
+          .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PHASE6_CAMPAIGN_ROOT"])
+          report_path = root / "campaign-report.json"
+          report = json.loads(report_path.read_bytes())
+          required_ids = tuple(report["required_scenario_ids"])
+          completed_ids = tuple(report["completed_scenario_ids"])
+          result_digests = tuple(report["scenario_result_digests"])
+          if (
+              len(required_ids) < 15
+              or required_ids != completed_ids
+              or len(result_digests) != len(required_ids)
+              or report["controlled_scenario_count"] != len(required_ids)
+              or report["untrusted_execution_count"] != 0
+              or report["unapproved_network_effect_count"] != 0
+              or report["unauthorized_effect_count"] != 0
+              or report["synthetic_canary_hit_count"] != 0
+          ):
+              raise SystemExit("offline campaign report is incomplete")
+
+          report_digest = "sha256:" + hashlib.sha256(
+              report_path.read_bytes()
+          ).hexdigest()
+          sanitized_surface = {
+              "schema_version": "phase6.sanitized-surface.v1",
+              "campaign_report_digest": report_digest,
+              "controlled_scenario_count": len(required_ids),
+              "unauthorized_effect_count": 0,
+          }
+          (root / "redacted-state.json").write_text(
+              json.dumps(sanitized_surface, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          (root / "one-day-artifact.json").write_text(
+              json.dumps(sanitized_surface, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          (root / "pr-diff-fixture.txt").write_text(
+              "sanitized-campaign-report " + report_digest + "\n",
+              encoding="utf-8",
+          )
+
+          scan_names = ("control.log", "redacted-state.json", "campaign-report.json", "one-day-artifact.json", "pr-diff-fixture.txt")
+          scanned = tuple(root / name for name in scan_names)
+          canaries = (
+              os.environ["PHASE6_SYNTHETIC_HEADER_CANARY"].encode(),
+              os.environ["PHASE6_SYNTHETIC_PAYLOAD_CANARY"].encode(),
+          )
+          hit_count = sum(
+              path.read_bytes().count(canary)
+              for path in scanned
+              for canary in canaries
+          )
+          if hit_count:
+              raise SystemExit("synthetic canary reached an allowlisted surface")
+
+          control_command = (
+              ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync "
+              "pytest -q tests/test_phase6_adversarial.py -x"
+          )
+          direct_command = (
+              ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync "
+              "python /probe/direct_probe.py\n"
+          ).encode() + (root / "direct_probe.py").read_bytes()
+          child_command = (
+              ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync "
+              "python /probe/child_probe.py\n"
+          ).encode() + (root / "child_probe.py").read_bytes()
+          evidence = {
+              "schema_version": "phase6.offline-hosted-evidence.v1",
+              "non_authoritative": True,
+              "supersedes_failed_probe_run_id": os.environ[
+                  "PHASE6_PRIOR_FAILED_PROBE_RUN_ID"
+              ],
+              "workflow_sha256": "sha256:"
+              + os.environ["PHASE6_WORKFLOW_SHA256"],
+              "source_commit_sha": os.environ["PHASE6_SOURCE_COMMIT"],
+              "hosted_run_id": os.environ["PHASE6_RUN_ID"],
+              "run_attempt": int(os.environ["PHASE6_RUN_ATTEMPT"]),
+              "runner_image": (
+                  os.environ.get("ImageOS", "ubuntu24")
+                  + "-"
+                  + os.environ.get("ImageVersion", "unknown")
+              )[:128],
+              "isolation_mechanism": "docker_network_none",
+              "control_command_digest": "sha256:"
+              + hashlib.sha256(control_command.encode()).hexdigest(),
+              "direct_probe_command_digest": "sha256:"
+              + hashlib.sha256(direct_command).hexdigest(),
+              "child_probe_command_digest": "sha256:"
+              + hashlib.sha256(child_command).hexdigest(),
+              "control_outcome": os.environ["PHASE6_CONTROL_OUTCOME"],
+              "direct_network_outcome": os.environ["PHASE6_DIRECT_OUTCOME"],
+              "child_network_outcome": os.environ["PHASE6_CHILD_OUTCOME"],
+              "scenario_matrix_digest": report["scenario_matrix_digest"],
+              "required_scenario_ids": required_ids,
+              "completed_scenario_ids": completed_ids,
+              "scenario_result_digests": result_digests,
+              "controlled_scenario_count": len(required_ids),
+              "credential_count": 0,
+              "state_write_capability": False,
+              "untrusted_execution_count": 0,
+              "unapproved_network_effect_count": 0,
+              "unauthorized_effect_count": 0,
+              "synthetic_scan_manifest": scan_names,
+              "synthetic_scan_manifest_digest": "sha256:"
+              + hashlib.sha256(
+                  json.dumps(scan_names, separators=(",", ":")).encode()
+              ).hexdigest(),
+              "synthetic_canary_hit_count": hit_count,
+              "artifact_retention_days": 1,
+          }
+          destination = root / "offline-evidence.json"
+          destination.write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          chmod 600 "${campaign_root}/offline-evidence.json"
+
+      - name: Upload the bounded noncanonical offline evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: phase6-offline-adversarial-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phase6-offline-adversarial/offline-evidence.json
+          if-no-files-found: error
+          retention-days: 1
 
   live_benchmark:
     if: ${{ inputs.phase6_action == 'run-benchmark' || inputs.phase6_action == 'run-replay' }}

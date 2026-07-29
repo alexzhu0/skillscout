@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,7 @@ SYSTEM_FAILURE_MUTATIONS = {
     "schema_invalid",
     "harness_broken",
 }
+_CAMPAIGN_RESULTS: dict[str, dict[str, object]] = {}
 
 
 def _application(*, skip_if_missing: bool) -> Any:
@@ -65,6 +68,64 @@ def _matrix() -> dict[str, dict[str, object]]:
     value = json.loads(MATRIX_PATH.read_bytes())
     assert isinstance(value, dict)
     return value
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _write_bounded_campaign_report() -> Any:
+    yield
+    destination_value = os.environ.get("PHASE6_OFFLINE_REPORT")
+    if destination_value is None:
+        return
+    destination = Path(destination_value)
+    if destination != Path("/probe/campaign-report.json"):
+        pytest.fail("phase6-offline-report-path-outside-closed-manifest")
+    matrix = _matrix()
+    if set(_CAMPAIGN_RESULTS) != set(matrix):
+        pytest.fail("phase6-offline-campaign-incomplete")
+    credited = sorted(
+        (
+            result
+            for result in _CAMPAIGN_RESULTS.values()
+            if result["coverage_credited"] is True
+        ),
+        key=lambda result: str(result["scenario_id"]),
+    )
+    result_digests = sorted(
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        for result in credited
+    )
+    report = {
+        "schema_version": "phase6.offline-campaign-report.v1",
+        "scenario_matrix_digest": "sha256:"
+        + hashlib.sha256(MATRIX_PATH.read_bytes()).hexdigest(),
+        "required_scenario_ids": [
+            str(result["scenario_id"]) for result in credited
+        ],
+        "completed_scenario_ids": [
+            str(result["scenario_id"]) for result in credited
+        ],
+        "scenario_result_digests": result_digests,
+        "controlled_scenario_count": len(credited),
+        "untrusted_execution_count": sum(
+            int(result["untrusted_execution_count"]) for result in credited
+        ),
+        "unapproved_network_effect_count": sum(
+            int(result["unapproved_network_effect_count"]) for result in credited
+        ),
+        "unauthorized_effect_count": sum(
+            int(result["unauthorized_effect_count"]) for result in credited
+        ),
+        "synthetic_canary_hit_count": sum(
+            int(result["synthetic_canary_hit_count"]) for result in credited
+        ),
+    }
+    destination.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_required_phase6_adversarial_contract_is_missing() -> None:
@@ -141,11 +202,20 @@ def test_controlled_scenario_preserves_expected_terminal_and_has_zero_unauthoriz
         if mutation in INJECTION_FIXTURES
         else b"synthetic controlled fixture"
     )
+    header_canary = os.environ.get("PHASE6_SYNTHETIC_HEADER_CANARY", "")
+    payload_canary = os.environ.get(
+        "PHASE6_SYNTHETIC_PAYLOAD_CANARY",
+        SYNTHETIC_CANARY,
+    )
+    if header_canary:
+        fixture = header_canary.encode() + b"\n" + fixture
+    if payload_canary != SYNTHETIC_CANARY:
+        fixture += b"\n" + payload_canary.encode()
     result = _runner()(
         scenario_name=scenario_name,
         scenario=scenario,
         fixture_bytes=fixture,
-        synthetic_canary=SYNTHETIC_CANARY,
+        synthetic_canary=payload_canary,
     )
     assert set(result) == {
         "scenario_id",
@@ -198,8 +268,11 @@ def test_controlled_scenario_preserves_expected_terminal_and_has_zero_unauthoriz
     assert result["unauthorized_effect_count"] == 0
     assert result["synthetic_canary_hit_count"] == 0
     serialized = json.dumps(result, sort_keys=True)
-    assert SYNTHETIC_CANARY not in serialized
+    if header_canary:
+        assert header_canary not in serialized
+    assert payload_canary not in serialized
     assert "synthetic controlled fixture" not in serialized
+    _CAMPAIGN_RESULTS[scenario_name] = result
 
 
 def test_evaluator_only_labels_cannot_drive_the_observed_terminal() -> None:
