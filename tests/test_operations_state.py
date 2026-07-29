@@ -27,6 +27,12 @@ from skillscout.domain.discovery import (
     SearchRepositoryObservationV1,
 )
 from skillscout.domain.canonical import sha256_digest
+from skillscout.domain.acceptance import (
+    HostedIsolationCapabilityV1,
+    OfflineAdversarialRunV1,
+    PublicationReplayCompletionV1,
+    ReplayEvidenceV1,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +48,7 @@ FORBIDDEN_SCHEMA_OWNERS = {
 TIMESTAMP = "2026-07-27T12:00:00.000000Z"
 DIGEST_A = "sha256:" + ("a" * 64)
 DIGEST_B = "sha256:" + ("b" * 64)
+DIGEST_C = "sha256:" + ("c" * 64)
 
 
 def _digest_values(values: dict[str, object]) -> str:
@@ -159,6 +166,244 @@ def _candidate(
 
 def _operations_module():
     return importlib.import_module("skillscout.adapters.operations_state")
+
+
+def _acceptance_replay() -> ReplayEvidenceV1:
+    return ReplayEvidenceV1(
+        schema_version="replay-evidence-v1",
+        acceptance_run_id="acceptance-operations",
+        repository_id=101,
+        source_commit_sha="a" * 40,
+        workflow_fingerprint=DIGEST_A,
+        workflow_spec_authority_digest=DIGEST_B,
+        publication_policy_version="publication-policy-v1",
+        semantic_request_count=0,
+        duplicate_workflow_spec_count=0,
+        duplicate_skill_count=0,
+        duplicate_fact_count=0,
+        branch_effect_count=0,
+        pull_request_effect_count=0,
+        reviewer_effect_count=0,
+        recorded_at=TIMESTAMP,
+    )
+
+
+def _acceptance_replay_completion(
+    replay: ReplayEvidenceV1,
+    *,
+    recorded_at: str = "2026-07-27T12:01:00.000000Z",
+) -> PublicationReplayCompletionV1:
+    return PublicationReplayCompletionV1(
+        schema_version="publication-replay-completion-v1",
+        acceptance_run_id=replay.acceptance_run_id,
+        replay_intent_digest=replay.replay_digest,
+        repository_id=replay.repository_id,
+        source_commit_sha=replay.source_commit_sha,
+        workflow_fingerprint=replay.workflow_fingerprint,
+        workflow_spec_authority_digest=replay.workflow_spec_authority_digest,
+        publication_policy_version=replay.publication_policy_version,
+        publication_key=DIGEST_A,
+        publication_marker=DIGEST_B,
+        target_repository_id=202,
+        target_repository_full_name="catalog-org/skills",
+        pull_request_number=17,
+        head_branch="skillscout/bounded-workflow",
+        head_commit_sha="b" * 40,
+        draft=True,
+        open=True,
+        prior_publication_receipt_digest=DIGEST_C,
+        before_remote_observation_digest=DIGEST_B,
+        after_remote_observation_digest=DIGEST_B,
+        branch_create_count=0,
+        commit_create_count=0,
+        pull_request_create_count=0,
+        pull_request_update_count=0,
+        reviewer_request_count=0,
+        completion_recorded_at=recorded_at,
+    )
+
+
+def _hosted_capability() -> HostedIsolationCapabilityV1:
+    return HostedIsolationCapabilityV1(
+        schema_version="hosted-isolation-capability-v1",
+        workflow_sha256=DIGEST_A,
+        source_commit_sha="a" * 40,
+        hosted_run_id=1001,
+        run_attempt=1,
+        runner_image="github-actions-ubuntu-24.04",
+        isolation_mechanism="docker_network_none",
+        probe_artifact_locator="phase6/probes/1001/1",
+        probe_artifact_digest=DIGEST_A,
+        control_command_digest=DIGEST_A,
+        direct_probe_command_digest=DIGEST_B,
+        child_probe_command_digest=DIGEST_C,
+        control_outcome="passed",
+        direct_network_outcome="denied",
+        child_network_outcome="denied",
+        credential_count=0,
+        state_write_capability=False,
+        synthetic_scan_manifest_digest=DIGEST_B,
+        synthetic_canary_hit_count=0,
+        reviewer_id="security-reviewer",
+        reviewed_at=TIMESTAMP,
+    )
+
+
+def _offline_run(
+    capability: HostedIsolationCapabilityV1,
+) -> OfflineAdversarialRunV1:
+    scenario_ids = tuple(f"scenario-{index:02d}" for index in range(1, 16))
+    return OfflineAdversarialRunV1(
+        schema_version="offline-adversarial-run-v1",
+        acceptance_run_id="acceptance-operations",
+        hosted_capability_digest=capability.capability_digest,
+        workflow_sha256=capability.workflow_sha256,
+        source_commit_sha=capability.source_commit_sha,
+        hosted_run_id=capability.hosted_run_id,
+        run_attempt=capability.run_attempt,
+        isolation_mechanism=capability.isolation_mechanism,
+        scenario_matrix_digest=DIGEST_C,
+        required_scenario_ids=scenario_ids,
+        completed_scenario_ids=scenario_ids,
+        scenario_result_digests=tuple(
+            "sha256:" + f"{index:064x}" for index in range(1, 16)
+        ),
+        controlled_scenario_count=15,
+        os_syscall_network_denied=True,
+        direct_network_denied=True,
+        child_network_denied=True,
+        untrusted_execution_count=0,
+        unapproved_network_effect_count=0,
+        unauthorized_effect_count=0,
+        synthetic_scan_manifest_digest=capability.synthetic_scan_manifest_digest,
+        synthetic_canary_hit_count=0,
+        started_at=TIMESTAMP,
+        completed_at="2026-07-27T12:01:00.000000Z",
+    )
+
+
+def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
+    module = _operations_module()
+    assert tuple(module.ACCEPTANCE_FACT_MODELS) == (
+        "acceptance_nomination",
+        "acceptance_benchmark_lock",
+        "acceptance_scenario",
+        "acceptance_hosted_isolation_capability",
+        "acceptance_offline_adversarial_run",
+        "acceptance_replay",
+        "acceptance_changed_source",
+        "acceptance_publication_replay_completion",
+        "acceptance_changed_source_draft_update_completion",
+        "acceptance_gate_b4",
+        "acceptance_human_review",
+        "acceptance_cleanup",
+        "acceptance_reviewer_calibration",
+        "acceptance_gate",
+        "acceptance_report_root",
+    )
+    with pytest.raises(TypeError):
+        module.ACCEPTANCE_FACT_MODELS["acceptance_replay"] = object
+
+
+def test_acceptance_intent_and_completion_coexist_idempotently(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    replay = _acceptance_replay()
+    completion = _acceptance_replay_completion(replay)
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        first = store.record_acceptance_fact(
+            replay.acceptance_run_id,
+            "acceptance_replay",
+            replay,
+        )
+        second = store.record_acceptance_fact(
+            replay.acceptance_run_id,
+            "acceptance_publication_replay_completion",
+            completion,
+        )
+        assert store.record_acceptance_fact(
+            replay.acceptance_run_id,
+            "acceptance_publication_replay_completion",
+            completion,
+        ) == second
+        snapshot = store.acceptance_snapshot(replay.acceptance_run_id)
+        assert tuple(item.kind for item in snapshot.facts) == (
+            "acceptance_publication_replay_completion",
+            "acceptance_replay",
+        )
+        assert {item.fact_digest for item in snapshot.facts} == {
+            first.fact_digest,
+            second.fact_digest,
+        }
+        with pytest.raises(module.OperationsIntegrityError):
+            store.record_acceptance_fact(
+                replay.acceptance_run_id,
+                "acceptance_publication_replay_completion",
+                _acceptance_replay_completion(
+                    replay,
+                    recorded_at="2026-07-27T12:02:00.000000Z",
+                ),
+            )
+
+
+def test_acceptance_capability_reference_and_owned_rebuild_are_exact(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    capability = _hosted_capability()
+    offline = _offline_run(capability)
+    source = tmp_path / "operations.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        with pytest.raises(module.OperationsIntegrityError):
+            store.record_acceptance_fact(
+                offline.acceptance_run_id,
+                "acceptance_offline_adversarial_run",
+                offline,
+            )
+        store.record_acceptance_fact(
+            offline.acceptance_run_id,
+            "acceptance_hosted_isolation_capability",
+            capability,
+        )
+        store.record_acceptance_fact(
+            offline.acceptance_run_id,
+            "acceptance_offline_adversarial_run",
+            offline,
+        )
+        exported = store.export_owned_state()
+
+    rebuilt = tmp_path / "rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        fresh = store.export_owned_state()
+    assert fresh.facts == exported.facts
+    assert fresh.projection == exported.projection
+    assert (
+        fresh.database_bytes == exported.database_bytes
+        and fresh.database_digest == exported.database_digest
+    )
+
+
+def test_acceptance_kind_model_and_run_binding_fail_before_mutation(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    replay = _acceptance_replay()
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        with pytest.raises((TypeError, module.OperationsIntegrityError)):
+            store.record_acceptance_fact(
+                replay.acceptance_run_id,
+                "acceptance_scenario",
+                replay,
+            )
+        with pytest.raises(module.OperationsIntegrityError):
+            store.record_acceptance_fact(
+                "other-acceptance-run",
+                "acceptance_replay",
+                replay,
+            )
+        assert store.acceptance_snapshot(replay.acceptance_run_id).facts == ()
 
 
 def test_state_fixture_is_bounded_canonical_and_database_owner_complete() -> None:
