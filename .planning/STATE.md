@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Completed 06-05-PLAN.md
-last_updated: "2026-07-29T08:03:57.703Z"
+stopped_at: Completed 06-15-PLAN.md out of order; next incomplete remains 06-06
+last_updated: "2026-07-29T08:17:33.890Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 76
-  completed_plans: 66
+  completed_plans: 67
   percent: 83
 ---
 
@@ -119,8 +119,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-29T08:03:57.699Z
-**Stopped at:** Completed 06-05-PLAN.md
+**Last session:** 2026-07-29T08:17:21.735Z
+**Stopped at:** Completed 06-15-PLAN.md out of order; next incomplete remains 06-06
 **Resume file:** None
 
 ### Next
@@ -192,6 +192,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 | Phase 06 P03 | 10min | 2 tasks | 8 files |
 | Phase 06 P04 | 18min | 2 tasks | 4 files |
 | Phase 06 P05 | 12min | 2 tasks | 6 files |
+| Phase 06 P15 | 9min | 1 tasks | 8 files |
 
 ## Decisions
 
@@ -343,3 +344,5 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - [Phase 06]: Phase 6 acceptance uses distinct frozen capability types for nomination, locked campaigns, replay/update, attestations, and rebuild.
 - [Phase 06]: Acceptance CLI authority excludes runtime model, endpoint, catalog, ref, secret, cleanup, merge, approval, and ready-for-review selection.
 - [Phase 06]: Acceptance fixes the catalog to alexzhu0/skillscout-catalog-test and validates immutable facts before environment-backed credentials.
+- [Phase 06]: Recognize only direct python -m skillscout, inline SkillScout imports, and python tools/*.py as authoritative workflow entry forms — Every unknown acquisition or invocation source must fail closed before Gate B4.
+- [Phase 06]: Keep fixed-catalog credentials exclusively in value_publication after fresh_gate_b4 — Nomination, semantic, attestation, rebuild, and isolation jobs retain separate minimum authority zones.

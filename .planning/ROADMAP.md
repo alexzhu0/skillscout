@@ -310,7 +310,7 @@ Plans:
 
 **Depends on:** Phase 5  
 **Requirements:** TEST-01, TEST-02, TEST-03, TEST-04  
-**Plans:** 5/15 plans executed
+**Plans:** 6/15 plans executed
 
 - [x] 06-01-PLAN.md
 - [x] 06-02-PLAN.md
@@ -326,7 +326,7 @@ Plans:
 - [ ] 06-12-PLAN.md
 - [ ] 06-13-PLAN.md
 - [ ] 06-14-PLAN.md
-- [ ] 06-15-PLAN.md
+- [x] 06-15-PLAN.md
 
 - [ ] `06-01-PLAN.md` — Freeze Wave 0 acceptance contracts and exact validation task map.
 - [ ] `06-02-PLAN.md` — Freeze adversarial/report contracts and prove hosted kernel isolation capability.
@@ -374,7 +374,7 @@ Plans:
 | 3. Validated Skill Candidate | 14/14 | Complete   | 2026-07-23 |
 | 4. Controlled Draft PR | 11/11 | Complete    | 2026-07-27 |
 | 5. Automated Discovery Operations | 14/14 | Complete    | 2026-07-28 |
-| 6. Adversarial MVP Acceptance | 5/15 | In Progress|  |
+| 6. Adversarial MVP Acceptance | 6/15 | In Progress|  |
 
 ## Milestone Exit Criteria
 
