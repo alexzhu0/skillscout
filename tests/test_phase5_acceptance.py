@@ -13,6 +13,17 @@ import pytest
 PROJECT_ROOT = Path(__file__).parents[1]
 INSPECTOR = PROJECT_ROOT / "tools/verify_phase5_acceptance.py"
 PHASE = Path(".planning/phases/05-automated-discovery-operations")
+PHASE5_GATE_B4_WORKFLOW_DIGESTS = {
+    Path(".github/workflows/discover.yml"): (
+        "8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd"
+    ),
+    Path(".github/workflows/publish-candidate.yml"): (
+        "96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0"
+    ),
+    Path(".github/workflows/gate-b4-canary.yml"): (
+        "9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d"
+    ),
+}
 
 
 @pytest.fixture
@@ -72,6 +83,18 @@ def _metadata(root: Path) -> dict[str, tuple[int, int, str]]:
             hashlib.sha256(path.read_bytes()).hexdigest(),
         )
     return result
+
+
+def test_historical_fixture_uses_gate_b4_bound_workflow_bytes(
+    acceptance_repository: Path,
+) -> None:
+    observed = {
+        relative: hashlib.sha256(
+            (acceptance_repository / relative).read_bytes()
+        ).hexdigest()
+        for relative in PHASE5_GATE_B4_WORKFLOW_DIGESTS
+    }
+    assert observed == PHASE5_GATE_B4_WORKFLOW_DIGESTS
 
 
 def test_complete_tree_passes_read_only_from_external_cwd(
