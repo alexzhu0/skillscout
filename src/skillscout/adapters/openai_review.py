@@ -166,9 +166,7 @@ class OpenAIReviewClient:
                 started,
                 response=deepseek,
                 judgment=deepseek.parsed,
-                incomplete_reason=(
-                    "max_tokens" if deepseek.status == "incomplete" else None
-                ),
+                incomplete_reason=("max_tokens" if deepseek.status == "incomplete" else None),
             )
         try:
             response = self._client.responses.parse(
@@ -193,9 +191,7 @@ class OpenAIReviewClient:
                 "incomplete",
                 started,
                 response=response,
-                incomplete_reason=(reason or "incomplete")[
-                    :MAX_INCOMPLETE_REASON_CHARS
-                ],
+                incomplete_reason=(reason or "incomplete")[:MAX_INCOMPLETE_REASON_CHARS],
             )
         refusal = _first_refusal(response)
         if refusal is not None:
@@ -244,8 +240,7 @@ class OpenAIReviewClient:
                 refusal_text=refusal_text,
                 incomplete_reason=incomplete_reason,
                 request_id=(
-                    getattr(response, "id", None)
-                    or getattr(response, "request_id", None)
+                    getattr(response, "id", None) or getattr(response, "request_id", None)
                     if response is not None
                     else None
                 ),

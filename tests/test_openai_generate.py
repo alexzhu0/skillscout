@@ -169,9 +169,7 @@ def _deepseek_client(recorded: RecordedTransport) -> OpenAIGenerationClient:
 
 
 def test_generator_request_is_one_tool_less_store_false_strict_call() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: recorded_openai_generator_fixture("parsed_success")}
-    )
+    recorded = RecordedTransport({RESPONSES: recorded_openai_generator_fixture("parsed_success")})
     result = _client(recorded).generate(request=_request())
 
     assert result.status == "parsed"
@@ -197,9 +195,7 @@ def test_generator_request_is_one_tool_less_store_false_strict_call() -> None:
 
 def test_generator_prompt_is_versioned_and_separates_untrusted_evidence() -> None:
     request = _request(injection=True)
-    recorded = RecordedTransport(
-        {RESPONSES: recorded_openai_generator_fixture("prompt_injection")}
-    )
+    recorded = RecordedTransport({RESPONSES: recorded_openai_generator_fixture("prompt_injection")})
     result = _client(recorded).generate(request=request)
 
     assert GENERATOR_PROMPT_VERSION in GENERATOR_INSTRUCTIONS_V1
@@ -213,9 +209,7 @@ def test_generator_prompt_is_versioned_and_separates_untrusted_evidence() -> Non
 
 
 def test_generator_success_maps_complete_telemetry() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: recorded_openai_generator_fixture("parsed_success")}
-    )
+    recorded = RecordedTransport({RESPONSES: recorded_openai_generator_fixture("parsed_success")})
     result = _client(recorded).generate(request=_request())
 
     assert result.status == "parsed"
@@ -243,9 +237,7 @@ def test_generator_closed_model_outcomes_use_exactly_one_request(
     fixture: str,
     status: str,
 ) -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: recorded_openai_generator_fixture(fixture)}
-    )
+    recorded = RecordedTransport({RESPONSES: recorded_openai_generator_fixture(fixture)})
     result = _client(recorded).generate(request=_request())
 
     assert result.status == status
@@ -264,9 +256,7 @@ def test_generator_retryable_provider_failures_escape_after_one_request(
     fixture: str,
     expected: SemanticTransportDisposition,
 ) -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: recorded_openai_generator_fixture(fixture)}
-    )
+    recorded = RecordedTransport({RESPONSES: recorded_openai_generator_fixture(fixture)})
     with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).generate(request=_request())
 
@@ -275,9 +265,7 @@ def test_generator_retryable_provider_failures_escape_after_one_request(
 
 
 def test_generator_has_remote_read_scope_and_keeps_key_out_of_payload() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: recorded_openai_generator_fixture("parsed_success")}
-    )
+    recorded = RecordedTransport({RESPONSES: recorded_openai_generator_fixture("parsed_success")})
     client = _client(recorded)
     assert client.effect_scope is EffectScope.REMOTE_READ
     client.generate(request=_request())
@@ -324,9 +312,7 @@ def test_deepseek_generator_rejects_extra_fields_locally() -> None:
     openai_body = json.loads(recorded_openai_generator_fixture("parsed_success").body)
     content = json.loads(openai_body["output"][0]["content"][0]["text"])
     content["unexpected"] = True
-    recorded = RecordedTransport(
-        {CHAT_COMPLETIONS: _deepseek_response(json.dumps(content))}
-    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _deepseek_response(json.dumps(content))})
 
     result = _deepseek_client(recorded).generate(request=_request())
 
@@ -347,9 +333,7 @@ def test_deepseek_generator_preserves_transport_disposition(
     status: int,
     expected: SemanticTransportDisposition,
 ) -> None:
-    recorded = RecordedTransport(
-        {CHAT_COMPLETIONS: _provider_error_response(status)}
-    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _provider_error_response(status)})
 
     with pytest.raises(SemanticProviderFailure) as failure:
         _deepseek_client(recorded).generate(request=_request())

@@ -102,9 +102,7 @@ def test_semantic_transport_disposition_is_one_closed_four_way_vocabulary() -> N
             "semantic_provider_outcome_unknown",
         ),
         (
-            openai.APITimeoutError(
-                httpx.Request("POST", "https://provider.invalid/semantic")
-            ),
+            openai.APITimeoutError(httpx.Request("POST", "https://provider.invalid/semantic")),
             SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
             "semantic_provider_outcome_unknown",
         ),
@@ -525,9 +523,7 @@ def test_each_exact_stage_model_pair_makes_one_strict_request(
     model: str,
 ) -> None:
     stage = _future_provider_symbol("SemanticStage")
-    recorded = RecordedTransport(
-        {CHAT_COMPLETIONS: _chat_response('{"value":"ok"}', model=model)}
-    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _chat_response('{"value":"ok"}', model=model)})
     settings = resolve_semantic_provider(
         {
             "SKILLSCOUT_LLM_PROVIDER": "deepseek",
@@ -573,9 +569,7 @@ def test_each_exact_stage_model_pair_makes_one_strict_request(
         ("review", "caller-selected-model"),
     ),
 )
-def test_wrong_stage_model_pair_fails_before_transport(
-    stage_name: str, model: str
-) -> None:
+def test_wrong_stage_model_pair_fails_before_transport(stage_name: str, model: str) -> None:
     stage = _future_provider_symbol("SemanticStage")
 
     class RejectingClient:

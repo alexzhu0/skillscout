@@ -75,9 +75,7 @@ from skillscout.domain.skill_artifacts import (
 )
 from skillscout.domain.validation import ValidationReportV1
 
-REVIEW_FIXTURES = (
-    Path(__file__).parent / "fixtures" / "openai" / "reviewer" / "cases.json"
-)
+REVIEW_FIXTURES = Path(__file__).parent / "fixtures" / "openai" / "reviewer" / "cases.json"
 RESPONSES = ("POST", "/v1/responses")
 CHAT_COMPLETIONS = ("POST", "/chat/completions")
 CANARY_KEY = "sk-CANARY-REVIEWER-DO-NOT-DISCLOSE-012345"
@@ -354,9 +352,7 @@ def test_domain_versions_and_judgment_are_strict_and_judge_only() -> None:
         "rewrite",
     ):
         with pytest.raises(ValidationError):
-            ReviewerJudgment.model_validate(
-                {**payload, forbidden_field: "replacement content"}
-            )
+            ReviewerJudgment.model_validate({**payload, forbidden_field: "replacement content"})
 
 
 @pytest.mark.parametrize("verdict", ("MAYBE", "yes", "", "NO "))
@@ -449,9 +445,7 @@ def test_domain_exact_validation_verdict_confidence_cross_product(
 
 
 def test_adapter_request_is_exact_four_section_user_only_envelope() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: _recorded_review_fixture("parsed_yes")}
-    )
+    recorded = RecordedTransport({RESPONSES: _recorded_review_fixture("parsed_yes")})
     result = _client(recorded).review(
         workflow_spec=_workflow(injection=True),
         package=_package(injection=True),
@@ -538,9 +532,7 @@ def _envelope_section(envelope: str, ordinal: int) -> str:
 
 
 def test_adapter_uses_fresh_non_colliding_delimiters_per_invocation() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: _recorded_review_fixture("parsed_yes")}
-    )
+    recorded = RecordedTransport({RESPONSES: _recorded_review_fixture("parsed_yes")})
     client = _client(recorded)
     for _ in range(2):
         result = client.review(
@@ -552,8 +544,7 @@ def test_adapter_uses_fresh_non_colliding_delimiters_per_invocation() -> None:
 
     bodies = [json.loads(request.content.decode()) for request in recorded.requests]
     tokens = [
-        re.search(r"SKILLSCOUT-REVIEW:([0-9a-f]{32}):1", body["input"][1]["content"])
-        .group(1)
+        re.search(r"SKILLSCOUT-REVIEW:([0-9a-f]{32}):1", body["input"][1]["content"]).group(1)
         for body in bodies
     ]
     assert tokens[0] != tokens[1]
@@ -561,9 +552,7 @@ def test_adapter_uses_fresh_non_colliding_delimiters_per_invocation() -> None:
 
 
 def test_adapter_success_maps_actual_reviewer_telemetry() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: _recorded_review_fixture("parsed_yes")}
-    )
+    recorded = RecordedTransport({RESPONSES: _recorded_review_fixture("parsed_yes")})
     result = _client(recorded).review(
         workflow_spec=_workflow(),
         package=_package(),
@@ -632,9 +621,7 @@ def test_adapter_retryable_provider_failure_escapes_after_one_request(
 
 
 def test_adapter_permanent_provider_failure_escapes_after_one_request() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: _recorded_review_fixture("openai_400")}
-    )
+    recorded = RecordedTransport({RESPONSES: _recorded_review_fixture("openai_400")})
     with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).review(
             workflow_spec=_workflow(),
@@ -647,9 +634,7 @@ def test_adapter_permanent_provider_failure_escapes_after_one_request() -> None:
 
 
 def test_adapter_is_remote_read_and_keeps_credentials_header_only() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: _recorded_review_fixture("parsed_yes")}
-    )
+    recorded = RecordedTransport({RESPONSES: _recorded_review_fixture("parsed_yes")})
     client = _client(recorded)
     assert client.effect_scope is EffectScope.REMOTE_READ
     client.review(
@@ -741,17 +726,12 @@ def test_deepseek_reviewer_rejects_wrong_actual_model_evidence() -> None:
             validation_report=_adapter_report(),
         )
 
-    assert (
-        failure.value.disposition
-        is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-    )
+    assert failure.value.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
 
 
 def test_deepseek_reviewer_rejects_invalid_schema_locally() -> None:
-    recorded = RecordedTransport(
-        {CHAT_COMPLETIONS: _deepseek_response('{"verdict":"YES"}')}
-    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _deepseek_response('{"verdict":"YES"}')})
 
     result = _deepseek_client(recorded).review(
         workflow_spec=_workflow(),
@@ -776,9 +756,7 @@ def test_deepseek_reviewer_preserves_transport_disposition(
     status: int,
     expected: SemanticTransportDisposition,
 ) -> None:
-    recorded = RecordedTransport(
-        {CHAT_COMPLETIONS: _provider_error_response(status)}
-    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _provider_error_response(status)})
 
     with pytest.raises(SemanticProviderFailure) as failure:
         _deepseek_client(recorded).review(
@@ -865,19 +843,13 @@ def _resolved_lineage() -> LineageResolutionV1:
 def _rejected_lineage(*, qualification: bool = False) -> LineageResolutionV1:
     return LineageResolutionV1(
         schema_version=LINEAGE_RESOLUTION_SCHEMA_VERSION,
-        status=(
-            "not_evaluated_qualification_rejected"
-            if qualification
-            else "lineage_rejected"
-        ),
+        status=("not_evaluated_qualification_rejected" if qualification else "lineage_rejected"),
         lineage_authority_digest=None,
         lineage_id=None,
         stable_slug=None,
         initial_workflow_spec_authority_digest=None,
         reason_codes=(
-            ("qualification_rejected",)
-            if qualification
-            else ("missing_verified_evidence",)
+            ("qualification_rejected",) if qualification else ("missing_verified_evidence",)
         ),
     )
 
@@ -917,9 +889,7 @@ def _review_result(
     return ReviewResult(
         status=status,
         judgment=(
-            _judgment(verdict=verdict, confidence=confidence)
-            if status == "parsed"
-            else None
+            _judgment(verdict=verdict, confidence=confidence) if status == "parsed" else None
         ),
         refusal_text="bounded refusal" if status == "refused" else None,
         incomplete_reason="max_output_tokens" if status == "incomplete" else None,
@@ -978,11 +948,7 @@ def _matrix_case(outcome: str) -> dict[str, object]:
     lineage = (
         _rejected_lineage(qualification=True)
         if outcome == "qualification_rejected"
-        else (
-            _rejected_lineage()
-            if outcome == "lineage_rejected"
-            else _resolved_lineage()
-        )
+        else (_rejected_lineage() if outcome == "lineage_rejected" else _resolved_lineage())
     )
     generator: GeneratorOutcomeEvidenceV1 | None = None
     report: ValidationReportV1 | None = None
@@ -1002,9 +968,7 @@ def _matrix_case(outcome: str) -> dict[str, object]:
         generator = _generator_evidence("parsed", package=package)
         package_identity = package.package_identity
         artifact_identity = package.generated_artifact_identity
-        report = _terminal_report(
-            error_count=1 if outcome == "validation_rejected" else 0
-        )
+        report = _terminal_report(error_count=1 if outcome == "validation_rejected" else 0)
 
     if outcome == "validation_rejected":
         disposition = review_disposition(
@@ -1056,17 +1020,11 @@ def _matrix_case(outcome: str) -> dict[str, object]:
 
 
 def test_external_contract_vocabularies_are_exact_and_attestation_has_no_eligibility() -> None:
-    assert CANDIDATE_EXECUTION_AUTHORITY_SCHEMA_VERSION == (
-        "candidate-execution-authority-v1"
-    )
-    assert GENERATOR_OUTCOME_EVIDENCE_SCHEMA_VERSION == (
-        "generator-outcome-evidence-v1"
-    )
+    assert CANDIDATE_EXECUTION_AUTHORITY_SCHEMA_VERSION == ("candidate-execution-authority-v1")
+    assert GENERATOR_OUTCOME_EVIDENCE_SCHEMA_VERSION == ("generator-outcome-evidence-v1")
     assert REVIEW_DISPOSITION_SCHEMA_VERSION == "review-disposition-v1"
     assert REVIEW_ATTESTATION_SCHEMA_VERSION == "review-attestation-v1"
-    assert CANDIDATE_TERMINAL_SUMMARY_SCHEMA_VERSION == (
-        "candidate-terminal-summary-v1"
-    )
+    assert CANDIDATE_TERMINAL_SUMMARY_SCHEMA_VERSION == ("candidate-terminal-summary-v1")
 
     terminal_schema = CandidateTerminalSummaryV1.model_json_schema()
     assert terminal_schema["properties"]["outcome"]["enum"] == list(TERMINAL_OUTCOMES)
@@ -1084,9 +1042,7 @@ def test_external_contract_vocabularies_are_exact_and_attestation_has_no_eligibi
         "review_completed_eligible",
     ]
 
-    attestation_properties = set(
-        ReviewAttestationV1.model_json_schema()["properties"]
-    )
+    attestation_properties = set(ReviewAttestationV1.model_json_schema()["properties"])
     assert "eligible" not in attestation_properties
     assert "eligibility_policy_version" not in attestation_properties
 
@@ -1099,37 +1055,40 @@ def test_terminal_summary_accepts_exact_branch_evidence_matrix(outcome: str) -> 
     assert summary.outcome == outcome
     assert summary.eligible is (outcome == "eligible_local_candidate")
     assert summary.eligibility_policy_version == ELIGIBILITY_POLICY_VERSION
-    assert (
-        summary.generator_outcome_evidence is not None
-    ) is (outcome not in {"qualification_rejected", "lineage_rejected"})
-    assert (
-        summary.package_identity is not None
-    ) is (outcome not in {
-        "qualification_rejected",
-        "lineage_rejected",
-        "generator_refusal",
-        "generator_incomplete",
-        "generator_schema_failure",
-    })
-    assert (
-        summary.validation_report_digest is not None
-    ) is (outcome not in {
-        "qualification_rejected",
-        "lineage_rejected",
-        "generator_refusal",
-        "generator_incomplete",
-        "generator_schema_failure",
-    })
-    assert (
-        summary.review_attestation_digest is not None
-    ) is (outcome in {
-        "reviewer_refusal",
-        "reviewer_incomplete",
-        "reviewer_schema_failure",
-        "review_rejected",
-        "review_low_confidence",
-        "eligible_local_candidate",
-    })
+    assert (summary.generator_outcome_evidence is not None) is (
+        outcome not in {"qualification_rejected", "lineage_rejected"}
+    )
+    assert (summary.package_identity is not None) is (
+        outcome
+        not in {
+            "qualification_rejected",
+            "lineage_rejected",
+            "generator_refusal",
+            "generator_incomplete",
+            "generator_schema_failure",
+        }
+    )
+    assert (summary.validation_report_digest is not None) is (
+        outcome
+        not in {
+            "qualification_rejected",
+            "lineage_rejected",
+            "generator_refusal",
+            "generator_incomplete",
+            "generator_schema_failure",
+        }
+    )
+    assert (summary.review_attestation_digest is not None) is (
+        outcome
+        in {
+            "reviewer_refusal",
+            "reviewer_incomplete",
+            "reviewer_schema_failure",
+            "review_rejected",
+            "review_low_confidence",
+            "eligible_local_candidate",
+        }
+    )
 
 
 def test_attestation_binds_exact_external_evidence_and_raw_review() -> None:
@@ -1138,9 +1097,7 @@ def test_attestation_binds_exact_external_evidence_and_raw_review() -> None:
     result = _review_result()
     attestation = _attestation(result=result, report=report, package=package)
 
-    assert attestation.generated_artifact_identity == (
-        package.generated_artifact_identity
-    )
+    assert attestation.generated_artifact_identity == (package.generated_artifact_identity)
     assert attestation.package_identity == package.package_identity
     assert attestation.package_digest == package.package_identity.package_digest
     assert attestation.validation_report_digest == report.report_digest
@@ -1158,9 +1115,7 @@ def test_attestation_binds_exact_external_evidence_and_raw_review() -> None:
     assert attestation.usage == result.usage
     assert attestation.latency_ms == result.latency_ms
     assert attestation.attestation_digest.startswith("sha256:")
-    assert review_attestation_bytes(attestation) == review_attestation_bytes(
-        attestation
-    )
+    assert review_attestation_bytes(attestation) == review_attestation_bytes(attestation)
 
 
 def test_attestation_rejects_noncontiguous_failed_reviewer_attempts() -> None:
@@ -1173,9 +1128,7 @@ def test_attestation_rejects_noncontiguous_failed_reviewer_attempts() -> None:
     )
     payload = attestation.model_dump(mode="python", exclude_none=False)
     payload["attempt_count"] = 2
-    payload["failed_attempts"] = (
-        {"attempt_no": 2, "error_code": "stage_transient_failure"},
-    )
+    payload["failed_attempts"] = ({"attempt_no": 2, "error_code": "stage_transient_failure"},)
 
     with pytest.raises(ValidationError, match="attempt history disagrees"):
         ReviewAttestationV1.model_validate(payload)
@@ -1219,9 +1172,7 @@ def test_terminal_summary_digest_is_canonical_and_evidence_sensitive() -> None:
         **{**case, "qualification_report_digest": _digest("1")},
     )
 
-    assert candidate_terminal_summary_bytes(first) == (
-        candidate_terminal_summary_bytes(second)
-    )
+    assert candidate_terminal_summary_bytes(first) == (candidate_terminal_summary_bytes(second))
     assert first.terminal_summary_digest == second.terminal_summary_digest
     assert changed.terminal_summary_digest != first.terminal_summary_digest
 

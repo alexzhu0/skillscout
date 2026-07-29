@@ -53,9 +53,7 @@ class SemanticProviderFailure(Exception):
         if type(disposition) is not SemanticTransportDisposition:
             raise TypeError("invalid semantic transport disposition")
         expected_codes = {
-            SemanticTransportDisposition.CONFIRMED_RETRYABLE: {
-                "semantic_rate_limited"
-            },
+            SemanticTransportDisposition.CONFIRMED_RETRYABLE: {"semantic_rate_limited"},
             SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN: {
                 "semantic_provider_outcome_unknown"
             },
@@ -66,10 +64,7 @@ class SemanticProviderFailure(Exception):
             or code not in expected_codes[disposition]
             or (
                 request_id is not None
-                and (
-                    type(request_id) is not str
-                    or _SAFE_REQUEST_ID.fullmatch(request_id) is None
-                )
+                and (type(request_id) is not str or _SAFE_REQUEST_ID.fullmatch(request_id) is None)
             )
         ):
             raise TypeError("invalid semantic provider failure")
@@ -112,9 +107,7 @@ def classify_semantic_provider_failure(
         if type(status_code) is int and 400 <= status_code < 500:
             if status_code == 408:
                 return SemanticProviderFailure(
-                    disposition=(
-                        SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-                    ),
+                    disposition=(SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
                     code="semantic_provider_outcome_unknown",
                     request_id=request_id,
                 )
@@ -241,12 +234,9 @@ def _validate_semantic_provider_settings(
     elif settings.provider is SemanticProvider.DEEPSEEK:
         valid = (
             settings.api_key_env == "DEEPSEEK_API_KEY"
-            and settings.extract_model
-            == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.EXTRACTION]
-            and settings.generator_model
-            == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.GENERATION]
-            and settings.reviewer_model
-            == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.REVIEW]
+            and settings.extract_model == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.EXTRACTION]
+            and settings.generator_model == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.GENERATION]
+            and settings.reviewer_model == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.REVIEW]
             and settings.base_url == DEEPSEEK_OFFICIAL_BASE_URL
         )
     else:

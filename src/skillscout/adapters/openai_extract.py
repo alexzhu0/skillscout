@@ -216,8 +216,7 @@ class OpenAIExtractionClient:
                 refusal_text=refusal_text,
                 incomplete_reason=incomplete_reason,
                 request_id=(
-                    getattr(response, "id", None)
-                    or getattr(response, "request_id", None)
+                    getattr(response, "id", None) or getattr(response, "request_id", None)
                     if response is not None
                     else None
                 ),

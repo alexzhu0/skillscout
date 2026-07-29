@@ -63,14 +63,10 @@ def _error_response(status: int, error_type: str) -> RecordedResponse:
     body = json.dumps(
         {"error": {"message": "recorded", "type": error_type, "code": "recorded"}}
     ).encode()
-    return RecordedResponse(
-        status=status, headers={"content-type": "application/json"}, body=body
-    )
+    return RecordedResponse(status=status, headers={"content-type": "application/json"}, body=body)
 
 
-def _deepseek_response(
-    content: str | None, *, finish_reason: str = "stop"
-) -> RecordedResponse:
+def _deepseek_response(content: str | None, *, finish_reason: str = "stop") -> RecordedResponse:
     return RecordedResponse(
         status=200,
         headers={"content-type": "application/json"},
@@ -176,9 +172,7 @@ def test_environment_api_key_is_read_once_at_construction(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", CANARY_KEY)
     recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("parsed_2_workflows")})
-    client = OpenAIExtractionClient(
-        http_client=httpx.Client(transport=recorded.transport())
-    )
+    client = OpenAIExtractionClient(http_client=httpx.Client(transport=recorded.transport()))
     monkeypatch.delenv("OPENAI_API_KEY")
     result = client.extract(user_payload=USER_PAYLOAD)
 
@@ -205,17 +199,13 @@ def test_parsed_two_workflows_maps_to_result_with_full_telemetry() -> None:
     assert result.incomplete_reason is None
     assert result.request_id == "resp_ext_0001"
     assert result.model == ACTUAL_MODEL
-    assert result.usage == TokenUsage(
-        prompt_tokens=812, completion_tokens=246, total_tokens=1058
-    )
+    assert result.usage == TokenUsage(prompt_tokens=812, completion_tokens=246, total_tokens=1058)
     assert result.latency_ms is not None and result.latency_ms >= 0
     assert recorded.call_count(*RESPONSES) == 1
 
 
 def test_zero_workflows_maps_to_parsed_with_empty_workflows() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: recorded_openai_fixture("parsed_zero_workflows")}
-    )
+    recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("parsed_zero_workflows")})
     result = _client(recorded).extract(user_payload=USER_PAYLOAD)
 
     assert result.status == "parsed"
@@ -239,9 +229,7 @@ def test_refusal_maps_to_bounded_outcome_data() -> None:
 
 
 def test_incomplete_maps_to_reason_outcome_data() -> None:
-    recorded = RecordedTransport(
-        {RESPONSES: recorded_openai_fixture("incomplete_max_tokens")}
-    )
+    recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("incomplete_max_tokens")})
     result = _client(recorded).extract(user_payload=USER_PAYLOAD)
 
     assert result.status == "incomplete"
@@ -266,10 +254,7 @@ def test_rate_limit_maps_to_transient_failure_with_one_request() -> None:
     recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("openai_429")})
     with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).extract(user_payload=USER_PAYLOAD)
-    assert (
-        failure.value.disposition
-        is SemanticTransportDisposition.CONFIRMED_RETRYABLE
-    )
+    assert failure.value.disposition is SemanticTransportDisposition.CONFIRMED_RETRYABLE
     assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -291,10 +276,7 @@ def test_non_conforming_provider_telemetry_collapses_into_the_closed_failure_set
         )
         with pytest.raises(SemanticProviderFailure) as failure:
             _client(recorded).extract(user_payload=USER_PAYLOAD)
-        assert (
-            failure.value.disposition
-            is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-        )
+        assert failure.value.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
         assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -302,10 +284,7 @@ def test_server_error_maps_to_transient_failure_with_one_request() -> None:
     recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("openai_500")})
     with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).extract(user_payload=USER_PAYLOAD)
-    assert (
-        failure.value.disposition
-        is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-    )
+    assert failure.value.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
     assert recorded.call_count(*RESPONSES) == 1
 
 
@@ -313,9 +292,7 @@ def test_server_error_maps_to_transient_failure_with_one_request() -> None:
     ("status", "error_type"),
     [(400, "invalid_request_error"), (401, "authentication_error"), (403, "permission_error")],
 )
-def test_auth_and_bad_request_errors_map_to_permanent_failure(
-    status: int, error_type: str
-) -> None:
+def test_auth_and_bad_request_errors_map_to_permanent_failure(status: int, error_type: str) -> None:
     recorded = RecordedTransport({RESPONSES: _error_response(status, error_type)})
     with pytest.raises(SemanticProviderFailure) as failure:
         _client(recorded).extract(user_payload=USER_PAYLOAD)
@@ -337,9 +314,7 @@ def test_model_and_output_budget_are_configurable() -> None:
 def test_deepseek_extraction_uses_chat_json_and_maps_existing_result() -> None:
     openai_body = json.loads(recorded_openai_fixture("parsed_2_workflows").body)
     content = openai_body["output"][0]["content"][0]["text"]
-    recorded = RecordedTransport(
-        {CHAT_COMPLETIONS: _deepseek_response(content)}
-    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _deepseek_response(content)})
 
     result = _deepseek_client(recorded).extract(user_payload=USER_PAYLOAD)
 
@@ -347,9 +322,7 @@ def test_deepseek_extraction_uses_chat_json_and_maps_existing_result() -> None:
     assert result.response is not None
     assert result.request_id == "chatcmpl-extract-1"
     assert result.model == DEEPSEEK_MODEL
-    assert result.usage == TokenUsage(
-        prompt_tokens=20, completion_tokens=10, total_tokens=30
-    )
+    assert result.usage == TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30)
     body = json.loads(recorded.requests[0].content)
     assert body["model"] == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.EXTRACTION]
     assert body["messages"][1] == {"role": "user", "content": USER_PAYLOAD}
@@ -370,9 +343,7 @@ def test_deepseek_extraction_uses_chat_json_and_maps_existing_result() -> None:
         (_deepseek_response("{}", finish_reason="length"), "incomplete"),
     ),
 )
-def test_deepseek_extraction_fails_closed(
-    response: RecordedResponse, status: str
-) -> None:
+def test_deepseek_extraction_fails_closed(response: RecordedResponse, status: str) -> None:
     recorded = RecordedTransport({CHAT_COMPLETIONS: response})
     result = _deepseek_client(recorded).extract(user_payload=USER_PAYLOAD)
     assert result.status == status
