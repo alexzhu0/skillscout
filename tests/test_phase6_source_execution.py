@@ -22,6 +22,9 @@ WORKFLOW_PATHS = (
 LOCAL_LOCKED = ".tools/uv-0.11.29/bin/uv run --locked"
 CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV = "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9"
+UPLOAD_ARTIFACT = (
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+)
 PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
 
 
@@ -125,6 +128,70 @@ def test_source_execution_verifier_requires_closed_python_runtime_mounts(
     module = _module()
     result = module.verify_source_execution(_copy_workflows(tmp_path))
     assert result.network_none_invocation_count == 6
+
+
+def test_source_execution_verifier_requires_one_failure_only_diagnostic_upload(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    result = module.verify_source_execution(_copy_workflows(tmp_path))
+    assert getattr(result, "diagnostic_upload_count", 0) == 1
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        (
+            "runtime-preflight|control|direct-probe|child-probe|campaign-report|"
+            "synthetic-scan|complete",
+            "runtime-preflight|control|direct-probe|child-probe|campaign-report|"
+            "synthetic-scan|complete|debug",
+        ),
+        ("control_status=-1", 'control_status="not-run"'),
+        (
+            '"artifact_retention_days":1}',
+            '"message":"campaign failed","artifact_retention_days":1}',
+        ),
+        (
+            '"artifact_retention_days":1}',
+            '"log_path":"/tmp/control.log","artifact_retention_days":1}',
+        ),
+        (
+            "failure-diagnostic.json\n"
+            "          if-no-files-found: error\n"
+            "          retention-days: 1",
+            "failure-diagnostic.json\n"
+            "          if-no-files-found: error\n"
+            "          retention-days: 2",
+        ),
+        (
+            "Upload the bounded noncanonical campaign diagnostic\n"
+            "        if: ${{ always() && steps.offline_campaign.outcome == 'failure' }}\n"
+            f"        uses: {UPLOAD_ARTIFACT}",
+            "Upload the bounded noncanonical campaign diagnostic\n"
+            "        if: ${{ always() && steps.offline_campaign.outcome == 'failure' }}\n"
+            "        uses: actions/upload-artifact@main",
+        ),
+        (
+            "phase6-offline-adversarial-diagnostic-",
+            "phase6-offline-adversarial-canonical-evidence-",
+        ),
+        (
+            "if: ${{ always() && steps.offline_campaign.outcome == 'failure' }}",
+            "if: ${{ always() }}",
+        ),
+    ),
+)
+def test_source_execution_verifier_rejects_diagnostic_mutations(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    _replace_first(repository, needle, replacement)
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -91,6 +92,28 @@ OFFLINE_EVIDENCE_FIELDS = (
     "synthetic_scan_manifest_digest",
     "synthetic_canary_hit_count",
     "artifact_retention_days",
+)
+OFFLINE_DIAGNOSTIC_FIELDS = (
+    "schema_version",
+    "source_commit_sha",
+    "workflow_sha256",
+    "hosted_run_id",
+    "run_attempt",
+    "stage",
+    "overall_status",
+    "control_status",
+    "direct_status",
+    "child_status",
+    "artifact_retention_days",
+)
+OFFLINE_DIAGNOSTIC_STAGES = (
+    "runtime-preflight",
+    "control",
+    "direct-probe",
+    "child-probe",
+    "campaign-report",
+    "synthetic-scan",
+    "complete",
 )
 
 
@@ -255,6 +278,160 @@ def _assert_offline_adversarial_workflow(source: str) -> None:
         )
         == OFFLINE_EVIDENCE_FIELDS
     )
+
+
+def _assert_offline_failure_diagnostic(job: str) -> None:
+    campaign_match = re.search(
+        r"^      - name: Run the fresh kernel-isolated adversarial campaign\n"
+        r"        id: offline_campaign\n"
+        r"        run: \|\n"
+        r"(?P<body>.*?)(?=^      - name: )",
+        job,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert campaign_match is not None
+    campaign = campaign_match.group("body")
+    format_match = re.search(
+        r"^          diagnostic_format='(?P<format>\{.*\})\\n'$",
+        campaign,
+        re.MULTILINE,
+    )
+    assert format_match is not None
+    rendered = format_match.group("format") % (
+        "phase6.offline-diagnostic.v1",
+        "a" * 40,
+        "absent",
+        123,
+        1,
+        "runtime-preflight",
+        1,
+        -1,
+        -1,
+        -1,
+    )
+    diagnostic = json.loads(rendered)
+    assert tuple(diagnostic) == OFFLINE_DIAGNOSTIC_FIELDS
+    assert diagnostic["artifact_retention_days"] == 1
+    for field in (
+        "hosted_run_id",
+        "run_attempt",
+        "overall_status",
+        "control_status",
+        "direct_status",
+        "child_status",
+        "artifact_retention_days",
+    ):
+        assert type(diagnostic[field]) is int
+    assert diagnostic["workflow_sha256"] == "absent"
+    assert (
+        tuple(
+            re.findall(
+                r'^          diagnostic_stage="([a-z-]+)"$',
+                campaign,
+                re.MULTILINE,
+            )
+        )
+        == OFFLINE_DIAGNOSTIC_STAGES
+    )
+    assert "control_status=-1" in campaign
+    assert "direct_status=-1" in campaign
+    assert "child_status=-1" in campaign
+    assert "campaign_exit_status=$?" in campaign
+    assert 'overall_status="$campaign_exit_status"' in campaign
+    assert 'exit "$campaign_exit_status"' in campaign
+    assert "diagnostic_write_status" in campaign
+    assert campaign.index("diagnostic_format=") < campaign.index(
+        "python_base_prefix_output="
+    )
+
+    diagnostic_upload = re.search(
+        r"^      - name: Upload the bounded noncanonical campaign diagnostic\n"
+        r"(?P<body>.*?)(?=^      - name: )",
+        job,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert diagnostic_upload is not None
+    upload = diagnostic_upload.group("body")
+    assert "if: ${{ always() && steps.offline_campaign.outcome == 'failure' }}" in upload
+    assert f"uses: actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}" in upload
+    assert (
+        "name: phase6-offline-adversarial-diagnostic-${{ github.run_id }}-"
+        "${{ github.run_attempt }}"
+    ) in upload
+    assert (
+        "path: ${{ runner.temp }}/phase6-offline-adversarial/"
+        "failure-diagnostic.json"
+    ) in upload
+    assert "if-no-files-found: error" in upload
+    assert "retention-days: 1" in upload
+    assert all(
+        token not in upload.casefold()
+        for token in (
+            ".log",
+            "offline-evidence",
+            "canonical",
+            "state",
+            "credential",
+            "secret",
+        )
+    )
+    assert job.count(f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}") == 2
+
+    evidence_upload = job.partition(
+        "- name: Upload the bounded noncanonical offline evidence"
+    )[2]
+    assert evidence_upload
+    assert "if: always()" not in evidence_upload
+
+
+def test_offline_campaign_failure_uploads_one_bounded_diagnostic_without_authority() -> None:
+    job = _job(_source(required=False), "offline_adversarial")
+    _assert_offline_failure_diagnostic(job)
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        (
+            "runtime-preflight|control|direct-probe|child-probe|campaign-report|"
+            "synthetic-scan|complete",
+            "runtime-preflight|control|direct-probe|child-probe|campaign-report|"
+            "synthetic-scan|complete|debug",
+        ),
+        ("control_status=-1", 'control_status="not-run"'),
+        (
+            '"artifact_retention_days":1}',
+            '"message":"campaign failed","artifact_retention_days":1}',
+        ),
+        (
+            '"artifact_retention_days":1}',
+            '"log_path":"/tmp/control.log","artifact_retention_days":1}',
+        ),
+        ("retention-days: 1", "retention-days: 2"),
+        (
+            f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}",
+            "actions/upload-artifact@main",
+        ),
+        (
+            "phase6-offline-adversarial-diagnostic-",
+            "phase6-offline-adversarial-canonical-evidence-",
+        ),
+        (
+            "if: ${{ always() && steps.offline_campaign.outcome == 'failure' }}",
+            "if: ${{ always() }}",
+        ),
+    ),
+)
+def test_offline_failure_diagnostic_mutations_fail_closed(
+    needle: str,
+    replacement: str,
+) -> None:
+    source = _source(required=False)
+    job = _job(source, "offline_adversarial")
+    assert needle in job
+    mutated_job = job.replace(needle, replacement, 1)
+    with pytest.raises(AssertionError):
+        _assert_offline_failure_diagnostic(mutated_job)
 
 
 def test_offline_adversarial_runs_complete_kernel_isolated_campaign_without_credentials() -> None:
