@@ -39,6 +39,37 @@ EVIDENCE_FIELDS = (
     "synthetic_canary_hit_count",
     "artifact_retention_days",
 )
+OFFLINE_EVIDENCE_FIELDS = (
+    "schema_version",
+    "non_authoritative",
+    "supersedes_failed_probe_run_id",
+    "workflow_sha256",
+    "source_commit_sha",
+    "hosted_run_id",
+    "run_attempt",
+    "runner_image",
+    "isolation_mechanism",
+    "control_command_digest",
+    "direct_probe_command_digest",
+    "child_probe_command_digest",
+    "control_outcome",
+    "direct_network_outcome",
+    "child_network_outcome",
+    "scenario_matrix_digest",
+    "required_scenario_ids",
+    "completed_scenario_ids",
+    "scenario_result_digests",
+    "controlled_scenario_count",
+    "credential_count",
+    "state_write_capability",
+    "untrusted_execution_count",
+    "unapproved_network_effect_count",
+    "unauthorized_effect_count",
+    "synthetic_scan_manifest",
+    "synthetic_scan_manifest_digest",
+    "synthetic_canary_hit_count",
+    "artifact_retention_days",
+)
 
 
 def _source(*, required: bool = True) -> str:
@@ -136,6 +167,102 @@ def _assert_isolation_workflow(source: str) -> None:
         < job.index(f"astral-sh/setup-uv@{SETUP_UV_SHA}")
         < job.index(f"{LOCAL_UV} run --locked")
     )
+
+
+def _assert_offline_adversarial_workflow(source: str) -> None:
+    job = _job(source, "offline_adversarial")
+    assert "runs-on: ubuntu-24.04" in job
+    assert re.search(r"^    permissions:\n      contents: read$", job, re.MULTILINE)
+    assert f"actions/checkout@{CHECKOUT_SHA}" in job
+    assert f"astral-sh/setup-uv@{SETUP_UV_SHA}" in job
+    assert job.count("docker run --network none") == 3
+    assert "tests/test_phase6_adversarial.py" in job
+    assert "python /probe/direct_probe.py" in job
+    assert "python /probe/child_probe.py" in job
+    assert 'PHASE6_PRIOR_FAILED_PROBE_RUN_ID="30430010273"' in job
+    assert "observed artifact count was zero" in job
+    assert "phase6-synthetic-header-canary" in job
+    assert "phase6-synthetic-payload-canary" in job
+    assert f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}" in job
+    assert "retention-days: 1" in job
+    assert "if-no-files-found: error" in job
+    assert "offline-evidence.json" in job
+    evidence_match = re.search(
+        r"^          evidence = \{\n(?P<body>.*?)^          \}\n",
+        job,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert evidence_match is not None
+    assert tuple(
+        re.findall(
+            r'^              "([a-z][a-z0-9_]*)":',
+            evidence_match.group("body"),
+            re.MULTILINE,
+        )
+    ) == OFFLINE_EVIDENCE_FIELDS
+
+
+def test_offline_adversarial_runs_complete_kernel_isolated_campaign_without_credentials() -> None:
+    source = _source(required=False)
+    _assert_offline_adversarial_workflow(source)
+    job = _job(source, "offline_adversarial")
+    forbidden = (
+        "DEEPSEEK",
+        "OPENAI",
+        "SKILLSCOUT_GITHUB_APP",
+        "SKILLSCOUT_CATALOG",
+        "SKILLSCOUT_STATE_GITHUB_TOKEN",
+        "contents: write",
+        "pull-requests: write",
+        "administration:",
+        "${{ secrets.",
+    )
+    assert all(token not in job for token in forbidden)
+
+
+def test_offline_adversarial_synthetic_scan_manifest_is_explicit_and_path_closed() -> None:
+    job = _job(_source(required=False), "offline_adversarial")
+    assert (
+        'scan_names = ("control.log", "redacted-state.json", '
+        '"campaign-report.json", "one-day-artifact.json", "pr-diff-fixture.txt")'
+    ) in job
+    forbidden = (
+        "rglob(",
+        "os.walk(",
+        "Path.home(",
+        ".env",
+        ".pem",
+        ".jwt",
+        "private-key",
+        "private_key",
+    )
+    assert all(token not in job.casefold() for token in forbidden)
+    assert "raise SystemExit(\"synthetic canary reached an allowlisted surface\")" in job
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        ("docker run --network none", "docker run"),
+        (
+            'PHASE6_PRIOR_FAILED_PROBE_RUN_ID="30430010273"',
+            'PHASE6_PRIOR_FAILED_PROBE_RUN_ID="1"',
+        ),
+        ("phase6-synthetic-header-canary", "removed-header-seed"),
+        ("synthetic_scan_manifest_digest", "unbounded_scan_digest"),
+        ("retention-days: 1", "retention-days: 30"),
+    ),
+)
+def test_offline_adversarial_mutations_fail_closed(
+    needle: str,
+    replacement: str,
+) -> None:
+    source = _source(required=False)
+    assert needle in source
+    with pytest.raises(AssertionError):
+        _assert_offline_adversarial_workflow(
+            source.replace(needle, replacement, 1)
+        )
 
 
 def test_phase6_isolation_probe_workflow_is_required() -> None:
