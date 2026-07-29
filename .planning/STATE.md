@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-07-29T06:22:15.870Z"
+stopped_at: Completed 06-02-PLAN.md with hosted isolation blocker
+last_updated: "2026-07-29T07:02:47.206Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 76
-  completed_plans: 62
-  percent: 82
+  completed_plans: 63
+  percent: 83
 ---
 
 # Project State: SkillScout
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 06 (adversarial-mvp-acceptance) — EXECUTING
-**Plan:** 2 of 15
+**Plan:** 3 of 15
 **Verification:** Phase 6 plan checker passed with TEST-01..04, D-01..D-27, 38/38 task-map, dependency, threat-model, workflow-freeze, and post-planning gap gates green
 **Next command:** `$gsd-execute-phase 6`
 
@@ -42,7 +42,7 @@ Phase 3 implementation  [██████████] 100%
 Phase 3 verification    [██████████] 100%
 Phase 4 publication     [██████████] 100%
 Phase 5 operations      [██████████] 100%
-Phase 6 acceptance      [░░░░░░░░░░]   0%
+Phase 6 acceptance      [█░░░░░░░░░]  13%
 ```
 
 | Metric | Value |
@@ -51,7 +51,7 @@ Phase 6 acceptance      [░░░░░░░░░░]   0%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 5/6 |
-| Plans completed | 61/76 authored plans |
+| Plans completed | 63/76 authored plans |
 
 ## Project Reference
 
@@ -106,7 +106,9 @@ Live acceptance uses DeepSeek Flash for extraction/generation and Pro for indepe
 
 ## Blockers
 
-None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips, and fresh Gate B4 evidence is bound to the exact current discover, publish, and canary workflow bytes. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
+Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips, and fresh Gate B4 evidence is bound to the exact current discover, publish, and canary workflow bytes. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
+
+- Plan 06-06 hosted isolation ingestion is blocked: run 30430010273 failed before the network probe, upload was skipped, and artifact count is zero.
 
 ### Quick Tasks Completed
 
@@ -117,8 +119,8 @@ None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requ
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-29T06:22:15.865Z
-**Stopped at:** Completed 06-01-PLAN.md
+**Last session:** 2026-07-29T07:02:47.192Z
+**Stopped at:** Completed 06-02-PLAN.md with hosted isolation blocker
 **Resume file:** None
 
 ### Next
@@ -186,6 +188,7 @@ None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requ
 | Phase 05 P07 | 8min | 2 tasks | 3 files |
 | Phase 05 P08 | 56min | 2 tasks | 20 files |
 | Phase 06 P01 | 12 min | 3 tasks | 8 files |
+| Phase 06 P02 | 32 min | 3 tasks | 5 files |
 
 ## Decisions
 
@@ -323,3 +326,6 @@ None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requ
 - [Phase 06]: Represent Wave 0 RED as exact named missing-contract failures — Collection and infrastructure failures must never satisfy the RED contract.
 - [Phase 06]: Keep all Phase 6 release gates blocking when evidence is absent — Wave 0 cannot fabricate hosted, live, human, or report authority.
 - [Phase 06]: Require transitive ownership reachability for every Phase 6 surface — Prevents missing owners and producer-consumer inversions before execution.
+- [Phase 06]: Treat hosted run 30430010273 as a blocking failure because locked-toolchain verification failed before the network probe and artifact upload. — No bounded artifact exists, so D-24 kernel/OS denial remains unproven.
+- [Phase 06]: Record exact run, source, workflow, job, and empty-artifact locators without inventing an artifact digest or inspecting raw logs. — Preserve a tamper-evident failure boundary without widening the approved evidence surface.
+- [Phase 06]: Deny Plan 06-06 campaign credit until an authorized exact run produces bounded evidence revalidated into canonical operations state. — A skipped probe and zero artifacts cannot authorize campaign evidence.
