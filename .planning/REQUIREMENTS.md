@@ -81,10 +81,10 @@
 
 ### MVP Verification
 
-- [ ] **TEST-01**: 系统使用至少 5 个固定到 commit SHA 的真实公共仓库完成 Search 到发布决策的端到端验收。
-- [ ] **TEST-02**: 验收集至少覆盖成功生成、确定性过滤、资格低分、格式/安全失败、Reviewer 拒绝和多种 Prompt Injection 输入。
-- [ ] **TEST-03**: 相同 repo、commit SHA、workflow fingerprint 和政策版本重复运行时，不得重复生成 WorkflowSpec、Skill、发布分支或 Draft PR；相关来源变化必须触发重新评估并更新既有 Draft。
-- [ ] **TEST-04**: MVP 必须至少创建一个需要人类审核的真实 Draft PR，并实测自动化身份无法 push 默认分支、merge、批准或读取未授权密钥。
+- [x] **TEST-01**: 系统使用至少 5 个固定到 commit SHA 的真实公共仓库完成 Search 到发布决策的端到端验收。
+- [x] **TEST-02**: 验收集至少覆盖成功生成、确定性过滤、资格低分、格式/安全失败、Reviewer 拒绝和多种 Prompt Injection 输入。
+- [x] **TEST-03**: 相同 repo、commit SHA、workflow fingerprint 和政策版本重复运行时，不得重复生成 WorkflowSpec、Skill、发布分支或 Draft PR；相关来源变化必须触发重新评估并更新既有 Draft。
+- [x] **TEST-04**: MVP 必须至少创建一个需要人类审核的真实 Draft PR，并实测自动化身份无法 push 默认分支、merge、批准或读取未授权密钥。
 
 ## v2 Requirements
 
@@ -177,10 +177,10 @@ Roadmap 创建后，每条 v1 requirement 必须且只能映射到一个主要�
 | OPS-04 | Phase 1 | Complete |
 | SEC-01 | Phase 2 | Complete |
 | SEC-02 | Phase 4 | Complete |
-| TEST-01 | Phase 6 | Pending |
-| TEST-02 | Phase 6 | Pending |
-| TEST-03 | Phase 6 | Pending |
-| TEST-04 | Phase 6 | Pending |
+| TEST-01 | Phase 6 | Complete |
+| TEST-02 | Phase 6 | Complete |
+| TEST-03 | Phase 6 | Complete |
+| TEST-04 | Phase 6 | Complete |
 
 **Coverage:** 44 v1 requirements; 44 mapped; 0 unmapped.
 

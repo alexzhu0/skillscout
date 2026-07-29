@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 6
-current_phase_name: Adversarial MVP Acceptance
+current_phase: 06
+current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Phase 6 planned and independently verified; ready to execute
-last_updated: "2026-07-29T05:59:35.543Z"
+stopped_at: Completed 06-01-PLAN.md
+last_updated: "2026-07-29T06:22:15.870Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 76
-  completed_plans: 61
-  percent: 83
+  completed_plans: 62
+  percent: 82
 ---
 
 # Project State: SkillScout
@@ -24,8 +24,8 @@ progress:
 
 ## Current Position
 
-**Phase:** 6 — Adversarial MVP Acceptance
-**Plan:** 15 plans across 13 waves; execution not started
+**Phase:** 06 (adversarial-mvp-acceptance) — EXECUTING
+**Plan:** 2 of 15
 **Verification:** Phase 6 plan checker passed with TEST-01..04, D-01..D-27, 38/38 task-map, dependency, threat-model, workflow-freeze, and post-planning gap gates green
 **Next command:** `$gsd-execute-phase 6`
 
@@ -117,9 +117,9 @@ None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requ
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-28T07:35:52.535Z
-**Stopped at:** Phase 6 planned and independently verified; ready to execute
-**Resume file:** .planning/phases/06-adversarial-mvp-acceptance/06-01-PLAN.md
+**Last session:** 2026-07-29T06:22:15.865Z
+**Stopped at:** Completed 06-01-PLAN.md
+**Resume file:** None
 
 ### Next
 
@@ -185,6 +185,7 @@ None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requ
 | Phase 05 P13 | 15min | 2 tasks | 4 files |
 | Phase 05 P07 | 8min | 2 tasks | 3 files |
 | Phase 05 P08 | 56min | 2 tasks | 20 files |
+| Phase 06 P01 | 12 min | 3 tasks | 8 files |
 
 ## Decisions
 
@@ -319,3 +320,6 @@ None. Phase 5 independently passed 6/6 roadmap criteria and all five mapped requ
 - [Phase 05]: Operations run identity is explicit and distinct from semantic execution identity — Durability checks must address the discovery reservation namespace exactly.
 - [Phase 05]: Workflow terminal facts are authoritative for exact eligible-set reconstruction — Candidate aggregates cannot prove which workflow emitted each artifact.
 - [Phase 05]: Discovery resumes from typed persisted prefixes — Search pages, candidates, reservations, workflow terminals and summaries must not replay after durable completion.
+- [Phase 06]: Represent Wave 0 RED as exact named missing-contract failures — Collection and infrastructure failures must never satisfy the RED contract.
+- [Phase 06]: Keep all Phase 6 release gates blocking when evidence is absent — Wave 0 cannot fabricate hosted, live, human, or report authority.
+- [Phase 06]: Require transitive ownership reachability for every Phase 6 surface — Prevents missing owners and producer-consumer inversions before execution.
