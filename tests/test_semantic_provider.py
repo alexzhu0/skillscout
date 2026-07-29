@@ -213,7 +213,7 @@ def test_default_provider_is_openai_and_secret_free() -> None:
     assert "key" not in repr(settings).lower()
 
 
-def test_deepseek_requires_exact_official_origin_and_fixed_model() -> None:
+def test_deepseek_requires_exact_official_origin_and_stage_models() -> None:
     settings = resolve_semantic_provider(
         {
             "SKILLSCOUT_LLM_PROVIDER": "deepseek",
@@ -226,7 +226,7 @@ def test_deepseek_requires_exact_official_origin_and_fixed_model() -> None:
     assert settings.base_url == CANARY_BASE_URL
     assert settings.extract_model == DEEPSEEK_MODEL
     assert settings.generator_model == DEEPSEEK_MODEL
-    assert settings.reviewer_model == DEEPSEEK_MODEL
+    assert settings.reviewer_model == "deepseek-v4-pro"
     assert CANARY_BASE_URL not in repr(settings)
 
 
@@ -368,7 +368,7 @@ def test_deepseek_missing_secret_fails_closed_and_profile_stays_nonsecret() -> N
     )
     projection = profile.model_dump(mode="json")
     assert projection["configured_generator_model_id"] == DEEPSEEK_MODEL
-    assert projection["configured_reviewer_model_id"] == DEEPSEEK_MODEL
+    assert projection["configured_reviewer_model_id"] == "deepseek-v4-pro"
     assert CANARY_BASE_URL not in json.dumps(projection)
     assert settings.api_key_env not in json.dumps(projection)
 

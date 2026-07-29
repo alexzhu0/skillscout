@@ -6,15 +6,19 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Generic, Literal, Mapping, TypeVar
+from enum import Enum, StrEnum
+from types import MappingProxyType
+from typing import Any, Final, Generic, Literal, Mapping, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
 
 OPENAI_MODEL = "gpt-5.6-terra"
-DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"
+DEEPSEEK_PRO_MODEL = "deepseek-v4-pro"
+# Historical public name retained for existing all-Flash evidence and callers.
+DEEPSEEK_MODEL = DEEPSEEK_FLASH_MODEL
 DEEPSEEK_OFFICIAL_BASE_URL = "https://api.deepseek.com"
 
 _ResponseModel = TypeVar("_ResponseModel", bound=BaseModel)
@@ -140,6 +144,23 @@ class SemanticProvider(str, Enum):
     DEEPSEEK = "deepseek"
 
 
+class SemanticStage(StrEnum):
+    """The complete set of semantic stages admitted to provider transport."""
+
+    EXTRACTION = "extraction"
+    GENERATION = "generation"
+    REVIEW = "review"
+
+
+DEEPSEEK_MODEL_BY_STAGE: Final[Mapping[SemanticStage, str]] = MappingProxyType(
+    {
+        SemanticStage.EXTRACTION: DEEPSEEK_FLASH_MODEL,
+        SemanticStage.GENERATION: DEEPSEEK_FLASH_MODEL,
+        SemanticStage.REVIEW: DEEPSEEK_PRO_MODEL,
+    }
+)
+
+
 @dataclass(frozen=True, repr=False)
 class SemanticProviderSettings:
     """Non-secret provider identity resolved independently of credentials."""
@@ -197,11 +218,41 @@ def resolve_semantic_provider(
     return SemanticProviderSettings(
         provider=SemanticProvider.DEEPSEEK,
         api_key_env="DEEPSEEK_API_KEY",
-        extract_model=DEEPSEEK_MODEL,
-        generator_model=DEEPSEEK_MODEL,
-        reviewer_model=DEEPSEEK_MODEL,
+        extract_model=DEEPSEEK_MODEL_BY_STAGE[SemanticStage.EXTRACTION],
+        generator_model=DEEPSEEK_MODEL_BY_STAGE[SemanticStage.GENERATION],
+        reviewer_model=DEEPSEEK_MODEL_BY_STAGE[SemanticStage.REVIEW],
         base_url=DEEPSEEK_OFFICIAL_BASE_URL,
     )
+
+
+def _validate_semantic_provider_settings(
+    settings: SemanticProviderSettings,
+) -> None:
+    if type(settings) is not SemanticProviderSettings:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    if settings.provider is SemanticProvider.OPENAI:
+        valid = (
+            settings.api_key_env == "OPENAI_API_KEY"
+            and settings.extract_model == OPENAI_MODEL
+            and settings.generator_model == OPENAI_MODEL
+            and settings.reviewer_model == OPENAI_MODEL
+            and settings.base_url is None
+        )
+    elif settings.provider is SemanticProvider.DEEPSEEK:
+        valid = (
+            settings.api_key_env == "DEEPSEEK_API_KEY"
+            and settings.extract_model
+            == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.EXTRACTION]
+            and settings.generator_model
+            == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.GENERATION]
+            and settings.reviewer_model
+            == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.REVIEW]
+            and settings.base_url == DEEPSEEK_OFFICIAL_BASE_URL
+        )
+    else:
+        valid = False
+    if not valid:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
 
 
 def create_semantic_client(
@@ -214,8 +265,7 @@ def create_semantic_client(
 ) -> Any:
     """Bind exactly one provider credential to a zero-retry SDK client."""
 
-    if type(settings) is not SemanticProviderSettings:
-        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    _validate_semantic_provider_settings(settings)
     source = os.environ if environ is None else environ
     resolved_key = api_key if api_key is not None else source.get(settings.api_key_env)
     if not resolved_key:
@@ -226,8 +276,6 @@ def create_semantic_client(
         "max_retries": 0,
     }
     if settings.provider is SemanticProvider.DEEPSEEK:
-        if settings.base_url != DEEPSEEK_OFFICIAL_BASE_URL:
-            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         arguments["base_url"] = DEEPSEEK_OFFICIAL_BASE_URL
     return sdk.OpenAI(**arguments)
 
@@ -236,6 +284,7 @@ def request_deepseek_json(
     client: Any,
     *,
     sdk: Any,
+    stage: SemanticStage,
     model: str,
     instructions: str,
     user_payload: str,
@@ -245,7 +294,8 @@ def request_deepseek_json(
     """Make one no-tools JSON request and strictly validate assistant content."""
 
     if (
-        model != DEEPSEEK_MODEL
+        type(stage) is not SemanticStage
+        or model != DEEPSEEK_MODEL_BY_STAGE[stage]
         or not instructions
         or type(user_payload) is not str
         or max_tokens < 1
