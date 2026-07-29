@@ -265,9 +265,7 @@ def _offline_run(
         scenario_matrix_digest=DIGEST_C,
         required_scenario_ids=scenario_ids,
         completed_scenario_ids=scenario_ids,
-        scenario_result_digests=tuple(
-            "sha256:" + f"{index:064x}" for index in range(1, 16)
-        ),
+        scenario_result_digests=tuple("sha256:" + f"{index:064x}" for index in range(1, 16)),
         controlled_scenario_count=15,
         os_syscall_network_denied=True,
         direct_network_denied=True,
@@ -322,11 +320,14 @@ def test_acceptance_intent_and_completion_coexist_idempotently(
             "acceptance_publication_replay_completion",
             completion,
         )
-        assert store.record_acceptance_fact(
-            replay.acceptance_run_id,
-            "acceptance_publication_replay_completion",
-            completion,
-        ) == second
+        assert (
+            store.record_acceptance_fact(
+                replay.acceptance_run_id,
+                "acceptance_publication_replay_completion",
+                completion,
+            )
+            == second
+        )
         snapshot = store.acceptance_snapshot(replay.acceptance_run_id)
         assert tuple(item.kind for item in snapshot.facts) == (
             "acceptance_publication_replay_completion",
@@ -781,10 +782,10 @@ def test_workflow_terminals_and_run_snapshot_preserve_exact_eligible_set(
 
     assert snapshot.search_pages == (page,)
     assert snapshot.candidates == (candidate,)
-    assert tuple(
-        item.workflow_authority_digest
-        for item in snapshot.workflow_terminals
-    ) == (workflow_a, workflow_b)
+    assert tuple(item.workflow_authority_digest for item in snapshot.workflow_terminals) == (
+        workflow_a,
+        workflow_b,
+    )
     assert tuple(
         item.workflow_authority_digest
         for item in snapshot.workflow_terminals
@@ -1063,7 +1064,8 @@ def test_three_store_bundle_has_exact_paths_and_round_trips_owner_projections(
         "state/databases/publication.sqlite3",
     } < paths
     assert all(
-        path in {
+        path
+        in {
             "state/root.json",
             "state/databases/pipeline.sqlite3",
             "state/databases/operations.sqlite3",
@@ -1168,9 +1170,7 @@ def test_three_store_restore_rejects_bundle_mismatch_before_reuse(
         files[files.index(second)] = type(second)(second.path, first.content)
     elif damage == "object":
         index = next(
-            index
-            for index, item in enumerate(files)
-            if item.path.startswith("state/objects/")
+            index for index, item in enumerate(files) if item.path.startswith("state/objects/")
         )
         files[index] = type(files[index])(files[index].path, b"{}")
     else:

@@ -10,7 +10,8 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Callable, Final, Literal, TypeVar
+from types import MappingProxyType
+from typing import Annotated, Callable, Final, Literal, Mapping, TypeAlias, TypeVar
 
 from pydantic import Field, model_validator
 
@@ -31,6 +32,23 @@ from skillscout.adapters.state_branch import (
     StateOwnedFile,
     VerifiedStateBundle,
     _validate_bundle,
+)
+from skillscout.domain.acceptance import (
+    AcceptanceEvidenceRootV1,
+    AcceptanceGateResultV1,
+    AcceptanceScenarioResultV1,
+    ChangedSourceDraftUpdateCompletionV1,
+    ChangedSourceEvidenceV1,
+    GateB4BindingV1,
+    HostedIsolationCapabilityV1,
+    HumanSkillReviewAttestationV1,
+    LockedBenchmarkManifestV1,
+    NominationSetV1,
+    OfflineAdversarialRunV1,
+    ProbeCleanupAttestationV1,
+    PublicationReplayCompletionV1,
+    ReplayEvidenceV1,
+    ReviewerCalibrationV1,
 )
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.discovery import (
@@ -55,12 +73,8 @@ from skillscout.domain.models import Digest, StrictFrozenModel
 OPERATIONS_SCHEMA_VERSION: Final = 1
 MAX_OPERATIONS_DB_BYTES: Final = 67_108_864
 _DIGEST_PATTERN: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
-_STATE_OBJECT_LOCATOR: Final = re.compile(
-    r"^state/objects/sha256/[0-9a-f]{2}/[0-9a-f]{64}\.json$"
-)
-_TIMESTAMP_PATTERN: Final = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
-)
+_STATE_OBJECT_LOCATOR: Final = re.compile(r"^state/objects/sha256/[0-9a-f]{2}/[0-9a-f]{64}\.json$")
+_TIMESTAMP_PATTERN: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 _TEST_RUN_SCHEMA: Final = "operations-test-run-v1"
 _TEST_RESERVATION_SCHEMA: Final = "operations-test-reservation-v1"
 _TEST_TERMINAL_SCHEMA: Final = "operations-test-terminal-v1"
@@ -154,6 +168,24 @@ class DiscoveryRunSnapshot:
     summary: DiscoveryRunSummaryV1 | None
 
 
+_AcceptanceFactKind = Literal[
+    "acceptance_nomination",
+    "acceptance_benchmark_lock",
+    "acceptance_scenario",
+    "acceptance_hosted_isolation_capability",
+    "acceptance_offline_adversarial_run",
+    "acceptance_replay",
+    "acceptance_changed_source",
+    "acceptance_publication_replay_completion",
+    "acceptance_changed_source_draft_update_completion",
+    "acceptance_gate_b4",
+    "acceptance_human_review",
+    "acceptance_cleanup",
+    "acceptance_reviewer_calibration",
+    "acceptance_gate",
+    "acceptance_report_root",
+]
+
 _FactKind = Literal[
     "run",
     "search_page",
@@ -165,7 +197,100 @@ _FactKind = Literal[
     "candidate_terminal",
     "run_summary",
     "root_checkpoint",
+    "acceptance_nomination",
+    "acceptance_benchmark_lock",
+    "acceptance_scenario",
+    "acceptance_hosted_isolation_capability",
+    "acceptance_offline_adversarial_run",
+    "acceptance_replay",
+    "acceptance_changed_source",
+    "acceptance_publication_replay_completion",
+    "acceptance_changed_source_draft_update_completion",
+    "acceptance_gate_b4",
+    "acceptance_human_review",
+    "acceptance_cleanup",
+    "acceptance_reviewer_calibration",
+    "acceptance_gate",
+    "acceptance_report_root",
 ]
+
+_AcceptanceFactModel: TypeAlias = (
+    NominationSetV1
+    | LockedBenchmarkManifestV1
+    | AcceptanceScenarioResultV1
+    | HostedIsolationCapabilityV1
+    | OfflineAdversarialRunV1
+    | ReplayEvidenceV1
+    | ChangedSourceEvidenceV1
+    | PublicationReplayCompletionV1
+    | ChangedSourceDraftUpdateCompletionV1
+    | GateB4BindingV1
+    | HumanSkillReviewAttestationV1
+    | ProbeCleanupAttestationV1
+    | ReviewerCalibrationV1
+    | AcceptanceGateResultV1
+    | AcceptanceEvidenceRootV1
+)
+
+_ACCEPTANCE_FACT_MODEL_VALUES: Final = {
+    "acceptance_nomination": NominationSetV1,
+    "acceptance_benchmark_lock": LockedBenchmarkManifestV1,
+    "acceptance_scenario": AcceptanceScenarioResultV1,
+    "acceptance_hosted_isolation_capability": HostedIsolationCapabilityV1,
+    "acceptance_offline_adversarial_run": OfflineAdversarialRunV1,
+    "acceptance_replay": ReplayEvidenceV1,
+    "acceptance_changed_source": ChangedSourceEvidenceV1,
+    "acceptance_publication_replay_completion": PublicationReplayCompletionV1,
+    "acceptance_changed_source_draft_update_completion": (ChangedSourceDraftUpdateCompletionV1),
+    "acceptance_gate_b4": GateB4BindingV1,
+    "acceptance_human_review": HumanSkillReviewAttestationV1,
+    "acceptance_cleanup": ProbeCleanupAttestationV1,
+    "acceptance_reviewer_calibration": ReviewerCalibrationV1,
+    "acceptance_gate": AcceptanceGateResultV1,
+    "acceptance_report_root": AcceptanceEvidenceRootV1,
+}
+ACCEPTANCE_FACT_MODELS: Final[Mapping[str, type[StrictFrozenModel]]] = MappingProxyType(
+    _ACCEPTANCE_FACT_MODEL_VALUES
+)
+_ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "acceptance_nomination": "nomination_set_digest",
+        "acceptance_benchmark_lock": "manifest_digest",
+        "acceptance_scenario": "result_digest",
+        "acceptance_hosted_isolation_capability": "capability_digest",
+        "acceptance_offline_adversarial_run": "run_digest",
+        "acceptance_replay": "replay_digest",
+        "acceptance_changed_source": "changed_source_digest",
+        "acceptance_publication_replay_completion": "completion_digest",
+        "acceptance_changed_source_draft_update_completion": "completion_digest",
+        "acceptance_gate_b4": "binding_digest",
+        "acceptance_human_review": "attestation_digest",
+        "acceptance_cleanup": "attestation_digest",
+        "acceptance_reviewer_calibration": "calibration_digest",
+        "acceptance_gate": "gate_digest",
+        "acceptance_report_root": "root_digest",
+    }
+)
+_ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
+_ACCEPTANCE_FACT_KIND_SQL: Final = ", ".join(f"'{kind}'" for kind in _ACCEPTANCE_FACT_KINDS)
+
+
+@dataclass(frozen=True)
+class AcceptanceFactRecord:
+    """One typed, redacted acceptance fact owned by the operations ledger."""
+
+    acceptance_run_id: str
+    kind: _AcceptanceFactKind
+    fact_digest: str
+    fact: _AcceptanceFactModel
+
+
+@dataclass(frozen=True)
+class AcceptanceRunSnapshot:
+    """Canonical acceptance fact sequence for one acceptance run."""
+
+    acceptance_run_id: str
+    facts: tuple[AcceptanceFactRecord, ...]
 
 
 class OperationsOwnedFactV1(StrictFrozenModel):
@@ -187,6 +312,47 @@ class OperationsOwnedFactV1(StrictFrozenModel):
         return self
 
 
+class OperationsStateProjectionV1(StrictFrozenModel):
+    """Canonical digest-only projection of discovery and acceptance facts."""
+
+    schema_version: Literal["operations-state-projection-v1"]
+    search_page_digests: tuple[Digest, ...]
+    candidate_digests: tuple[Digest, ...]
+    discovery_reservation_digests: tuple[Digest, ...]
+    semantic_reservation_digests: tuple[Digest, ...]
+    workflow_terminal_digests: tuple[Digest, ...]
+    candidate_terminal_digests: tuple[Digest, ...]
+    run_summary_digests: tuple[Digest, ...]
+    acceptance_nomination_digests: tuple[Digest, ...]
+    acceptance_benchmark_lock_digests: tuple[Digest, ...]
+    acceptance_scenario_digests: tuple[Digest, ...]
+    acceptance_hosted_isolation_capability_digests: tuple[Digest, ...]
+    acceptance_offline_adversarial_run_digests: tuple[Digest, ...]
+    acceptance_replay_intent_digests: tuple[Digest, ...]
+    acceptance_changed_source_intent_digests: tuple[Digest, ...]
+    acceptance_publication_replay_completion_digests: tuple[Digest, ...]
+    acceptance_changed_source_draft_update_completion_digests: tuple[Digest, ...]
+    acceptance_gate_b4_digests: tuple[Digest, ...]
+    acceptance_human_review_digests: tuple[Digest, ...]
+    acceptance_cleanup_digests: tuple[Digest, ...]
+    acceptance_reviewer_calibration_digests: tuple[Digest, ...]
+    acceptance_gate_digests: tuple[Digest, ...]
+    acceptance_report_root_digests: tuple[Digest, ...]
+    projection_digest: Digest
+
+    @model_validator(mode="after")
+    def validate_projection_digest(self) -> OperationsStateProjectionV1:
+        values = self.model_dump(mode="json", exclude={"projection_digest"})
+        if self.projection_digest != sha256_digest(values):
+            raise ValueError("operations projection digest mismatch")
+        for name, value in values.items():
+            if name.endswith("_digests") and (
+                value != sorted(value) or len(value) != len(set(value))
+            ):
+                raise ValueError("operations projection digests are not canonical")
+        return self
+
+
 class OperationsOwnedStateV1(StrictFrozenModel):
     """Complete operations-owned JSON authority plus a disposable SQLite index."""
 
@@ -197,7 +363,7 @@ class OperationsOwnedStateV1(StrictFrozenModel):
     database_bytes: Annotated[bytes, Field(max_length=MAX_OPERATIONS_DB_BYTES)]
     database_digest: Digest
     facts: Annotated[tuple[OperationsOwnedFactV1, ...], Field(max_length=8_192)]
-    projection: DiscoveryStateRebuildProjectionV1
+    projection: OperationsStateProjectionV1
     projection_digest: Digest
     export_digest: Digest
 
@@ -236,7 +402,7 @@ class ThreeStoreProjectionV1(StrictFrozenModel):
 
     schema_version: Literal["three-store-projection-v1"]
     pipeline: PipelineStateProjectionV1
-    operations: DiscoveryStateRebuildProjectionV1
+    operations: OperationsStateProjectionV1
     publication: PublicationStateProjectionV1
     pipeline_export_digest: Digest
     operations_export_digest: Digest
@@ -371,6 +537,20 @@ def _schema_statements() -> tuple[str, ...]:
             state_commit_sha TEXT NOT NULL,
             checkpoint_json TEXT NOT NULL,
             UNIQUE (run_id, event_index)
+        )""",
+        f"""CREATE TABLE operations_acceptance_facts (
+            fact_digest TEXT PRIMARY KEY,
+            acceptance_run_id TEXT NOT NULL
+                CHECK (length(acceptance_run_id) BETWEEN 1 AND 256),
+            fact_kind TEXT NOT NULL CHECK (
+                fact_kind IN ({_ACCEPTANCE_FACT_KIND_SQL})
+            ),
+            schema_version TEXT NOT NULL
+                CHECK (length(schema_version) BETWEEN 1 AND 128),
+            recorded_identity TEXT NOT NULL
+                CHECK (length(recorded_identity) BETWEEN 1 AND 1024),
+            fact_json TEXT NOT NULL,
+            UNIQUE (acceptance_run_id, fact_kind, recorded_identity)
         )""",
     )
 
@@ -519,6 +699,19 @@ _FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str,
             "state_commit_sha",
         ),
     ),
+    (
+        "acceptance_nomination",
+        "operations_acceptance_facts",
+        "fact_json",
+        ("acceptance_run_id", "fact_kind", "fact_digest"),
+        (
+            "fact_digest",
+            "acceptance_run_id",
+            "fact_kind",
+            "schema_version",
+            "recorded_identity",
+        ),
+    ),
 )
 
 
@@ -558,9 +751,270 @@ def _fact_payload(fact: OperationsOwnedFactV1) -> dict[str, object]:
     return decoded
 
 
+def _contains_forbidden_acceptance_key(value: object) -> bool:
+    forbidden = {
+        "raw_corpus",
+        "raw_log",
+        "raw_logs",
+        "repository_body",
+        "response_body",
+        "fixture_prose",
+        "authorization",
+        "token",
+        "api_key",
+        "private_key",
+        "credential",
+        "home_path",
+        "repository_path",
+        "home_scan",
+        "repository_scan",
+        "unrestricted_path",
+    }
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized = str(key).casefold().replace("-", "_")
+            if normalized in forbidden or _contains_forbidden_acceptance_key(nested):
+                return True
+    elif isinstance(value, (list, tuple)):
+        return any(_contains_forbidden_acceptance_key(item) for item in value)
+    return False
+
+
+def _acceptance_fact_digest(kind: str, fact: StrictFrozenModel) -> str:
+    field = _ACCEPTANCE_DIGEST_FIELDS.get(kind)
+    digest = None if field is None else getattr(fact, field, None)
+    if type(digest) is not str or _DIGEST_PATTERN.fullmatch(digest) is None:
+        raise OperationsIntegrityError("acceptance fact self-digest is invalid")
+    return digest
+
+
+def _validate_acceptance_model(
+    kind: str,
+    raw: object,
+) -> _AcceptanceFactModel:
+    model = ACCEPTANCE_FACT_MODELS.get(kind)
+    if model is None or not isinstance(raw, dict) or _contains_forbidden_acceptance_key(raw):
+        raise OperationsIntegrityError("acceptance fact kind or redaction boundary is invalid")
+    try:
+        # JSON arrays are the canonical wire form of frozen tuple fields.
+        # Exact post-parse byte equality below rejects every coercive drift.
+        fact = model.model_validate_json(_json_text(raw), strict=False)
+    except Exception:
+        raise OperationsIntegrityError("acceptance fact model is invalid") from None
+    if _json_text(fact.model_dump(mode="json", exclude_none=False)) != _json_text(raw):
+        raise OperationsIntegrityError("acceptance fact JSON is not exact")
+    _acceptance_fact_digest(kind, fact)
+    return fact  # type: ignore[return-value]
+
+
+def _acceptance_recorded_identity(
+    acceptance_run_id: str,
+    kind: str,
+    fact: _AcceptanceFactModel,
+) -> str:
+    if kind == "acceptance_publication_replay_completion":
+        assert isinstance(fact, PublicationReplayCompletionV1)
+        values = (
+            acceptance_run_id,
+            fact.replay_intent_digest,
+            fact.publication_key,
+            fact.pull_request_number,
+            fact.head_commit_sha,
+        )
+    elif kind == "acceptance_changed_source_draft_update_completion":
+        assert isinstance(fact, ChangedSourceDraftUpdateCompletionV1)
+        values = (
+            acceptance_run_id,
+            fact.changed_source_intent_digest,
+            fact.publication_key,
+            fact.pull_request_number,
+            fact.new_head_commit_sha,
+        )
+    else:
+        values = (acceptance_run_id, kind, _acceptance_fact_digest(kind, fact))
+    return _json_text(values)
+
+
+def _acceptance_run_binding(
+    acceptance_run_id: str,
+    fact: _AcceptanceFactModel,
+) -> None:
+    bound_run_id = getattr(fact, "acceptance_run_id", acceptance_run_id)
+    if bound_run_id != acceptance_run_id:
+        raise OperationsIntegrityError("acceptance fact is bound to another run")
+
+
+def _acceptance_row_fact(row: sqlite3.Row) -> _AcceptanceFactModel:
+    raw = _decoded_json(row["fact_json"])
+    fact = _validate_acceptance_model(str(row["fact_kind"]), raw)
+    if (
+        str(getattr(fact, "schema_version")) != row["schema_version"]
+        or _acceptance_fact_digest(str(row["fact_kind"]), fact) != row["fact_digest"]
+    ):
+        raise OperationsIntegrityError("acceptance row metadata mismatch")
+    _acceptance_run_binding(str(row["acceptance_run_id"]), fact)
+    if (
+        _acceptance_recorded_identity(str(row["acceptance_run_id"]), str(row["fact_kind"]), fact)
+        != row["recorded_identity"]
+    ):
+        raise OperationsIntegrityError("acceptance fact natural identity mismatch")
+    return fact
+
+
+def _acceptance_fact_by_digest(
+    connection: sqlite3.Connection,
+    *,
+    acceptance_run_id: str,
+    kind: str,
+    digest: str,
+) -> _AcceptanceFactModel:
+    row = connection.execute(
+        """SELECT * FROM operations_acceptance_facts
+           WHERE acceptance_run_id = ? AND fact_kind = ? AND fact_digest = ?""",
+        (acceptance_run_id, kind, digest),
+    ).fetchone()
+    if row is None:
+        raise OperationsIntegrityError("required prior acceptance fact is missing")
+    return _acceptance_row_fact(row)
+
+
+def _validate_acceptance_references(
+    connection: sqlite3.Connection,
+    *,
+    acceptance_run_id: str,
+    kind: str,
+    fact: _AcceptanceFactModel,
+) -> None:
+    if kind == "acceptance_offline_adversarial_run":
+        assert isinstance(fact, OfflineAdversarialRunV1)
+        hosted = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_hosted_isolation_capability",
+            digest=fact.hosted_capability_digest,
+        )
+        assert isinstance(hosted, HostedIsolationCapabilityV1)
+        if (
+            fact.workflow_sha256,
+            fact.source_commit_sha,
+            fact.hosted_run_id,
+            fact.run_attempt,
+            fact.isolation_mechanism,
+            fact.synthetic_scan_manifest_digest,
+        ) != (
+            hosted.workflow_sha256,
+            hosted.source_commit_sha,
+            hosted.hosted_run_id,
+            hosted.run_attempt,
+            hosted.isolation_mechanism,
+            hosted.synthetic_scan_manifest_digest,
+        ):
+            raise OperationsIntegrityError("offline run capability binding mismatch")
+    elif kind == "acceptance_publication_replay_completion":
+        assert isinstance(fact, PublicationReplayCompletionV1)
+        replay = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_replay",
+            digest=fact.replay_intent_digest,
+        )
+        assert isinstance(replay, ReplayEvidenceV1)
+        if (
+            fact.repository_id,
+            fact.source_commit_sha,
+            fact.workflow_fingerprint,
+            fact.workflow_spec_authority_digest,
+            fact.publication_policy_version,
+        ) != (
+            replay.repository_id,
+            replay.source_commit_sha,
+            replay.workflow_fingerprint,
+            replay.workflow_spec_authority_digest,
+            replay.publication_policy_version,
+        ):
+            raise OperationsIntegrityError("publication replay intent binding mismatch")
+    elif kind == "acceptance_changed_source_draft_update_completion":
+        assert isinstance(fact, ChangedSourceDraftUpdateCompletionV1)
+        changed = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_changed_source",
+            digest=fact.changed_source_intent_digest,
+        )
+        assert isinstance(changed, ChangedSourceEvidenceV1)
+        if (
+            fact.repository_id,
+            fact.prior_source_commit_sha,
+            fact.new_source_commit_sha,
+            fact.prior_workflow_fingerprint,
+            fact.new_workflow_fingerprint,
+            fact.prior_workflow_spec_authority_digest,
+            fact.new_workflow_spec_authority_digest,
+            fact.prior_lineage_binding_digest,
+            fact.lineage_approval_record_digest,
+            fact.publication_key,
+            fact.new_lineage_id,
+        ) != (
+            changed.repository_id,
+            changed.prior_source_commit_sha,
+            changed.new_source_commit_sha,
+            changed.prior_workflow_fingerprint,
+            changed.new_workflow_fingerprint,
+            changed.prior_workflow_spec_authority_digest,
+            changed.new_workflow_spec_authority_digest,
+            changed.prior_lineage_binding_digest,
+            changed.lineage_approval_record_digest,
+            changed.planned_publication_key,
+            changed.planned_lineage_id,
+        ):
+            raise OperationsIntegrityError("changed-source intent binding mismatch")
+    elif kind == "acceptance_benchmark_lock":
+        assert isinstance(fact, LockedBenchmarkManifestV1)
+        _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_nomination",
+            digest=fact.nomination_set_digest,
+        )
+    elif kind == "acceptance_cleanup":
+        assert isinstance(fact, ProbeCleanupAttestationV1)
+        binding = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_gate_b4",
+            digest=fact.gate_b4_binding_digest,
+        )
+        assert isinstance(binding, GateB4BindingV1)
+        if (
+            fact.cleanup_target_digests
+            != tuple(target.target_digest for target in binding.cleanup_targets)
+            or fact.default_branch_before_sha != binding.default_branch_before_sha
+            or fact.default_branch_after_sha != binding.default_branch_after_sha
+        ):
+            raise OperationsIntegrityError("cleanup attestation binding mismatch")
+    elif kind == "acceptance_report_root":
+        assert isinstance(fact, AcceptanceEvidenceRootV1)
+        _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_benchmark_lock",
+            digest=fact.benchmark_manifest_digest,
+        )
+        gate_digests = {
+            str(row["fact_digest"])
+            for row in connection.execute(
+                """SELECT fact_digest FROM operations_acceptance_facts
+                   WHERE acceptance_run_id = ? AND fact_kind = 'acceptance_gate'""",
+                (acceptance_run_id,),
+            ).fetchall()
+        }
+        if {gate.gate_digest for gate in fact.gate_results} != gate_digests:
+            raise OperationsIntegrityError("acceptance report root gate set is stale")
+
+
 def _projection_from_facts(
     facts: tuple[OperationsOwnedFactV1, ...],
-) -> DiscoveryStateRebuildProjectionV1:
+) -> OperationsStateProjectionV1:
     fields: dict[str, list[str]] = {
         "search_page_digests": [],
         "candidate_digests": [],
@@ -569,6 +1023,21 @@ def _projection_from_facts(
         "workflow_terminal_digests": [],
         "candidate_terminal_digests": [],
         "run_summary_digests": [],
+        "acceptance_nomination_digests": [],
+        "acceptance_benchmark_lock_digests": [],
+        "acceptance_scenario_digests": [],
+        "acceptance_hosted_isolation_capability_digests": [],
+        "acceptance_offline_adversarial_run_digests": [],
+        "acceptance_replay_intent_digests": [],
+        "acceptance_changed_source_intent_digests": [],
+        "acceptance_publication_replay_completion_digests": [],
+        "acceptance_changed_source_draft_update_completion_digests": [],
+        "acceptance_gate_b4_digests": [],
+        "acceptance_human_review_digests": [],
+        "acceptance_cleanup_digests": [],
+        "acceptance_reviewer_calibration_digests": [],
+        "acceptance_gate_digests": [],
+        "acceptance_report_root_digests": [],
     }
     mapping = {
         "search_page": ("search_page_digests", "observation_digest"),
@@ -584,6 +1053,57 @@ def _projection_from_facts(
         "workflow_terminal": ("workflow_terminal_digests", "terminal_digest"),
         "candidate_terminal": ("candidate_terminal_digests", "terminal_digest"),
         "run_summary": ("run_summary_digests", "summary_digest"),
+        "acceptance_nomination": (
+            "acceptance_nomination_digests",
+            "nomination_set_digest",
+        ),
+        "acceptance_benchmark_lock": (
+            "acceptance_benchmark_lock_digests",
+            "manifest_digest",
+        ),
+        "acceptance_scenario": ("acceptance_scenario_digests", "result_digest"),
+        "acceptance_hosted_isolation_capability": (
+            "acceptance_hosted_isolation_capability_digests",
+            "capability_digest",
+        ),
+        "acceptance_offline_adversarial_run": (
+            "acceptance_offline_adversarial_run_digests",
+            "run_digest",
+        ),
+        "acceptance_replay": (
+            "acceptance_replay_intent_digests",
+            "replay_digest",
+        ),
+        "acceptance_changed_source": (
+            "acceptance_changed_source_intent_digests",
+            "changed_source_digest",
+        ),
+        "acceptance_publication_replay_completion": (
+            "acceptance_publication_replay_completion_digests",
+            "completion_digest",
+        ),
+        "acceptance_changed_source_draft_update_completion": (
+            "acceptance_changed_source_draft_update_completion_digests",
+            "completion_digest",
+        ),
+        "acceptance_gate_b4": ("acceptance_gate_b4_digests", "binding_digest"),
+        "acceptance_human_review": (
+            "acceptance_human_review_digests",
+            "attestation_digest",
+        ),
+        "acceptance_cleanup": (
+            "acceptance_cleanup_digests",
+            "attestation_digest",
+        ),
+        "acceptance_reviewer_calibration": (
+            "acceptance_reviewer_calibration_digests",
+            "calibration_digest",
+        ),
+        "acceptance_gate": ("acceptance_gate_digests", "gate_digest"),
+        "acceptance_report_root": (
+            "acceptance_report_root_digests",
+            "root_digest",
+        ),
     }
     for fact in facts:
         target = mapping.get(fact.kind)
@@ -595,10 +1115,10 @@ def _projection_from_facts(
             raise OperationsIntegrityError("operations projection fact is malformed")
         fields[target[0]].append(str(nested[target[1]]))
     values: dict[str, object] = {
-        "schema_version": "discovery-state-rebuild-projection-v1",
-        **{name: tuple(digests) for name, digests in fields.items()},
+        "schema_version": "operations-state-projection-v1",
+        **{name: tuple(sorted(digests)) for name, digests in fields.items()},
     }
-    return DiscoveryStateRebuildProjectionV1(
+    return OperationsStateProjectionV1(
         **values,
         projection_digest=sha256_digest(values),
     )
@@ -608,7 +1128,7 @@ def _export_digest(
     *,
     schema_fingerprint: str,
     facts: tuple[OperationsOwnedFactV1, ...],
-    projection: DiscoveryStateRebuildProjectionV1,
+    projection: OperationsStateProjectionV1,
 ) -> str:
     return sha256_digest(
         {
@@ -887,8 +1407,7 @@ class OperationsStateStore:
                     or terminal.repository_id != row["repository_id"]
                     or terminal.outcome != row["outcome"]
                     or terminal.semantic_reservation_digest != row["semantic_reservation_digest"]
-                    or tuple(sorted(terminal.workflow_authority_digests))
-                    != workflow_authorities
+                    or tuple(sorted(terminal.workflow_authority_digests)) != workflow_authorities
                 ):
                     raise OperationsIntegrityError("candidate terminal mismatch")
                 terminal_digest = terminal.terminal_digest
@@ -907,9 +1426,7 @@ class OperationsStateStore:
                 "schema_version": "operations-semantic-attempt-v1",
                 "run_id": row["run_id"],
                 "repository_id": row["repository_id"],
-                "workflow_authority_digest": row[
-                    "workflow_authority_digest"
-                ],
+                "workflow_authority_digest": row["workflow_authority_digest"],
                 "stage": row["stage"],
                 "attempt_no": row["attempt_no"],
                 "status": row["status"],
@@ -931,18 +1448,17 @@ class OperationsStateStore:
                 "schema_version": "operations-workflow-terminal-v1",
                 "run_id": row["run_id"],
                 "repository_id": row["repository_id"],
-                "workflow_authority_digest": row[
-                    "workflow_authority_digest"
-                ],
+                "workflow_authority_digest": row["workflow_authority_digest"],
                 "outcome": row["outcome"],
                 "eligible_locator": row["eligible_locator"],
                 "eligible_object_digest": row["eligible_object_digest"],
                 "recorded_at": row["recorded_at"],
             }
             digest = sha256_digest(expected_fields)
-            if raw != {**expected_fields, "terminal_digest": digest} or row[
-                "terminal_digest"
-            ] != digest:
+            if (
+                raw != {**expected_fields, "terminal_digest": digest}
+                or row["terminal_digest"] != digest
+            ):
                 raise OperationsIntegrityError("workflow terminal mismatch")
 
         for row in connection.execute(
@@ -990,6 +1506,19 @@ class OperationsStateStore:
                 or (statuses["status"] in {"running", "interrupted"} and summary_count != 0)
             ):
                 raise OperationsIntegrityError("run status and summary disagree")
+
+        acceptance_rows = connection.execute(
+            """SELECT * FROM operations_acceptance_facts
+               ORDER BY acceptance_run_id, fact_kind, fact_digest"""
+        ).fetchall()
+        for row in acceptance_rows:
+            fact = _acceptance_row_fact(row)
+            _validate_acceptance_references(
+                connection,
+                acceptance_run_id=str(row["acceptance_run_id"]),
+                kind=str(row["fact_kind"]),
+                fact=fact,
+            )
 
     @staticmethod
     def _verify_reservation_rows(
@@ -1423,9 +1952,7 @@ class OperationsStateStore:
                 ).fetchall()
             )
             if tuple(sorted(terminal.workflow_authority_digests)) != workflow_authorities:
-                raise OperationsIntegrityError(
-                    "candidate terminal workflow set mismatch"
-                )
+                raise OperationsIntegrityError("candidate terminal workflow set mismatch")
             connection.execute(
                 """INSERT INTO operations_candidate_terminals
                    (terminal_digest, run_id, repository_id,
@@ -1474,22 +2001,15 @@ class OperationsStateStore:
                 and (
                     type(eligible_locator) is not str
                     or _STATE_OBJECT_LOCATOR.fullmatch(eligible_locator) is None
-                    or _DIGEST_PATTERN.fullmatch(
-                        eligible_object_digest or ""
-                    )
-                    is None
+                    or _DIGEST_PATTERN.fullmatch(eligible_object_digest or "") is None
                     or not eligible_locator.endswith(
-                        eligible_object_digest.removeprefix("sha256:")
-                        + ".json"
+                        eligible_object_digest.removeprefix("sha256:") + ".json"
                     )
                 )
             )
             or (
                 not eligible
-                and (
-                    eligible_locator is not None
-                    or eligible_object_digest is not None
-                )
+                and (eligible_locator is not None or eligible_object_digest is not None)
             )
         ):
             raise ValueError("invalid workflow terminal")
@@ -1503,9 +2023,7 @@ class OperationsStateStore:
                 ).fetchone()
                 is None
             ):
-                raise OperationsIntegrityError(
-                    "workflow terminal discovery reservation is missing"
-                )
+                raise OperationsIntegrityError("workflow terminal discovery reservation is missing")
             values: dict[str, object] = {
                 "schema_version": "operations-workflow-terminal-v1",
                 "run_id": run_id,
@@ -1526,9 +2044,7 @@ class OperationsStateStore:
             payload = _json_text(values)
             if existing is not None:
                 if existing["terminal_json"] != payload:
-                    raise OperationsIntegrityError(
-                        "workflow terminal conflict"
-                    )
+                    raise OperationsIntegrityError("workflow terminal conflict")
             else:
                 connection.execute(
                     """INSERT INTO operations_workflow_terminals
@@ -1581,8 +2097,7 @@ class OperationsStateStore:
                 return tuple(
                     model.model_validate_json(row[column], strict=True)
                     for row in connection.execute(
-                        f"SELECT {column} FROM {table} "
-                        f"WHERE run_id = ? ORDER BY {order}",
+                        f"SELECT {column} FROM {table} WHERE run_id = ? ORDER BY {order}",
                         (run_id,),
                     ).fetchall()
                 )
@@ -1601,9 +2116,7 @@ class OperationsStateStore:
                     SemanticAttemptRecord(
                         run_id=run_id,
                         repository_id=int(row["repository_id"]),
-                        workflow_authority_digest=str(
-                            row["workflow_authority_digest"]
-                        ),
+                        workflow_authority_digest=str(row["workflow_authority_digest"]),
                         stage=str(row["stage"]),  # type: ignore[arg-type]
                         attempt_no=int(row["attempt_no"]),
                         status=str(row["status"]),  # type: ignore[arg-type]
@@ -1622,14 +2135,10 @@ class OperationsStateStore:
                     WorkflowTerminalRecord(
                         run_id=run_id,
                         repository_id=int(row["repository_id"]),
-                        workflow_authority_digest=str(
-                            row["workflow_authority_digest"]
-                        ),
+                        workflow_authority_digest=str(row["workflow_authority_digest"]),
                         outcome=str(row["outcome"]),  # type: ignore[arg-type]
                         eligible_locator=row["eligible_locator"],
-                        eligible_object_digest=row[
-                            "eligible_object_digest"
-                        ],
+                        eligible_object_digest=row["eligible_object_digest"],
                         recorded_at=str(row["recorded_at"]),
                         terminal_digest=str(row["terminal_digest"]),
                     )
@@ -1681,6 +2190,121 @@ class OperationsStateStore:
                 ),
             )
 
+    def record_acceptance_fact(
+        self,
+        acceptance_run_id: str,
+        kind: _AcceptanceFactKind,
+        fact: _AcceptanceFactModel,
+    ) -> AcceptanceFactRecord:
+        """Append one exact typed acceptance fact or return its exact duplicate."""
+
+        model = ACCEPTANCE_FACT_MODELS.get(kind)
+        if (
+            model is None
+            or type(fact) is not model
+            or type(acceptance_run_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", acceptance_run_id) is None
+        ):
+            raise TypeError("invalid typed acceptance fact")
+        raw = fact.model_dump(mode="json", exclude_none=False)
+        validated = _validate_acceptance_model(kind, raw)
+        _acceptance_run_binding(acceptance_run_id, validated)
+        fact_digest = _acceptance_fact_digest(kind, validated)
+        fact_json = _json_text(raw)
+        schema_version = str(getattr(validated, "schema_version"))
+        recorded_identity = _acceptance_recorded_identity(acceptance_run_id, kind, validated)
+
+        def record(value: _AcceptanceFactModel) -> AcceptanceFactRecord:
+            return AcceptanceFactRecord(
+                acceptance_run_id=acceptance_run_id,
+                kind=kind,
+                fact_digest=fact_digest,
+                fact=value,
+            )
+
+        def mutate(connection: sqlite3.Connection) -> AcceptanceFactRecord:
+            digest_row = connection.execute(
+                """SELECT * FROM operations_acceptance_facts
+                   WHERE fact_digest = ?""",
+                (fact_digest,),
+            ).fetchone()
+            if digest_row is not None:
+                if (
+                    digest_row["acceptance_run_id"] != acceptance_run_id
+                    or digest_row["fact_kind"] != kind
+                    or digest_row["schema_version"] != schema_version
+                    or digest_row["recorded_identity"] != recorded_identity
+                    or digest_row["fact_json"] != fact_json
+                ):
+                    raise OperationsIntegrityError(
+                        "acceptance fact digest was reused across authority"
+                    )
+                return record(_acceptance_row_fact(digest_row))
+            identity_row = connection.execute(
+                """SELECT * FROM operations_acceptance_facts
+                   WHERE acceptance_run_id = ? AND fact_kind = ?
+                     AND recorded_identity = ?""",
+                (acceptance_run_id, kind, recorded_identity),
+            ).fetchone()
+            if identity_row is not None:
+                raise OperationsIntegrityError("acceptance fact natural identity conflict")
+            _validate_acceptance_references(
+                connection,
+                acceptance_run_id=acceptance_run_id,
+                kind=kind,
+                fact=validated,
+            )
+            connection.execute(
+                """INSERT INTO operations_acceptance_facts
+                   (fact_digest, acceptance_run_id, fact_kind, schema_version,
+                    recorded_identity, fact_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    fact_digest,
+                    acceptance_run_id,
+                    kind,
+                    schema_version,
+                    recorded_identity,
+                    fact_json,
+                ),
+            )
+            return record(validated)
+
+        return self._snapshot_transaction(mutate)
+
+    def acceptance_snapshot(
+        self,
+        acceptance_run_id: str,
+    ) -> AcceptanceRunSnapshot:
+        """Return one run's exact typed acceptance facts in canonical order."""
+
+        if (
+            type(acceptance_run_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", acceptance_run_id) is None
+        ):
+            raise ValueError("invalid acceptance run ID")
+        with self._thread_lock:
+            if self._connection is None or self._poisoned:
+                raise OperationsStateError("operations state is unavailable")
+            rows = self._connection.execute(
+                """SELECT * FROM operations_acceptance_facts
+                   WHERE acceptance_run_id = ?
+                   ORDER BY fact_kind, fact_digest""",
+                (acceptance_run_id,),
+            ).fetchall()
+            return AcceptanceRunSnapshot(
+                acceptance_run_id=acceptance_run_id,
+                facts=tuple(
+                    AcceptanceFactRecord(
+                        acceptance_run_id=acceptance_run_id,
+                        kind=str(row["fact_kind"]),  # type: ignore[arg-type]
+                        fact_digest=str(row["fact_digest"]),
+                        fact=_acceptance_row_fact(row),
+                    )
+                    for row in rows
+                ),
+            )
+
     def record_semantic_attempt(
         self,
         *,
@@ -1726,9 +2350,7 @@ class OperationsStateStore:
                     raise OperationsIntegrityError(
                         "workflow authority is required for sibling semantic stages"
                     )
-                resolved_workflow_authority = str(
-                    reservation["phase2_run_authority_digest"]
-                )
+                resolved_workflow_authority = str(reservation["phase2_run_authority_digest"])
             if _DIGEST_PATTERN.fullmatch(resolved_workflow_authority) is None:
                 raise ValueError("invalid workflow authority digest")
             rows = connection.execute(
@@ -2092,12 +2714,18 @@ class OperationsStateStore:
             order = ", ".join(order_columns)
             rows = connection.execute(f"SELECT * FROM {table} ORDER BY {order}").fetchall()
             for row in rows:
+                row_kind = str(row["fact_kind"]) if table == "operations_acceptance_facts" else kind
+                if (
+                    table == "operations_acceptance_facts"
+                    and row_kind not in _ACCEPTANCE_FACT_KINDS
+                ):
+                    raise OperationsIntegrityError("operations fact kind is invalid")
                 value = _decoded_json(row[json_column])
                 if not isinstance(value, dict):
                     raise OperationsIntegrityError("operations row JSON is invalid")
                 payload = {
                     "schema_version": "operations-rebuild-row-v1",
-                    "kind": kind,
+                    "kind": row_kind,
                     "columns": {column: row[column] for column in stored_columns},
                     "value": value,
                 }
@@ -2105,7 +2733,7 @@ class OperationsStateStore:
                 facts.append(
                     OperationsOwnedFactV1(
                         schema_version="operations-owned-fact-v1",
-                        kind=kind,
+                        kind=row_kind,  # type: ignore[arg-type]
                         sequence=len(facts),
                         payload_json=payload_json,
                         object_digest=sha256_digest(payload_json.encode("utf-8")),
@@ -2149,7 +2777,7 @@ class OperationsStateStore:
                 raw = exported
             else:
                 raise TypeError("invalid operations export")
-            return OperationsOwnedStateV1.model_validate(raw, strict=True)
+            return OperationsOwnedStateV1.model_validate(raw, strict=False)
         except Exception:
             raise OperationsIntegrityError("invalid operations owned export") from None
 
@@ -2163,10 +2791,14 @@ class OperationsStateStore:
             cls._create_schema(connection)
             connection.execute("BEGIN IMMEDIATE")
             kind_positions = {definition[0]: index for index, definition in enumerate(_FACT_TABLES)}
+            acceptance_position = kind_positions["acceptance_nomination"]
+            kind_positions.update({kind: acceptance_position for kind in _ACCEPTANCE_FACT_KINDS})
             positions = tuple(kind_positions[fact.kind] for fact in facts)
             if positions != tuple(sorted(positions)):
                 raise OperationsIntegrityError("operations fact kinds are not canonically ordered")
             definitions = {definition[0]: definition for definition in _FACT_TABLES}
+            acceptance_definition = definitions["acceptance_nomination"]
+            definitions.update({kind: acceptance_definition for kind in _ACCEPTANCE_FACT_KINDS})
             for fact in facts:
                 payload = _fact_payload(fact)
                 definition = definitions[fact.kind]
@@ -2227,16 +2859,17 @@ class OperationsStateStore:
         if database_is_valid:
             assert database_connection is not None
             database_projection = cls._export_connection(database_connection)
-            database_connection.close()
             if (
                 authority.database_digest != sha256_digest(authority.database_bytes)
                 or database_projection.facts != authority.facts
                 or database_projection.projection != authority.projection
                 or database_projection.schema_fingerprint != authority.schema_fingerprint
             ):
+                database_connection.close()
                 raise OperationsIntegrityError(
                     "valid operations database disagrees with owned JSON"
                 )
+            return database_connection, authority
 
         candidate = cls._replay_facts(authority.facts)
         rebuilt = cls._export_connection(candidate)
@@ -2394,6 +3027,25 @@ def _three_store_projection(
     )
 
 
+def _discovery_projection_from_operations(
+    projection: OperationsStateProjectionV1,
+) -> DiscoveryStateRebuildProjectionV1:
+    values: dict[str, object] = {
+        "schema_version": "discovery-state-rebuild-projection-v1",
+        "search_page_digests": projection.search_page_digests,
+        "candidate_digests": projection.candidate_digests,
+        "discovery_reservation_digests": projection.discovery_reservation_digests,
+        "semantic_reservation_digests": projection.semantic_reservation_digests,
+        "workflow_terminal_digests": projection.workflow_terminal_digests,
+        "candidate_terminal_digests": projection.candidate_terminal_digests,
+        "run_summary_digests": projection.run_summary_digests,
+    }
+    return DiscoveryStateRebuildProjectionV1(
+        **values,
+        projection_digest=sha256_digest(values),
+    )
+
+
 def _object_locator(digest: str) -> str:
     if _DIGEST_PATTERN.fullmatch(digest) is None:
         raise OperationsIntegrityError("invalid state object digest")
@@ -2412,9 +3064,7 @@ def _owned_envelope(
             "database_locator": getattr(exported, "database_locator"),
             "schema_fingerprint": getattr(exported, "schema_fingerprint"),
             "database_digest": getattr(exported, "database_digest"),
-            "fact_digests": tuple(
-                fact.object_digest for fact in getattr(exported, "facts")
-            ),
+            "fact_digests": tuple(fact.object_digest for fact in getattr(exported, "facts")),
             "projection": getattr(exported, "projection").model_dump(
                 mode="json", exclude_none=False
             ),
@@ -2486,7 +3136,7 @@ def _bundle_from_exports(
         "budget_policy_digest": budget_policy_digest,
         "objects": objects,
         "databases": databases,
-        "rebuild_projection": operations.projection,
+        "rebuild_projection": _discovery_projection_from_operations(operations.projection),
         "created_at": created_at,
     }
     root = DiscoveryStateRootV1(
@@ -2494,10 +3144,7 @@ def _bundle_from_exports(
         root_digest=sha256_digest(
             {
                 key: (
-                    tuple(
-                        item.model_dump(mode="json", exclude_none=False)
-                        for item in value
-                    )
+                    tuple(item.model_dump(mode="json", exclude_none=False) for item in value)
                     if key in {"objects", "databases"}
                     else value.model_dump(mode="json", exclude_none=False)
                     if hasattr(value, "model_dump")
@@ -2579,11 +3226,11 @@ def _parse_bundle_exports(
             for decoded, _content in objects.values()
             if decoded.get("schema_version") == "three-store-owned-envelope-v1"
         ]
-        if (
-            len(envelopes) != 3
-            or {item.get("owner") for item in envelopes}
-            != {"pipeline", "operations", "publication"}
-        ):
+        if len(envelopes) != 3 or {item.get("owner") for item in envelopes} != {
+            "pipeline",
+            "operations",
+            "publication",
+        }:
             raise OperationsIntegrityError("owned state envelopes are not exact")
         projection_objects = [
             decoded
@@ -2592,9 +3239,7 @@ def _parse_bundle_exports(
         ]
         if len(projection_objects) != 1:
             raise OperationsIntegrityError("three-store projection is not exact")
-        projection = ThreeStoreProjectionV1.model_validate(
-            projection_objects[0], strict=True
-        )
+        projection = ThreeStoreProjectionV1.model_validate(projection_objects[0], strict=False)
         envelope_by_owner = {str(item["owner"]): item for item in envelopes}
 
         def facts_for(owner: str) -> tuple[object, ...]:
@@ -2632,10 +3277,7 @@ def _parse_bundle_exports(
                 )
             return tuple(output)
 
-        database_bytes = {
-            owner: files[path]
-            for owner, path in _THREE_STORE_DATABASE_PATHS.items()
-        }
+        database_bytes = {owner: files[path] for owner, path in _THREE_STORE_DATABASE_PATHS.items()}
 
         def export_values(owner: str, facts: tuple[object, ...]) -> dict[str, object]:
             envelope = envelope_by_owner[owner]
@@ -2665,17 +3307,15 @@ def _parse_bundle_exports(
             }
 
         pipeline = PipelineOwnedStateV1.model_validate(
-            export_values("pipeline", facts_for("pipeline")), strict=True
+            export_values("pipeline", facts_for("pipeline")), strict=False
         )
         operations = OperationsOwnedStateV1.model_validate(
-            export_values("operations", facts_for("operations")), strict=True
+            export_values("operations", facts_for("operations")), strict=False
         )
         publication = PublicationOwnedStateV1.model_validate(
-            export_values("publication", facts_for("publication")), strict=True
+            export_values("publication", facts_for("publication")), strict=False
         )
-        expected_projection = _three_store_projection(
-            pipeline, operations, publication
-        )
+        expected_projection = _three_store_projection(pipeline, operations, publication)
         if projection != expected_projection:
             raise OperationsIntegrityError("three-store projection mismatch")
         return pipeline, operations, publication, projection
