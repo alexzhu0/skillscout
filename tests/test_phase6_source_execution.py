@@ -130,7 +130,12 @@ def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_v
     fake_repository = tmp_path / "repository"
     fake_uv = fake_repository / ".tools/uv-0.11.29/bin/uv"
     fake_uv.parent.mkdir(parents=True)
+    fake_uv.write_text("#!/bin/sh\nprintf '%s\\n' 'uv 0.11.29'\n", encoding="utf-8")
+    fake_uv.chmod(0o755)
+    assert all(_run_guard(fake_repository, guard).returncode == 0 for guard in guards)
+
     for output in (
+        "uvx 0.11.29",
         "uv 0.11.28 (901092ee1 2026-07-15 aarch64-apple-darwin)",
         "uv",
         "uv 0.11.29 malformed",

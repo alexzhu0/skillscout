@@ -31,7 +31,10 @@ REPOSITORY_LOCAL_TOOLCHAIN_STEP = """\
           mkdir -p .tools/uv-0.11.29/bin
           install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
           test -x .tools/uv-0.11.29/bin/uv
-          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          uv_version_output="$(.tools/uv-0.11.29/bin/uv --version)"
+          if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then
+            exit 1
+          fi
           .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
 """
 PUBLISH_LOCAL_TOOLCHAIN_STEPS = (

@@ -384,7 +384,12 @@ def test_publish_workflow_uses_same_job_locked_checked_out_source() -> None:
         assert "persist-credentials: false" in job
         assert "version: 0.11.29" in job
         assert "enable-cache: false" in job
-        assert f'test "$({_LOCAL_UV} --version)" = "uv 0.11.29"' in job
+        assert f'uv_version_output="$({_LOCAL_UV} --version)"' in job
+        assert (
+            'if [[ "$uv_version_output" != "uv 0.11.29" && '
+            '! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then'
+            in job
+        )
         assert f"{_LOCAL_UV} sync --locked --no-install-project" in job
     assert not any(
         marker in text

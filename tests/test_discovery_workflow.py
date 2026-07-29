@@ -142,7 +142,12 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
         assert "ref: ${{ github.sha }}" in job
         assert "persist-credentials: false" in job
         assert f"test -x {local_uv}" in job
-        assert f'test "$({local_uv} --version)" = "uv 0.11.29"' in job
+        assert f'uv_version_output="$({local_uv} --version)"' in job
+        assert (
+            'if [[ "$uv_version_output" != "uv 0.11.29" && '
+            '! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then'
+            in job
+        )
         assert f"{local_uv} sync --locked --no-install-project" in job
     assert "UV_LINK_MODE: hardlink" not in text
     assert "--link-mode hardlink" not in text
