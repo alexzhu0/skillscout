@@ -70,6 +70,31 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          test -n "${RUNNER_TOOL_CACHE:-}"
+          test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"
+          python_base_prefix_output="$(
+            .venv/bin/python -I -c 'import sys; print(sys.base_prefix, end="\n__PHASE6_BASE_PREFIX_END__")'
+          )"
+          python_base_prefix_sentinel=$'\n__PHASE6_BASE_PREFIX_END__'
+          [[ "$python_base_prefix_output" == *"$python_base_prefix_sentinel" ]]
+          python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"
+          test "${runner_python_root}" = "${RUNNER_TOOL_CACHE}/Python"
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "$python_base_prefix" in
+            "${runner_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          case "$python_executable" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${python_executable}"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
           probe_root="${RUNNER_TEMP}/phase6-isolation-probe"
           mkdir -p "${probe_root}"
           docker_server_version="$(docker version --format '{{.Server.Version}}')"
@@ -119,6 +144,7 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
+            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
             --volume "${repository_root}:${repository_root}:ro" \
             --workdir "${repository_root}" \
             "${image_tag}" \
@@ -134,6 +160,7 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
+            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${probe_root}:/probe:ro" \
             --workdir "${repository_root}" \
@@ -149,6 +176,7 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
+            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${probe_root}:/probe:ro" \
             --workdir "${repository_root}" \
@@ -344,6 +372,31 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          test -n "${RUNNER_TOOL_CACHE:-}"
+          test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"
+          python_base_prefix_output="$(
+            .venv/bin/python -I -c 'import sys; print(sys.base_prefix, end="\n__PHASE6_BASE_PREFIX_END__")'
+          )"
+          python_base_prefix_sentinel=$'\n__PHASE6_BASE_PREFIX_END__'
+          [[ "$python_base_prefix_output" == *"$python_base_prefix_sentinel" ]]
+          python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"
+          test "${runner_python_root}" = "${RUNNER_TOOL_CACHE}/Python"
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "$python_base_prefix" in
+            "${runner_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          case "$python_executable" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${python_executable}"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
           PHASE6_PRIOR_FAILED_PROBE_RUN_ID="30430010273"
           # The prior run's observed artifact count was zero; it grants no authority.
           campaign_root="${RUNNER_TEMP}/phase6-offline-adversarial"
@@ -391,6 +444,7 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
+            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${campaign_root}:/probe:rw" \
             --env PHASE6_OFFLINE_REPORT=/probe/campaign-report.json \
@@ -409,6 +463,7 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
+            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${campaign_root}:/probe:ro" \
             --workdir "${repository_root}" \
@@ -424,6 +479,7 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
+            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${campaign_root}:/probe:ro" \
             --workdir "${repository_root}" \

@@ -22,9 +22,7 @@ WORKFLOW_PATHS = (
 LOCAL_LOCKED = ".tools/uv-0.11.29/bin/uv run --locked"
 CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV = "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9"
-PYTHON_BASE_PREFIX_MOUNT = (
-    '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
-)
+PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
 
 
 def _module(*, skip_if_missing: bool = True) -> Any:
@@ -81,9 +79,7 @@ def _version_guards(repository: Path) -> tuple[str, ...]:
                 assert step.run is not None
                 lines = step.run.splitlines()
                 start = lines.index("test -x .tools/uv-0.11.29/bin/uv") + 1
-                end = lines.index(
-                    ".tools/uv-0.11.29/bin/uv sync --locked --no-install-project"
-                )
+                end = lines.index(".tools/uv-0.11.29/bin/uv sync --locked --no-install-project")
                 guards.append("\n".join(lines[start:end]))
     return tuple(guards)
 
@@ -135,12 +131,10 @@ def test_source_execution_verifier_requires_closed_python_runtime_mounts(
     "replacement",
     (
         "",
-        '--volume /opt:/opt:ro \\\n            '
+        "--volume /opt:/opt:ro \\\n            " + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro" \\\n            '
         + PYTHON_BASE_PREFIX_MOUNT,
-        '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro \\\n            '
-        + PYTHON_BASE_PREFIX_MOUNT,
-        '--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            '
-        + PYTHON_BASE_PREFIX_MOUNT,
+        "--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            " + PYTHON_BASE_PREFIX_MOUNT,
         '--volume "${python_base_prefix}:${python_base_prefix}:rw"',
         '--volume "${python_base_prefix}:/runtime:ro"',
         '--volume "${unvalidated_base}:${unvalidated_base}:ro"',
@@ -201,7 +195,11 @@ def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_v
     (
         ("missing_checkout", CHECKOUT, "name: checkout omitted"),
         ("non_full_sha_checkout", CHECKOUT, "actions/checkout@main"),
-        ("non_root_checkout", "persist-credentials: false", "persist-credentials: false\n          path: external"),
+        (
+            "non_root_checkout",
+            "persist-credentials: false",
+            "persist-credentials: false\n          path: external",
+        ),
         ("missing_setup_uv", SETUP_UV, "name: setup omitted"),
         ("late_setup_uv", SETUP_UV, "astral-sh/setup-uv@main"),
         ("bare_uv", LOCAL_LOCKED, "uv run --locked"),
@@ -217,8 +215,16 @@ def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_v
         ("downloaded_artifact", LOCAL_LOCKED, "download-artifact && " + LOCAL_LOCKED),
         ("external_working_directory", LOCAL_LOCKED, "cd /tmp && " + LOCAL_LOCKED),
         ("command_variable", LOCAL_LOCKED, 'runner="' + LOCAL_LOCKED + '"\n          $runner'),
-        ("alias", LOCAL_LOCKED, "alias run_skillscout='" + LOCAL_LOCKED + "'\n          run_skillscout"),
-        ("function", LOCAL_LOCKED, "run_skillscout() { " + LOCAL_LOCKED + "; }\n          run_skillscout"),
+        (
+            "alias",
+            LOCAL_LOCKED,
+            "alias run_skillscout='" + LOCAL_LOCKED + "'\n          run_skillscout",
+        ),
+        (
+            "function",
+            LOCAL_LOCKED,
+            "run_skillscout() { " + LOCAL_LOCKED + "; }\n          run_skillscout",
+        ),
         ("sourced_wrapper", LOCAL_LOCKED, "source ./run-skillscout.sh"),
         ("delegated_wrapper", LOCAL_LOCKED, "bash ./run-skillscout.sh"),
         ("indirect_script", LOCAL_LOCKED, "make run-skillscout"),

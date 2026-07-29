@@ -15,14 +15,12 @@ CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 UPLOAD_ARTIFACT_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
-PYTHON_BASE_PREFIX_MOUNT = (
-    '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
-)
+PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
 PYTHON_BASE_PREFIX_PREFLIGHT = (
     'test -n "${RUNNER_TOOL_CACHE:-}"',
     'test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"',
-    '.venv/bin/python -I -c \'import sys; print(sys.base_prefix, '
-    'end="\\\\n__PHASE6_BASE_PREFIX_END__")\'',
+    ".venv/bin/python -I -c 'import sys; print(sys.base_prefix, "
+    'end="\\n__PHASE6_BASE_PREFIX_END__")\'',
     "python_base_prefix_sentinel=$'\\n__PHASE6_BASE_PREFIX_END__'",
     '[[ "$python_base_prefix_output" == *"$python_base_prefix_sentinel" ]]',
     'python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"',
@@ -134,9 +132,7 @@ def _assert_network_none_python_runtime_mounts(job: str) -> None:
         '--volume "${campaign_root}:/probe:rw"',
     }
     for invocation in invocations:
-        options, separator, _ = invocation.partition(
-            f"{LOCAL_UV} run --locked --offline --no-sync"
-        )
+        options, separator, _ = invocation.partition(f"{LOCAL_UV} run --locked --offline --no-sync")
         assert separator
         volume_lines = {
             line.strip().removesuffix(" \\")
@@ -249,13 +245,16 @@ def _assert_offline_adversarial_workflow(source: str) -> None:
         re.MULTILINE | re.DOTALL,
     )
     assert evidence_match is not None
-    assert tuple(
-        re.findall(
-            r'^              "([a-z][a-z0-9_]*)":',
-            evidence_match.group("body"),
-            re.MULTILINE,
+    assert (
+        tuple(
+            re.findall(
+                r'^              "([a-z][a-z0-9_]*)":',
+                evidence_match.group("body"),
+                re.MULTILINE,
+            )
         )
-    ) == OFFLINE_EVIDENCE_FIELDS
+        == OFFLINE_EVIDENCE_FIELDS
+    )
 
 
 def test_offline_adversarial_runs_complete_kernel_isolated_campaign_without_credentials() -> None:
@@ -293,19 +292,17 @@ def test_offline_adversarial_synthetic_scan_manifest_is_explicit_and_path_closed
     )
     assert all(token not in job.casefold() for token in forbidden)
     assert re.search(r"""(?i)(?:["'/])\.env(?:["'/\s]|$)""", job) is None
-    assert "raise SystemExit(\"synthetic canary reached an allowlisted surface\")" in job
+    assert 'raise SystemExit("synthetic canary reached an allowlisted surface")' in job
 
 
 @pytest.mark.parametrize(
     "replacement",
     (
         "",
-        '--volume /opt:/opt:ro \\\n            '
+        "--volume /opt:/opt:ro \\\n            " + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro" \\\n            '
         + PYTHON_BASE_PREFIX_MOUNT,
-        '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro \\\n            '
-        + PYTHON_BASE_PREFIX_MOUNT,
-        '--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            '
-        + PYTHON_BASE_PREFIX_MOUNT,
+        "--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            " + PYTHON_BASE_PREFIX_MOUNT,
         '--volume "${python_base_prefix}:${python_base_prefix}:rw"',
         '--volume "${python_base_prefix}:/runtime:ro"',
         '--volume "${unvalidated_base}:${unvalidated_base}:ro"',
@@ -358,9 +355,7 @@ def test_offline_adversarial_mutations_fail_closed(
     assert needle in job
     mutated_job = job.replace(needle, replacement, 1)
     with pytest.raises(AssertionError):
-        _assert_offline_adversarial_workflow(
-            source.replace(job, mutated_job, 1)
-        )
+        _assert_offline_adversarial_workflow(source.replace(job, mutated_job, 1))
 
 
 def test_phase6_isolation_probe_workflow_is_required() -> None:

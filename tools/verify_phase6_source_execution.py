@@ -23,6 +23,43 @@ CHECKOUT = f"actions/checkout@{CHECKOUT_SHA}"
 SETUP_UV = f"astral-sh/setup-uv@{SETUP_UV_SHA}"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
 LOCAL_LOCKED = f"{LOCAL_UV} run --locked"
+PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
+PYTHON_BASE_PREFIX_PREFLIGHT = (
+    'test -n "${RUNNER_TOOL_CACHE:-}"',
+    'test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"',
+    ".venv/bin/python -I -c 'import sys; print(sys.base_prefix, "
+    'end="\\n__PHASE6_BASE_PREFIX_END__")\'',
+    "python_base_prefix_sentinel=$'\\n__PHASE6_BASE_PREFIX_END__'",
+    '[[ "$python_base_prefix_output" == *"$python_base_prefix_sentinel" ]]',
+    'python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"',
+    '[[ -n "$python_base_prefix" && "$python_base_prefix" != *$\'\\n\'* '
+    '&& "$python_base_prefix" == /* ]]',
+    'runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"',
+    'test "${runner_python_root}" = "${RUNNER_TOOL_CACHE}/Python"',
+    'python_base_prefix="$(realpath -e -- "${python_base_prefix}")"',
+    '"${runner_python_root}"/*)',
+    'python_executable="$(realpath -e -- .venv/bin/python)"',
+    '"${python_base_prefix}"/bin/python*)',
+    'test -x "${python_executable}"',
+    'test -d "${python_base_prefix}/lib/python3.13"',
+    'test -f "${python_base_prefix}/lib/python3.13/os.py"',
+    'test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"',
+)
+ALLOWED_NETWORK_NONE_VOLUMES = frozenset(
+    {
+        "--volume /bin:/bin:ro",
+        "--volume /etc:/etc:ro",
+        "--volume /lib:/lib:ro",
+        "--volume /lib64:/lib64:ro",
+        "--volume /usr:/usr:ro",
+        PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${repository_root}:${repository_root}:ro"',
+        '--volume "${probe_root}:/probe:ro"',
+        '--volume "${campaign_root}:/probe:ro"',
+        '--volume "${campaign_root}:/probe:rw"',
+    }
+)
+EXPECTED_NETWORK_NONE_INVOCATIONS = 6
 MAX_WORKFLOW_BYTES = 1_000_000
 SUCCESS_DIAGNOSTIC = "phase6 source execution valid"
 FAILURE_DIAGNOSTIC = "phase6 source execution invalid"
@@ -53,6 +90,7 @@ class SourceExecutionResult(NamedTuple):
     workflow_paths: tuple[str, ...]
     authoritative_step_count: int
     authoritative_steps: tuple[AuthoritativeStep, ...]
+    network_none_invocation_count: int
 
 
 class _Step(NamedTuple):
@@ -266,10 +304,31 @@ def _materialization_is_closed(step: _Step) -> bool:
     return all(value in step.run for value in required)
 
 
+def _python_runtime_preflight_is_closed(step: _Step) -> bool:
+    return step.run is not None and all(value in step.run for value in PYTHON_BASE_PREFIX_PREFLIGHT)
+
+
+def _closed_network_none_invocation_count(run: str) -> int:
+    marker = "docker run --network none --rm \\"
+    invocations = run.split(marker)[1:]
+    for invocation in invocations:
+        options, separator, _ = invocation.partition(LOCAL_LOCKED + " --offline --no-sync")
+        _require(bool(separator))
+        volumes = {
+            line.strip().removesuffix(" \\")
+            for line in options.splitlines()
+            if line.strip().startswith("--volume ")
+        }
+        _require(PYTHON_BASE_PREFIX_MOUNT in volumes)
+        _require(volumes <= ALLOWED_NETWORK_NONE_VOLUMES)
+    return len(invocations)
+
+
 def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     root = Path(os.path.abspath(os.fspath(repository_root)))
     _require(root.is_dir())
     findings: list[AuthoritativeStep] = []
+    network_none_invocation_count = 0
     for relative in WORKFLOW_PATHS:
         source = _read(root, relative)
         jobs = _parse_jobs(source)
@@ -285,6 +344,11 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                 index for index, step in enumerate(job.steps) if _materialization_is_closed(step)
             )
             for index, step in enumerate(job.steps):
+                if step.run is not None:
+                    invocation_count = _closed_network_none_invocation_count(step.run)
+                    if invocation_count:
+                        _require(_python_runtime_preflight_is_closed(step))
+                        network_none_invocation_count += invocation_count
                 if step.run is None or not _run_has_entry(step.run):
                     continue
                 _require(_recognized_entry(step.run))
@@ -311,10 +375,12 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     )
                 )
     _require(bool(findings))
+    _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     return SourceExecutionResult(
         workflow_paths=tuple(path.as_posix() for path in WORKFLOW_PATHS),
         authoritative_step_count=len(findings),
         authoritative_steps=tuple(findings),
+        network_none_invocation_count=network_none_invocation_count,
     )
 
 
