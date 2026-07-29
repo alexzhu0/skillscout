@@ -15,6 +15,30 @@ CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 UPLOAD_ARTIFACT_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
+PYTHON_BASE_PREFIX_MOUNT = (
+    '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
+)
+PYTHON_BASE_PREFIX_PREFLIGHT = (
+    'test -n "${RUNNER_TOOL_CACHE:-}"',
+    'test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"',
+    '.venv/bin/python -I -c \'import sys; print(sys.base_prefix, '
+    'end="\\\\n__PHASE6_BASE_PREFIX_END__")\'',
+    "python_base_prefix_sentinel=$'\\n__PHASE6_BASE_PREFIX_END__'",
+    '[[ "$python_base_prefix_output" == *"$python_base_prefix_sentinel" ]]',
+    'python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"',
+    '[[ -n "$python_base_prefix" && "$python_base_prefix" != *$\'\\n\'* '
+    '&& "$python_base_prefix" == /* ]]',
+    'runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"',
+    'test "${runner_python_root}" = "${RUNNER_TOOL_CACHE}/Python"',
+    'python_base_prefix="$(realpath -e -- "${python_base_prefix}")"',
+    '"${runner_python_root}"/*)',
+    'python_executable="$(realpath -e -- .venv/bin/python)"',
+    '"${python_base_prefix}"/bin/python*)',
+    'test -x "${python_executable}"',
+    'test -d "${python_base_prefix}/lib/python3.13"',
+    'test -f "${python_base_prefix}/lib/python3.13/os.py"',
+    'test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"',
+)
 EVIDENCE_FIELDS = (
     "schema_version",
     "non_authoritative",
@@ -93,6 +117,36 @@ def _job(source: str, name: str) -> str:
     return match.group("body")
 
 
+def _assert_network_none_python_runtime_mounts(job: str) -> None:
+    assert all(token in job for token in PYTHON_BASE_PREFIX_PREFLIGHT)
+    invocations = job.split("docker run --network none --rm \\")[1:]
+    assert invocations
+    allowed_volumes = {
+        "--volume /bin:/bin:ro",
+        "--volume /etc:/etc:ro",
+        "--volume /lib:/lib:ro",
+        "--volume /lib64:/lib64:ro",
+        "--volume /usr:/usr:ro",
+        PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${repository_root}:${repository_root}:ro"',
+        '--volume "${probe_root}:/probe:ro"',
+        '--volume "${campaign_root}:/probe:ro"',
+        '--volume "${campaign_root}:/probe:rw"',
+    }
+    for invocation in invocations:
+        options, separator, _ = invocation.partition(
+            f"{LOCAL_UV} run --locked --offline --no-sync"
+        )
+        assert separator
+        volume_lines = {
+            line.strip().removesuffix(" \\")
+            for line in options.splitlines()
+            if line.strip().startswith("--volume ")
+        }
+        assert PYTHON_BASE_PREFIX_MOUNT in volume_lines
+        assert volume_lines <= allowed_volumes
+
+
 def _assert_isolation_workflow(source: str) -> None:
     assert re.search(r"^on:\n  workflow_dispatch:\n    inputs:", source, re.MULTILINE)
     assert "phase6_action:" in source
@@ -129,6 +183,7 @@ def _assert_isolation_workflow(source: str) -> None:
     assert "version: 0.11.29" in job
     assert "enable-cache: false" in job
     assert job.count("docker run --network none") == 3
+    _assert_network_none_python_runtime_mounts(job)
     assert "retention-days: 1" in job
     assert f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}" in job
     assert "non_authoritative" in job
@@ -176,6 +231,7 @@ def _assert_offline_adversarial_workflow(source: str) -> None:
     assert f"actions/checkout@{CHECKOUT_SHA}" in job
     assert f"astral-sh/setup-uv@{SETUP_UV_SHA}" in job
     assert job.count("docker run --network none") == 3
+    _assert_network_none_python_runtime_mounts(job)
     assert "tests/test_phase6_adversarial.py" in job
     assert "python /probe/direct_probe.py" in job
     assert "python /probe/child_probe.py" in job
@@ -238,6 +294,46 @@ def test_offline_adversarial_synthetic_scan_manifest_is_explicit_and_path_closed
     assert all(token not in job.casefold() for token in forbidden)
     assert re.search(r"""(?i)(?:["'/])\.env(?:["'/\s]|$)""", job) is None
     assert "raise SystemExit(\"synthetic canary reached an allowlisted surface\")" in job
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        "",
+        '--volume /opt:/opt:ro \\\n            '
+        + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro \\\n            '
+        + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            '
+        + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${python_base_prefix}:${python_base_prefix}:rw"',
+        '--volume "${python_base_prefix}:/runtime:ro"',
+        '--volume "${unvalidated_base}:${unvalidated_base}:ro"',
+    ),
+)
+def test_network_none_python_runtime_mount_mutations_fail_closed(
+    replacement: str,
+) -> None:
+    source = _source(required=False)
+    job = _job(source, "offline_adversarial")
+    assert PYTHON_BASE_PREFIX_MOUNT in job
+    mutated = job.replace(PYTHON_BASE_PREFIX_MOUNT, replacement, 1)
+    with pytest.raises(AssertionError):
+        _assert_network_none_python_runtime_mounts(mutated)
+
+
+def test_network_none_python_runtime_mount_requires_validated_base_prefix() -> None:
+    source = _source(required=False)
+    for name in ("isolation_probe", "offline_adversarial"):
+        job = _job(source, name)
+        _assert_network_none_python_runtime_mounts(job)
+        mutated = job.replace(
+            'runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"',
+            'runner_python_root="${RUNNER_TOOL_CACHE}/Python"',
+            1,
+        )
+        with pytest.raises(AssertionError):
+            _assert_network_none_python_runtime_mounts(mutated)
 
 
 @pytest.mark.parametrize(

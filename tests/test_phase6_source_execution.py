@@ -22,6 +22,9 @@ WORKFLOW_PATHS = (
 LOCAL_LOCKED = ".tools/uv-0.11.29/bin/uv run --locked"
 CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV = "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9"
+PYTHON_BASE_PREFIX_MOUNT = (
+    '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
+)
 
 
 def _module(*, skip_if_missing: bool = True) -> Any:
@@ -118,6 +121,54 @@ def test_source_execution_verifier_discovers_every_authoritative_entry_point(
     assert result.authoritative_step_count > 0
     assert result.authoritative_step_count == len(result.authoritative_steps)
     assert all(step.checkout_sha and step.invocation_digest for step in result.authoritative_steps)
+
+
+def test_source_execution_verifier_requires_closed_python_runtime_mounts(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    result = module.verify_source_execution(_copy_workflows(tmp_path))
+    assert result.network_none_invocation_count == 6
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        "",
+        '--volume /opt:/opt:ro \\\n            '
+        + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${RUNNER_TOOL_CACHE}:${RUNNER_TOOL_CACHE}:ro \\\n            '
+        + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume /srv/unvalidated:/srv/unvalidated:ro \\\n            '
+        + PYTHON_BASE_PREFIX_MOUNT,
+        '--volume "${python_base_prefix}:${python_base_prefix}:rw"',
+        '--volume "${python_base_prefix}:/runtime:ro"',
+        '--volume "${unvalidated_base}:${unvalidated_base}:ro"',
+    ),
+)
+def test_source_execution_verifier_rejects_python_runtime_mount_mutations(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    _replace_first(repository, PYTHON_BASE_PREFIX_MOUNT, replacement)
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+def test_source_execution_verifier_rejects_unvalidated_python_base_prefix(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    _replace_first(
+        repository,
+        'runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"',
+        'runner_python_root="${RUNNER_TOOL_CACHE}/Python"',
+    )
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
 
 
 def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_versions(
