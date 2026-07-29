@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 pending fresh human authorization after hosted Python runtime mount correction; no retry authorized
-last_updated: "2026-07-29T10:39:47Z"
+stopped_at: Blocked 06-06 Task 3 after authorized one-shot run 30446151495 failed in kernel-isolated campaign; zero artifacts, no canonical facts, and no retry authorized
+last_updated: "2026-07-29T11:05:41Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
@@ -115,6 +115,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - Every earlier workflow digest, dispatch approval, Gate B4 approval, and exact-source authorization is stale after the current workflow-byte changes. A new human checkpoint must bind the final local HEAD and current Phase 6 workflow digest before any retry; no push, dispatch, artifact access, canonical fact write, or approval inference has occurred.
 - Plan 06-06 Task 3 remains blocked: authorized one-shot offline-adversarial run 30443794922 attempt 1 at source 5997ceaac5fc137971d031750be98323b5745591 passed checkout, pinned uv materialization, and locked-toolchain verification, then failed in the fresh kernel-isolated adversarial campaign; bounded evidence upload was skipped, artifact count is zero, and no acceptance_hosted_isolation_capability or acceptance_offline_adversarial_run canonical fact was persisted. No retry is authorized.
 - Proven cause for run 30443794922 was the repository-visible `.venv/bin/python` resolving to a hosted Python base prefix outside the repository while the empty-rootfs Docker invocations did not mount that prefix. Strict-TDD correction commits are RED `e86c8091279757fb43ffdb2dcac7afe364e79f91` and GREEN `b48e1fddc058e44a355ebc09086ec6a2aa65ee8d`; the fix validates the exact canonical `${RUNNER_TOOL_CACHE}/Python/` descendant and mounts only that prefix read-only at the identical path in all six network-none invocations.
+- Plan 06-06 Task 3 remains blocked: authorized one-shot offline-adversarial run `30446151495` attempt 1 at exact source `f40d559244a68e3e7746fcd3a45c250685551b0f` and Phase 6 workflow SHA-256 `6a25a68d98cb8d796b8619bdb6e4922c28d575a4d0955aa80f8eb28dbc78981f` passed checkout, pinned uv materialization, and locked-toolchain verification, then failed in the fresh kernel-isolated adversarial campaign. The bounded evidence upload was skipped, artifact metadata reported `total_count: 0`, and neither `acceptance_hosted_isolation_capability` nor `acceptance_offline_adversarial_run` was persisted. Raw logs were not opened; no retry is authorized.
 
 ### Quick Tasks Completed
 
@@ -125,8 +126,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-29T10:39:47Z
-**Stopped at:** Blocked 06-06 Task 3 pending fresh human authorization after hosted Python runtime mount correction; no retry authorized
+**Last session:** 2026-07-29T11:05:41Z
+**Stopped at:** Blocked 06-06 Task 3 after authorized one-shot run 30446151495 failed in kernel-isolated campaign; zero artifacts, no canonical facts, and no retry authorized
 **Resume file:** None
 
 ### Next
