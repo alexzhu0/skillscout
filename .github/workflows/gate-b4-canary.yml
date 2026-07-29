@@ -32,6 +32,20 @@ jobs:
       - name: Verify the repository-local locked toolchain
         run: |
           set -euo pipefail
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          if [[ -L "${tools_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${tools_root}" ]]; then
+            test -d "${tools_root}"
+          else
+            mkdir -m 0755 "${tools_root}"
+          fi
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
           mkdir -p .tools/uv-0.11.29/bin
           install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
           test -x .tools/uv-0.11.29/bin/uv
@@ -39,7 +53,62 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Admit fixed identities before catalog credentials exist
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,29 +25,6 @@ PHASE5_GATE_B4_WORKFLOW_DIGESTS = {
         "9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d"
     ),
 }
-REPOSITORY_LOCAL_TOOLCHAIN_STEP = """\
-      - name: Verify the repository-local locked toolchain
-        run: |
-          set -euo pipefail
-          mkdir -p .tools/uv-0.11.29/bin
-          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
-          test -x .tools/uv-0.11.29/bin/uv
-          uv_version_output="$(.tools/uv-0.11.29/bin/uv --version)"
-          if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then
-            exit 1
-          fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
-"""
-PUBLISH_LOCAL_TOOLCHAIN_STEPS = (
-    """\
-      - name: Install the exact locked uv tool
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
-        with:
-          version: 0.11.29
-          enable-cache: false
-"""
-    + REPOSITORY_LOCAL_TOOLCHAIN_STEP
-)
 
 
 def _replace_exact(repository: Path, relative: Path, old: str, new: str, *, count: int) -> None:
@@ -56,15 +34,25 @@ def _replace_exact(repository: Path, relative: Path, old: str, new: str, *, coun
     path.write_text(source.replace(old, new), encoding="utf-8")
 
 
+def _remove_named_steps(repository: Path, relative: Path, name: str, *, count: int) -> None:
+    path = repository / relative
+    source = path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf"^      - name: {re.escape(name)}\n.*?(?=^      - name: |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    assert len(pattern.findall(source)) == count
+    path.write_text(pattern.sub("", source), encoding="utf-8")
+
+
 def _restore_phase5_gate_b4_workflows(repository: Path) -> None:
     discover = Path(".github/workflows/discover.yml")
     publish = Path(".github/workflows/publish-candidate.yml")
     canary = Path(".github/workflows/gate-b4-canary.yml")
-    _replace_exact(
+    _remove_named_steps(
         repository,
         discover,
-        REPOSITORY_LOCAL_TOOLCHAIN_STEP,
-        "",
+        "Verify the repository-local locked toolchain",
         count=2,
     )
     _replace_exact(
@@ -81,11 +69,16 @@ def _restore_phase5_gate_b4_workflows(repository: Path) -> None:
         "",
         count=2,
     )
-    _replace_exact(
+    _remove_named_steps(
         repository,
         publish,
-        PUBLISH_LOCAL_TOOLCHAIN_STEPS,
-        "",
+        "Install the exact locked uv tool",
+        count=2,
+    )
+    _remove_named_steps(
+        repository,
+        publish,
+        "Verify the repository-local locked toolchain",
         count=2,
     )
     _replace_exact(
@@ -95,11 +88,10 @@ def _restore_phase5_gate_b4_workflows(repository: Path) -> None:
         'python - "$protected_admission"',
         count=1,
     )
-    _replace_exact(
+    _remove_named_steps(
         repository,
         canary,
-        REPOSITORY_LOCAL_TOOLCHAIN_STEP,
-        "",
+        "Verify the repository-local locked toolchain",
         count=1,
     )
     _replace_exact(

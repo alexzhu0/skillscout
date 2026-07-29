@@ -24,7 +24,7 @@ CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV = "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9"
 UPLOAD_ARTIFACT = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 MANAGED_PYTHON_VERSION = "3.13.14"
-MANAGED_PYTHON_ROOT = '${GITHUB_WORKSPACE}/.tools/python'
+MANAGED_PYTHON_ROOT = "${GITHUB_WORKSPACE}/.tools/python"
 MANAGED_PYTHON_INSTALL = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     ".tools/uv-0.11.29/bin/uv python install 3.13.14 "
@@ -32,12 +32,9 @@ MANAGED_PYTHON_INSTALL = (
 )
 MANAGED_PYTHON_SYNC = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
-    'UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked '
+    "UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked "
     '--no-install-project --python "${managed_python_executable}" '
     "--managed-python --no-python-downloads"
-)
-MANAGED_PYTHON_TOOLCHAIN_START = (
-    'repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"'
 )
 CONTAINER_MANAGED_ENV = (
     '--env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python"',
@@ -101,7 +98,7 @@ def _version_guards(repository: Path) -> tuple[str, ...]:
                 assert step.run is not None
                 lines = step.run.splitlines()
                 start = lines.index("test -x .tools/uv-0.11.29/bin/uv") + 1
-                end = lines.index(MANAGED_PYTHON_TOOLCHAIN_START)
+                end = lines.index("fi", start) + 1
                 guards.append("\n".join(lines[start:end]))
     return tuple(guards)
 

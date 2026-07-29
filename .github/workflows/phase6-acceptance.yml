@@ -60,7 +60,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
 
       - name: Run the fail-closed network-isolation probe
         env:
@@ -70,8 +131,11 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          test -n "${RUNNER_TOOL_CACHE:-}"
-          test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          managed_python_root="$(realpath -e -- "${repository_root}/.tools/python")"
+          test "${managed_python_root}" = "${repository_root}/.tools/python"
           python_base_prefix_output="$(
             .venv/bin/python -I -c 'import sys; print(sys.base_prefix, end="\n__PHASE6_BASE_PREFIX_END__")'
           )"
@@ -79,11 +143,9 @@ jobs:
           [[ "$python_base_prefix_output" == *"$python_base_prefix_sentinel" ]]
           python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
-          runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"
-          test "${runner_python_root}" = "${RUNNER_TOOL_CACHE}/Python"
           python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
           case "$python_base_prefix" in
-            "${runner_python_root}"/*) ;;
+            "${managed_python_root}"/*) ;;
             *) exit 1 ;;
           esac
           python_executable="$(realpath -e -- .venv/bin/python)"
@@ -92,6 +154,8 @@ jobs:
             *) exit 1 ;;
           esac
           test -x "${python_executable}"
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
           test -d "${python_base_prefix}/lib/python3.13"
           test -f "${python_base_prefix}/lib/python3.13/os.py"
           test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
@@ -144,7 +208,9 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
-            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
+            --env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python" \
+            --env UV_MANAGED_PYTHON=1 \
+            --env UV_PYTHON_DOWNLOADS=never \
             --volume "${repository_root}:${repository_root}:ro" \
             --workdir "${repository_root}" \
             "${image_tag}" \
@@ -160,7 +226,9 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
-            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
+            --env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python" \
+            --env UV_MANAGED_PYTHON=1 \
+            --env UV_PYTHON_DOWNLOADS=never \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${probe_root}:/probe:ro" \
             --workdir "${repository_root}" \
@@ -176,7 +244,9 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
-            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
+            --env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python" \
+            --env UV_MANAGED_PYTHON=1 \
+            --env UV_PYTHON_DOWNLOADS=never \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${probe_root}:/probe:ro" \
             --workdir "${repository_root}" \
@@ -320,7 +390,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Nominate the bounded Search-derived benchmark
         run: |
           set -euo pipefail
@@ -367,7 +498,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Run the fresh kernel-isolated adversarial campaign
         id: offline_campaign
         run: |
@@ -387,8 +579,11 @@ jobs:
           image_tag=""
           trap 'campaign_exit_status=$?; overall_status="$campaign_exit_status"; diagnostic_write_status=0; case "$diagnostic_stage" in runtime-preflight|control|direct-probe|child-probe|campaign-report|synthetic-scan|complete) ;; *) diagnostic_write_status=1 ;; esac; if [[ "$diagnostic_write_status" -eq 0 ]]; then printf "$diagnostic_format" "$diagnostic_schema_version" "$PHASE6_SOURCE_COMMIT" "$diagnostic_workflow_sha256" "$PHASE6_RUN_ID" "$PHASE6_RUN_ATTEMPT" "$diagnostic_stage" "$overall_status" "$control_status" "$direct_status" "$child_status" >"$diagnostic_path" || diagnostic_write_status=$?; fi; if [[ -n "$image_tag" ]]; then docker image rm -f "$image_tag" >/dev/null 2>&1 || true; fi; rm -f "${campaign_root}/direct_probe.py" "${campaign_root}/child_probe.py" "${campaign_root}/empty-rootfs.tar" || true; if [[ "$campaign_exit_status" -ne 0 ]]; then exit "$campaign_exit_status"; fi; exit "$diagnostic_write_status"' EXIT
           printf "$diagnostic_format" "$diagnostic_schema_version" "$PHASE6_SOURCE_COMMIT" "$diagnostic_workflow_sha256" "$PHASE6_RUN_ID" "$PHASE6_RUN_ATTEMPT" "$diagnostic_stage" "$overall_status" "$control_status" "$direct_status" "$child_status" >"$diagnostic_path"
-          test -n "${RUNNER_TOOL_CACHE:-}"
-          test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          managed_python_root="$(realpath -e -- "${repository_root}/.tools/python")"
+          test "${managed_python_root}" = "${repository_root}/.tools/python"
           python_base_prefix_output="$(
             .venv/bin/python -I -c 'import sys; print(sys.base_prefix, end="\n__PHASE6_BASE_PREFIX_END__")'
           )"
@@ -396,11 +591,9 @@ jobs:
           [[ "$python_base_prefix_output" == *"$python_base_prefix_sentinel" ]]
           python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
-          runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"
-          test "${runner_python_root}" = "${RUNNER_TOOL_CACHE}/Python"
           python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
           case "$python_base_prefix" in
-            "${runner_python_root}"/*) ;;
+            "${managed_python_root}"/*) ;;
             *) exit 1 ;;
           esac
           python_executable="$(realpath -e -- .venv/bin/python)"
@@ -409,6 +602,8 @@ jobs:
             *) exit 1 ;;
           esac
           test -x "${python_executable}"
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
           test -d "${python_base_prefix}/lib/python3.13"
           test -f "${python_base_prefix}/lib/python3.13/os.py"
           test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
@@ -463,7 +658,9 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
-            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
+            --env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python" \
+            --env UV_MANAGED_PYTHON=1 \
+            --env UV_PYTHON_DOWNLOADS=never \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${campaign_root}:/probe:rw" \
             --env PHASE6_OFFLINE_REPORT=/probe/campaign-report.json \
@@ -483,7 +680,9 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
-            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
+            --env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python" \
+            --env UV_MANAGED_PYTHON=1 \
+            --env UV_PYTHON_DOWNLOADS=never \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${campaign_root}:/probe:ro" \
             --workdir "${repository_root}" \
@@ -500,7 +699,9 @@ jobs:
             --volume /lib:/lib:ro \
             --volume /lib64:/lib64:ro \
             --volume /usr:/usr:ro \
-            --volume "${python_base_prefix}:${python_base_prefix}:ro" \
+            --env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python" \
+            --env UV_MANAGED_PYTHON=1 \
+            --env UV_PYTHON_DOWNLOADS=never \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${campaign_root}:/probe:ro" \
             --workdir "${repository_root}" \
@@ -704,7 +905,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Run the locked benchmark or exact replay
         run: |
           set -euo pipefail
@@ -747,7 +1009,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Run the one approved changed-source pair
         run: |
           set -euo pipefail
@@ -781,7 +1104,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Verify exact frozen source bytes before protected authority
         run: |
           set -euo pipefail
@@ -825,7 +1209,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Revalidate the fixed publication authority before token minting
         run: |
           set -euo pipefail
@@ -880,7 +1325,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Record only the bounded human review attestation
         run: |
           set -euo pipefail
@@ -919,7 +1425,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Record only the separate cleanup attestation
         run: |
           set -euo pipefail
@@ -958,7 +1525,68 @@ jobs:
           if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
             exit 1
           fi
-          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
       - name: Rebuild the report from verified state only
         run: |
           set -euo pipefail

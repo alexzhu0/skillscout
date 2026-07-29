@@ -23,7 +23,7 @@ MANAGED_PYTHON_INSTALL = (
 )
 MANAGED_PYTHON_SYNC = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
-    'UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked '
+    "UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked "
     '--no-install-project --python "${managed_python_executable}" '
     "--managed-python --no-python-downloads"
 )
@@ -45,10 +45,9 @@ PYTHON_BASE_PREFIX_PREFLIGHT = (
     'python_executable="$(realpath -e -- .venv/bin/python)"',
     '"${python_base_prefix}"/bin/python*)',
     'test -x "${python_executable}"',
-    "test \"$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')\" "
-    '= "cpython"',
+    'test "$(.venv/bin/python -I -c \'import sys; print(sys.implementation.name)\')" = "cpython"',
     "test \"$(.venv/bin/python -I -c 'import sys; "
-    "print('.'.join(map(str, sys.version_info[:3])))')\" = \"3.13.14\"",
+    'print(".".join(map(str, sys.version_info[:3])))\')" = "3.13.14"',
     'test -d "${python_base_prefix}/lib/python3.13"',
     'test -f "${python_base_prefix}/lib/python3.13/os.py"',
     'test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"',

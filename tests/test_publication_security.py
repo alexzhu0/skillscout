@@ -398,27 +398,21 @@ def test_publish_workflow_uses_same_job_locked_checked_out_source() -> None:
         assert f'uv_version_output="$({_LOCAL_UV} --version)"' in job
         assert (
             'if [[ "$uv_version_output" != "uv 0.11.29" && '
-            '! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then'
-            in job
+            '! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then' in job
         )
         assert 'repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"' in job
         assert 'managed_python_root="${tools_root}/python"' in job
-        assert (
-            'test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"'
-            in job
-        )
+        assert 'test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"' in job
         assert 'if [[ -L "${managed_python_root}" ]]; then' in job
         assert _MANAGED_PYTHON_INSTALL in job
         assert _MANAGED_PYTHON_SYNC in job
         assert (
             "test \"$(.venv/bin/python -I -c 'import sys; "
-            "print(sys.implementation.name)')\" = \"cpython\""
-            in job
+            'print(sys.implementation.name)\')" = "cpython"' in job
         )
         assert (
             "test \"$(.venv/bin/python -I -c 'import sys; "
-            "print('.'.join(map(str, sys.version_info[:3])))')\" = \"3.13.14\""
-            in job
+            'print(".".join(map(str, sys.version_info[:3])))\')" = "3.13.14"' in job
         )
         assert "UV_PYTHON_INSTALL_DIR" in job
         assert "UV_MANAGED_PYTHON=1" in job

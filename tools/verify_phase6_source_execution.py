@@ -25,10 +25,56 @@ SETUP_UV = f"astral-sh/setup-uv@{SETUP_UV_SHA}"
 UPLOAD_ARTIFACT = f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
 LOCAL_LOCKED = f"{LOCAL_UV} run --locked"
-PYTHON_BASE_PREFIX_MOUNT = '--volume "${python_base_prefix}:${python_base_prefix}:ro"'
+MANAGED_PYTHON_VERSION = "3.13.14"
+MANAGED_PYTHON_ROOT = "${GITHUB_WORKSPACE}/.tools/python"
+MANAGED_PYTHON_INSTALL = (
+    'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
+    f"{LOCAL_UV} python install {MANAGED_PYTHON_VERSION} "
+    '--install-dir "${managed_python_root}" --no-bin'
+)
+MANAGED_PYTHON_SYNC = (
+    'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
+    f"UV_PYTHON_DOWNLOADS=never {LOCAL_UV} sync --locked "
+    '--no-install-project --python "${managed_python_executable}" '
+    "--managed-python --no-python-downloads"
+)
+MANAGED_PYTHON_TOOLCHAIN = (
+    'repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"',
+    'test "${repository_root}" = "${GITHUB_WORKSPACE}"',
+    'test "${repository_root}" = "$(pwd -P)"',
+    'tools_root="${repository_root}/.tools"',
+    'test ! -L "${tools_root}"',
+    'test "$(realpath -e -- "${tools_root}")" = "${tools_root}"',
+    'managed_python_root="${tools_root}/python"',
+    'test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"',
+    'if [[ -L "${managed_python_root}" ]]; then',
+    'test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"',
+    MANAGED_PYTHON_INSTALL,
+    f"{LOCAL_UV} python find --managed-python {MANAGED_PYTHON_VERSION}",
+    'managed_python_executable="$(realpath -e -- "${managed_python_executable}")"',
+    '"${managed_python_root}"/*/bin/python*)',
+    'venv_root="${repository_root}/.venv"',
+    'test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"',
+    'if [[ -L "${venv_root}" ]]; then',
+    'test "$(realpath -e -- "${venv_root}")" = "${venv_root}"',
+    'rm -rf -- "${venv_root}"',
+    MANAGED_PYTHON_SYNC,
+    'python_executable="$(realpath -e -- .venv/bin/python)"',
+    '"${python_base_prefix}"/bin/python*)',
+    'test "$(.venv/bin/python -I -c \'import sys; print(sys.implementation.name)\')" = "cpython"',
+    "test \"$(.venv/bin/python -I -c 'import sys; "
+    'print(".".join(map(str, sys.version_info[:3])))\')" = "3.13.14"',
+    "printf 'UV_PYTHON_INSTALL_DIR=%s\\n' \"${managed_python_root}\"",
+    "printf 'UV_MANAGED_PYTHON=1\\n'",
+    "printf 'UV_PYTHON_DOWNLOADS=never\\n'",
+    '>> "${GITHUB_ENV}"',
+)
 PYTHON_BASE_PREFIX_PREFLIGHT = (
-    'test -n "${RUNNER_TOOL_CACHE:-}"',
-    'test "${RUNNER_TOOL_CACHE}" = "$(realpath -e -- "${RUNNER_TOOL_CACHE}")"',
+    'repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"',
+    'test "${repository_root}" = "${GITHUB_WORKSPACE}"',
+    'test "${repository_root}" = "$(pwd -P)"',
+    'managed_python_root="$(realpath -e -- "${repository_root}/.tools/python")"',
+    'test "${managed_python_root}" = "${repository_root}/.tools/python"',
     ".venv/bin/python -I -c 'import sys; print(sys.base_prefix, "
     'end="\\n__PHASE6_BASE_PREFIX_END__")\'',
     "python_base_prefix_sentinel=$'\\n__PHASE6_BASE_PREFIX_END__'",
@@ -36,17 +82,26 @@ PYTHON_BASE_PREFIX_PREFLIGHT = (
     'python_base_prefix="${python_base_prefix_output%"$python_base_prefix_sentinel"}"',
     '[[ -n "$python_base_prefix" && "$python_base_prefix" != *$\'\\n\'* '
     '&& "$python_base_prefix" == /* ]]',
-    'runner_python_root="$(realpath -e -- "${RUNNER_TOOL_CACHE}/Python")"',
-    'test "${runner_python_root}" = "${RUNNER_TOOL_CACHE}/Python"',
     'python_base_prefix="$(realpath -e -- "${python_base_prefix}")"',
-    '"${runner_python_root}"/*)',
+    '"${managed_python_root}"/*)',
     'python_executable="$(realpath -e -- .venv/bin/python)"',
     '"${python_base_prefix}"/bin/python*)',
     'test -x "${python_executable}"',
+    'test "$(.venv/bin/python -I -c \'import sys; print(sys.implementation.name)\')" = "cpython"',
+    "test \"$(.venv/bin/python -I -c 'import sys; "
+    'print(".".join(map(str, sys.version_info[:3])))\')" = "3.13.14"',
     'test -d "${python_base_prefix}/lib/python3.13"',
     'test -f "${python_base_prefix}/lib/python3.13/os.py"',
     'test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"',
 )
+CONTAINER_MANAGED_ENV = frozenset(
+    {
+        '--env "UV_PYTHON_INSTALL_DIR=${repository_root}/.tools/python"',
+        "--env UV_MANAGED_PYTHON=1",
+        "--env UV_PYTHON_DOWNLOADS=never",
+    }
+)
+REPOSITORY_MOUNT = '--volume "${repository_root}:${repository_root}:ro"'
 ALLOWED_NETWORK_NONE_VOLUMES = frozenset(
     {
         "--volume /bin:/bin:ro",
@@ -54,8 +109,7 @@ ALLOWED_NETWORK_NONE_VOLUMES = frozenset(
         "--volume /lib:/lib:ro",
         "--volume /lib64:/lib64:ro",
         "--volume /usr:/usr:ro",
-        PYTHON_BASE_PREFIX_MOUNT,
-        '--volume "${repository_root}:${repository_root}:ro"',
+        REPOSITORY_MOUNT,
         '--volume "${probe_root}:/probe:ro"',
         '--volume "${campaign_root}:/probe:ro"',
         '--volume "${campaign_root}:/probe:rw"',
@@ -114,6 +168,9 @@ class SourceExecutionResult(NamedTuple):
     workflow_paths: tuple[str, ...]
     authoritative_step_count: int
     authoritative_steps: tuple[AuthoritativeStep, ...]
+    managed_python_job_count: int
+    managed_python_version: str
+    managed_python_root: str
     network_none_invocation_count: int
     diagnostic_upload_count: int
 
@@ -324,7 +381,7 @@ def _materialization_is_closed(step: _Step) -> bool:
         ),
         "exit 1",
         "fi",
-        ".tools/uv-0.11.29/bin/uv sync --locked --no-install-project",
+        *MANAGED_PYTHON_TOOLCHAIN,
     )
     return all(value in step.run for value in required)
 
@@ -344,8 +401,14 @@ def _closed_network_none_invocation_count(run: str) -> int:
             for line in options.splitlines()
             if line.strip().startswith("--volume ")
         }
-        _require(PYTHON_BASE_PREFIX_MOUNT in volumes)
+        container_environment = {
+            line.strip().removesuffix(" \\")
+            for line in options.splitlines()
+            if line.strip().startswith("--env ")
+        }
+        _require(REPOSITORY_MOUNT in volumes)
         _require(volumes <= ALLOWED_NETWORK_NONE_VOLUMES)
+        _require(CONTAINER_MANAGED_ENV <= container_environment)
     return len(invocations)
 
 
@@ -460,6 +523,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     root = Path(os.path.abspath(os.fspath(repository_root)))
     _require(root.is_dir())
     findings: list[AuthoritativeStep] = []
+    managed_python_job_count = 0
     network_none_invocation_count = 0
     diagnostic_upload_count = 0
     for relative in WORKFLOW_PATHS:
@@ -478,6 +542,8 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
             materialization_indexes = tuple(
                 index for index, step in enumerate(job.steps) if _materialization_is_closed(step)
             )
+            _require(len(materialization_indexes) == 1)
+            managed_python_job_count += 1
             for index, step in enumerate(job.steps):
                 if step.run is not None:
                     invocation_count = _closed_network_none_invocation_count(step.run)
@@ -510,12 +576,16 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     )
                 )
     _require(bool(findings))
+    _require(managed_python_job_count == 15)
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     _require(diagnostic_upload_count == 1)
     return SourceExecutionResult(
         workflow_paths=tuple(path.as_posix() for path in WORKFLOW_PATHS),
         authoritative_step_count=len(findings),
         authoritative_steps=tuple(findings),
+        managed_python_job_count=managed_python_job_count,
+        managed_python_version=MANAGED_PYTHON_VERSION,
+        managed_python_root=MANAGED_PYTHON_ROOT,
         network_none_invocation_count=network_none_invocation_count,
         diagnostic_upload_count=diagnostic_upload_count,
     )
