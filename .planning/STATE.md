@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 after exact run 30441596331 failed with zero artifacts; no canonical acceptance facts written
-last_updated: "2026-07-29T09:56:53.048Z"
+stopped_at: Blocked 06-06 Task 3 pending fresh exact-head authorization after locked-toolchain guard correction; no canonical acceptance facts written
+last_updated: "2026-07-29T10:06:12.844Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
@@ -106,10 +106,13 @@ Live acceptance uses DeepSeek Flash for extraction/generation and Pro for indepe
 
 ## Blockers
 
-Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips, and fresh Gate B4 evidence is bound to the exact current discover, publish, and canary workflow bytes. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
+Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips. The 2026-07-28 Gate B4 evidence remains historical, but its workflow-byte bindings are stale after the 06-15 toolchain-guard correction and grant no current authority. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
 
 - Plan 06-06 hosted isolation ingestion is blocked: run 30430010273 failed before the network probe, upload was skipped, and artifact count is zero.
 - Plan 06-06 Task 3 blocked: exact offline-adversarial run 30441596331 attempt 1 at source 27d7a41f0e7c7ffeb2991110f44eab6a977c78ca failed during repository-local locked-toolchain verification; campaign and upload were skipped, artifact count is zero, and no hosted-isolation or offline-run canonical fact was persisted. No retry is authorized.
+- Proven common cause for runs 30430010273 and 30441596331 was the exact-full-output guard rejecting the official pinned output `uv 0.11.29 (901092ee1 2026-07-15 aarch64-apple-darwin)`. Strict-TDD correction commits are RED `49a548261c84f81628d301f5bf4eba603c0c18ee` and GREEN `3b6b189cc848ab083cf83bf4489a5c91945f5aed`.
+- The corrected authoritative workflow SHA-256 values are discover `7fafb18b11d82e9a65581f1658123dd5558e7279474b502c590fe84e73147373`, publish `19c34f87c0d3934ccba3be677511118185e3421e7ec86b371e2c08f0afa42daa`, canary `78061cb777d97381f79fd2f9a4653fa2a11d93553822ddf079cf6bc44e1a00d4`, and Phase 6 acceptance `0152df0b855ae33862cf39d65f70ddc5dc319b82288d8c73660e4b80e80ff89b`.
+- Every earlier workflow digest, dispatch approval, Gate B4 approval, and exact-source authorization is stale after the four workflow-byte changes. A new human checkpoint must bind the final local HEAD and corrected Phase 6 workflow digest before any retry; no push, dispatch, artifact access, canonical fact write, or approval inference has occurred.
 
 ### Quick Tasks Completed
 
@@ -120,8 +123,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-29T09:56:53.043Z
-**Stopped at:** Blocked 06-06 Task 3 after exact run 30441596331 failed with zero artifacts; no canonical acceptance facts written
+**Last session:** 2026-07-29T10:06:12.839Z
+**Stopped at:** Blocked 06-06 Task 3 pending fresh exact-head authorization after locked-toolchain guard correction; no canonical acceptance facts written
 **Resume file:** None
 
 ### Next
@@ -347,3 +350,4 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - [Phase 06]: Acceptance fixes the catalog to alexzhu0/skillscout-catalog-test and validates immutable facts before environment-backed credentials.
 - [Phase 06]: Recognize only direct python -m skillscout, inline SkillScout imports, and python tools/*.py as authoritative workflow entry forms — Every unknown acquisition or invocation source must fail closed before Gate B4.
 - [Phase 06]: Keep fixed-catalog credentials exclusively in value_publication after fresh_gate_b4 — Nomination, semantic, attestation, rebuild, and isolation jobs retain separate minimum authority zones.
+- [Phase 06]: Admit the pinned tool only when its program token is exactly `uv` and version token is exactly `0.11.29`, with an optional non-empty parenthesized build-metadata suffix. — Official build metadata must not be rejected, and metadata cannot replace either authoritative token.
