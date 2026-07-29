@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import re
 import shutil
@@ -138,3 +139,121 @@ def test_future_requirement_map_must_be_canonical_and_exactly_all_44() -> None:
     ).encode("ascii")
     assert len(payload["requirements"]) == 44
     assert set(payload["requirements"]) == set(payload["inverse_requirement_map"])
+
+
+def _cli_subcommands() -> dict[str, Any]:
+    from skillscout.cli import build_parser
+
+    parser = build_parser()
+    action = next(
+        item
+        for item in parser._actions
+        if item.__class__.__name__ == "_SubParsersAction"
+    )
+    return dict(action.choices)
+
+
+def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
+    commands = _cli_subcommands()
+    expected = {
+        "nominate-benchmark": {
+            "--state-repository-id",
+            "--state-repository-full-name",
+            "--initial-state-root-digest",
+        },
+        "run-acceptance": {
+            "--manifest",
+            "--state-commit-sha",
+            "--state-root-digest",
+        },
+        "record-acceptance-attestation": {
+            "--attestation",
+            "--kind",
+            "--state-commit-sha",
+            "--state-root-digest",
+        },
+        "rebuild-acceptance": {
+            "--acceptance-run-id",
+            "--evidence-root-digest",
+            "--state-commit-sha",
+            "--state-root-digest",
+        },
+    }
+    forbidden = {
+        "--model",
+        "--endpoint",
+        "--catalog",
+        "--token",
+        "--secret",
+        "--ref",
+        "--merge",
+        "--approve",
+        "--ready",
+        "--delete",
+        "--cleanup",
+    }
+    for name, required in expected.items():
+        options = {
+            option
+            for action in commands[name]._actions
+            for option in action.option_strings
+        }
+        assert required <= options
+        assert forbidden.isdisjoint(options)
+    kind = next(
+        action
+        for action in commands["record-acceptance-attestation"]._actions
+        if "--kind" in action.option_strings
+    )
+    assert tuple(kind.choices) == ("human-review", "probe-cleanup")
+
+
+def test_acceptance_bootstrap_target_is_fixed_and_fact_validation_is_pre_secret() -> None:
+    import skillscout.bootstrap as bootstrap
+
+    assert bootstrap.ACCEPTANCE_CATALOG_FULL_NAME == (
+        "alexzhu0/skillscout-catalog-test"
+    )
+    signature = inspect.signature(bootstrap.load_acceptance_runtime_config)
+    assert "environ" in signature.parameters
+    assert {
+        "model",
+        "endpoint",
+        "catalog",
+        "token",
+        "credential",
+    }.isdisjoint(signature.parameters)
+
+    class ForbiddenEnvironment(dict[str, str]):
+        def __getitem__(self, key: str) -> str:
+            pytest.fail(f"invalid authority read credential:{key}")
+
+        def get(self, key: str, default: Any = None) -> Any:
+            pytest.fail(f"invalid authority read credential:{key}")
+
+    with pytest.raises(ValueError, match="acceptance runtime configuration rejected"):
+        bootstrap.load_acceptance_runtime_config(
+            manifest_path=Path("not-the-locked-manifest.json"),
+            state_commit_sha="not-a-sha",
+            state_root_digest="not-a-digest",
+            environ=ForbiddenEnvironment(),
+        )
+
+
+def test_acceptance_cli_unknown_flag_uses_existing_fixed_parser_diagnostic(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from skillscout.cli import build_parser
+
+    with pytest.raises(SystemExit) as failure:
+        build_parser().parse_args(
+            ["run-acceptance", "--unknown", "SECRET_DO_NOT_ECHO"]
+        )
+    captured = capsys.readouterr()
+    assert failure.value.code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        '{"error":{"code":"invalid_cli_arguments",'
+        '"summary":"Command-line arguments were rejected."}}\n'
+    )
+    assert "SECRET_DO_NOT_ECHO" not in captured.err
