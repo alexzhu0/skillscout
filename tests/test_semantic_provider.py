@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import importlib
+from collections.abc import Iterator, Mapping
 
 import httpx
 import openai
@@ -15,6 +16,7 @@ from skillscout.adapters.semantic_provider import (
     DEEPSEEK_MODEL,
     SemanticProvider,
     SemanticProviderFailure,
+    SemanticProviderSettings,
     SemanticTransportDisposition,
     classify_semantic_provider_failure,
     create_semantic_client,
@@ -36,6 +38,26 @@ REQUIRED_PHASE6_PROVIDER_CONTRACTS = (
 
 class _Answer(StrictFrozenModel):
     value: str
+
+
+class _LookupSpy(Mapping[str, str]):
+    def __init__(self, values: Mapping[str, str]) -> None:
+        self._values = dict(values)
+        self.lookups: list[str] = []
+
+    def __getitem__(self, key: str) -> str:
+        self.lookups.append(key)
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        self.lookups.append(key)
+        return self._values.get(key, default)
 
 
 def _status_error(
@@ -155,6 +177,7 @@ def _chat_response(
     *,
     finish_reason: str = "stop",
     choices: int = 1,
+    model: str = DEEPSEEK_MODEL,
 ) -> RecordedResponse:
     choice = {
         "index": 0,
@@ -165,7 +188,7 @@ def _chat_response(
         "id": "chatcmpl-deepseek-1",
         "object": "chat.completion",
         "created": 1,
-        "model": DEEPSEEK_MODEL,
+        "model": model,
         "choices": [choice for _ in range(choices)],
         "usage": {
             "prompt_tokens": 10,
@@ -207,6 +230,34 @@ def test_deepseek_requires_exact_official_origin_and_fixed_model() -> None:
     assert CANARY_BASE_URL not in repr(settings)
 
 
+def test_deepseek_profile_admission_precedes_credential_lookup() -> None:
+    invalid_settings = (
+        SemanticProviderSettings(
+            provider=SemanticProvider.DEEPSEEK,
+            api_key_env="DEEPSEEK_API_KEY",
+            extract_model="deepseek-v4-pro",
+            generator_model="deepseek-v4-flash",
+            reviewer_model="deepseek-v4-pro",
+            base_url=CANARY_BASE_URL,
+        ),
+        SemanticProviderSettings(
+            provider=SemanticProvider.DEEPSEEK,
+            api_key_env="DEEPSEEK_API_KEY",
+            extract_model="deepseek-v4-flash",
+            generator_model="deepseek-v4-flash",
+            reviewer_model="deepseek-v4-pro",
+            base_url="https://compatible-provider.invalid",
+        ),
+    )
+
+    for settings in invalid_settings:
+        environ = _LookupSpy({"DEEPSEEK_API_KEY": CANARY_KEY})
+        with pytest.raises(SafeFailure) as failure:
+            create_semantic_client(settings, sdk=openai, environ=environ)
+        assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+        assert "DEEPSEEK_API_KEY" not in environ.lookups
+
+
 @pytest.mark.parametrize(
     "value",
     (
@@ -222,15 +273,18 @@ def test_deepseek_requires_exact_official_origin_and_fixed_model() -> None:
     ),
 )
 def test_deepseek_rejects_noncanonical_endpoints_without_echo(value: str) -> None:
-    with pytest.raises(SafeFailure) as failure:
-        resolve_semantic_provider(
-            {
-                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
-                "DEEPSEEK_BASE_URL": value,
-            }
+    environ = _LookupSpy(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": value,
+            "DEEPSEEK_API_KEY": CANARY_KEY,
+        }
     )
+    with pytest.raises(SafeFailure) as failure:
+        resolve_semantic_provider(environ)
 
     assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert "DEEPSEEK_API_KEY" not in environ.lookups
     if value:
         assert value not in str(failure.value)
 
@@ -244,6 +298,7 @@ def test_unknown_provider_fails_closed_without_echo() -> None:
 
 
 def test_deepseek_chat_request_is_one_toolless_strict_json_call() -> None:
+    stage = _future_provider_symbol("SemanticStage")
     recorded = RecordedTransport({CHAT_COMPLETIONS: _chat_response('{"value":"ok"}')})
     settings = resolve_semantic_provider(
         {
@@ -261,6 +316,7 @@ def test_deepseek_chat_request_is_one_toolless_strict_json_call() -> None:
     result = request_deepseek_json(
         client,
         sdk=openai,
+        stage=stage.EXTRACTION,
         model=DEEPSEEK_MODEL,
         instructions="trusted instructions",
         user_payload="untrusted payload",
@@ -270,6 +326,11 @@ def test_deepseek_chat_request_is_one_toolless_strict_json_call() -> None:
 
     assert result.status == "parsed"
     assert result.parsed == _Answer(value="ok")
+    assert result.request_id == "chatcmpl-deepseek-1"
+    assert result.model == DEEPSEEK_MODEL
+    assert result.usage.prompt_tokens == 10
+    assert result.usage.completion_tokens == 4
+    assert result.usage.total_tokens == 14
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
     request = recorded.requests[0]
     assert request.url.host == "api.deepseek.com"
@@ -323,6 +384,7 @@ def test_deepseek_missing_secret_fails_closed_and_profile_stays_nonsecret() -> N
 def test_deepseek_provider_errors_are_closed_without_hidden_retry(
     status: int, expected: SemanticTransportDisposition
 ) -> None:
+    stage = _future_provider_symbol("SemanticStage")
     response = RecordedResponse(
         status=status,
         headers={"content-type": "application/json"},
@@ -346,6 +408,7 @@ def test_deepseek_provider_errors_are_closed_without_hidden_retry(
         request_deepseek_json(
             client,
             sdk=openai,
+            stage=stage.EXTRACTION,
             model=DEEPSEEK_MODEL,
             instructions="trusted",
             user_payload="untrusted",
@@ -373,6 +436,7 @@ def test_deepseek_response_must_be_single_terminal_strict_schema(
     response: RecordedResponse,
     expected: str,
 ) -> None:
+    stage = _future_provider_symbol("SemanticStage")
     recorded = RecordedTransport({CHAT_COMPLETIONS: response})
     settings = resolve_semantic_provider(
         {
@@ -390,6 +454,7 @@ def test_deepseek_response_must_be_single_terminal_strict_schema(
     result = request_deepseek_json(
         client,
         sdk=openai,
+        stage=stage.EXTRACTION,
         model=DEEPSEEK_MODEL,
         instructions="trusted",
         user_payload="untrusted",
@@ -434,6 +499,8 @@ def test_phase6_deepseek_stage_map_is_exact_flash_flash_pro() -> None:
         stage.GENERATION: "deepseek-v4-flash",
         stage.REVIEW: "deepseek-v4-pro",
     }
+    with pytest.raises(TypeError):
+        mapping[stage.REVIEW] = "caller-selected-model"
     settings = resolve_semantic_provider(
         {
             "SKILLSCOUT_LLM_PROVIDER": "deepseek",
@@ -443,6 +510,58 @@ def test_phase6_deepseek_stage_map_is_exact_flash_flash_pro() -> None:
     assert settings.extract_model == "deepseek-v4-flash"
     assert settings.generator_model == "deepseek-v4-flash"
     assert settings.reviewer_model == "deepseek-v4-pro"
+
+
+@pytest.mark.parametrize(
+    ("stage_name", "model"),
+    (
+        ("extraction", "deepseek-v4-flash"),
+        ("generation", "deepseek-v4-flash"),
+        ("review", "deepseek-v4-pro"),
+    ),
+)
+def test_each_exact_stage_model_pair_makes_one_strict_request(
+    stage_name: str,
+    model: str,
+) -> None:
+    stage = _future_provider_symbol("SemanticStage")
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _chat_response('{"value":"ok"}', model=model)}
+    )
+    settings = resolve_semantic_provider(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": CANARY_BASE_URL,
+        }
+    )
+    client = create_semantic_client(
+        settings,
+        sdk=openai,
+        api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+    )
+
+    result = request_deepseek_json(
+        client,
+        sdk=openai,
+        stage=stage(stage_name),
+        model=model,
+        instructions="trusted",
+        user_payload="untrusted",
+        response_model=_Answer,
+        max_tokens=32,
+    )
+
+    assert result.status == "parsed"
+    assert result.model == model
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+    body = json.loads(recorded.requests[0].content)
+    assert body["model"] == model
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["stream"] is False
+    assert body["thinking"] == {"type": "disabled"}
+    assert "tools" not in body
+    assert "tool_choice" not in body
 
 
 @pytest.mark.parametrize(
