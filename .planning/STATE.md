@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 after authorized one-shot run 30443794922 failed in kernel-isolated campaign; zero artifacts and no canonical facts
-last_updated: "2026-07-29T10:29:23.433Z"
+stopped_at: Blocked 06-06 Task 3 pending fresh human authorization after hosted Python runtime mount correction; no retry authorized
+last_updated: "2026-07-29T10:39:47Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
@@ -106,14 +106,15 @@ Live acceptance uses DeepSeek Flash for extraction/generation and Pro for indepe
 
 ## Blockers
 
-Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips. The 2026-07-28 Gate B4 evidence remains historical, but its workflow-byte bindings are stale after the 06-15 toolchain-guard correction and grant no current authority. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
+Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips. The 2026-07-28 Gate B4 evidence remains historical, but its workflow-byte bindings are stale after the 06-15 toolchain and hosted-runtime corrections and grant no current authority. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
 
 - Plan 06-06 hosted isolation ingestion is blocked: run 30430010273 failed before the network probe, upload was skipped, and artifact count is zero.
 - Plan 06-06 Task 3 blocked: exact offline-adversarial run 30441596331 attempt 1 at source 27d7a41f0e7c7ffeb2991110f44eab6a977c78ca failed during repository-local locked-toolchain verification; campaign and upload were skipped, artifact count is zero, and no hosted-isolation or offline-run canonical fact was persisted. No retry is authorized.
 - Proven common cause for runs 30430010273 and 30441596331 was the exact-full-output guard rejecting the official pinned output `uv 0.11.29 (901092ee1 2026-07-15 aarch64-apple-darwin)`. Strict-TDD correction commits are RED `49a548261c84f81628d301f5bf4eba603c0c18ee` and GREEN `3b6b189cc848ab083cf83bf4489a5c91945f5aed`.
-- The corrected authoritative workflow SHA-256 values are discover `7fafb18b11d82e9a65581f1658123dd5558e7279474b502c590fe84e73147373`, publish `19c34f87c0d3934ccba3be677511118185e3421e7ec86b371e2c08f0afa42daa`, canary `78061cb777d97381f79fd2f9a4653fa2a11d93553822ddf079cf6bc44e1a00d4`, and Phase 6 acceptance `0152df0b855ae33862cf39d65f70ddc5dc319b82288d8c73660e4b80e80ff89b`.
-- Every earlier workflow digest, dispatch approval, Gate B4 approval, and exact-source authorization is stale after the four workflow-byte changes. A new human checkpoint must bind the final local HEAD and corrected Phase 6 workflow digest before any retry; no push, dispatch, artifact access, canonical fact write, or approval inference has occurred.
+- The current authoritative workflow SHA-256 values are discover `7fafb18b11d82e9a65581f1658123dd5558e7279474b502c590fe84e73147373`, publish `19c34f87c0d3934ccba3be677511118185e3421e7ec86b371e2c08f0afa42daa`, canary `78061cb777d97381f79fd2f9a4653fa2a11d93553822ddf079cf6bc44e1a00d4`, and Phase 6 acceptance `6a25a68d98cb8d796b8619bdb6e4922c28d575a4d0955aa80f8eb28dbc78981f`.
+- Every earlier workflow digest, dispatch approval, Gate B4 approval, and exact-source authorization is stale after the current workflow-byte changes. A new human checkpoint must bind the final local HEAD and current Phase 6 workflow digest before any retry; no push, dispatch, artifact access, canonical fact write, or approval inference has occurred.
 - Plan 06-06 Task 3 remains blocked: authorized one-shot offline-adversarial run 30443794922 attempt 1 at source 5997ceaac5fc137971d031750be98323b5745591 passed checkout, pinned uv materialization, and locked-toolchain verification, then failed in the fresh kernel-isolated adversarial campaign; bounded evidence upload was skipped, artifact count is zero, and no acceptance_hosted_isolation_capability or acceptance_offline_adversarial_run canonical fact was persisted. No retry is authorized.
+- Proven cause for run 30443794922 was the repository-visible `.venv/bin/python` resolving to a hosted Python base prefix outside the repository while the empty-rootfs Docker invocations did not mount that prefix. Strict-TDD correction commits are RED `e86c8091279757fb43ffdb2dcac7afe364e79f91` and GREEN `b48e1fddc058e44a355ebc09086ec6a2aa65ee8d`; the fix validates the exact canonical `${RUNNER_TOOL_CACHE}/Python/` descendant and mounts only that prefix read-only at the identical path in all six network-none invocations.
 
 ### Quick Tasks Completed
 
@@ -124,8 +125,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-29T10:29:12.314Z
-**Stopped at:** Blocked 06-06 Task 3 after authorized one-shot run 30443794922 failed in kernel-isolated campaign; zero artifacts and no canonical facts
+**Last session:** 2026-07-29T10:39:47Z
+**Stopped at:** Blocked 06-06 Task 3 pending fresh human authorization after hosted Python runtime mount correction; no retry authorized
 **Resume file:** None
 
 ### Next
