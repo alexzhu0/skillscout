@@ -5,14 +5,14 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Completed 06-02-PLAN.md with hosted isolation blocker
-last_updated: "2026-07-29T07:02:47.206Z"
+stopped_at: Completed 06-03-PLAN.md
+last_updated: "2026-07-29T07:22:31.750Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 76
-  completed_plans: 63
+  completed_plans: 64
   percent: 83
 ---
 
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 06 (adversarial-mvp-acceptance) — EXECUTING
-**Plan:** 3 of 15
+**Plan:** 4 of 15
 **Verification:** Phase 6 plan checker passed with TEST-01..04, D-01..D-27, 38/38 task-map, dependency, threat-model, workflow-freeze, and post-planning gap gates green
 **Next command:** `$gsd-execute-phase 6`
 
@@ -119,8 +119,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-29
-**Last session:** 2026-07-29T07:02:47.192Z
-**Stopped at:** Completed 06-02-PLAN.md with hosted isolation blocker
+**Last session:** 2026-07-29T07:22:17.806Z
+**Stopped at:** Completed 06-03-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -189,6 +189,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 | Phase 05 P08 | 56min | 2 tasks | 20 files |
 | Phase 06 P01 | 12 min | 3 tasks | 8 files |
 | Phase 06 P02 | 32 min | 3 tasks | 5 files |
+| Phase 06 P03 | 10min | 2 tasks | 8 files |
 
 ## Decisions
 
@@ -329,3 +330,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - [Phase 06]: Treat hosted run 30430010273 as a blocking failure because locked-toolchain verification failed before the network probe and artifact upload. — No bounded artifact exists, so D-24 kernel/OS denial remains unproven.
 - [Phase 06]: Record exact run, source, workflow, job, and empty-artifact locators without inventing an artifact digest or inspecting raw logs. — Preserve a tamper-evident failure boundary without widening the approved evidence surface.
 - [Phase 06]: Deny Plan 06-06 campaign credit until an authorized exact run produces bounded evidence revalidated into canonical operations state. — A skipped probe and zero artifacts cannot authorize campaign evidence.
+- [Phase 06]: Preserve the historical DEEPSEEK_MODEL Flash alias — New live authority comes only from immutable DEEPSEEK_MODEL_BY_STAGE, so historical all-Flash evidence is not rewritten.
+- [Phase 06]: Validate provider settings before credential lookup and stage-model pairs before HTTP — Invalid endpoint, key variable, or model identity must produce zero secret lookup and zero transport calls.
+- [Phase 06]: Quarantine wrong actual DeepSeek model telemetry as semantic_outcome_unknown — Mismatched provider identity is ambiguous evidence and cannot authorize a business result or blind replay.
+- [Phase 06]: Fix DeepSeek stage output caps at 8000, 6000, and 2000 tokens — Exact extraction, generation, and review budgets are part of the closed Phase 6 semantic policy while recorded OpenAI behavior stays unchanged.
