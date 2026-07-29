@@ -24,6 +24,93 @@ PHASE5_GATE_B4_WORKFLOW_DIGESTS = {
         "9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d"
     ),
 }
+REPOSITORY_LOCAL_TOOLCHAIN_STEP = """\
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          test "$(.tools/uv-0.11.29/bin/uv --version)" = "uv 0.11.29"
+          .tools/uv-0.11.29/bin/uv sync --locked --no-install-project
+"""
+PUBLISH_LOCAL_TOOLCHAIN_STEPS = (
+    """\
+      - name: Install the exact locked uv tool
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+"""
+    + REPOSITORY_LOCAL_TOOLCHAIN_STEP
+)
+
+
+def _replace_exact(repository: Path, relative: Path, old: str, new: str, *, count: int) -> None:
+    path = repository / relative
+    source = path.read_text(encoding="utf-8")
+    assert source.count(old) == count
+    path.write_text(source.replace(old, new), encoding="utf-8")
+
+
+def _restore_phase5_gate_b4_workflows(repository: Path) -> None:
+    discover = Path(".github/workflows/discover.yml")
+    publish = Path(".github/workflows/publish-candidate.yml")
+    canary = Path(".github/workflows/gate-b4-canary.yml")
+    _replace_exact(
+        repository,
+        discover,
+        REPOSITORY_LOCAL_TOOLCHAIN_STEP,
+        "",
+        count=2,
+    )
+    _replace_exact(
+        repository,
+        discover,
+        ".tools/uv-0.11.29/bin/uv run --locked",
+        "uv run --locked",
+        count=3,
+    )
+    _replace_exact(
+        repository,
+        publish,
+        "          ref: ${{ github.sha }}\n",
+        "",
+        count=2,
+    )
+    _replace_exact(
+        repository,
+        publish,
+        PUBLISH_LOCAL_TOOLCHAIN_STEPS,
+        "",
+        count=2,
+    )
+    _replace_exact(
+        repository,
+        publish,
+        '.tools/uv-0.11.29/bin/uv run --locked python - "$protected_admission"',
+        'python - "$protected_admission"',
+        count=1,
+    )
+    _replace_exact(
+        repository,
+        canary,
+        REPOSITORY_LOCAL_TOOLCHAIN_STEP,
+        "",
+        count=1,
+    )
+    _replace_exact(
+        repository,
+        canary,
+        ".tools/uv-0.11.29/bin/uv run --locked",
+        "uv run --locked",
+        count=2,
+    )
+    observed = {
+        relative: hashlib.sha256((repository / relative).read_bytes()).hexdigest()
+        for relative in PHASE5_GATE_B4_WORKFLOW_DIGESTS
+    }
+    assert observed == PHASE5_GATE_B4_WORKFLOW_DIGESTS
 
 
 @pytest.fixture
@@ -31,6 +118,7 @@ def acceptance_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
     for directory in ("src", "config", ".github"):
         shutil.copytree(PROJECT_ROOT / directory, repository / directory)
+    _restore_phase5_gate_b4_workflows(repository)
     phase = repository / PHASE
     phase.mkdir(parents=True)
     for name in (
@@ -89,9 +177,7 @@ def test_historical_fixture_uses_gate_b4_bound_workflow_bytes(
     acceptance_repository: Path,
 ) -> None:
     observed = {
-        relative: hashlib.sha256(
-            (acceptance_repository / relative).read_bytes()
-        ).hexdigest()
+        relative: hashlib.sha256((acceptance_repository / relative).read_bytes()).hexdigest()
         for relative in PHASE5_GATE_B4_WORKFLOW_DIGESTS
     }
     assert observed == PHASE5_GATE_B4_WORKFLOW_DIGESTS
@@ -106,6 +192,13 @@ def test_complete_tree_passes_read_only_from_external_cwd(
     assert completed.stdout == "phase5 acceptance valid\n"
     assert completed.stderr == ""
     assert _metadata(acceptance_repository) == before
+
+
+def test_current_tree_fails_closed_until_fresh_gate_b4_evidence_is_recorded() -> None:
+    completed = _run(PROJECT_ROOT)
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr == "phase5 acceptance invalid\n"
 
 
 @pytest.mark.parametrize(
