@@ -17,7 +17,9 @@ from skillscout.adapters.openai_extract import (
 )
 from skillscout.adapters.semantic_provider import (
     DEEPSEEK_MODEL,
+    DEEPSEEK_MODEL_BY_STAGE,
     SemanticProviderFailure,
+    SemanticStage,
     SemanticTransportDisposition,
     resolve_semantic_provider,
 )
@@ -349,8 +351,14 @@ def test_deepseek_extraction_uses_chat_json_and_maps_existing_result() -> None:
         prompt_tokens=20, completion_tokens=10, total_tokens=30
     )
     body = json.loads(recorded.requests[0].content)
+    assert body["model"] == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.EXTRACTION]
     assert body["messages"][1] == {"role": "user", "content": USER_PAYLOAD}
+    assert body["max_tokens"] == MAX_EXTRACT_OUTPUT_TOKENS == 8_000
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["stream"] is False
+    assert body["thinking"] == {"type": "disabled"}
     assert "tools" not in body
+    assert "tool_choice" not in body
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
 
 

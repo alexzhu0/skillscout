@@ -20,8 +20,9 @@ from skillscout.adapters.openai_review import (
     review_input_size_bytes,
 )
 from skillscout.adapters.semantic_provider import (
-    DEEPSEEK_MODEL,
+    DEEPSEEK_MODEL_BY_STAGE,
     SemanticProviderFailure,
+    SemanticStage,
     SemanticTransportDisposition,
     resolve_semantic_provider,
 )
@@ -87,6 +88,7 @@ REPORT_CANARY = "REPORT-CANARY-ONLY-IN-USER"
 GENERATOR_TRANSCRIPT_CANARY = "GENERATOR-TRANSCRIPT-MUST-NOT-APPEAR"
 RAW_REPOSITORY_CANARY = "RAW-REPOSITORY-TEXT-MUST-NOT-APPEAR"
 ACTUAL_REVIEWER_MODEL = "gpt-5.6-terra-reviewer-2026-07-22"
+DEEPSEEK_REVIEWER_MODEL = DEEPSEEK_MODEL_BY_STAGE[SemanticStage.REVIEW]
 
 
 def _judgment(
@@ -250,7 +252,11 @@ def _client(recorded: RecordedTransport) -> OpenAIReviewClient:
     )
 
 
-def _deepseek_response(content: str | None) -> RecordedResponse:
+def _deepseek_response(
+    content: str | None,
+    *,
+    model: str = DEEPSEEK_REVIEWER_MODEL,
+) -> RecordedResponse:
     return RecordedResponse(
         status=200,
         headers={"content-type": "application/json"},
@@ -259,7 +265,7 @@ def _deepseek_response(content: str | None) -> RecordedResponse:
                 "id": "chatcmpl-reviewer-1",
                 "object": "chat.completion",
                 "created": 1,
-                "model": DEEPSEEK_MODEL,
+                "model": model,
                 "choices": [
                     {
                         "index": 0,
@@ -671,10 +677,74 @@ def test_deepseek_reviewer_uses_chat_json_and_preserves_user_boundary() -> None:
     assert result.status == "parsed"
     assert result.judgment == _judgment()
     assert result.request_id == "chatcmpl-reviewer-1"
-    assert result.model == DEEPSEEK_MODEL
+    assert result.model == DEEPSEEK_REVIEWER_MODEL
     body = json.loads(recorded.requests[0].content)
+    assert body["model"] == DEEPSEEK_REVIEWER_MODEL == "deepseek-v4-pro"
+    assert body["max_tokens"] == MAX_REVIEWER_OUTPUT_TOKENS == 2_000
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["stream"] is False
+    assert body["thinking"] == {"type": "disabled"}
     assert WORKFLOW_CANARY in body["messages"][1]["content"]
     assert WORKFLOW_CANARY not in body["messages"][0]["content"]
+    assert GENERATOR_TRANSCRIPT_CANARY not in body["messages"][1]["content"]
+    assert RAW_REPOSITORY_CANARY not in body["messages"][1]["content"]
+    assert "tools" not in body
+    assert "tool_choice" not in body
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    (
+        "raw_repository",
+        "expected_label",
+        "human_notes",
+        "generator_history",
+        "edit_authority",
+        "publication_authority",
+    ),
+)
+def test_reviewer_rejects_forbidden_context_fields_before_transport(
+    forbidden: str,
+) -> None:
+    recorded = RecordedTransport(
+        {CHAT_COMPLETIONS: _deepseek_response(_judgment().model_dump_json())}
+    )
+    client = _deepseek_client(recorded)
+    arguments = {
+        "workflow_spec": _workflow(),
+        "package": _package(),
+        "validation_report": _adapter_report(),
+        forbidden: "MUTATION-CANARY-MUST-NOT-REACH-REVIEWER",
+    }
+
+    with pytest.raises(TypeError):
+        client.review(**arguments)
+
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 0
+
+
+def test_deepseek_reviewer_rejects_wrong_actual_model_evidence() -> None:
+    recorded = RecordedTransport(
+        {
+            CHAT_COMPLETIONS: _deepseek_response(
+                _judgment().model_dump_json(),
+                model="deepseek-v4-flash",
+            )
+        }
+    )
+
+    with pytest.raises(SemanticProviderFailure) as failure:
+        _deepseek_client(recorded).review(
+            workflow_spec=_workflow(),
+            package=_package(),
+            validation_report=_adapter_report(),
+        )
+
+    assert (
+        failure.value.disposition
+        is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+    )
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
 
 
