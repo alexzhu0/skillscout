@@ -721,6 +721,12 @@ def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> No
                 candidate_fact_digests=tuple(
                     "sha256:" + f"{index:064x}" for index in range(21, 26)
                 ),
+                acceptance_business_fact_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(31, 36)
+                ),
+                operations_fact_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(41, 46)
+                ),
                 semantic_request_count=5 + (calls - 1),
             )
 
