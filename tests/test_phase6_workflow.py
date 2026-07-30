@@ -1105,6 +1105,7 @@ def test_live_resume_uses_no_mutable_commit_or_root_variables() -> None:
     )
     for consumer in (benchmark, replay):
         assert "resolve-acceptance-resume" in consumer
+        assert "--resume-proof" in consumer
         assert (
             '--state-commit-sha "$PHASE6_STATE_COMMIT_SHA"'
             in consumer

@@ -194,6 +194,7 @@ def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
         "run-acceptance": {
             "--manifest",
             "--acceptance-run-id",
+            "--resume-proof",
             "--state-commit-sha",
             "--state-root-digest",
         },
