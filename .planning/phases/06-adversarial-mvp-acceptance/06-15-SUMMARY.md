@@ -21,6 +21,7 @@ tech-stack:
   added: []
   patterns:
     - Same-job full-SHA checkout, exact setup-uv, repository-managed CPython 3.13.14, and direct run --locked
+    - Fresh authoritative venvs install the locked current SkillScout project before any source entry executes
     - Constrained ordered workflow parser with closed authoritative-entry grammar
     - Failure-only bounded diagnostic artifact with closed stage/status schema and no evidence authority
 
@@ -44,6 +45,7 @@ key-decisions:
   - "Preserve isolation_probe as the Plan 06-02 contract while widening only the closed phase6_action grammar and exact job registry."
   - "Admit uv only when the program token is exactly uv and the version token is exactly 0.11.29; allow only an optional non-empty parenthesized build-metadata suffix."
   - "Materialize exact CPython 3.13.14 under ${GITHUB_WORKSPACE}/.tools/python in every authoritative job; network-none containers receive only the read-only repository mount and closed uv managed-runtime environment."
+  - "Install the current locked SkillScout project in all 15 fresh authoritative venvs; --no-install-project is a fail-closed mutation because the src-layout control runtime otherwise cannot import SkillScout."
 
 patterns-established:
   - "Authoritative workflow execution: checkout current github.sha with credentials disabled, pin setup-uv 0.11.29, copy and verify local uv, then invoke checked-out source directly with run --locked."
@@ -98,7 +100,7 @@ coverage:
     human_judgment: false
 
 duration: 9min
-completed: 2026-07-29
+completed: 2026-07-30
 status: complete
 ---
 
@@ -125,6 +127,7 @@ status: complete
 - Added failure-only campaign observability: a closed seven-stage diagnostic initialized before runtime preflight, updated without raw output, and uploaded as exactly one pinned one-day artifact only when the campaign step fails.
 - Extended the independent four-workflow verifier to reject diagnostic enum/schema/status widening, extra free-text/path/log fields, retention or Action-pin drift, broadened upload conditions, and any evidence/canonical naming.
 - Replaced runner-toolcache dependence in all 15 authoritative jobs with exact CPython `3.13.14` materialized under `${GITHUB_WORKSPACE}/.tools/python`; all six network-none containers now rely only on the read-only repository mount plus closed managed-runtime environment variables.
+- Corrected all 15 fresh authoritative sync jobs to install the locked current SkillScout project after removing the old venv; a real offline control test now proves baseline import/execution succeeds and the `--no-install-project` mutation returns 1.
 
 ## Task Commits
 
@@ -157,6 +160,11 @@ The fifth post-merge correction followed the user-approved repository-managed Py
 10. **RED: require exact repository-managed CPython runtime** - `80eaa3a` (test; runner-toolcache paths, external runtime mounts, non-exact versions, and writable/remapped repository mounts remained admissible)
 11. **GREEN: materialize CPython 3.13.14 inside the repository** - `a8f42d1` (fix; 15 exact managed-runtime jobs, six repository-only network-none containers, and independent mutation enforcement)
 
+The sixth post-merge correction followed hosted run `30508458266` under strict TDD:
+
+12. **RED: reproduce the missing project in a fresh authoritative venv** - `5aa3aa2` (test; real locked initialization completed but isolated SkillScout import returned 1)
+13. **GREEN: install the current project in all fresh authoritative venvs** - `e425de3` (fix; all 15 jobs, the independent verifier, and workflow-owner contracts now require project installation)
+
 ## Files Created/Modified
 
 - `.github/workflows/phase6-acceptance.yml` - Defines the closed action grammar and separated nomination, offline, semantic, publication, attestation, cleanup, and rebuild jobs.
@@ -180,6 +188,8 @@ The fifth post-merge correction followed the user-approved repository-managed Py
 - This correction changes all four authoritative workflow byte sequences. Every prior workflow digest, approval, dispatch authorization, and Gate B4 binding is stale and grants no authority to retry, publish, or record canonical acceptance facts.
 - The previous `${RUNNER_TOOL_CACHE}` base-prefix assumption is historical and superseded. Every authoritative job now materializes exact CPython `3.13.14` under canonical `${GITHUB_WORKSPACE}/.tools/python`; empty-rootfs containers receive no external Python mount and resolve the locked venv through the same-path read-only repository mount with `UV_PYTHON_INSTALL_DIR`, `UV_MANAGED_PYTHON=1`, and `UV_PYTHON_DOWNLOADS=never`.
 - Failure diagnostics are never campaign evidence: they contain only the fixed schema, source/workflow identities, hosted run identity, one closed stage, four integer statuses, and retention value `1`; the existing offline-evidence upload remains success-only and canonical state admission remains unchanged.
+- Fresh authoritative venv creation must install the current locked project. Dependency-only initialization is insufficient for a src-layout checkout: `uv run --locked --offline --no-sync` cannot resolve `skillscout.application.acceptance` unless sync records the project installation.
+- Hosted run `30508458266` is a failure fact only. Its control returned 1 while direct and child network-denial probes remained 97; it grants no hosted campaign, canonical state, Gate B4, dispatch, or publication authority.
 
 ## Deviations from Plan
 
@@ -245,10 +255,21 @@ The fifth post-merge correction followed the user-approved repository-managed Py
 - **Verification:** The RED contract failed on the absent managed-runtime result and workflow markers. GREEN passed 180 affected tests, the independent source-execution verifier, Ruff lint/format, `git diff --check`, and Bash syntax validation for all 35 workflow run blocks. Full locked pytest classified 2,168 passed, 14 skipped, and only the unchanged planned Phase 6 `verify_repository` RED failure.
 - **Committed in:** `80eaa3a` (RED), `a8f42d1` (GREEN)
 
+### Post-Checkpoint Auto-Fixed Issue
+
+**8. [Rule 1 - Bug] Installed SkillScout in every fresh authoritative venv**
+- **Found during:** Plan 06-06 Task 3 hosted run `30508458266`
+- **Issue:** Each authoritative job deleted `.venv` and then ran `uv sync --locked --no-install-project`. The fresh venv therefore contained locked dependencies but no SkillScout installation, so the offline control could not import `skillscout.application.acceptance` and returned 1 even though direct and child denial probes still returned 97.
+- **Fix:** Removed only `--no-install-project` from all 15 authoritative fresh sync commands across the four frozen workflow paths, then updated the dependency-free source verifier and owner contracts. Locking, managed CPython, offline/no-sync container execution, read-only mounts, probes, scenarios, credentials, publication, retention, and diagnostic schema are unchanged.
+- **Behavior proof:** The RED test executes the parsed production init against a project-free locked environment after deleting a pre-existing venv. GREEN imports `skillscout.application.acceptance` and runs the target adversarial control node successfully; mutating the exact sync back to `--no-install-project` makes both return 1.
+- **Files modified:** `.github/workflows/discover.yml`, `.github/workflows/publish-candidate.yml`, `.github/workflows/gate-b4-canary.yml`, `.github/workflows/phase6-acceptance.yml`, `tools/verify_phase6_source_execution.py`, `tests/test_phase6_source_execution.py`, `tests/test_phase6_workflow.py`, `tests/test_publication_security.py`, `tests/test_discovery_workflow.py`
+- **Verification:** 130 four-workflow owner tests and 137 Phase 6 workflow/adversarial/source tests passed; the independent verifier reported `phase6 source execution valid`; all 35 workflow run blocks passed `bash -n`; full locked pytest classified 2,169 passed, 14 skipped, and only the unchanged planned repository-verifier RED failure.
+- **Committed in:** `5aa3aa2` (RED), `e425de3` (GREEN)
+
 ---
 
-**Total deviations:** 6 auto-fixed (4 bugs, 1 blocking issue, 1 missing critical diagnostic boundary) plus 1 user-approved architectural correction
-**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The first post-merge fix restored historical Phase 5 fixture correctness. The second made the pinned official uv executable admissible without widening its authority. The third attempted to expose the hosted Python runtime but was superseded when the toolcache assumption failed deterministically. The fourth added bounded diagnostic observability. The approved fifth correction now owns the exact Python runtime inside the repository without widening container mounts or provider/publication authority. Every workflow-byte authorization remains stale.
+**Total deviations:** 7 auto-fixed (5 bugs, 1 blocking issue, 1 missing critical diagnostic boundary) plus 1 user-approved architectural correction
+**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The first post-merge fix restored historical Phase 5 fixture correctness. The second made the pinned official uv executable admissible without widening its authority. The third attempted to expose the hosted Python runtime but was superseded when the toolcache assumption failed deterministically. The fourth added bounded diagnostic observability. The approved fifth correction now owns the exact Python runtime inside the repository without widening container mounts or provider/publication authority. The sixth post-checkpoint correction restores the project installation required by every authoritative source entry without changing the lock or execution boundary. Every workflow-byte authorization remains stale.
 
 ## Issues Encountered
 
@@ -259,7 +280,9 @@ The fifth post-merge correction followed the user-approved repository-managed Py
 - Hosted run `30443794922` passed checkout, pinned uv materialization, and locked sync, then failed inside the kernel-isolated campaign because the repository-visible venv referenced an unmounted hosted Python base prefix. It produced zero artifacts and no canonical facts; no retry is authorized.
 - Hosted run `30446151495` passed checkout, pinned uv materialization, and locked-toolchain verification, then failed in the campaign step. Its success-only evidence upload was skipped, artifact count was zero, raw logs were not opened, and no canonical facts were written. This correction adds diagnostics only; it does not explain or fix that failure.
 - Hosted run `30447435387` deterministically failed during runtime preflight before any container launched because the hosted toolcache path assumption was not satisfied. No artifact was accessed, no canonical fact was written, and no retry, push, or dispatch was authorized or performed.
-- The current workflow SHA-256 values are `4a587d2a65520b03fb35ed113cf0d36a145bb41b6884118f1189e05da2d3132d` (discover), `112f3e7cfb9f769f9ace282a50b3344bcf8e0216a0a1b8e9a2c64226d9518ac5` (publish), `613d0abe7192b0e5e1eb7901ae234159e45357ccced360e0c17543ae185f95e4` (canary), and `993c3a33fcf467876095244efb293fac0b54c17c3bdf48bb5beddceb4ad33829` (Phase 6 acceptance). All earlier workflow approvals, exact-source authorizations, dispatch approvals, and digest bindings are stale.
+- Hosted run `30508458266` reached the kernel-isolated campaign but the control returned 1 because the fresh venv could not import `skillscout.application.acceptance`; direct and child probes both retained the required denial status 97. The ordinary baseline was 36 passed, the synthetic-canary environment was 36 passed, and the read-only-repository case was 36 passed. Removing the project installation record reproduced the first-test failure consistently; restoring the record produced 1 passed.
+- The confirmed root cause was the static contract requiring `uv sync --locked --no-install-project` after deleting `.venv`. This correction used only local locked tests and the user-supplied bounded failure facts; it did not read artifacts or raw logs, push, dispatch, write canonical state, execute candidate source, or access any remote system.
+- The current workflow SHA-256 values are `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4` (discover), `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19` (publish), `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc` (canary), and `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5` (Phase 6 acceptance). All earlier workflow digests, workflow approvals, exact-source authorizations, dispatch approvals, and Gate B4 bindings are stale.
 
 ## Authentication Gates
 
@@ -276,7 +299,7 @@ None - no new dependency or external service configuration is required by this p
 ## Next Phase Readiness
 
 - Plan 06-06 Task 3 remains incomplete. Do not create `06-06-SUMMARY.md` or grant campaign credit from any failed run.
-- Any retry requires a new human authorization bound to the exact final local HEAD and Phase 6 workflow SHA-256 `993c3a33fcf467876095244efb293fac0b54c17c3bdf48bb5beddceb4ad33829`; it cannot inherit any prior dispatch approval and grants no Gate B4, publication, artifact-read, or canonical-state authority.
+- Any retry requires a new human authorization bound to the exact final local HEAD and Phase 6 workflow SHA-256 `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`; it cannot inherit any prior dispatch approval and grants no Gate B4, publication, artifact-read, or canonical-state authority.
 - Plans 06-07 through 06-14 remain blocked from treating the workflow as hosted evidence until an authorized exact run succeeds and its bounded facts rebuild canonically.
 - Fresh Gate B4 and value publication remain unauthorized until later checkpoints bind the corrected exact workflow bytes and fixed catalog identity.
 
@@ -308,7 +331,14 @@ None - no new dependency or external service configuration is required by this p
 - Exact managed CPython `3.13.14` install, discovery, locked no-download sync, and runtime validation completed locally.
 - All 180 affected tests passed, the independent verifier reported `phase6 source execution valid`, all 35 workflow run blocks passed `bash -n`, and Ruff lint/changed-file format plus `git diff --check` passed.
 - Full locked pytest classified 2,168 passed, 14 skipped, and only the unchanged planned `test_required_phase6_repository_verifier_is_missing` RED failure.
+- Fresh-project RED commit `5aa3aa28eed11adefe3ccaa0bb294bdb22e6426e` and GREEN commit `e425de3acf9ccb6c8ebeabd3a4bb90ea80403070` exist and contain no file deletions.
+- The real fresh-control behavior test passed and proved the `--no-install-project` production mutation makes both isolated import and the target control test return 1.
+- The four workflow owner suites passed 130 tests; the Phase 6 workflow/adversarial/source suites passed 137 tests; the independent verifier reported `phase6 source execution valid`; and all 35 workflow run blocks passed `bash -n`.
+- Full locked pytest classified 2,169 passed, 14 skipped, and only the unchanged planned `tests/test_phase6_acceptance.py::test_required_phase6_repository_verifier_is_missing` RED failure.
+- Full Ruff lint, changed-file Ruff format, and `git diff --check` passed. Neither `pyproject.toml` nor `uv.lock` changed.
+- The exact current workflow SHA-256 values were recomputed from disk as discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`.
+- No `06-06-SUMMARY.md` was created, and no remote, credential, artifact, canonical-state, push, dispatch, Gate B4, or publication action occurred.
 
 ---
 *Phase: 06-adversarial-mvp-acceptance*
-*Completed: 2026-07-29*
+*Completed: 2026-07-30*

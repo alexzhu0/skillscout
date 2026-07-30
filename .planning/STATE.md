@@ -5,9 +5,9 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 after run 30447435387 deterministically failed at runtime preflight; repository-managed CPython correction complete locally, no remote retry authorized
-last_updated: "2026-07-29T14:12:31Z"
-last_activity: 2026-07-29
+stopped_at: Blocked 06-06 Task 3 after run 30508458266 control returned 1 because the fresh venv omitted SkillScout; strict-TDD correction complete locally, no remote retry authorized
+last_updated: "2026-07-30T03:00:04Z"
+last_activity: 2026-07-30
 progress:
   total_phases: 6
   completed_phases: 5
@@ -111,7 +111,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - Plan 06-06 hosted isolation ingestion is blocked: run 30430010273 failed before the network probe, upload was skipped, and artifact count is zero.
 - Plan 06-06 Task 3 blocked: exact offline-adversarial run 30441596331 attempt 1 at source 27d7a41f0e7c7ffeb2991110f44eab6a977c78ca failed during repository-local locked-toolchain verification; campaign and upload were skipped, artifact count is zero, and no hosted-isolation or offline-run canonical fact was persisted. No retry is authorized.
 - Proven common cause for runs 30430010273 and 30441596331 was the exact-full-output guard rejecting the official pinned output `uv 0.11.29 (901092ee1 2026-07-15 aarch64-apple-darwin)`. Strict-TDD correction commits are RED `49a548261c84f81628d301f5bf4eba603c0c18ee` and GREEN `3b6b189cc848ab083cf83bf4489a5c91945f5aed`.
-- The current authoritative workflow SHA-256 values are discover `4a587d2a65520b03fb35ed113cf0d36a145bb41b6884118f1189e05da2d3132d`, publish `112f3e7cfb9f769f9ace282a50b3344bcf8e0216a0a1b8e9a2c64226d9518ac5`, canary `613d0abe7192b0e5e1eb7901ae234159e45357ccced360e0c17543ae185f95e4`, and Phase 6 acceptance `993c3a33fcf467876095244efb293fac0b54c17c3bdf48bb5beddceb4ad33829`.
+- The current authoritative workflow SHA-256 values are discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`.
 - Every earlier workflow digest, dispatch approval, Gate B4 approval, and exact-source authorization is stale after the current workflow-byte changes. A new human checkpoint must bind the final local HEAD and current Phase 6 workflow digest before any retry; no push, dispatch, artifact access, canonical fact write, or approval inference has occurred.
 - Plan 06-06 Task 3 remains blocked: authorized one-shot offline-adversarial run 30443794922 attempt 1 at source 5997ceaac5fc137971d031750be98323b5745591 passed checkout, pinned uv materialization, and locked-toolchain verification, then failed in the fresh kernel-isolated adversarial campaign; bounded evidence upload was skipped, artifact count is zero, and no acceptance_hosted_isolation_capability or acceptance_offline_adversarial_run canonical fact was persisted. No retry is authorized.
 - Proven cause for run 30443794922 was the repository-visible `.venv/bin/python` resolving to a hosted Python base prefix outside the repository while the empty-rootfs Docker invocations did not mount that prefix. Strict-TDD correction commits RED `e86c8091279757fb43ffdb2dcac7afe364e79f91` and GREEN `b48e1fddc058e44a355ebc09086ec6a2aa65ee8d` attempted an exact `${RUNNER_TOOL_CACHE}/Python/` mount; that approach is historical and superseded by the repository-managed correction below.
@@ -120,7 +120,9 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - This instrumentation is diagnostic-only: it changes no mount, temporary-directory policy, pytest command, probe, network mode, scenario, persistence, credential, catalog, publication, lock, or dependency behavior. It does not diagnose or fix run `30446151495`, grant campaign credit, or authorize artifact access.
 - Run `30447435387` deterministically failed during runtime preflight before any container launched because the hosted toolcache-root assumption was unavailable. No artifact was accessed, no canonical fact was written, and no retry, push, or dispatch was authorized or performed.
 - The user-approved correction materializes exact CPython `3.13.14` under canonical `${GITHUB_WORKSPACE}/.tools/python` in all 15 authoritative jobs. Six network-none invocations receive no external Python mount; the same-path read-only repository mount carries both `.venv` and its managed runtime, with downloads disabled. Strict-TDD commits are RED `80eaa3a68d945867b338e71262d12cb0abf87a61` and GREEN `a8f42d1baa50118fb9dffd5a797adb4ead13ecb0`.
-- Every prior Phase 6 workflow digest, exact-source authorization, dispatch approval, and Gate B4 binding is stale after the repository-managed-runtime workflow-byte change. A new human authorization must bind the final local HEAD and exact Phase 6 workflow SHA-256 `993c3a33fcf467876095244efb293fac0b54c17c3bdf48bb5beddceb4ad33829`; it grants no retry, artifact-read, canonical-state, Gate B4, or publication authority unless the checkpoint explicitly says so.
+- Run `30508458266` is a blocking failure fact: the kernel-isolated control returned 1 because the freshly recreated venv did not contain the current SkillScout project, while the direct and child network-denial probes both returned 97. The ordinary baseline, synthetic-canary environment, and read-only-repository checks each passed 36 tests; removing the project installation record reproduced the first-test failure, and restoring it produced 1 passed.
+- The confirmed root cause was all 15 authoritative initializers running `uv sync --locked --no-install-project` after deleting `.venv`. Strict-TDD commits are RED `5aa3aa28eed11adefe3ccaa0bb294bdb22e6426e` and GREEN `e425de3acf9ccb6c8ebeabd3a4bb90ea80403070`; the correction installs only the current locked project and changes no lock, dependency, mount, network, probe, scenario, credential, publication, retention, or diagnostic authority.
+- Every prior Phase 6 workflow digest, exact-source authorization, dispatch approval, and Gate B4 binding is stale after the fresh-project workflow-byte change. A new human authorization must bind the final local HEAD and exact Phase 6 workflow SHA-256 `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`; it grants no retry, artifact-read, canonical-state, Gate B4, or publication authority unless the checkpoint explicitly says so. No remote, push, dispatch, artifact-read, raw-log, canonical-state, or publication action occurred during this correction.
 
 ### Quick Tasks Completed
 
@@ -130,9 +132,9 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 
 ## Session Continuity
 
-**Last activity:** 2026-07-29
-**Last session:** 2026-07-29T14:12:31Z
-**Stopped at:** Blocked 06-06 Task 3 after run 30447435387 deterministically failed at runtime preflight; repository-managed CPython correction complete locally, no remote retry authorized
+**Last activity:** 2026-07-30
+**Last session:** 2026-07-30T03:00:04Z
+**Stopped at:** Blocked 06-06 Task 3 after run 30508458266 control returned 1 because the fresh venv omitted SkillScout; strict-TDD correction complete locally, no remote retry authorized
 **Resume file:** None
 
 ### Next
@@ -360,3 +362,4 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - [Phase 06]: Keep fixed-catalog credentials exclusively in value_publication after fresh_gate_b4 — Nomination, semantic, attestation, rebuild, and isolation jobs retain separate minimum authority zones.
 - [Phase 06]: Admit the pinned tool only when its program token is exactly `uv` and version token is exactly `0.11.29`, with an optional non-empty parenthesized build-metadata suffix. — Official build metadata must not be rejected, and metadata cannot replace either authoritative token.
 - [Phase 06]: Materialize exact CPython 3.13.14 under canonical `${GITHUB_WORKSPACE}/.tools/python` in every authoritative job. — The locked venv and managed runtime cross into network-none containers only through the same-path read-only repository mount; hosted toolcache paths and external Python mounts are no longer runtime authority.
+- [Phase 06]: Install the current locked SkillScout project in all 15 freshly recreated authoritative venvs. — A dependency-only venv cannot import the src-layout application, and the `--no-install-project` mutation must make both isolated import and the adversarial control return 1.
