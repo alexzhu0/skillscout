@@ -601,7 +601,7 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             "validation_rejected": "skill_validation_rejected",
             "review_rejected": "independent_review_rejected",
             "eligible_local_candidate": "eligible_candidate_completed",
-            "provider_exhausted": "provider_outcome_unknown",
+            "provider_exhausted": "provider_attempts_exhausted",
             "schema_exhausted": "provider_schema_exhausted",
             "evidence_missing": "state_integrity_conflict",
             "duplicate_effect": "duplicate_effect_observed",

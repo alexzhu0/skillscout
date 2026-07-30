@@ -2175,6 +2175,30 @@ class _CompletedBenchmarkStateProjector:
         return None
 
 
+def _acceptance_reason_code(outcome: str) -> str:
+    reasons = {
+        "filter_rejected": "deterministic_filter_rejected",
+        "no_workflow": "no_reusable_workflow",
+        "qualification_rejected": "qualification_policy_rejected",
+        "validation_rejected": "skill_validation_rejected",
+        "review_rejected": "independent_review_rejected",
+        "eligible_local_candidate": "eligible_candidate_completed",
+        "provider_exhausted": "provider_attempts_exhausted",
+        "schema_exhausted": "provider_schema_exhausted",
+        "evidence_missing": "state_integrity_conflict",
+        "duplicate_effect": "duplicate_effect_observed",
+        "unauthorized_effect": "unauthorized_effect_observed",
+        "secret_exposure": "secret_exposure_observed",
+        "untrusted_execution": "untrusted_execution_observed",
+        "harness_failed": "pipeline_permanent_failure",
+        "rebuild_failed": "state_rebuild_failed",
+    }
+    try:
+        return reasons[outcome]
+    except KeyError:
+        raise ValueError("unsupported normalized acceptance outcome") from None
+
+
 class _FixedRepositoryAcceptanceRunner:
     """Run one locked identity through the existing production Phase 2/3 graph."""
 
@@ -2534,17 +2558,6 @@ class _FixedRepositoryAcceptanceRunner:
             *(attempt.attempt_digest for attempt in semantic_attempts),
             *(workflow.workflow_authority_digest for workflow in workflows),
         }
-        reason_codes = {
-            "filter_rejected": "deterministic_filter_rejected",
-            "no_workflow": "no_reusable_workflow",
-            "qualification_rejected": "qualification_policy_rejected",
-            "validation_rejected": "skill_validation_rejected",
-            "review_rejected": "independent_review_rejected",
-            "eligible_local_candidate": "eligible_candidate_completed",
-            "semantic_outcome_unknown": "provider_outcome_unknown",
-            "state_integrity_conflict": "state_integrity_conflict",
-            "permanent_failure": "pipeline_permanent_failure",
-        }
         acceptance_outcome = execution.acceptance_system_outcome or {
             "confirmed_retryable": "provider_exhausted",
             "semantic_outcome_unknown": "provider_exhausted",
@@ -2557,10 +2570,7 @@ class _FixedRepositoryAcceptanceRunner:
             exact_commit_sha=authority.exact_commit_sha,
             license_spdx=authority.license_spdx,
             outcome=acceptance_outcome,
-            reason_code=reason_codes.get(
-                execution.terminal.outcome,
-                "pipeline_permanent_failure",
-            ),
+            reason_code=_acceptance_reason_code(acceptance_outcome),
             evidence_digests=tuple(sorted(evidence)),
             live_acceptance_authority_digest=(
                 self._live_authority.authority_digest
