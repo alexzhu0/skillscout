@@ -8,6 +8,7 @@ import inspect
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -2093,6 +2094,206 @@ def test_fixed_runner_reconstructs_three_attempt_crash_without_provider_replay(
 
     assert result is recovered
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "third_status",
+    ("decided", "confirmed_retryable", "semantic_outcome_unknown"),
+)
+def test_third_attempt_crash_recovers_across_real_sqlite_process_restart(
+    tmp_path: Path,
+    third_status: str,
+) -> None:
+    """A new process reopens exact stores and cannot issue request four."""
+
+    operations_path = tmp_path / "operations.sqlite3"
+    pipeline_path = tmp_path / "pipeline.sqlite3"
+    request_count_path = tmp_path / "provider-request-count"
+    recovery_path = tmp_path / "recovery-result.json"
+    setup = r"""
+import sqlite3
+import sys
+from pathlib import Path
+
+from skillscout.adapters.operations_state import OperationsStateStore
+from skillscout.adapters.state import SQLiteStateStore
+from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
+from skillscout.domain.discovery import DiscoveryRunAuthorityV1, SemanticReservationV1
+
+operations_path = Path(sys.argv[1])
+pipeline_path = Path(sys.argv[2])
+request_count_path = Path(sys.argv[3])
+third_status = sys.argv[4]
+run_id = "acceptance-process-restart-semantic"
+repository_id = 101
+phase2_authority = "sha256:" + ("a" * 64)
+timestamp = "2026-07-30T12:00:00.000000Z"
+values = {
+    "schema_version": "discovery-run-authority-v1",
+    "run_id": run_id,
+    "query_set_digest": "sha256:" + ("1" * 64),
+    "budget_policy_digest": "sha256:" + ("2" * 64),
+    "phase2_profile_version": "phase2-v1",
+    "phase3_profile_version": "phase3-profile-v1",
+    "semantic_provider": "deepseek",
+    "extractor_model_id": "deepseek-v4-flash",
+    "generator_model_id": "deepseek-v4-flash",
+    "reviewer_model_id": "deepseek-v4-pro",
+    "initial_state_root_digest": "sha256:" + ("3" * 64),
+}
+authority = DiscoveryRunAuthorityV1(
+    **values,
+    authority_digest=sha256_digest(values),
+)
+store = OperationsStateStore(operations_path)
+store.create_run(authority, timestamp)
+store.close()
+reservation_values = {
+    "schema_version": "semantic-reservation-v1",
+    "discovery_run_authority_digest": authority.authority_digest,
+    "repository_id": repository_id,
+    "ordinal": 1,
+    "discovery_reservation_digest": "sha256:" + ("4" * 64),
+    "phase2_run_authority_digest": phase2_authority,
+    "reserved_at": timestamp,
+}
+reservation = SemanticReservationV1(
+    **reservation_values,
+    reservation_digest=sha256_digest(reservation_values),
+)
+with sqlite3.connect(operations_path) as connection:
+    connection.execute(
+        "INSERT INTO operations_semantic_reservations "
+        "(reservation_digest, run_id, repository_id, ordinal, "
+        "discovery_reservation_digest, phase2_run_authority_digest, "
+        "reservation_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            reservation.reservation_digest,
+            run_id,
+            repository_id,
+            reservation.ordinal,
+            reservation.discovery_reservation_digest,
+            reservation.phase2_run_authority_digest,
+            canonical_json_bytes(reservation).decode("utf-8"),
+        ),
+    )
+pipeline = SQLiteStateStore(pipeline_path)
+pipeline.close()
+store = OperationsStateStore(operations_path)
+for attempt_no in range(1, 4):
+    store.record_semantic_attempt(
+        run_id=run_id,
+        repository_id=repository_id,
+        workflow_authority_digest=phase2_authority,
+        stage="extractor",
+        attempt_no=attempt_no,
+        status="started",
+        recorded_at=timestamp,
+    )
+    store.record_semantic_attempt(
+        run_id=run_id,
+        repository_id=repository_id,
+        workflow_authority_digest=phase2_authority,
+        stage="extractor",
+        attempt_no=attempt_no,
+        status=third_status if attempt_no == 3 else "confirmed_retryable",
+        recorded_at=timestamp,
+    )
+store.close()
+request_count_path.write_text("3", encoding="ascii")
+"""
+    recover = r"""
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+from skillscout.adapters.operations_state import OperationsStateStore
+from skillscout.adapters.state import SQLiteStateStore
+from skillscout.bootstrap import _FixedRepositoryAcceptanceRunner
+
+operations_path = Path(sys.argv[1])
+pipeline_path = Path(sys.argv[2])
+request_count_path = Path(sys.argv[3])
+recovery_path = Path(sys.argv[4])
+store = OperationsStateStore(operations_path)
+pipeline = SQLiteStateStore(pipeline_path)
+runner = object.__new__(_FixedRepositoryAcceptanceRunner)
+runner._state_head = "b" * 40
+runner._state_root = "sha256:" + ("c" * 64)
+runner._authority = SimpleNamespace(run_id="acceptance-process-restart-semantic")
+runner._operations = store
+runner._barrier = object()
+runner._phase3_factory = object()
+calls = []
+def recovery_factory(**kwargs):
+    calls.append(kwargs)
+    if kwargs.get("recovery_only") is not True:
+        raise AssertionError("provider replay was granted after durable attempt three")
+    return SimpleNamespace(
+        terminal=SimpleNamespace(outcome="recovered"),
+        state_commit_sha=runner._state_head,
+        state_root_digest=runner._state_root,
+    )
+runner._phase2_factory = recovery_factory
+result = runner._run_phase2_with_retries(
+    candidate=SimpleNamespace(repository=SimpleNamespace(repository_id=101)),
+    pinned_commit_sha="e" * 40,
+)
+snapshot = store.snapshot_run(runner._authority.run_id)
+recovery_path.write_text(
+    json.dumps(
+        {
+            "attempt_count": len(snapshot.semantic_attempts),
+            "provider_request_count": int(request_count_path.read_text(encoding="ascii")),
+            "recovery_only_calls": len(calls),
+            "result": result.terminal.outcome,
+        },
+        sort_keys=True,
+    ),
+    encoding="utf-8",
+)
+pipeline.close()
+store.close()
+"""
+    first = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            setup,
+            str(operations_path),
+            str(pipeline_path),
+            str(request_count_path),
+            third_status,
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert first.returncode == 0, first.stderr
+    second = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            recover,
+            str(operations_path),
+            str(pipeline_path),
+            str(request_count_path),
+            str(recovery_path),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert second.returncode == 0, second.stderr
+    assert json.loads(recovery_path.read_text(encoding="utf-8")) == {
+        "attempt_count": 3,
+        "provider_request_count": 3,
+        "recovery_only_calls": 1,
+        "result": "recovered",
+    }
 
 
 @pytest.mark.parametrize(

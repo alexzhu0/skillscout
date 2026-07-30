@@ -917,6 +917,20 @@ class _LateStateDurabilityBarrier:
             "lineage_root_digests": lineage_root_digests,
         }
 
+    def acceptance_resume_lineage(
+        self,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Return the active verified lineage for the next fixed runner."""
+
+        resume = self._acceptance_resume
+        if resume is None:
+            raise ValueError("acceptance resume lineage is not configured")
+        commits = resume["lineage_commit_shas"]
+        roots = resume["lineage_root_digests"]
+        if type(commits) is not tuple or type(roots) is not tuple:
+            raise ValueError("acceptance resume lineage is invalid")
+        return commits, roots
+
     def anchor_acceptance_resume(
         self,
         *,
@@ -1498,15 +1512,21 @@ def build_discovery_application(
                 nonlocal state_head, state_root
                 if fixed_admission is None:
                     raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-                anchored = barrier.anchor_acceptance_resume(
-                    operations_store=operations,
-                    observed_head=state_head,
-                    prior_root_digest=state_root,
-                    created_at=_discovery_timestamp(),
-                    pipeline_store=pipeline_store,
+                anchor_resume = getattr(
+                    barrier,
+                    "anchor_acceptance_resume",
+                    None,
                 )
-                state_head = anchored.commit_sha
-                state_root = anchored.root_digest
+                if callable(anchor_resume):
+                    anchored = anchor_resume(
+                        operations_store=operations,
+                        observed_head=state_head,
+                        prior_root_digest=state_root,
+                        created_at=_discovery_timestamp(),
+                        pipeline_store=pipeline_store,
+                    )
+                    state_head = anchored.commit_sha
+                    state_root = anchored.root_digest
                 request = operations.reserve_acceptance_semantic_request(
                     acceptance_run_id=fixed_admission.acceptance_run_id,
                     fixed_candidate_admission_digest=(
@@ -2892,7 +2912,15 @@ class _FixedRepositoryAcceptanceRunner:
         self._operations.create_run(self._authority, _discovery_timestamp())
         self._state_head = config.state_commit_sha
         self._state_root = config.state_root_digest
-        if config.acceptance_run_id is not None:
+        configure_resume = getattr(
+            self._barrier,
+            "configure_acceptance_resume",
+            None,
+        )
+        if not callable(configure_resume) and config.acceptance_run_id is None:
+            resume_commits = ()
+            resume_roots = ()
+        elif config.acceptance_run_id is not None:
             if config.acceptance_run_id != acceptance_run_id:
                 raise ValueError("acceptance resume run mismatch")
             resume_commits = config.resume_lineage_commit_shas
@@ -2906,12 +2934,15 @@ class _FixedRepositoryAcceptanceRunner:
             resume_roots = (config.state_root_digest,)
         else:
             raise ValueError("verified acceptance resume proof is required")
-        self._barrier.configure_acceptance_resume(
-            authority=self._live_authority,
-            acceptance_run_id=acceptance_run_id,
-            lineage_commit_shas=resume_commits,
-            lineage_root_digests=resume_roots,
-        )
+        if callable(configure_resume):
+            configure_resume(
+                authority=self._live_authority,
+                acceptance_run_id=acceptance_run_id,
+                lineage_commit_shas=resume_commits,
+                lineage_root_digests=resume_roots,
+            )
+        elif config.acceptance_run_id is not None:
+            raise ValueError("acceptance resume barrier is unavailable")
 
     def _run_phase2_with_retries(
         self,
@@ -3486,11 +3517,23 @@ def _fixed_acceptance_runner_factory(
     del restored
 
     def factory(state_commit_sha: str, state_root_digest: str) -> object:
+        lineage_reader = getattr(
+            barrier,
+            "acceptance_resume_lineage",
+            None,
+        )
+        if callable(lineage_reader):
+            resume_commits, resume_roots = lineage_reader()
+        else:
+            resume_commits = config.resume_lineage_commit_shas
+            resume_roots = config.resume_lineage_root_digests
         return _FixedRepositoryAcceptanceRunner(
             config=replace(
                 config,
                 state_commit_sha=state_commit_sha,
                 state_root_digest=state_root_digest,
+                resume_lineage_commit_shas=resume_commits,
+                resume_lineage_root_digests=resume_roots,
             ),
             discovery_config=discovery_config,
             barrier=barrier,
