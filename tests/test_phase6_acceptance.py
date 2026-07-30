@@ -568,12 +568,14 @@ def test_run_acceptance_dispatches_exact_action_without_publication_authority(
         SimpleNamespace(
             action=action,
             manifest=config.manifest_path,
+            acceptance_run_id="acceptance-live-five",
             state_commit_sha=config.state_commit_sha,
             state_root_digest=config.state_root_digest,
         )
     )
 
     assert calls == [expected_handler]
+    assert result["status"] == f"{expected_handler}_complete"
 
 
 def test_live_execution_builder_has_no_publication_state_or_configuration() -> None:
@@ -594,4 +596,16 @@ def test_live_execution_builder_has_no_publication_state_or_configuration() -> N
         "SKILLSCOUT_CATALOG",
     ):
         assert forbidden not in source
-    assert result["status"] == f"{expected_handler}_complete"
+
+
+def test_live_runner_persists_read_and_semantic_budget_before_remote_read() -> None:
+    """Every fixed repository must consume its bounded slot before GitHub I/O."""
+
+    import skillscout.bootstrap as bootstrap
+    import skillscout.domain.acceptance as acceptance
+
+    assert hasattr(acceptance, "AcceptanceBudgetReservationV1")
+    source = inspect.getsource(bootstrap._FixedRepositoryAcceptanceRunner.run)
+    reservation = source.index('"acceptance_budget_reservation"')
+    remote_read = source.index("github = GitHubReadClient(")
+    assert reservation < remote_read
