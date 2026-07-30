@@ -456,6 +456,8 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                 workflow_spec_authority_digest=None,
                 eligible_locator=None,
                 semantic_request_count=1,
+                semantic_attempt_digests=(authority.entry_digest,),
+                actual_models=("deepseek-v4-flash",),
             )
 
         def close(self) -> None:

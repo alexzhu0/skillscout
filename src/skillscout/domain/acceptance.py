@@ -312,7 +312,11 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
     schema_version: Literal["acceptance-scenario-result-v1"]
     acceptance_run_id: _Identifier
     scenario_id: _Identifier
-    repository_id: _Positive | None
+    repository_id: _Positive
+    repository_full_name: _FullName
+    exact_commit_sha: _Sha
+    license_spdx: _Spdx
+    benchmark_manifest_digest: Digest
     terminal_class: Literal["eligible", "business_terminal", "system_failure"]
     outcome: Literal["eligible_local_candidate"] | _BusinessOutcome | _SystemOutcome
     reason_code: Annotated[
@@ -321,6 +325,26 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
     evidence_digests: Annotated[
         tuple[Digest, ...], Field(min_length=1, max_length=128)
     ]
+    candidate_funnel: Annotated[tuple[str, ...], Field(min_length=1, max_length=16)]
+    reader_order: Literal["readme_docs_examples_manifests_source"]
+    reader_file_count: Annotated[int, Field(ge=0, le=25)]
+    reader_source_file_count: Annotated[int, Field(ge=0, le=5)]
+    reader_total_bytes: Annotated[int, Field(ge=0, le=524_288)]
+    reader_estimated_tokens: Annotated[int, Field(ge=0, le=40_000)]
+    semantic_request_count: Annotated[int, Field(ge=0, le=20)]
+    semantic_attempt_digests: Annotated[tuple[Digest, ...], Field(max_length=20)]
+    actual_models: Annotated[tuple[str, ...], Field(max_length=20)]
+    prompt_versions: Annotated[tuple[_Version, ...], Field(min_length=3, max_length=3)]
+    schema_versions: Annotated[tuple[_Version, ...], Field(min_length=3, max_length=3)]
+    policy_versions: Annotated[tuple[_Version, ...], Field(min_length=3, max_length=16)]
+    workflow_fingerprint: Digest | None
+    workflow_spec_authority_digest: Digest | None
+    eligible_locator: _Identifier | None
+    expected_coverage_role: Literal[
+        "positive", "positive_multi_workflow", "negative", "borderline"
+    ]
+    evaluator_matches_observed: bool
+    publication_decision: Literal["eligible_for_later_publication", "not_eligible"]
     warnings: Annotated[tuple[AcceptanceWarningV1, ...], Field(max_length=16)]
     recorded_at: _Timestamp
     result_digest: Digest | None = None
@@ -359,6 +383,18 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             or len(set(self.evidence_digests)) != len(self.evidence_digests)
         ):
             raise ValueError("scenario evidence must be sorted and unique")
+        if (
+            self.semantic_attempt_digests
+            != tuple(sorted(self.semantic_attempt_digests))
+            or len(set(self.semantic_attempt_digests))
+            != len(self.semantic_attempt_digests)
+            or len(self.actual_models) > self.semantic_request_count
+            or (
+                self.publication_decision == "eligible_for_later_publication"
+                and self.terminal_class != AcceptanceTerminalClass.ELIGIBLE
+            )
+        ):
+            raise ValueError("scenario telemetry or publication decision is incoherent")
         return self
 
 
@@ -477,6 +513,17 @@ class ReplayEvidenceV1(_SelfDigestedModel):
     workflow_fingerprint: Digest
     workflow_spec_authority_digest: Digest
     publication_policy_version: _Version
+    benchmark_manifest_digest: Digest
+    before_state_commit_sha: _Sha
+    before_state_root_digest: Digest
+    after_state_commit_sha: _Sha
+    after_state_root_digest: Digest
+    scenario_result_digests: Annotated[
+        tuple[Digest, ...], Field(min_length=5, max_length=5)
+    ]
+    eligible_locators: Annotated[tuple[_Identifier, ...], Field(max_length=60)]
+    semantic_attempt_count_before: _NonNegative
+    semantic_attempt_count_after: _NonNegative
     semantic_request_count: Literal[0]
     duplicate_workflow_spec_count: Literal[0]
     duplicate_skill_count: Literal[0]
@@ -486,6 +533,22 @@ class ReplayEvidenceV1(_SelfDigestedModel):
     reviewer_effect_count: Literal[0]
     recorded_at: _Timestamp
     replay_digest: Digest | None = None
+
+    @model_validator(mode="after")
+    def validate_exact_replay(self) -> Self:
+        if (
+            self.before_state_commit_sha != self.after_state_commit_sha
+            or self.before_state_root_digest != self.after_state_root_digest
+            or self.semantic_attempt_count_before
+            != self.semantic_attempt_count_after
+            or self.scenario_result_digests
+            != tuple(sorted(self.scenario_result_digests))
+            or len(set(self.scenario_result_digests)) != 5
+            or self.eligible_locators != tuple(sorted(self.eligible_locators))
+            or len(set(self.eligible_locators)) != len(self.eligible_locators)
+        ):
+            raise ValueError("replay evidence is not an exact zero-effect projection")
+        return self
 
 
 class ChangedSourceEvidenceV1(_SelfDigestedModel):

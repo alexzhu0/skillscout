@@ -159,6 +159,70 @@ class AcceptanceRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class LiveAcceptanceAuthority:
+    """Complete immutable acceptance authority, verified before secret lookup."""
+
+    manifest: object
+    manifest_path: Path
+    source_commit_sha: str
+    acceptance_workflow_sha256: str
+    state_commit_sha: str
+    state_root_digest: str
+    provider: str
+    models: tuple[str, str, str]
+    max_candidates: int
+    max_semantic_candidates: int
+
+
+def verify_live_acceptance_authority(
+    *,
+    manifest_path: Path,
+    source_commit_sha: str,
+    acceptance_workflow_sha256: str,
+    state_commit_sha: str,
+    state_root_digest: str,
+    environ: Mapping[str, str] | None = None,
+) -> LiveAcceptanceAuthority:
+    """Validate every non-secret identity before any credential can be resolved."""
+
+    try:
+        if (
+            not _is_commit_sha(source_commit_sha)
+            or not _is_digest(acceptance_workflow_sha256)
+        ):
+            raise ValueError
+        config = load_acceptance_runtime_config(
+            manifest_path=manifest_path,
+            state_commit_sha=state_commit_sha,
+            state_root_digest=state_root_digest,
+            environ=environ,
+        )
+        from skillscout.domain.discovery import (
+            DISCOVERY_MAX_CANDIDATES,
+            DISCOVERY_MAX_SEMANTIC_CANDIDATES,
+        )
+
+        return LiveAcceptanceAuthority(
+            manifest=config.manifest,
+            manifest_path=config.manifest_path,
+            source_commit_sha=source_commit_sha,
+            acceptance_workflow_sha256=acceptance_workflow_sha256,
+            state_commit_sha=config.state_commit_sha,
+            state_root_digest=config.state_root_digest,
+            provider=config.semantic_provider,
+            models=(
+                config.extractor_model_id,
+                config.generator_model_id,
+                config.reviewer_model_id,
+            ),
+            max_candidates=DISCOVERY_MAX_CANDIDATES,
+            max_semantic_candidates=DISCOVERY_MAX_SEMANTIC_CANDIDATES,
+        )
+    except Exception:
+        raise ValueError("live acceptance authority rejected") from None
+
+
+@dataclass(frozen=True)
 class NominationRuntimeConfig:
     """Search-only authority with no semantic or publication configuration."""
 

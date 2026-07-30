@@ -134,7 +134,7 @@ def _fresh_toolchain_fragment(repository: Path) -> str:
             start = lines.index('venv_root="${repository_root}/.venv"')
             end = lines.index(MANAGED_PYTHON_SYNC, start) + 1
             fragments.append("\n".join(lines[start:end]))
-    assert len(fragments) == 15
+    assert len(fragments) == 16
     assert len(set(fragments)) == 1
     return fragments[0]
 
@@ -334,7 +334,7 @@ def test_source_execution_verifier_requires_repo_managed_cpython_for_every_job(
 ) -> None:
     module = _module()
     result = module.verify_source_execution(_copy_workflows(tmp_path))
-    assert result.managed_python_job_count == 15
+    assert result.managed_python_job_count == 16
     assert result.managed_python_version == MANAGED_PYTHON_VERSION
     assert result.managed_python_root == MANAGED_PYTHON_ROOT
     assert result.network_none_invocation_count == 6
@@ -577,7 +577,7 @@ def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_v
     tmp_path: Path,
 ) -> None:
     guards = _version_guards(ROOT)
-    assert len(guards) == 15
+    assert len(guards) == 16
     assert all(_run_guard(ROOT, guard).returncode == 0 for guard in guards)
 
     fake_repository = tmp_path / "repository"

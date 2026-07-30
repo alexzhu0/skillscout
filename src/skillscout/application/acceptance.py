@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Callable, Final, Literal, Mapping
 
@@ -460,6 +461,7 @@ class LockedCampaignDependencies:
 
     discovery_factory: Callable[[], object]
     operations_store_factory: Callable[[], object]
+    state_sync: Callable[..., object]
     candidate_factory: Callable[[], object] | None = None
     publication_factory: Callable[[], object] | None = None
 
@@ -501,6 +503,327 @@ class OfflineEvaluationDependencies:
     """Offline evaluators can read verified state but own no live adapter."""
 
     operations_store_factory: Callable[[], object]
+
+
+@dataclass(frozen=True)
+class LiveRepositoryAuthority:
+    """Role-free immutable identity passed into the untrusted-content runner."""
+
+    repository_full_name: str
+    repository_id: int
+    exact_commit_sha: str
+    license_spdx: str
+    nomination_entry_digest: str
+    entry_digest: str
+    selection_evidence_digests: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LiveScenarioObservation:
+    """Sanitized production observation returned by one bounded repository run."""
+
+    repository_id: int
+    repository_full_name: str
+    exact_commit_sha: str
+    license_spdx: str
+    outcome: str
+    reason_code: str
+    evidence_digests: tuple[str, ...]
+    workflow_fingerprint: str | None
+    workflow_spec_authority_digest: str | None
+    eligible_locator: str | None
+    semantic_request_count: int
+    candidate_funnel: tuple[str, ...] = (
+        "fixed_identity",
+        "deterministic_filter",
+        "bounded_read",
+        "semantic_terminal",
+    )
+    reader_file_count: int = 0
+    reader_source_file_count: int = 0
+    reader_total_bytes: int = 0
+    reader_estimated_tokens: int = 0
+    semantic_attempt_digests: tuple[str, ...] = ()
+    actual_models: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LockedBenchmarkResult:
+    """Five terminal facts plus the exact state CAS resulting from persistence."""
+
+    scenario_results: tuple[AcceptanceScenarioResultV1, ...]
+    state_commit_sha: str
+    state_root_digest: str
+
+
+@dataclass(frozen=True)
+class CompletedBenchmarkProjection:
+    """Read-only completed projection used before replay opens mutable state."""
+
+    manifest_digest: str
+    scenario_result_digests: tuple[str, ...]
+    repository_id: int
+    source_commit_sha: str
+    workflow_fingerprint: str
+    workflow_spec_authority_digest: str
+    eligible_locators: tuple[str, ...]
+    semantic_attempt_count: int
+
+
+def load_locked_benchmark_manifest(path: Path) -> LockedBenchmarkManifestV1:
+    """Strictly load the sole canonical checked-in manifest path."""
+
+    if (
+        not isinstance(path, Path)
+        or path.name != "06-BENCHMARK-MANIFEST.json"
+        or path.parent.name != "06-adversarial-mvp-acceptance"
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    try:
+        payload = path.read_bytes()
+        manifest = LockedBenchmarkManifestV1.model_validate_json(payload, strict=True)
+        from skillscout.domain.canonical import canonical_json_bytes
+
+        canonical = canonical_json_bytes(manifest)
+        if payload not in {canonical, canonical + b"\n"}:
+            raise ValueError
+    except Exception:
+        raise AcceptanceApplicationError("evidence_missing") from None
+    return manifest
+
+
+def run_locked_benchmark(
+    dependencies: LockedCampaignDependencies,
+    *,
+    manifest: LockedBenchmarkManifestV1,
+    acceptance_run_id: str,
+    observed_head: str,
+    prior_root_digest: str,
+    recorded_at: str,
+) -> LockedBenchmarkResult:
+    """Run the exact locked five-entry campaign and persist every terminal by CAS."""
+
+    if type(dependencies) is not LockedCampaignDependencies:
+        raise TypeError("invalid locked campaign dependencies")
+    store = dependencies.operations_store_factory()
+    runner: object | None = None
+    results: list[AcceptanceScenarioResultV1] = []
+    current_head = observed_head
+    current_root = prior_root_digest
+    semantic_requests = 0
+    try:
+        snapshot = _snapshot(store, acceptance_run_id)
+        locks = tuple(
+            record.fact
+            for record in snapshot.facts
+            if record.kind == "acceptance_benchmark_lock"
+            and record.fact_digest == manifest.manifest_digest
+        )
+        if len(locks) != 1 or locks[0] != manifest or len(manifest.entries) != 5:
+            raise AcceptanceApplicationError("evidence_missing")
+
+        runner = dependencies.discovery_factory()
+        run = getattr(runner, "run", None)
+        if not callable(run):
+            raise AcceptanceApplicationError("evidence_missing")
+        for ordinal, entry in enumerate(manifest.entries, start=1):
+            authority = LiveRepositoryAuthority(
+                repository_full_name=entry.repository_full_name,
+                repository_id=entry.repository_id,
+                exact_commit_sha=entry.exact_commit_sha,
+                license_spdx=entry.license_spdx,
+                nomination_entry_digest=entry.nomination_entry_digest,
+                entry_digest=entry.entry_digest,
+                selection_evidence_digests=entry.selection_evidence_digests,
+            )
+            try:
+                observation = run(authority)
+            except Exception:
+                raise AcceptanceApplicationError("harness_failed") from None
+            if (
+                type(observation) is not LiveScenarioObservation
+                or (
+                    observation.repository_full_name,
+                    observation.repository_id,
+                    observation.exact_commit_sha,
+                    observation.license_spdx,
+                )
+                != (
+                    authority.repository_full_name,
+                    authority.repository_id,
+                    authority.exact_commit_sha,
+                    authority.license_spdx,
+                )
+                or observation.semantic_request_count != len(observation.semantic_attempt_digests)
+                or observation.semantic_request_count != len(observation.actual_models)
+            ):
+                raise AcceptanceApplicationError("evidence_missing")
+            semantic_requests += observation.semantic_request_count
+            if semantic_requests > 20:
+                raise AcceptanceApplicationError("unauthorized_effect")
+
+            terminal_class = classify_acceptance_terminal(observation.outcome)
+            evaluator_match = (
+                terminal_class == "eligible"
+                if entry.coverage_role in {"positive", "positive_multi_workflow"}
+                else terminal_class == "business_terminal"
+            )
+            result = AcceptanceScenarioResultV1(
+                schema_version="acceptance-scenario-result-v1",
+                acceptance_run_id=acceptance_run_id,
+                scenario_id=f"locked-{ordinal}-{entry.repository_id}",
+                repository_id=entry.repository_id,
+                repository_full_name=entry.repository_full_name,
+                exact_commit_sha=entry.exact_commit_sha,
+                license_spdx=entry.license_spdx,
+                benchmark_manifest_digest=manifest.manifest_digest,
+                terminal_class=terminal_class,
+                outcome=observation.outcome,
+                reason_code=observation.reason_code,
+                evidence_digests=tuple(sorted(set(observation.evidence_digests))),
+                candidate_funnel=observation.candidate_funnel,
+                reader_order="readme_docs_examples_manifests_source",
+                reader_file_count=observation.reader_file_count,
+                reader_source_file_count=observation.reader_source_file_count,
+                reader_total_bytes=observation.reader_total_bytes,
+                reader_estimated_tokens=observation.reader_estimated_tokens,
+                semantic_request_count=observation.semantic_request_count,
+                semantic_attempt_digests=tuple(sorted(observation.semantic_attempt_digests)),
+                actual_models=observation.actual_models,
+                prompt_versions=(
+                    "extract-prompt-v1",
+                    "generator-prompt-v1",
+                    "reviewer-prompt-v1",
+                ),
+                schema_versions=(
+                    "workflow-spec-v1",
+                    "generation-draft-v1",
+                    "reviewer-judgment-v1",
+                ),
+                policy_versions=(
+                    "discovery-budget-policy-v1",
+                    "eligibility-policy-v1",
+                    "generator-policy-v1",
+                    "qualification-policy-v1",
+                    "reader-policy-v1",
+                    "reviewer-policy-v1",
+                    "validation-policy-v1",
+                ),
+                workflow_fingerprint=observation.workflow_fingerprint,
+                workflow_spec_authority_digest=(observation.workflow_spec_authority_digest),
+                eligible_locator=observation.eligible_locator,
+                expected_coverage_role=entry.coverage_role,
+                evaluator_matches_observed=evaluator_match,
+                publication_decision=(
+                    "eligible_for_later_publication"
+                    if terminal_class == "eligible"
+                    else "not_eligible"
+                ),
+                warnings=(),
+                recorded_at=recorded_at,
+            )
+            _record_on_open_store(
+                store,
+                acceptance_run_id,
+                "acceptance_scenario",
+                result,
+            )
+            synchronized = dependencies.state_sync(
+                operations_store=store,
+                observed_head=current_head,
+                prior_root_digest=current_root,
+                created_at=recorded_at,
+            )
+            next_head = getattr(synchronized, "commit_sha", None)
+            next_root = getattr(synchronized, "root_digest", None)
+            if (
+                getattr(synchronized, "status", None) != "verified"
+                or getattr(synchronized, "previous_head", None) != current_head
+                or type(next_head) is not str
+                or re.fullmatch(r"[0-9a-f]{40}", next_head) is None
+                or type(next_root) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", next_root) is None
+            ):
+                raise AcceptanceApplicationError("evidence_missing")
+            current_head, current_root = next_head, next_root
+            results.append(result)
+            if terminal_class == "system_failure":
+                raise AcceptanceApplicationError(observation.outcome)
+        return LockedBenchmarkResult(
+            scenario_results=tuple(results),
+            state_commit_sha=current_head,
+            state_root_digest=current_root,
+        )
+    finally:
+        _close(runner)
+        _close(store)
+
+
+def run_exact_replay(
+    dependencies: ReplayUpdateDependencies,
+    *,
+    manifest: LockedBenchmarkManifestV1,
+    acceptance_run_id: str,
+    state_commit_sha: str,
+    state_root_digest: str,
+    recorded_at: str,
+) -> ReplayEvidenceV1:
+    """Project completed evidence first, then persist a zero-effect replay fact."""
+
+    if type(dependencies) is not ReplayUpdateDependencies:
+        raise TypeError("invalid replay dependencies")
+    projector = dependencies.completed_projector_factory()
+    try:
+        project = getattr(projector, "project", None)
+        if not callable(project):
+            raise AcceptanceApplicationError("evidence_missing")
+        projection = project(
+            manifest=manifest,
+            state_commit_sha=state_commit_sha,
+            state_root_digest=state_root_digest,
+        )
+    finally:
+        _close(projector)
+    if (
+        type(projection) is not CompletedBenchmarkProjection
+        or projection.manifest_digest != manifest.manifest_digest
+        or len(projection.scenario_result_digests) != 5
+        or len(set(projection.scenario_result_digests)) != 5
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    replay = ReplayEvidenceV1(
+        schema_version="replay-evidence-v1",
+        acceptance_run_id=acceptance_run_id,
+        repository_id=projection.repository_id,
+        source_commit_sha=projection.source_commit_sha,
+        workflow_fingerprint=projection.workflow_fingerprint,
+        workflow_spec_authority_digest=projection.workflow_spec_authority_digest,
+        publication_policy_version="publication-policy-v1",
+        benchmark_manifest_digest=manifest.manifest_digest,
+        before_state_commit_sha=state_commit_sha,
+        before_state_root_digest=state_root_digest,
+        after_state_commit_sha=state_commit_sha,
+        after_state_root_digest=state_root_digest,
+        scenario_result_digests=tuple(sorted(projection.scenario_result_digests)),
+        eligible_locators=tuple(sorted(projection.eligible_locators)),
+        semantic_attempt_count_before=projection.semantic_attempt_count,
+        semantic_attempt_count_after=projection.semantic_attempt_count,
+        semantic_request_count=0,
+        duplicate_workflow_spec_count=0,
+        duplicate_skill_count=0,
+        duplicate_fact_count=0,
+        branch_effect_count=0,
+        pull_request_effect_count=0,
+        reviewer_effect_count=0,
+        recorded_at=recorded_at,
+    )
+    _record_fact(
+        dependencies.operations_store_factory,
+        acceptance_run_id,
+        "acceptance_replay",
+        replay,
+    )
+    return replay
 
 
 def classify_acceptance_terminal(outcome: str) -> AcceptanceTerminal:
@@ -759,10 +1082,7 @@ def nominate_search_candidates(
                 query_ordinal=query_ordinal,
                 page=page_number,
             )
-            if (
-                type(page) is not SearchPageObservationV1
-                or type(repositories) is not tuple
-            ):
+            if type(page) is not SearchPageObservationV1 or type(repositories) is not tuple:
                 raise AcceptanceApplicationError("evidence_missing")
             for repository in repositories:
                 if (
@@ -792,10 +1112,8 @@ def nominate_search_candidates(
                     or getattr(metadata, "fork", None)
                     or getattr(metadata, "archived", None)
                     or getattr(metadata, "disabled", None)
-                    or getattr(metadata, "default_branch", None)
-                    != repository.default_branch
-                    or getattr(metadata, "license_spdx", None)
-                    not in ALLOWED_LICENSE_SPDX
+                    or getattr(metadata, "default_branch", None) != repository.default_branch
+                    or getattr(metadata, "license_spdx", None) not in ALLOWED_LICENSE_SPDX
                 ):
                     continue
                 commit_sha = search.resolve_commit(
@@ -821,9 +1139,7 @@ def nominate_search_candidates(
                         {
                             page.observation_digest,
                             repository.observation_digest,
-                            sha256_digest(
-                                metadata.model_dump(mode="json", exclude_none=False)
-                            ),
+                            sha256_digest(metadata.model_dump(mode="json", exclude_none=False)),
                             sha256_digest(
                                 {
                                     "repository_id": repository.repository_id,
@@ -837,9 +1153,7 @@ def nominate_search_candidates(
                                     "exact_commit_sha": commit_sha,
                                     "status": license_facts.status,
                                     "spdx_id": license_facts.spdx_id,
-                                    "license_blob_sha": (
-                                        license_facts.license_blob_sha
-                                    ),
+                                    "license_blob_sha": (license_facts.license_blob_sha),
                                 }
                             ),
                         }

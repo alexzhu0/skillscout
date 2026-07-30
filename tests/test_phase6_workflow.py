@@ -357,6 +357,7 @@ def _assert_isolation_workflow(source: str) -> None:
         "isolation_probe",
         "nominate",
         "offline_adversarial",
+        "live_authority_preflight",
         "live_benchmark",
         "changed_source",
         "fresh_gate_b4",

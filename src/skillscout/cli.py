@@ -29,6 +29,7 @@ from skillscout.bootstrap import (
     require_phase3_gate_b3,
     run_protected_discovery_publication,
     validate_acceptance_state_authority,
+    verify_live_acceptance_authority,
     verify_publication_admission_handoff,
 )
 
@@ -148,9 +149,20 @@ def build_parser() -> SafeArgumentParser:
     nominate_benchmark.add_argument("--state-repository-full-name", required=True)
     nominate_benchmark.add_argument("--initial-state-root-digest", required=True)
     run_acceptance = commands.add_parser("run-acceptance")
+    run_acceptance.add_argument(
+        "--action",
+        required=True,
+        choices=("benchmark", "replay", "changed-source", "publication"),
+    )
     run_acceptance.add_argument("--manifest", required=True, type=Path)
     run_acceptance.add_argument("--state-commit-sha", required=True)
     run_acceptance.add_argument("--state-root-digest", required=True)
+    verify_live = commands.add_parser("verify-live-authority")
+    verify_live.add_argument("--manifest", required=True, type=Path)
+    verify_live.add_argument("--source-commit-sha", required=True)
+    verify_live.add_argument("--acceptance-workflow-sha256", required=True)
+    verify_live.add_argument("--state-commit-sha", required=True)
+    verify_live.add_argument("--state-root-digest", required=True)
     record_attestation = commands.add_parser("record-acceptance-attestation")
     record_attestation.add_argument("--attestation", required=True, type=Path)
     record_attestation.add_argument(
@@ -778,6 +790,33 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
+def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, object]:
+    """Return only sanitized immutable identities from credential-free preflight."""
+
+    try:
+        authority = verify_live_acceptance_authority(
+            manifest_path=arguments.manifest,
+            source_commit_sha=arguments.source_commit_sha,
+            acceptance_workflow_sha256=arguments.acceptance_workflow_sha256,
+            state_commit_sha=arguments.state_commit_sha,
+            state_root_digest=arguments.state_root_digest,
+        )
+        return {
+            "acceptance_workflow_sha256": authority.acceptance_workflow_sha256,
+            "manifest_digest": getattr(authority.manifest, "manifest_digest"),
+            "max_candidates": authority.max_candidates,
+            "max_semantic_candidates": authority.max_semantic_candidates,
+            "models": authority.models,
+            "provider": authority.provider,
+            "source_commit_sha": authority.source_commit_sha,
+            "state_commit_sha": authority.state_commit_sha,
+            "state_root_digest": authority.state_root_digest,
+            "status": "live_authority_verified",
+        }
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def _run_record_acceptance_attestation(
     arguments: argparse.Namespace,
 ) -> dict[str, object]:
@@ -1012,6 +1051,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_nominate_benchmark(arguments)
         elif arguments.command == "run-acceptance":
             payload = _run_acceptance(arguments)
+        elif arguments.command == "verify-live-authority":
+            payload = _run_verify_live_authority(arguments)
         elif arguments.command == "record-acceptance-attestation":
             payload = _run_record_acceptance_attestation(arguments)
         elif arguments.command == "rebuild-acceptance":

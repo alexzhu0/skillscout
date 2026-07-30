@@ -876,8 +876,115 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  live_authority_preflight:
+    if: ${{ inputs.phase6_action == 'run-benchmark' || inputs.phase6_action == 'run-replay' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      SKILLSCOUT_LLM_PROVIDER: deepseek
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
+      PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
+      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
+      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+    steps:
+      - name: Check out the dispatched commit without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          uv_version_output="$(.tools/uv-0.11.29/bin/uv --version)"
+          if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
+            exit 1
+          fi
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
+      - name: Verify every immutable live authority
+        run: |
+          set -euo pipefail
+          workflow_digest="sha256:$(sha256sum .github/workflows/phase6-acceptance.yml | cut -d ' ' -f1)"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-live-authority \
+            --manifest "$PHASE6_MANIFEST" \
+            --source-commit-sha "${{ github.sha }}" \
+            --acceptance-workflow-sha256 "$workflow_digest" \
+            --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" \
+            --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+
   live_benchmark:
     if: ${{ inputs.phase6_action == 'run-benchmark' || inputs.phase6_action == 'run-replay' }}
+    needs: live_authority_preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -888,7 +995,8 @@ jobs:
       SKILLSCOUT_LLM_PROVIDER: deepseek
       DEEPSEEK_BASE_URL: https://api.deepseek.com
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      PHASE6_MANIFEST: evidence/phase6/locked-benchmark.json
+      PHASE6_ACTION: ${{ inputs.phase6_action }}
+      PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
       PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
       PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
     steps:
@@ -978,7 +1086,11 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          if [[ "$PHASE6_ACTION" == "run-benchmark" ]]; then
+            .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action benchmark --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          else
+            .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action replay --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          fi
 
   changed_source:
     if: ${{ inputs.phase6_action == 'run-changed-source' }}
@@ -1082,7 +1194,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action changed-source --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
 
   fresh_gate_b4:
     if: ${{ inputs.phase6_action == 'gate-b4-and-publish' }}
@@ -1282,7 +1394,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action publication --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
       - name: Mint the fixed-catalog token after fresh source admission
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
@@ -1298,7 +1410,7 @@ jobs:
           SKILLSCOUT_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action publication --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
 
   human_attestation:
     if: ${{ inputs.phase6_action == 'record-human-review' }}

@@ -637,7 +637,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     )
                 )
     _require(bool(findings))
-    _require(managed_python_job_count == 15)
+    _require(managed_python_job_count == 16)
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     _require(control_user_mapping_count == EXPECTED_CONTROL_USER_MAPPINGS)
     _require(diagnostic_upload_count == 1)
