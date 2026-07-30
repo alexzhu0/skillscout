@@ -24,6 +24,7 @@ tech-stack:
     - Fresh authoritative venvs install the locked current SkillScout project before any source entry executes
     - Constrained ordered workflow parser with closed authoritative-entry grammar
     - Failure-only bounded diagnostic artifact with closed stage/status schema and no evidence authority
+    - Production-embedded exact injection corpus with independent digest tests and instrumented in-memory stage seams
 
 key-files:
   created:
@@ -31,6 +32,7 @@ key-files:
     - src/skillscout/application/phase6_adversarial_runner.py
     - tests/test_phase6_campaign_runner.py
   modified:
+    - src/skillscout/application/acceptance.py
     - .github/workflows/phase6-acceptance.yml
     - .github/workflows/discover.yml
     - .github/workflows/publish-candidate.yml
@@ -40,6 +42,7 @@ key-files:
     - tests/test_publication_security.py
     - tests/test_phase6_workflow.py
     - tests/test_discovery_workflow.py
+    - tests/test_phase6_adversarial.py
 
 key-decisions:
   - "Recognize only direct python -m skillscout, inline skillscout imports, and python tools/*.py as authoritative workflow entry forms; every unknown form fails closed."
@@ -49,6 +52,7 @@ key-decisions:
   - "Materialize exact CPython 3.13.14 under ${GITHUB_WORKSPACE}/.tools/python in every authoritative job; network-none containers receive only the read-only repository mount and closed uv managed-runtime environment."
   - "Install the current locked SkillScout project in all 15 fresh authoritative venvs; --no-install-project is a fail-closed mutation because the src-layout control runtime otherwise cannot import SkillScout."
   - "Run the hosted adversarial campaign through an installed-package deterministic runner with a closed 25-node registry; pytest remains only a development test consumer and cannot produce hosted evidence."
+  - "Bind every injection scenario to one of seven exact production-embedded fixture byte strings and independently fixed SHA-256 identities; omission, replacement, identity swap, or acquisition bypass fails before a success report."
 
 patterns-established:
   - "Authoritative workflow execution: checkout current github.sha with credentials disabled, pin setup-uv 0.11.29, copy and verify local uv, then invoke checked-out source directly with run --locked."
@@ -285,10 +289,20 @@ The seventh post-checkpoint correction followed the user-approved deterministic-
 - **Verification:** RED produced exactly five expected failures. GREEN passed 270 affected tests with 12 skips and only the future repository-verifier node deselected; the independent source verifier passed; all 35 workflow run blocks passed `bash -n`; full Ruff passed; full locked pytest classified 2,175 passed, 14 skipped, and only `test_required_phase6_repository_verifier_is_missing` failed.
 - **Committed in:** `f32fa2d` (RED), `e5ab102` (GREEN)
 
+**10. [Rule 1 - Bug] Bound the production runner to the actual seven-fixture injection corpus**
+- **Found during:** Blocking code review of the deterministic Phase 6 runner
+- **Issue:** `execute_campaign` synthesized every fixture from canaries and registry names, while `evaluate_controlled_scenario` projected a trusted static policy with zero effect counts. A hosted success could therefore occur without any committed injection or supply-chain payload reaching a controlled application seam.
+- **Fix:** Embedded the exact 1,945 committed fixture bytes and seven independent SHA-256 identities in the installed production module; validated the whole corpus before evaluation and every injection acquisition again at its scenario boundary; removed caller-supplied evaluator authority; and drove each fixture through ordered in-memory filter/read/extract/qualification/generate/validate/review/publication-barrier seams with a content-bound observed-effect digest and zero unauthorized-effect recorders.
+- **Fail-closed proof:** Full production runner mutation tests omit one fixture, replace bytes, swap identities, and bypass acquisition; each returns nonzero before a report. The exact-corpus test independently re-hashes the committed fixtures, and a replacement mutation proves fixture content changes the campaign outcome.
+- **Installed-package proof:** The installed `.venv/bin/python -I` ran the complete campaign from `/private/tmp` without repository/test paths, returning corpus digest `sha256:809fdb625fc9340ff6c4effa2dd5252311ea485bb4ec2c164aafb0835545d032`, seven fixtures, and 22 credited controlled scenarios.
+- **Files modified:** `src/skillscout/application/phase6_adversarial_runner.py`, `src/skillscout/application/acceptance.py`, `tests/test_phase6_campaign_runner.py`, `tests/test_phase6_adversarial.py`
+- **Verification:** RED classified 33 expected missing-contract failures and 14 passes. GREEN passed 264 focused tests with 12 skips and the future repository-verifier node deselected; the independent source verifier passed; 35/35 workflow blocks passed `bash -n`; full locked pytest classified 2,181 passed, 14 skipped, and only `test_required_phase6_repository_verifier_is_missing` failed.
+- **Committed in:** `17fa07e` (RED), `2625c27` (GREEN)
+
 ---
 
-**Total deviations:** 7 auto-fixed (5 bugs, 1 blocking issue, 1 missing critical diagnostic boundary) plus 2 user-approved architectural corrections
-**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The first post-merge fix restored historical Phase 5 fixture correctness. The second made the pinned official uv executable admissible without widening its authority. The third attempted to expose the hosted Python runtime but was superseded when the toolcache assumption failed deterministically. The fourth added bounded diagnostic observability. The approved fifth correction now owns the exact Python runtime inside the repository without widening container mounts or provider/publication authority. The sixth post-checkpoint correction restores the project installation required by every authoritative source entry without changing the lock or execution boundary. The seventh correction removes pytest lifecycle ownership from hosted evidence and makes the two previously ambiguous internal failure classes independently observable. Every workflow-byte authorization remains stale.
+**Total deviations:** 8 auto-fixed (6 bugs, 1 blocking issue, 1 missing critical diagnostic boundary) plus 2 user-approved architectural corrections
+**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The first post-merge fix restored historical Phase 5 fixture correctness. The second made the pinned official uv executable admissible without widening its authority. The third attempted to expose the hosted Python runtime but was superseded when the toolcache assumption failed deterministically. The fourth added bounded diagnostic observability. The approved fifth correction now owns the exact Python runtime inside the repository without widening container mounts or provider/publication authority. The sixth post-checkpoint correction restores the project installation required by every authoritative source entry without changing the lock or execution boundary. The seventh correction removes pytest lifecycle ownership from hosted evidence and makes the two previously ambiguous internal failure classes independently observable. The eighth binds the runner to the actual inert corpus and observed controlled stage seams. Every workflow-byte authorization remains stale.
 
 ## Issues Encountered
 
@@ -305,6 +319,7 @@ The seventh post-checkpoint correction followed the user-approved deterministic-
 - Run `30510875649` failed in `offline_adversarial`. Its only artifact was the one-day bounded diagnostic `8747046558`, named `phase6-offline-adversarial-diagnostic-30510875649-1`, with metadata size 416 bytes, ZIP SHA-256 `26faa56b695126a6d65cea55209787911973570b072f2e39251ba976b1306755`, and exact JSON SHA-256 `112b9c040433f10524b08a62d6e11764146b6e08f64e17a1fa3ed316641142ff` over 378 bytes. The strict diagnostic was bound to the exact source/workflow/run/attempt, stopped at `campaign-report`, and recorded overall/control/direct/child statuses `1/1/97/97`.
 - The failed run grants no campaign or hosted-isolation credit. No raw logs or other artifacts were opened, no retry occurred, and neither `acceptance_hosted_isolation_capability` nor `acceptance_offline_adversarial_run` was written to canonical state.
 - The bounded run `30510875649` diagnostic is now explicitly classified as ambiguous: its old pytest-owned control status does not identify whether scenario evaluation/assertion or final report writing failed. No root cause is fabricated from that artifact.
+- Code review found that the first deterministic runner never loaded the seven committed injection fixtures and could report static policy zeros. Strict-TDD commits `17fa07e` and `2625c27` close that local production gap without changing any workflow byte, dependency, lock, network, credential, publication, artifact, or canonical-state boundary.
 - The current workflow SHA-256 values are `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4` (discover), `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19` (publish), `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc` (canary), and `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef` (Phase 6 acceptance). All earlier workflow digests, workflow approvals, exact-source authorizations, dispatch approvals, and Gate B4 bindings are stale.
 
 ## Authentication Gates
@@ -363,6 +378,13 @@ None - no new dependency or external service configuration is required by this p
 - The runner registry exactly matches all 25 committed matrix nodes; its real module/CLI behavior separately classifies scenario assertion and final report-write failures, and restoring pytest teardown ownership fails the behavior suite.
 - The affected regression passed with 270 tests, 12 skips, and only the future repository-verifier node deselected; the independent source verifier reported `phase6 source execution valid`; all 35 workflow run blocks passed `bash -n`; and full Ruff lint plus changed-file formatting passed.
 - Full locked pytest classified 2,175 passed, 14 skipped, and only the unchanged planned `tests/test_phase6_acceptance.py::test_required_phase6_repository_verifier_is_missing` RED failure.
+- Corpus-binding RED commit `17fa07e` and GREEN commit `2625c27` exist and contain no file deletions.
+- The production runner embeds exactly seven fixtures whose independent digests match the committed 1,945-byte corpus; omission, replacement, identity swap, and acquisition bypass all fail closed before report success.
+- The full installed runner reached only the ordered controlled stage seams applicable to each terminal, recorded zero untrusted execution, unapproved network, unauthorized effect, and synthetic-canary leakage, and never ran a downstream seam after a terminal barrier.
+- The installed-package invocation from `/private/tmp` completed with corpus digest `sha256:809fdb625fc9340ff6c4effa2dd5252311ea485bb4ec2c164aafb0835545d032`; no cwd, test-file, package-data, path, URL, or caller fixture override was required.
+- The affected regression passed with 264 tests, 12 skips, and only the planned future repository-verifier node deselected; full locked pytest classified 2,181 passed, 14 skipped, and only that planned RED failure.
+- Full Ruff lint, changed-file Ruff format, `git diff --check`, independent source verification, and all 35 workflow `bash -n` checks passed. The repository-wide format check retains 83 pre-existing out-of-scope files.
+- Neither `pyproject.toml` nor `uv.lock` changed; no dependency or package-data metadata changed.
 - The independent offline acceptance verifier correctly remains `phase6 acceptance incomplete`; no hosted success or canonical fact was fabricated.
 - Final workflow SHA-256 values are discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef`.
 - Before the deterministic-runner correction, the workflow SHA-256 values bound to the failed dispatch were discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`; those bindings are historical only.

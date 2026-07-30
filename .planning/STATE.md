@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 after deterministic-runner correction; run 30510875649 remains an ambiguous pytest-control failure, no hosted success, no canonical facts, no retry authorized
-last_updated: "2026-07-30T03:57:21Z"
+stopped_at: Blocked 06-06 Task 3 after local corpus-binding correction; no hosted success, no canonical facts, no retry authorized
+last_updated: "2026-07-30T04:18:34Z"
 last_activity: 2026-07-30
 progress:
   total_phases: 6
@@ -129,6 +129,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - The old pytest-owned diagnostic from run `30510875649` is ambiguous by construction: control status 1 plus a missing session-teardown report cannot distinguish scenario/assertion failure from final report-write failure. It is retained only as a bounded failure fact, not a root-cause claim.
 - The user-approved strict-TDD correction is RED `f32fa2d` and GREEN `e5ab102`. Hosted campaign control now invokes the installed `skillscout.application.phase6_adversarial_runner` with an exact closed 25-node registry, fixed validated bindings, no network/tools/subprocess/untrusted-code/path authority, canonical atomic output, synthetic scans, and distinct bounded scenario/report-write diagnostics. Pytest remains a development consumer only.
 - The correction changes only `.github/workflows/phase6-acceptance.yml`; the other three workflow digests remain unchanged. Every prior Phase 6 workflow authorization, dispatch approval, and Gate B4 binding is stale. No push, dispatch, remote read, artifact read, canonical write, credential access, or publication action occurred.
+- Blocking code review then proved the deterministic runner synthesized fixture bytes from canaries and registry names and returned static policy zeros without loading the seven committed injection fixtures. Strict-TDD RED `17fa07e` and GREEN `2625c27` embed and independently bind the exact 1,945-byte corpus, fail closed on omission/replacement/identity-swap/acquisition-bypass mutations, and pass actual inert bytes through ordered in-memory filter/read/extract/qualification/generate/validate/review/publication-barrier seams.
+- Local evidence is limited to corpus digest `sha256:809fdb625fc9340ff6c4effa2dd5252311ea485bb4ec2c164aafb0835545d032`, 264 focused passes with 12 skips and the future verifier node deselected, and full locked pytest `2181 passed, 14 skipped, 1` planned RED failure. This grants no hosted-isolation/campaign credit, retry, dispatch, artifact read, canonical fact, Gate B4, credential, or publication authority. No workflow, `pyproject.toml`, or `uv.lock` byte changed.
 
 ### Quick Tasks Completed
 
@@ -139,8 +141,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-30
-**Last session:** 2026-07-30T03:57:21Z
-**Stopped at:** Blocked 06-06 Task 3 after deterministic-runner correction; run 30510875649 remains an ambiguous pytest-control failure, no hosted success, no canonical facts, no retry authorized
+**Last session:** 2026-07-30T04:18:34Z
+**Stopped at:** Blocked 06-06 Task 3 after local corpus-binding correction; no hosted success, no canonical facts, no retry authorized
 **Resume file:** None
 
 ### Next
@@ -370,3 +372,4 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - [Phase 06]: Materialize exact CPython 3.13.14 under canonical `${GITHUB_WORKSPACE}/.tools/python` in every authoritative job. — The locked venv and managed runtime cross into network-none containers only through the same-path read-only repository mount; hosted toolcache paths and external Python mounts are no longer runtime authority.
 - [Phase 06]: Install the current locked SkillScout project in all 15 freshly recreated authoritative venvs. — A dependency-only venv cannot import the src-layout application, and the `--no-install-project` mutation must make both isolated import and the adversarial control return 1.
 - [Phase 06]: Hosted adversarial evidence is produced only by an installed-package deterministic runner with a closed 25-node registry; pytest is a development consumer and cannot own report lifecycle. — This separates scenario/assertion failure from final report-write failure without widening network, path, credential, publication, or canonical-state authority.
+- [Phase 06]: Bind the deterministic runner to seven exact production-embedded injection payloads and independent SHA-256 identities, then derive observed results through ordered in-memory application seams. — Static policy projection or synthetic-name bytes alone cannot prove the committed inert corpus crossed its intended barriers.
