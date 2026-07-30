@@ -901,8 +901,6 @@ jobs:
       PHASE6_AUTHORITY_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_ROOT_DIGEST }}
       PHASE6_AUTHORITY_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_DIGEST }}
       PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
-      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
-      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
       SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
       SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
     steps:
@@ -994,29 +992,55 @@ jobs:
           ref: ${{ env.PHASE6_AUTHORITY_STATE_COMMIT_SHA }}
           path: .phase6-authority-state
           persist-credentials: false
-      - name: Verify every immutable live authority
-        id: authority_handoff
+      - name: Verify the immutable original live authority
         run: |
           set -euo pipefail
           test "$(git -C .phase6-authority-state rev-parse HEAD)" = "$PHASE6_AUTHORITY_STATE_COMMIT_SHA"
-          handoff_file="${RUNNER_TEMP}/phase6-live-authority-handoff.json"
+          handoff_file="${RUNNER_TEMP}/phase6-live-authority.json"
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-live-authority \
             --authority-state-root ".phase6-authority-state" \
             --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
             --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
             --authority-digest "$PHASE6_AUTHORITY_DIGEST" \
             --source-commit-sha "${{ github.sha }}" \
-            --runtime-state-commit-sha "$PHASE6_STATE_COMMIT_SHA" \
-            --runtime-state-root-digest "$PHASE6_STATE_ROOT_DIGEST" \
+            --runtime-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA" \
+            --runtime-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
             --state-repository-id "$SKILLSCOUT_STATE_REPOSITORY_ID" \
             --state-repository-full-name "$SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" \
             > "$handoff_file"
-          PHASE6_HANDOFF_FILE="$handoff_file" .venv/bin/python -I - <<'PY'
+      - name: Check out the current campaign state candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
+          ref: skillscout-state
+          path: .phase6-campaign-state
+          persist-credentials: false
+          token: ${{ github.token }}
+      - name: Resolve the exact campaign resume descendant
+        id: authority_handoff
+        env:
+          SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          resume_file="${RUNNER_TEMP}/phase6-live-resume.json"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli resolve-acceptance-resume \
+            --authority-state-root ".phase6-authority-state" \
+            --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
+            --campaign-state-root ".phase6-campaign-state" \
+            --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
+            --authority-digest "$PHASE6_AUTHORITY_DIGEST" \
+            --source-commit-sha "${{ github.sha }}" \
+            --state-repository-id "$SKILLSCOUT_STATE_REPOSITORY_ID" \
+            --state-repository-full-name "$SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" \
+            > "$resume_file"
+          PHASE6_AUTHORITY_FILE="${RUNNER_TEMP}/phase6-live-authority.json" PHASE6_RESUME_FILE="$resume_file" .venv/bin/python -I - <<'PY'
           import json
           import os
           import re
 
-          payload = json.loads(open(os.environ["PHASE6_HANDOFF_FILE"], encoding="utf-8").read())
+          payload = json.loads(open(os.environ["PHASE6_AUTHORITY_FILE"], encoding="utf-8").read())
+          resume = json.loads(open(os.environ["PHASE6_RESUME_FILE"], encoding="utf-8").read())
+          payload.update(resume)
           payload["authority_state_commit_sha"] = os.environ["PHASE6_AUTHORITY_STATE_COMMIT_SHA"]
           payload["authority_state_root_digest"] = os.environ["PHASE6_AUTHORITY_STATE_ROOT_DIGEST"]
           required = {
@@ -1163,6 +1187,8 @@ jobs:
           persist-credentials: false
           token: ''
       - name: Repeat the complete credential-free live gate
+        env:
+          SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "${{ github.sha }}" = "$PHASE6_SOURCE_COMMIT_SHA"
@@ -1174,11 +1200,34 @@ jobs:
             --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
             --authority-digest "$PHASE6_AUTHORITY_DIGEST" \
             --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA" \
-            --runtime-state-commit-sha "$PHASE6_STATE_COMMIT_SHA" \
-            --runtime-state-root-digest "$PHASE6_STATE_ROOT_DIGEST" \
+            --runtime-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA" \
+            --runtime-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
             --state-repository-id "$SKILLSCOUT_STATE_REPOSITORY_ID" \
             --state-repository-full-name "$SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" \
             > "${RUNNER_TEMP}/phase6-live-authority-repeat.json"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli resolve-acceptance-resume \
+            --authority-state-root ".phase6-authority-state" \
+            --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
+            --campaign-state-root ".phase6-campaign-state" \
+            --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
+            --authority-digest "$PHASE6_AUTHORITY_DIGEST" \
+            --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA" \
+            --state-repository-id "$SKILLSCOUT_STATE_REPOSITORY_ID" \
+            --state-repository-full-name "$SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" \
+            > "${RUNNER_TEMP}/phase6-live-resume-repeat.json"
+          PHASE6_RESUME_FILE="${RUNNER_TEMP}/phase6-live-resume-repeat.json" .venv/bin/python -I - <<'PY'
+          import json
+          import os
+
+          payload = json.loads(open(os.environ["PHASE6_RESUME_FILE"], encoding="utf-8").read())
+          if (
+              payload.get("state_commit_sha") != os.environ["PHASE6_STATE_COMMIT_SHA"]
+              or payload.get("state_root_digest") != os.environ["PHASE6_STATE_ROOT_DIGEST"]
+              or payload.get("authority_digest") != os.environ["PHASE6_AUTHORITY_DIGEST"]
+              or payload.get("acceptance_run_id") != os.environ["PHASE6_ACCEPTANCE_RUN_ID"]
+          ):
+              raise SystemExit("campaign resume changed after preflight")
+          PY
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-acceptance-state \
             --checkout-root ".phase6-campaign-state" \
             --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" \
@@ -1315,6 +1364,8 @@ jobs:
           persist-credentials: false
           token: ''
       - name: Reconstruct the approved replay authority
+        env:
+          SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "${{ github.sha }}" = "$PHASE6_SOURCE_COMMIT_SHA"
@@ -1326,11 +1377,34 @@ jobs:
             --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
             --authority-digest "$PHASE6_AUTHORITY_DIGEST" \
             --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA" \
-            --runtime-state-commit-sha "$PHASE6_STATE_COMMIT_SHA" \
-            --runtime-state-root-digest "$PHASE6_STATE_ROOT_DIGEST" \
+            --runtime-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA" \
+            --runtime-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
             --state-repository-id "$SKILLSCOUT_STATE_REPOSITORY_ID" \
             --state-repository-full-name "$SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" \
             > "${RUNNER_TEMP}/phase6-replay-authority.json"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli resolve-acceptance-resume \
+            --authority-state-root ".phase6-authority-state" \
+            --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
+            --campaign-state-root ".phase6-campaign-state" \
+            --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
+            --authority-digest "$PHASE6_AUTHORITY_DIGEST" \
+            --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA" \
+            --state-repository-id "$SKILLSCOUT_STATE_REPOSITORY_ID" \
+            --state-repository-full-name "$SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" \
+            > "${RUNNER_TEMP}/phase6-replay-resume.json"
+          PHASE6_RESUME_FILE="${RUNNER_TEMP}/phase6-replay-resume.json" .venv/bin/python -I - <<'PY'
+          import json
+          import os
+
+          payload = json.loads(open(os.environ["PHASE6_RESUME_FILE"], encoding="utf-8").read())
+          if (
+              payload.get("state_commit_sha") != os.environ["PHASE6_STATE_COMMIT_SHA"]
+              or payload.get("state_root_digest") != os.environ["PHASE6_STATE_ROOT_DIGEST"]
+              or payload.get("authority_digest") != os.environ["PHASE6_AUTHORITY_DIGEST"]
+              or payload.get("acceptance_run_id") != os.environ["PHASE6_ACCEPTANCE_RUN_ID"]
+          ):
+              raise SystemExit("campaign resume changed after preflight")
+          PY
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-acceptance-state \
             --checkout-root ".phase6-campaign-state" \
             --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" \
