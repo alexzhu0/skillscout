@@ -1210,16 +1210,26 @@ def build_phase_two_runtime(
 ) -> PhaseTwoRuntime:
     """Construct the closed phase-two runtime under its remote-read ceiling."""
 
+    from skillscout.adapters.github import (
+        GitHubReadClient as CurrentGitHubReadClient,
+    )
+    from skillscout.adapters.openai_extract import (
+        OpenAIExtractionClient as CurrentOpenAIExtractionClient,
+    )
+    from skillscout.adapters.state import (
+        SQLiteStateStore as CurrentSQLiteStateStore,
+    )
+
     if (
         type(processor) is not PhaseTwoProcessor
-        or type(state) is not SQLiteStateStore
+        or type(state) is not CurrentSQLiteStateStore
         or type(_allow_lazy_dependencies) is not bool
     ):
         raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
     openai_client = processor.openai
     if (
         not _allow_lazy_dependencies
-        and type(openai_client) is not OpenAIExtractionClient
+        and type(openai_client) is not CurrentOpenAIExtractionClient
     ) or (
         _allow_lazy_dependencies
         and (
@@ -1250,9 +1260,9 @@ def build_phase_two_runtime(
     validated = resolved_policy.validate(complete_registry)
     expected_types = (
         PhaseTwoProcessor,
-        SQLiteStateStore,
-        GitHubReadClient,
-        OpenAIExtractionClient,
+        CurrentSQLiteStateStore,
+        CurrentGitHubReadClient,
+        CurrentOpenAIExtractionClient,
         SystemClock,
         UUIDIdProvider,
         _ExtractionSummaryWriter,

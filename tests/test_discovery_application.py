@@ -1305,6 +1305,8 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
     operations_module = importlib.import_module(
         "skillscout.adapters.operations_state"
     )
+    pipeline_module = importlib.import_module("skillscout.application.pipeline")
+    importlib.import_module("skillscout.adapters.phase2_state")
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
     authority = bootstrap.discovery_run_authority(config)
@@ -1376,10 +1378,7 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
         "skillscout.adapters.state.SQLiteStateStore",
         FakePhaseTwoState,
     )
-    monkeypatch.setattr(
-        "skillscout.application.pipeline.build_phase_two_runtime",
-        build_runtime,
-    )
+    monkeypatch.setattr(pipeline_module, "build_phase_two_runtime", build_runtime)
     if primary_outcome == "candidate_source_unavailable":
         monkeypatch.setattr(
             "skillscout.application.candidate_source."
