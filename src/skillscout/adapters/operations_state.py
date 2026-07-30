@@ -52,6 +52,7 @@ from skillscout.domain.acceptance import (
     ProbeCleanupAttestationV1,
     PublicationReplayCompletionV1,
     ReplayIntentV1,
+    ReplayEvidenceV1,
     ReviewerCalibrationV1,
 )
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
@@ -183,6 +184,7 @@ _AcceptanceFactKind = Literal[
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
     "acceptance_replay",
+    "acceptance_replay_evidence",
     "acceptance_changed_source",
     "acceptance_publication_replay_completion",
     "acceptance_changed_source_draft_update_completion",
@@ -215,6 +217,7 @@ _FactKind = Literal[
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
     "acceptance_replay",
+    "acceptance_replay_evidence",
     "acceptance_changed_source",
     "acceptance_publication_replay_completion",
     "acceptance_changed_source_draft_update_completion",
@@ -237,6 +240,7 @@ _AcceptanceFactModel: TypeAlias = (
     | HostedIsolationCapabilityV1
     | OfflineAdversarialRunV1
     | ReplayIntentV1
+    | ReplayEvidenceV1
     | ChangedSourceEvidenceV1
     | PublicationReplayCompletionV1
     | ChangedSourceDraftUpdateCompletionV1
@@ -261,6 +265,7 @@ _ACCEPTANCE_FACT_MODEL_VALUES: Final = {
     "acceptance_hosted_isolation_capability": HostedIsolationCapabilityV1,
     "acceptance_offline_adversarial_run": OfflineAdversarialRunV1,
     "acceptance_replay": ReplayIntentV1,
+    "acceptance_replay_evidence": ReplayEvidenceV1,
     "acceptance_changed_source": ChangedSourceEvidenceV1,
     "acceptance_publication_replay_completion": PublicationReplayCompletionV1,
     "acceptance_changed_source_draft_update_completion": (ChangedSourceDraftUpdateCompletionV1),
@@ -286,6 +291,7 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
         "acceptance_hosted_isolation_capability": "capability_digest",
         "acceptance_offline_adversarial_run": "run_digest",
         "acceptance_replay": "replay_digest",
+        "acceptance_replay_evidence": "replay_digest",
         "acceptance_changed_source": "changed_source_digest",
         "acceptance_publication_replay_completion": "completion_digest",
         "acceptance_changed_source_draft_update_completion": "completion_digest",
@@ -298,9 +304,14 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 _ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
-_PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS: Final = tuple(
+_PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_replay_evidence"
+)
+_PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind
+    for kind in _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_semantic_request_reservation"
 )
 _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS: Final = tuple(
@@ -390,6 +401,10 @@ class OperationsStateProjectionV1(StrictFrozenModel):
     acceptance_hosted_isolation_capability_digests: tuple[Digest, ...]
     acceptance_offline_adversarial_run_digests: tuple[Digest, ...]
     acceptance_replay_intent_digests: tuple[Digest, ...]
+    acceptance_replay_evidence_digests: tuple[Digest, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
     acceptance_changed_source_intent_digests: tuple[Digest, ...]
     acceptance_publication_replay_completion_digests: tuple[Digest, ...]
     acceptance_changed_source_draft_update_completion_digests: tuple[Digest, ...]
@@ -637,6 +652,9 @@ def _expected_schema(
 
 
 _EXPECTED_SCHEMA: Final = _expected_schema()
+_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
+)
 _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
 )
@@ -802,6 +820,7 @@ def _schema_fingerprint() -> str:
 _SCHEMA_FINGERPRINTS: Final = frozenset(
     {
         _fingerprint_for_schema(_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_BUDGET_EXPECTED_SCHEMA),
@@ -1001,6 +1020,37 @@ def _validate_acceptance_references(
             hosted.synthetic_scan_manifest_digest,
         ):
             raise OperationsIntegrityError("offline run capability binding mismatch")
+    elif kind == "acceptance_replay_evidence":
+        assert isinstance(fact, ReplayEvidenceV1)
+        replay = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_replay",
+            digest=fact.replay_fact_digest,
+        )
+        assert isinstance(replay, ReplayIntentV1)
+        if (
+            fact.repository_id,
+            fact.source_commit_sha,
+            fact.workflow_fingerprint,
+            fact.workflow_spec_authority_digest,
+            fact.benchmark_manifest_digest,
+            fact.before_state_commit_sha,
+            fact.before_state_root_digest,
+            fact.before_projection_digest,
+            fact.before_object_digests,
+        ) != (
+            replay.repository_id,
+            replay.source_commit_sha,
+            replay.workflow_fingerprint,
+            replay.workflow_spec_authority_digest,
+            replay.benchmark_manifest_digest,
+            replay.before_state_commit_sha,
+            replay.before_state_root_digest,
+            replay.before_projection_digest,
+            replay.before_object_digests,
+        ):
+            raise OperationsIntegrityError("replay evidence intent binding mismatch")
     elif kind == "acceptance_publication_replay_completion":
         assert isinstance(fact, PublicationReplayCompletionV1)
         replay = _acceptance_fact_by_digest(
@@ -1200,6 +1250,7 @@ def _projection_from_facts(
         "acceptance_hosted_isolation_capability_digests": [],
         "acceptance_offline_adversarial_run_digests": [],
         "acceptance_replay_intent_digests": [],
+        "acceptance_replay_evidence_digests": [],
         "acceptance_changed_source_intent_digests": [],
         "acceptance_publication_replay_completion_digests": [],
         "acceptance_changed_source_draft_update_completion_digests": [],
@@ -1261,6 +1312,10 @@ def _projection_from_facts(
             "acceptance_replay_intent_digests",
             "replay_digest",
         ),
+        "acceptance_replay_evidence": (
+            "acceptance_replay_evidence_digests",
+            "replay_digest",
+        ),
         "acceptance_changed_source": (
             "acceptance_changed_source_intent_digests",
             "changed_source_digest",
@@ -1311,6 +1366,7 @@ def _projection_from_facts(
         "acceptance_budget_reservation_digests",
         "acceptance_fixed_candidate_admission_digests",
         "acceptance_semantic_request_reservation_digests",
+        "acceptance_replay_evidence_digests",
     ):
         if not fields[field]:
             digest_values.pop(field)
@@ -1483,6 +1539,7 @@ class OperationsStateStore:
             }
             if actual not in (
                 _EXPECTED_SCHEMA,
+                _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
                 _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
                 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                 _PRE_BUDGET_EXPECTED_SCHEMA,
@@ -1856,6 +1913,7 @@ class OperationsStateStore:
             if actual == _EXPECTED_SCHEMA:
                 return
             if actual not in (
+                _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
                 _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
                 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                 _PRE_BUDGET_EXPECTED_SCHEMA,

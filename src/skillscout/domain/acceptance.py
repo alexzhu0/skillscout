@@ -876,6 +876,9 @@ class ReplayEvidenceV1(_SelfDigestedModel):
     workflow_spec_authority_digest: Digest
     replay_policy_version: Literal["acceptance-replay-policy-v1"]
     replay_fact_digest: Digest
+    allowed_delta_fact_digests: Annotated[
+        tuple[Digest, ...], Field(min_length=1, max_length=2)
+    ]
     benchmark_manifest_digest: Digest
     before_state_commit_sha: _Sha
     before_state_root_digest: Digest
@@ -909,6 +912,7 @@ class ReplayEvidenceV1(_SelfDigestedModel):
             self.before_state_commit_sha == self.after_state_commit_sha
             or self.before_state_root_digest == self.after_state_root_digest
             or self.before_projection_digest != self.after_projection_digest
+            or self.allowed_delta_fact_digests != (self.replay_fact_digest,)
             or self.before_object_digests != self.after_object_digests
             or self.before_object_digests
             != tuple(sorted(self.before_object_digests))

@@ -1994,6 +1994,7 @@ class _CompletedBenchmarkStateProjector:
             raise ValueError("completed benchmark manifest rejected")
         with OperationsStateStore(self._operations_path) as operations:
             snapshot = operations.acceptance_snapshot(self._acceptance_run_id)
+            operations_export = operations.export_owned_state()
         scenarios = tuple(
             record.fact
             for record in snapshot.facts
@@ -2042,6 +2043,22 @@ class _CompletedBenchmarkStateProjector:
         candidate_fact_digests = tuple(
             sorted(fact.object_digest for fact in pipeline_export.facts)
         )
+        acceptance_business_fact_digests = tuple(
+            sorted(
+                record.fact_digest
+                for record in snapshot.facts
+                if record.kind
+                not in {"acceptance_replay", "acceptance_replay_evidence"}
+            )
+        )
+        operations_fact_digests = tuple(
+            sorted(
+                fact.object_digest
+                for fact in operations_export.facts
+                if fact.kind
+                not in {"acceptance_replay", "acceptance_replay_evidence"}
+            )
+        )
         skill_identity_digests = tuple(
             sorted(
                 fact.object_digest
@@ -2072,6 +2089,10 @@ class _CompletedBenchmarkStateProjector:
             workflow_spec_authority_digests=workflow_authority_digests,
             skill_identity_digests=skill_identity_digests,
             candidate_fact_digests=candidate_fact_digests,
+            acceptance_business_fact_digests=(
+                acceptance_business_fact_digests
+            ),
+            operations_fact_digests=operations_fact_digests,
             semantic_request_count=sum(
                 scenario.semantic_request_count for scenario in scenarios
             ),

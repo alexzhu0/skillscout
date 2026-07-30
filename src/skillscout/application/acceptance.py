@@ -601,6 +601,8 @@ class CompletedBenchmarkProjection:
     workflow_spec_authority_digests: tuple[str, ...]
     skill_identity_digests: tuple[str, ...]
     candidate_fact_digests: tuple[str, ...]
+    acceptance_business_fact_digests: tuple[str, ...]
+    operations_fact_digests: tuple[str, ...]
     semantic_request_count: int
 
     def __post_init__(self) -> None:
@@ -610,6 +612,8 @@ class CompletedBenchmarkProjection:
             self.workflow_spec_authority_digests,
             self.skill_identity_digests,
             self.candidate_fact_digests,
+            self.acceptance_business_fact_digests,
+            self.operations_fact_digests,
         )
         if (
             len(self.scenario_result_digests) != 5
@@ -638,6 +642,8 @@ class CompletedBenchmarkProjection:
                     *self.workflow_spec_authority_digests,
                     *self.skill_identity_digests,
                     *self.candidate_fact_digests,
+                    *self.acceptance_business_fact_digests,
+                    *self.operations_fact_digests,
                 }
             )
         )
@@ -1018,7 +1024,7 @@ def run_exact_replay(
         or after_projection != projection
     ):
         raise AcceptanceApplicationError("duplicate_effect")
-    return ReplayEvidenceV1(
+    replay = ReplayEvidenceV1(
         schema_version="replay-evidence-v1",
         acceptance_run_id=acceptance_run_id,
         repository_id=projection.repository_id,
@@ -1027,6 +1033,7 @@ def run_exact_replay(
         workflow_spec_authority_digest=projection.workflow_spec_authority_digest,
         replay_policy_version="acceptance-replay-policy-v1",
         replay_fact_digest=replay_intent.replay_digest,
+        allowed_delta_fact_digests=(replay_intent.replay_digest,),
         benchmark_manifest_digest=manifest.manifest_digest,
         before_state_commit_sha=state_commit_sha,
         before_state_root_digest=state_root_digest,
@@ -1047,6 +1054,52 @@ def run_exact_replay(
         remote_effect_count=0,
         recorded_at=recorded_at,
     )
+    evidence_store = dependencies.operations_store_factory()
+    try:
+        _record_on_open_store(
+            evidence_store,
+            acceptance_run_id,
+            "acceptance_replay_evidence",
+            replay,
+        )
+        evidence_sync = dependencies.state_sync(
+            operations_store=evidence_store,
+            observed_head=next_head,
+            prior_root_digest=next_root,
+            created_at=recorded_at,
+        )
+        final_head = getattr(evidence_sync, "commit_sha", None)
+        final_root = getattr(evidence_sync, "root_digest", None)
+        if (
+            getattr(evidence_sync, "status", None) != "verified"
+            or getattr(evidence_sync, "previous_head", None) != next_head
+            or type(final_head) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", final_head) is None
+            or type(final_root) is not str
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", final_root) is None
+        ):
+            raise AcceptanceApplicationError("evidence_missing")
+    finally:
+        _close(evidence_store)
+
+    final_projector = dependencies.completed_projector_factory()
+    try:
+        final_project = getattr(final_projector, "project", None)
+        if not callable(final_project):
+            raise AcceptanceApplicationError("evidence_missing")
+        final_projection = final_project(
+            manifest=manifest,
+            state_commit_sha=final_head,
+            state_root_digest=final_root,
+        )
+    finally:
+        _close(final_projector)
+    if (
+        type(final_projection) is not CompletedBenchmarkProjection
+        or final_projection != projection
+    ):
+        raise AcceptanceApplicationError("duplicate_effect")
+    return replay
 
 
 def classify_acceptance_terminal(outcome: str) -> AcceptanceTerminal:

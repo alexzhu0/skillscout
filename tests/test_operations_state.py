@@ -38,6 +38,7 @@ from skillscout.domain.acceptance import (
     OfflineAdversarialRunV1,
     PublicationReplayCompletionV1,
     ReplayIntentV1,
+    ReplayEvidenceV1,
 )
 
 
@@ -229,6 +230,41 @@ def _acceptance_replay_completion(
     )
 
 
+def _acceptance_replay_evidence(replay: ReplayIntentV1) -> ReplayEvidenceV1:
+    return ReplayEvidenceV1(
+        schema_version="replay-evidence-v1",
+        acceptance_run_id=replay.acceptance_run_id,
+        repository_id=replay.repository_id,
+        source_commit_sha=replay.source_commit_sha,
+        workflow_fingerprint=replay.workflow_fingerprint,
+        workflow_spec_authority_digest=replay.workflow_spec_authority_digest,
+        replay_policy_version=replay.replay_policy_version,
+        replay_fact_digest=replay.replay_digest,
+        allowed_delta_fact_digests=(replay.replay_digest,),
+        benchmark_manifest_digest=replay.benchmark_manifest_digest,
+        before_state_commit_sha=replay.before_state_commit_sha,
+        before_state_root_digest=replay.before_state_root_digest,
+        after_state_commit_sha="e" * 40,
+        after_state_root_digest="sha256:" + ("f" * 64),
+        before_projection_digest=replay.before_projection_digest,
+        after_projection_digest=replay.before_projection_digest,
+        before_object_digests=replay.before_object_digests,
+        after_object_digests=replay.before_object_digests,
+        scenario_result_digests=tuple(
+            "sha256:" + f"{index:064x}" for index in range(1, 6)
+        ),
+        eligible_locators=("state/objects/eligible.json",),
+        semantic_attempt_count_before=3,
+        semantic_attempt_count_after=3,
+        semantic_request_count=0,
+        duplicate_workflow_spec_count=0,
+        duplicate_skill_count=0,
+        duplicate_fact_count=0,
+        remote_effect_count=0,
+        recorded_at=TIMESTAMP,
+    )
+
+
 def _hosted_capability() -> HostedIsolationCapabilityV1:
     return HostedIsolationCapabilityV1(
         schema_version="hosted-isolation-capability-v1",
@@ -380,6 +416,7 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
         "acceptance_hosted_isolation_capability",
         "acceptance_offline_adversarial_run",
         "acceptance_replay",
+        "acceptance_replay_evidence",
         "acceptance_changed_source",
         "acceptance_publication_replay_completion",
         "acceptance_changed_source_draft_update_completion",
@@ -616,6 +653,44 @@ def test_acceptance_capability_reference_and_owned_rebuild_are_exact(
         fresh.database_bytes == exported.database_bytes
         and fresh.database_digest == exported.database_digest
     )
+
+
+def test_replay_evidence_requires_intent_and_survives_owned_rebuild(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    replay = _acceptance_replay()
+    evidence = _acceptance_replay_evidence(replay)
+    source = tmp_path / "operations.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        with pytest.raises(module.OperationsIntegrityError):
+            store.record_acceptance_fact(
+                replay.acceptance_run_id,
+                "acceptance_replay_evidence",
+                evidence,
+            )
+        store.record_acceptance_fact(
+            replay.acceptance_run_id,
+            "acceptance_replay",
+            replay,
+        )
+        store.record_acceptance_fact(
+            replay.acceptance_run_id,
+            "acceptance_replay_evidence",
+            evidence,
+        )
+        exported = store.export_owned_state()
+
+    rebuilt = tmp_path / "rebuilt-replay.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as fresh:
+        snapshot = fresh.acceptance_snapshot(replay.acceptance_run_id)
+        assert tuple(item.kind for item in snapshot.facts) == (
+            "acceptance_replay",
+            "acceptance_replay_evidence",
+        )
+        assert snapshot.facts[1].fact == evidence
+        assert fresh.export_owned_state().projection == exported.projection
 
 
 def test_nomination_entries_round_trip_through_owned_state(tmp_path: Path) -> None:
