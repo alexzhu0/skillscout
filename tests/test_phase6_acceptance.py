@@ -508,6 +508,20 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     )
 
 
+def test_live_authority_cli_accepts_only_a_complete_state_bundle_root() -> None:
+    """A raw operations database cannot establish the checked-out state root."""
+
+    commands = _cli_subcommands()
+    parser = commands["verify-live-authority"]
+    options = {
+        option
+        for action in parser._actions
+        for option in action.option_strings
+    }
+    assert "--authority-state-root" in options
+    assert "--authority-operations-state" not in options
+
+
 @pytest.mark.parametrize(
     ("action", "expected_handler"),
     (("benchmark", "benchmark"), ("replay", "replay")),
