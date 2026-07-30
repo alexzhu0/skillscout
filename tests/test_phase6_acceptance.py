@@ -365,12 +365,6 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
 
     import skillscout.bootstrap as bootstrap
 
-    manifest_path = (
-        ROOT
-        / ".planning/phases/06-adversarial-mvp-acceptance"
-        / "06-BENCHMARK-MANIFEST.json"
-    )
-
     class ForbiddenCredentials(dict[str, str]):
         def __getitem__(self, key: str) -> str:
             pytest.fail(f"credential read during non-secret preflight:{key}")
@@ -385,32 +379,22 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
                 pytest.fail(f"credential read during non-secret preflight:{key}")
             return super().get(key, default)
 
-    authority = bootstrap.verify_live_acceptance_authority(
-        manifest_path=manifest_path,
-        source_commit_sha="c" * 40,
-        acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        state_commit_sha="e" * 40,
-        state_root_digest="sha256:" + ("f" * 64),
-        environ=ForbiddenCredentials(
-            {
-                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
-                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
-            }
-        ),
-    )
-
-    assert authority.manifest.manifest_digest == (
-        "sha256:3d7f16e60c3336c5c73d174273a01740daa39ab1b506a437be753d94aa387185"
-    )
-    assert len(authority.manifest.entries) == 5
-    assert authority.provider == "deepseek"
-    assert authority.models == (
-        "deepseek-v4-flash",
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-    )
-    assert authority.max_candidates == 100
-    assert authority.max_semantic_candidates == 20
+    with pytest.raises(ValueError):
+        bootstrap.verify_live_acceptance_authority(
+            repository_root=ROOT,
+            authority_path=(
+                ROOT
+                / ".planning/phases/06-adversarial-mvp-acceptance"
+                / "06-LIVE-AUTHORITY.json"
+            ),
+            observed_source_commit_sha="c" * 40,
+            environ=ForbiddenCredentials(
+                {
+                    "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                }
+            ),
+        )
 
 
 def test_live_authority_verifier_requires_approved_file_under_trusted_root(

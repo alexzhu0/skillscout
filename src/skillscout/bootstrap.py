@@ -176,50 +176,131 @@ class LiveAcceptanceAuthority:
 
 def verify_live_acceptance_authority(
     *,
-    manifest_path: Path,
-    source_commit_sha: str,
-    acceptance_workflow_sha256: str,
-    state_commit_sha: str,
-    state_root_digest: str,
+    repository_root: Path,
+    authority_path: Path,
+    observed_source_commit_sha: str,
     environ: Mapping[str, str] | None = None,
-) -> LiveAcceptanceAuthority:
-    """Validate every non-secret identity before any credential can be resolved."""
+) -> object:
+    """Verify a human-approved authority and its exact repository-owned bytes."""
 
     try:
-        if (
-            not _is_commit_sha(source_commit_sha)
-            or not _is_digest(acceptance_workflow_sha256)
-        ):
-            raise ValueError
-        config = load_acceptance_runtime_config(
-            manifest_path=manifest_path,
-            state_commit_sha=state_commit_sha,
-            state_root_digest=state_root_digest,
-            environ=environ,
+        authority_relative = Path(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-LIVE-AUTHORITY.json"
         )
+        manifest_relative = Path(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        )
+        workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
+        query_relative = Path("config/discovery-queries-v1.json")
+        root = _trusted_repository_root(repository_root)
+        authority_bytes = _read_exact_repository_file(
+            root, authority_path, authority_relative, _ACCEPTANCE_MANIFEST_BYTES
+        )
+        manifest_bytes = _read_exact_repository_file(
+            root,
+            root / manifest_relative,
+            manifest_relative,
+            _ACCEPTANCE_MANIFEST_BYTES,
+        )
+        workflow_bytes = _read_exact_repository_file(
+            root,
+            root / workflow_relative,
+            workflow_relative,
+            _ACCEPTANCE_MANIFEST_BYTES,
+        )
+        query_bytes = _read_exact_repository_file(
+            root,
+            root / query_relative,
+            query_relative,
+            _DISCOVERY_DIGEST_BYTES,
+        )
+        from skillscout.adapters.semantic_provider import resolve_semantic_provider
+        from skillscout.domain.acceptance import (
+            LiveAcceptanceAuthorityV1,
+            LockedBenchmarkManifestV1,
+        )
+        from skillscout.domain.canonical import canonical_json_bytes
         from skillscout.domain.discovery import (
-            DISCOVERY_MAX_CANDIDATES,
-            DISCOVERY_MAX_SEMANTIC_CANDIDATES,
+            DiscoveryBudgetPolicyV1,
+            DiscoveryQuerySetV1,
         )
 
-        return LiveAcceptanceAuthority(
-            manifest=config.manifest,
-            manifest_path=config.manifest_path,
-            source_commit_sha=source_commit_sha,
-            acceptance_workflow_sha256=acceptance_workflow_sha256,
-            state_commit_sha=config.state_commit_sha,
-            state_root_digest=config.state_root_digest,
-            provider=config.semantic_provider,
-            models=(
-                config.extractor_model_id,
-                config.generator_model_id,
-                config.reviewer_model_id,
-            ),
-            max_candidates=DISCOVERY_MAX_CANDIDATES,
-            max_semantic_candidates=DISCOVERY_MAX_SEMANTIC_CANDIDATES,
+        authority = LiveAcceptanceAuthorityV1.model_validate_json(
+            authority_bytes,
+            strict=True,
         )
+        manifest = LockedBenchmarkManifestV1.model_validate_json(
+            manifest_bytes,
+            strict=True,
+        )
+        query_set = DiscoveryQuerySetV1.model_validate_json(query_bytes, strict=True)
+        if authority_bytes not in {
+            canonical_json_bytes(authority),
+            canonical_json_bytes(authority) + b"\n",
+        }:
+            raise ValueError
+        provider = resolve_semantic_provider(
+            os.environ if environ is None else environ
+        )
+        budget = DiscoveryBudgetPolicyV1()
+        if (
+            authority.source_commit_sha != observed_source_commit_sha
+            or authority.acceptance_workflow_sha256
+            != "sha256:" + hashlib.sha256(workflow_bytes).hexdigest()
+            or authority.manifest_path != manifest_relative.as_posix()
+            or authority.manifest_digest != manifest.manifest_digest
+            or authority.nomination_set_digest != manifest.nomination_set_digest
+            or authority.lock_attestation_digest
+            != manifest.lock_attestation.attestation_digest
+            or authority.query_set_digest != query_set.query_set_digest
+            or authority.budget_policy_digest != budget.budget_policy_digest
+            or provider.provider.value != authority.semantic_provider
+            or provider.base_url != authority.provider_base_url
+            or (
+                provider.extract_model,
+                provider.generator_model,
+                provider.reviewer_model,
+            )
+            != authority.stage_models
+        ):
+            raise ValueError
+        return authority
     except Exception:
         raise ValueError("live acceptance authority rejected") from None
+
+
+def _trusted_repository_root(repository_root: Path) -> Path:
+    if (
+        not isinstance(repository_root, Path)
+        or not repository_root.is_absolute()
+        or repository_root.is_symlink()
+    ):
+        raise ValueError
+    resolved = repository_root.resolve(strict=True)
+    if resolved != repository_root or not resolved.is_dir():
+        raise ValueError
+    return resolved
+
+
+def _read_exact_repository_file(
+    root: Path,
+    path: Path,
+    expected_relative: Path,
+    max_bytes: int,
+) -> bytes:
+    expected = root / expected_relative
+    if path != expected or path.is_symlink():
+        raise ValueError
+    cursor = root
+    for part in expected_relative.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ValueError
+    if path.resolve(strict=True) != expected or not path.is_file():
+        raise ValueError
+    return _read_stable_private_file(path, max_bytes=max_bytes)
 
 
 @dataclass(frozen=True)

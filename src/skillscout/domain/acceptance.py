@@ -271,6 +271,93 @@ class LockedBenchmarkManifestV1(StrictFrozenModel):
         return self
 
 
+class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
+    """Human-approved immutable authority consumed by protected live execution."""
+
+    _digest_field = "authority_digest"
+
+    schema_version: Literal["live-acceptance-authority-v1"]
+    authority_version: Literal[1]
+    source_commit_sha: _Sha
+    acceptance_workflow_sha256: Digest
+    manifest_path: Literal[
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    ]
+    manifest_digest: Digest
+    nomination_set_digest: Digest
+    lock_attestation_digest: Digest
+    state_commit_sha: _Sha
+    state_root_digest: Digest
+    query_set_digest: Digest
+    budget_policy_digest: Digest
+    semantic_provider: Literal["deepseek"]
+    provider_base_url: Literal["https://api.deepseek.com"]
+    stage_models: tuple[
+        Literal["deepseek-v4-flash"],
+        Literal["deepseek-v4-flash"],
+        Literal["deepseek-v4-pro"],
+    ]
+    prompt_versions: tuple[
+        Literal["extract-prompt-v1"],
+        Literal["generator-prompt-v1"],
+        Literal["reviewer-prompt-v1"],
+    ]
+    schema_versions: tuple[
+        Literal["workflow-spec-v1"],
+        Literal["generation-draft-v1"],
+        Literal["reviewer-judgment-v1"],
+    ]
+    policy_versions: Annotated[tuple[_Version, ...], Field(min_length=5, max_length=16)]
+    max_candidates: Literal[100]
+    max_semantic_candidates: Literal[20]
+    max_semantic_requests: Literal[20]
+    max_files_per_repository: Literal[25]
+    max_source_files_per_repository: Literal[5]
+    max_file_bytes: Literal[131_072]
+    max_total_bytes_per_repository: Literal[524_288]
+    max_tokens_per_repository: Literal[40_000]
+    benchmark_scenario_write_count: Literal[5]
+    replay_semantic_effect_count: Literal[0]
+    replay_publication_effect_count: Literal[0]
+    reviewer_id: _Identifier
+    approved_at: _Timestamp
+    authority_digest: Digest | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_sequences(cls, value: object) -> object:
+        if isinstance(value, dict):
+            payload = dict(value)
+            for field in (
+                "stage_models",
+                "prompt_versions",
+                "schema_versions",
+                "policy_versions",
+            ):
+                if isinstance(payload.get(field), list):
+                    payload[field] = tuple(payload[field])
+            return payload
+        return value
+
+    @model_validator(mode="after")
+    def validate_complete_authority(self) -> Self:
+        required_policies = {
+            "discovery-budget-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        }
+        if (
+            self.policy_versions != tuple(sorted(self.policy_versions))
+            or len(set(self.policy_versions)) != len(self.policy_versions)
+            or not required_policies.issubset(self.policy_versions)
+        ):
+            raise ValueError("live acceptance policies are incomplete or noncanonical")
+        return self
+
+
 class AcceptanceTerminalClass(StrEnum):
     ELIGIBLE = "eligible"
     BUSINESS_TERMINAL = "business_terminal"
