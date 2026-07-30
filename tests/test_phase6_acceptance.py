@@ -1311,7 +1311,13 @@ def test_fixed_runner_exhausts_only_after_three_same_authority_retries() -> None
     runner._state_head = "a" * 40
     runner._state_root = "sha256:" + ("b" * 64)
     runner._authority = object()
-    runner._operations = object()
+    runner._operations = SimpleNamespace(
+        snapshot_run=lambda _run_id: SimpleNamespace(
+            semantic_attempts=(),
+            semantic_reservations=(),
+            candidate_terminals=(),
+        )
+    )
     runner._barrier = object()
     runner._phase3_factory = object()
 
@@ -1336,6 +1342,72 @@ def test_fixed_runner_exhausts_only_after_three_same_authority_retries() -> None
 
 
 @pytest.mark.parametrize(
+    ("durable_attempts", "remaining_calls"),
+    ((1, 2), (2, 1)),
+)
+def test_fixed_runner_resumes_only_remaining_same_authority_attempts(
+    durable_attempts: int,
+    remaining_calls: int,
+) -> None:
+    """A restarted process cannot receive a fresh three-call retry budget."""
+
+    import skillscout.bootstrap as bootstrap
+
+    phase2_authority = "sha256:" + ("a" * 64)
+    attempts = tuple(
+        SimpleNamespace(
+            repository_id=101,
+            workflow_authority_digest=phase2_authority,
+            stage="extractor",
+            attempt_no=attempt_no,
+            status="confirmed_retryable",
+        )
+        for attempt_no in range(1, durable_attempts + 1)
+    )
+    runner = object.__new__(bootstrap._FixedRepositoryAcceptanceRunner)
+    runner._state_head = "a" * 40
+    runner._state_root = "sha256:" + ("b" * 64)
+    runner._authority = SimpleNamespace(run_id="acceptance-resume-semantic")
+    runner._operations = SimpleNamespace(
+        snapshot_run=lambda _run_id: SimpleNamespace(
+            semantic_attempts=attempts,
+            semantic_reservations=(
+                SimpleNamespace(
+                    repository_id=101,
+                    phase2_run_authority_digest=phase2_authority,
+                ),
+            ),
+            candidate_terminals=(),
+        )
+    )
+    runner._barrier = object()
+    runner._phase3_factory = object()
+    calls = 0
+    retryable = SimpleNamespace(
+        terminal=SimpleNamespace(outcome="confirmed_retryable"),
+        state_commit_sha="b" * 40,
+        state_root_digest="sha256:" + ("c" * 64),
+    )
+
+    def factory(**_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return retryable
+
+    runner._phase2_factory = factory
+    candidate = SimpleNamespace(
+        repository=SimpleNamespace(repository_id=101)
+    )
+    result = runner._run_phase2_with_retries(
+        candidate=candidate,
+        pinned_commit_sha="d" * 40,
+    )
+
+    assert result is retryable
+    assert calls == remaining_calls
+
+
+@pytest.mark.parametrize(
     "terminal_outcome",
     ("semantic_outcome_unknown", "completed_reuse"),
 )
@@ -1356,7 +1428,13 @@ def test_fixed_runner_never_replays_unknown_or_completed_phase2(
     runner._state_head = "a" * 40
     runner._state_root = "sha256:" + ("b" * 64)
     runner._authority = object()
-    runner._operations = object()
+    runner._operations = SimpleNamespace(
+        snapshot_run=lambda _run_id: SimpleNamespace(
+            semantic_attempts=(),
+            semantic_reservations=(),
+            candidate_terminals=(),
+        )
+    )
     runner._barrier = object()
     runner._phase3_factory = object()
 
