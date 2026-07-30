@@ -328,6 +328,10 @@ class DiscoveryWorkflowExecution:
         "completed_reuse", "permanent_failure"
     ]
     workflow_fingerprint: str | None = None
+    workflow_spec_authority_digest: str | None = None
+    phase3_terminal_summary_digest: str | None = None
+    skill_artifact_digest: str | None = None
+    package_digest: str | None = None
     locator: EligibleCandidateLocator | None = None
 
     def __post_init__(self) -> None:
@@ -337,6 +341,15 @@ class DiscoveryWorkflowExecution:
             or (
                 self.workflow_fingerprint is not None
                 and _DIGEST.fullmatch(self.workflow_fingerprint) is None
+            )
+            or any(
+                item is not None and _DIGEST.fullmatch(item) is None
+                for item in (
+                    self.workflow_spec_authority_digest,
+                    self.phase3_terminal_summary_digest,
+                    self.skill_artifact_digest,
+                    self.package_digest,
+                )
             )
             or eligible is (self.locator is None)
             or (

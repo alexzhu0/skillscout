@@ -557,6 +557,21 @@ class LiveScenarioObservation:
     reason_code: str
     evidence_digests: tuple[str, ...]
     live_acceptance_authority_digest: str
+    discovery_run_id: str
+    discovery_run_authority_digest: str
+    benchmark_entry_digest: str
+    budget_reservation_digest: str
+    fixed_candidate_admission_digest: str
+    semantic_candidate_reservation_digest: str | None
+    semantic_request_reservation_digests: tuple[str, ...]
+    candidate_terminal_digest: str
+    workflow_terminal_digests: tuple[str, ...]
+    workflow_execution_authority_digests: tuple[str, ...]
+    workflow_spec_authority_digests: tuple[str, ...]
+    phase3_terminal_summary_digests: tuple[str, ...]
+    skill_artifact_digests: tuple[str, ...]
+    package_digests: tuple[str, ...]
+    eligible_object_digest: str | None
     workflow_fingerprint: str | None
     workflow_spec_authority_digest: str | None
     eligible_locator: str | None
@@ -853,8 +868,22 @@ def run_locked_benchmark(
                 exact_commit_sha=entry.exact_commit_sha,
                 license_spdx=entry.license_spdx,
                 benchmark_manifest_digest=manifest.manifest_digest,
+                benchmark_entry_digest=observation.benchmark_entry_digest,
                 live_acceptance_authority_digest=(
                     observation.live_acceptance_authority_digest
+                ),
+                discovery_run_id=observation.discovery_run_id,
+                discovery_run_authority_digest=(
+                    observation.discovery_run_authority_digest
+                ),
+                budget_reservation_digest=(
+                    observation.budget_reservation_digest
+                ),
+                fixed_candidate_admission_digest=(
+                    observation.fixed_candidate_admission_digest
+                ),
+                semantic_candidate_reservation_digest=(
+                    observation.semantic_candidate_reservation_digest
                 ),
                 terminal_class=terminal_class,
                 outcome=observation.outcome,
@@ -870,6 +899,9 @@ def run_locked_benchmark(
                 reader_total_bytes=observation.reader_total_bytes,
                 reader_estimated_tokens=observation.reader_estimated_tokens,
                 semantic_request_count=observation.semantic_request_count,
+                semantic_request_reservation_digests=tuple(
+                    sorted(observation.semantic_request_reservation_digests)
+                ),
                 semantic_attempt_digests=tuple(sorted(observation.semantic_attempt_digests)),
                 semantic_telemetry=observation.semantic_telemetry,
                 actual_models=observation.actual_models,
@@ -885,7 +917,25 @@ def run_locked_benchmark(
                 ),
                 workflow_fingerprint=observation.workflow_fingerprint,
                 workflow_spec_authority_digest=(observation.workflow_spec_authority_digest),
+                workflow_execution_authority_digests=tuple(
+                    sorted(observation.workflow_execution_authority_digests)
+                ),
+                workflow_spec_authority_digests=tuple(
+                    sorted(observation.workflow_spec_authority_digests)
+                ),
+                candidate_terminal_digest=observation.candidate_terminal_digest,
+                workflow_terminal_digests=tuple(
+                    sorted(observation.workflow_terminal_digests)
+                ),
+                phase3_terminal_summary_digests=tuple(
+                    sorted(observation.phase3_terminal_summary_digests)
+                ),
+                skill_artifact_digests=tuple(
+                    sorted(observation.skill_artifact_digests)
+                ),
+                package_digests=tuple(sorted(observation.package_digests)),
                 eligible_locator=observation.eligible_locator,
+                eligible_object_digest=observation.eligible_object_digest,
                 expected_coverage_role=entry.coverage_role,
                 evaluator_matches_observed=evaluator_match,
                 publication_decision=(

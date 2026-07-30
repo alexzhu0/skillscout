@@ -1689,6 +1689,9 @@ def build_discovery_application(
                                             workflow_fingerprint=(
                                                 workflow_authority.selected_workflow_fingerprint
                                             ),
+                                            workflow_spec_authority_digest=(
+                                                workflow_authority.workflow_spec_authority.authority_digest
+                                            ),
                                         )
                                     )
                                     state_head = (
@@ -1708,6 +1711,9 @@ def build_discovery_application(
                                         workflow_fingerprint=(
                                             workflow_authority.selected_workflow_fingerprint
                                         ),
+                                        workflow_spec_authority_digest=(
+                                            workflow_authority.workflow_spec_authority.authority_digest
+                                        ),
                                     )
                                 )
                                 fatal_outcome = "permanent_failure"
@@ -1724,6 +1730,9 @@ def build_discovery_application(
                                         outcome="permanent_failure",
                                         workflow_fingerprint=(
                                             workflow_authority.selected_workflow_fingerprint
+                                        ),
+                                        workflow_spec_authority_digest=(
+                                            workflow_authority.workflow_spec_authority.authority_digest
                                         ),
                                     )
                                 )
@@ -1916,6 +1925,18 @@ def build_discovery_application(
                                     workflow_fingerprint=(
                                         workflow_authority.selected_workflow_fingerprint
                                     ),
+                                    workflow_spec_authority_digest=(
+                                        workflow_authority.workflow_spec_authority.authority_digest
+                                    ),
+                                    phase3_terminal_summary_digest=(
+                                        terminal_summary.terminal_summary_digest
+                                    ),
+                                    skill_artifact_digest=(
+                                        terminal_summary.generated_artifact_identity.artifact_digest
+                                    ),
+                                    package_digest=(
+                                        terminal_summary.package_identity.package_digest
+                                    ),
                                     locator=locator,
                                 )
                             )
@@ -1928,6 +1949,27 @@ def build_discovery_application(
                                     outcome=result.outcome,
                                     workflow_fingerprint=(
                                         workflow_authority.selected_workflow_fingerprint
+                                    ),
+                                    workflow_spec_authority_digest=(
+                                        workflow_authority.workflow_spec_authority.authority_digest
+                                    ),
+                                    phase3_terminal_summary_digest=(
+                                        terminal_summary.terminal_summary_digest
+                                        if terminal_summary is not None
+                                        else None
+                                    ),
+                                    skill_artifact_digest=(
+                                        terminal_summary.generated_artifact_identity.artifact_digest
+                                        if terminal_summary is not None
+                                        and terminal_summary.generated_artifact_identity
+                                        is not None
+                                        else None
+                                    ),
+                                    package_digest=(
+                                        terminal_summary.package_identity.package_digest
+                                        if terminal_summary is not None
+                                        and terminal_summary.package_identity is not None
+                                        else None
                                     ),
                                 )
                             )
@@ -2041,6 +2083,7 @@ class _CompletedBenchmarkStateProjector:
         operations_path: Path,
         pipeline_path: Path,
         acceptance_run_id: str,
+        expected_live_authority_digest: str,
         verified_state_locators: set[tuple[str, str]],
     ) -> None:
         if (
@@ -2050,11 +2093,15 @@ class _CompletedBenchmarkStateProjector:
                 not _is_commit_sha(commit_sha) or not _is_digest(root_digest)
                 for commit_sha, root_digest in verified_state_locators
             )
+            or not _is_digest(expected_live_authority_digest)
         ):
             raise ValueError("completed benchmark state locators rejected")
         self._operations_path = operations_path
         self._pipeline_path = pipeline_path
         self._acceptance_run_id = acceptance_run_id
+        self._expected_live_authority_digest = (
+            expected_live_authority_digest
+        )
         self._verified_state_locators = verified_state_locators
 
     def project(
@@ -2093,13 +2140,113 @@ class _CompletedBenchmarkStateProjector:
             and isinstance(record.fact, AcceptanceScenarioResultV1)
             and record.fact.benchmark_manifest_digest == manifest.manifest_digest
         )
+        live_authorities = tuple(
+            record.fact
+            for record in snapshot.facts
+            if record.kind == "acceptance_live_authority"
+            and record.fact_digest == self._expected_live_authority_digest
+        )
         if (
             len(scenarios) != 5
+            or len(live_authorities) != 1
+            or any(
+                scenario.live_acceptance_authority_digest
+                != self._expected_live_authority_digest
+                for scenario in scenarios
+            )
             or {scenario.repository_id for scenario in scenarios}
             != {entry.repository_id for entry in manifest.entries}
+            or {
+                (
+                    scenario.repository_id,
+                    scenario.repository_full_name,
+                    scenario.exact_commit_sha,
+                    scenario.license_spdx,
+                    scenario.benchmark_entry_digest,
+                )
+                for scenario in scenarios
+            }
+            != {
+                (
+                    entry.repository_id,
+                    entry.repository_full_name,
+                    entry.exact_commit_sha,
+                    entry.license_spdx,
+                    entry.entry_digest,
+                )
+                for entry in manifest.entries
+            }
             or any(scenario.terminal_class == "system_failure" for scenario in scenarios)
         ):
             raise ValueError("completed benchmark projection rejected")
+        discovery_run_ids = {
+            scenario.discovery_run_id for scenario in scenarios
+        }
+        if len(discovery_run_ids) != 1:
+            raise ValueError("completed benchmark discovery authority rejected")
+        with OperationsStateStore(self._operations_path) as operations:
+            discovery_snapshot = operations.snapshot_run(
+                next(iter(discovery_run_ids))
+            )
+        repository_ids = {scenario.repository_id for scenario in scenarios}
+        semantic_attempt_digests = tuple(
+            sorted(
+                attempt.attempt_digest
+                for attempt in discovery_snapshot.semantic_attempts
+                if attempt.repository_id in repository_ids
+            )
+        )
+        workflow_terminal_digests = tuple(
+            sorted(
+                terminal.terminal_digest
+                for terminal in discovery_snapshot.workflow_terminals
+                if terminal.repository_id in repository_ids
+            )
+        )
+        workflow_execution_authorities = {
+            terminal.workflow_authority_digest
+            for terminal in discovery_snapshot.workflow_terminals
+            if terminal.repository_id in repository_ids
+        }
+        candidate_terminal_digests = tuple(
+            sorted(
+                terminal.terminal_digest
+                for terminal in discovery_snapshot.candidate_terminals
+                if terminal.repository_id in repository_ids
+            )
+        )
+        if (
+            semantic_attempt_digests
+            != tuple(
+                sorted(
+                    digest
+                    for scenario in scenarios
+                    for digest in scenario.semantic_attempt_digests
+                )
+            )
+            or workflow_terminal_digests
+            != tuple(
+                sorted(
+                    digest
+                    for scenario in scenarios
+                    for digest in scenario.workflow_terminal_digests
+                )
+            )
+            or workflow_execution_authorities
+            != {
+                digest
+                for scenario in scenarios
+                for digest in scenario.workflow_execution_authority_digests
+            }
+            or candidate_terminal_digests
+            != tuple(
+                sorted(
+                    scenario.candidate_terminal_digest
+                    for scenario in scenarios
+                )
+            )
+        ):
+            raise ValueError("completed benchmark operations graph rejected")
         eligible = tuple(
             scenario
             for scenario in scenarios
@@ -2152,7 +2299,10 @@ class _CompletedBenchmarkStateProjector:
                     terminal_objects.append((owned_fact, terminal))
         finally:
             pipeline.close()
-        if not completed_chains or not terminal_objects:
+        if (
+            workflow_execution_authorities
+            and (not completed_chains or not terminal_objects)
+        ):
             raise ValueError(
                 "completed benchmark typed Phase 3 objects are missing"
             )
@@ -2160,11 +2310,20 @@ class _CompletedBenchmarkStateProjector:
             chain.identity.candidate_execution_authority_digest
             for chain in completed_chains
         }
+        terminal_objects = tuple(
+            (owned_fact, terminal)
+            for owned_fact, terminal in terminal_objects
+            if terminal.candidate_execution_authority.authority_digest
+            in workflow_execution_authorities
+        )
         if any(
             terminal.candidate_execution_authority.authority_digest
             not in chain_authorities
             for _owned_fact, terminal in terminal_objects
-        ):
+        ) or {
+            terminal.candidate_execution_authority.authority_digest
+            for _owned_fact, terminal in terminal_objects
+        } != workflow_execution_authorities:
             raise ValueError(
                 "completed benchmark typed Phase 3 terminal is unbound"
             )
@@ -2172,16 +2331,48 @@ class _CompletedBenchmarkStateProjector:
             terminal.workflow_spec_authority.authority_digest
             for _owned_fact, terminal in terminal_objects
         }
-        scenario_workflow_authorities = {
-            scenario.workflow_spec_authority_digest
+        scenario_workflow_spec_authorities = {
+            digest
             for scenario in scenarios
-            if scenario.workflow_spec_authority_digest is not None
+            for digest in scenario.workflow_spec_authority_digests
         }
-        if not scenario_workflow_authorities.issubset(
-            typed_workflow_authorities
+        phase3_terminal_digests = {
+            terminal.terminal_summary_digest
+            for _owned_fact, terminal in terminal_objects
+        }
+        phase3_skill_digests = {
+            terminal.generated_artifact_identity.artifact_digest
+            for _owned_fact, terminal in terminal_objects
+            if terminal.generated_artifact_identity is not None
+        }
+        phase3_package_digests = {
+            terminal.package_identity.package_digest
+            for _owned_fact, terminal in terminal_objects
+            if terminal.package_identity is not None
+        }
+        if (
+            scenario_workflow_spec_authorities != typed_workflow_authorities
+            or {
+                digest
+                for scenario in scenarios
+                for digest in scenario.phase3_terminal_summary_digests
+            }
+            != phase3_terminal_digests
+            or {
+                digest
+                for scenario in scenarios
+                for digest in scenario.skill_artifact_digests
+            }
+            != phase3_skill_digests
+            or {
+                digest
+                for scenario in scenarios
+                for digest in scenario.package_digests
+            }
+            != phase3_package_digests
         ):
             raise ValueError(
-                "completed benchmark typed Phase 3 workflow is missing"
+                "completed benchmark typed Phase 3 graph is missing"
             )
         matching_eligible_objects = tuple(
             (owned_fact, terminal)
@@ -2201,15 +2392,6 @@ class _CompletedBenchmarkStateProjector:
             raise ValueError(
                 "completed benchmark typed Phase 3 eligible object is missing"
             )
-        semantic_attempt_digests = tuple(
-            sorted(
-                {
-                    digest
-                    for scenario in scenarios
-                    for digest in scenario.semantic_attempt_digests
-                }
-            )
-        )
         workflow_authority_digests = tuple(
             sorted(typed_workflow_authorities)
         )
@@ -2722,6 +2904,38 @@ class _FixedRepositoryAcceptanceRunner:
             ),
             workflows[0] if workflows else None,
         )
+        workflow_execution_authority_digests = tuple(
+            sorted(item.workflow_authority_digest for item in workflows)
+        )
+        workflow_spec_authority_digests = tuple(
+            sorted(
+                item.workflow_spec_authority_digest
+                for item in workflows
+                if item.workflow_spec_authority_digest is not None
+                and item.phase3_terminal_summary_digest is not None
+            )
+        )
+        phase3_terminal_summary_digests = tuple(
+            sorted(
+                item.phase3_terminal_summary_digest
+                for item in workflows
+                if item.phase3_terminal_summary_digest is not None
+            )
+        )
+        skill_artifact_digests = tuple(
+            sorted(
+                item.skill_artifact_digest
+                for item in workflows
+                if item.skill_artifact_digest is not None
+            )
+        )
+        package_digests = tuple(
+            sorted(
+                item.package_digest
+                for item in workflows
+                if item.package_digest is not None
+            )
+        )
         evidence = {
             self._live_authority.authority_digest,
             self._config.manifest.manifest_digest,
@@ -2733,7 +2947,11 @@ class _FixedRepositoryAcceptanceRunner:
             *(item.reservation_digest for item in semantic_reservations),
             *(record.fact_digest for record in request_reservations),
             *(attempt.attempt_digest for attempt in semantic_attempts),
-            *(workflow.workflow_authority_digest for workflow in workflows),
+            *workflow_execution_authority_digests,
+            *workflow_spec_authority_digests,
+            *phase3_terminal_summary_digests,
+            *skill_artifact_digests,
+            *package_digests,
             *(terminal.terminal_digest for terminal in workflow_terminals),
             *(
                 terminal.eligible_object_digest
@@ -2758,13 +2976,49 @@ class _FixedRepositoryAcceptanceRunner:
             live_acceptance_authority_digest=(
                 self._live_authority.authority_digest
             ),
+            discovery_run_id=self._authority.run_id,
+            discovery_run_authority_digest=self._authority.authority_digest,
+            benchmark_entry_digest=authority.entry_digest,
+            budget_reservation_digest=(
+                budget_reservation.reservation_digest
+            ),
+            fixed_candidate_admission_digest=admission.admission_digest,
+            semantic_candidate_reservation_digest=(
+                semantic_reservations[0].reservation_digest
+                if len(semantic_reservations) == 1
+                else None
+            ),
+            semantic_request_reservation_digests=tuple(
+                sorted(record.fact_digest for record in request_reservations)
+            ),
+            candidate_terminal_digest=candidate_terminal.terminal_digest,
+            workflow_terminal_digests=tuple(
+                sorted(terminal.terminal_digest for terminal in workflow_terminals)
+            ),
+            workflow_execution_authority_digests=(
+                workflow_execution_authority_digests
+            ),
+            workflow_spec_authority_digests=(
+                workflow_spec_authority_digests
+            ),
+            phase3_terminal_summary_digests=(
+                phase3_terminal_summary_digests
+            ),
+            skill_artifact_digests=skill_artifact_digests,
+            package_digests=package_digests,
+            eligible_object_digest=(
+                selected_workflow.locator.authority_digest
+                if selected_workflow is not None
+                and selected_workflow.locator is not None
+                else None
+            ),
             workflow_fingerprint=(
                 selected_workflow.workflow_fingerprint
                 if selected_workflow is not None
                 else None
             ),
             workflow_spec_authority_digest=(
-                selected_workflow.workflow_authority_digest
+                selected_workflow.workflow_spec_authority_digest
                 if selected_workflow is not None
                 else None
             ),
@@ -2936,6 +3190,9 @@ def build_live_acceptance_execution(
                 operations_path=discovery_config.operations_state,
                 pipeline_path=discovery_config.pipeline_state,
                 acceptance_run_id=acceptance_run_id,
+                expected_live_authority_digest=(
+                    config.live_acceptance_authority_digest
+                ),
                 verified_state_locators=verified_state_locators,
             )
 

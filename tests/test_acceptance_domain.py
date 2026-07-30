@@ -965,6 +965,7 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
         "policy_versions": tuple(item.policy_version for item in complete),
         "workflow_fingerprint": DIGEST_A,
         "workflow_spec_authority_digest": DIGEST_A,
+        "workflow_execution_authority_digests": (DIGEST_A,),
         "workflow_spec_authority_digests": (DIGEST_A,),
         "candidate_terminal_digest": DIGEST_A,
         "workflow_terminal_digests": (DIGEST_A,),

@@ -528,7 +528,13 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
     exact_commit_sha: _Sha
     license_spdx: _Spdx
     benchmark_manifest_digest: Digest
+    benchmark_entry_digest: Digest
     live_acceptance_authority_digest: Digest
+    discovery_run_id: _Identifier
+    discovery_run_authority_digest: Digest
+    budget_reservation_digest: Digest
+    fixed_candidate_admission_digest: Digest
+    semantic_candidate_reservation_digest: Digest | None
     terminal_class: Literal["eligible", "business_terminal", "system_failure"]
     outcome: Literal["eligible_local_candidate"] | _BusinessOutcome | _SystemOutcome
     reason_code: Annotated[
@@ -544,6 +550,9 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
     reader_total_bytes: Annotated[int, Field(ge=0, le=524_288)]
     reader_estimated_tokens: Annotated[int, Field(ge=0, le=40_000)]
     semantic_request_count: Annotated[int, Field(ge=0, le=20)]
+    semantic_request_reservation_digests: Annotated[
+        tuple[Digest, ...], Field(max_length=20)
+    ]
     semantic_attempt_digests: Annotated[tuple[Digest, ...], Field(max_length=20)]
     semantic_telemetry: Annotated[
         tuple[AcceptanceSemanticTelemetryV1, ...],
@@ -555,7 +564,23 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
     policy_versions: Annotated[tuple[_Version, ...], Field(max_length=20)]
     workflow_fingerprint: Digest | None
     workflow_spec_authority_digest: Digest | None
+    workflow_execution_authority_digests: Annotated[
+        tuple[Digest, ...], Field(max_length=3)
+    ]
+    workflow_spec_authority_digests: Annotated[
+        tuple[Digest, ...], Field(max_length=3)
+    ]
+    candidate_terminal_digest: Digest
+    workflow_terminal_digests: Annotated[
+        tuple[Digest, ...], Field(max_length=3)
+    ]
+    phase3_terminal_summary_digests: Annotated[
+        tuple[Digest, ...], Field(max_length=3)
+    ]
+    skill_artifact_digests: Annotated[tuple[Digest, ...], Field(max_length=3)]
+    package_digests: Annotated[tuple[Digest, ...], Field(max_length=3)]
     eligible_locator: _Identifier | None
+    eligible_object_digest: Digest | None
     expected_coverage_role: Literal[
         "positive", "positive_multi_workflow", "negative", "borderline"
     ]
@@ -618,13 +643,30 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             or len(set(self.evidence_digests)) != len(self.evidence_digests)
         ):
             raise ValueError("scenario evidence must be sorted and unique")
+        exact_digest_sets = (
+            self.semantic_request_reservation_digests,
+            self.semantic_attempt_digests,
+            self.workflow_execution_authority_digests,
+            self.workflow_spec_authority_digests,
+            self.workflow_terminal_digests,
+            self.phase3_terminal_summary_digests,
+            self.skill_artifact_digests,
+            self.package_digests,
+        )
         if (
-            self.semantic_attempt_digests
-            != tuple(sorted(self.semantic_attempt_digests))
-            or len(set(self.semantic_attempt_digests))
-            != len(self.semantic_attempt_digests)
+            any(
+                values != tuple(sorted(values))
+                or len(set(values)) != len(values)
+                for values in exact_digest_sets
+            )
+            or len(self.semantic_request_reservation_digests)
+            != self.semantic_request_count
             or len(self.semantic_attempt_digests) != self.semantic_request_count
             or len(self.semantic_telemetry) > self.semantic_request_count
+            or len(self.workflow_terminal_digests)
+            != len(self.workflow_execution_authority_digests)
+            or len(self.phase3_terminal_summary_digests)
+            != len(self.workflow_spec_authority_digests)
             or tuple(
                 (
                     item.stage,
@@ -759,7 +801,13 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
                 and (
                     self.workflow_fingerprint is None
                     or self.workflow_spec_authority_digest is None
+                    or self.workflow_spec_authority_digest
+                    not in self.workflow_spec_authority_digests
+                    or not self.phase3_terminal_summary_digests
+                    or not self.skill_artifact_digests
+                    or not self.package_digests
                     or self.eligible_locator is None
+                    or self.eligible_object_digest is None
                 )
             )
             or (
@@ -783,7 +831,10 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             )
             or (
                 self.terminal_class != AcceptanceTerminalClass.ELIGIBLE
-                and self.eligible_locator is not None
+                and (
+                    self.eligible_locator is not None
+                    or self.eligible_object_digest is not None
+                )
             )
         ):
             raise ValueError("scenario terminal evidence is incoherent")

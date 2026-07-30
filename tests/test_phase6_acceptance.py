@@ -687,6 +687,7 @@ def test_completed_projector_rejects_unverified_state_locator(
         operations_path=tmp_path / "operations.sqlite3",
         pipeline_path=tmp_path / "pipeline.sqlite3",
         acceptance_run_id="acceptance-projector-locator",
+        expected_live_authority_digest="sha256:" + ("9" * 64),
         verified_state_locators=verified,
     )
 
@@ -778,7 +779,7 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
     assert calls == ["replay"]
 
 
-def test_production_replay_rejects_synthetic_scenarios_without_phase3_objects(
+def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1072,10 +1073,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_phase3_objects(
                     for index in range(1, len(stages) + 1)
                 )
             )
-            operations.record_acceptance_fact(
-                run_id,
-                "acceptance_scenario",
-                acceptance_domain.AcceptanceScenarioResultV1(
+            scenario = acceptance_domain.AcceptanceScenarioResultV1(
                     schema_version="acceptance-scenario-result-v1",
                     acceptance_run_id=run_id,
                     scenario_id=f"locked-{ordinal}-{entry.repository_id}",
@@ -1084,7 +1082,13 @@ def test_production_replay_rejects_synthetic_scenarios_without_phase3_objects(
                     exact_commit_sha=entry.exact_commit_sha,
                     license_spdx=entry.license_spdx,
                     benchmark_manifest_digest=manifest.manifest_digest,
+                    benchmark_entry_digest=entry.entry_digest,
                     live_acceptance_authority_digest=authority.authority_digest,
+                    discovery_run_id=f"{run_id}-semantic",
+                    discovery_run_authority_digest=entry.entry_digest,
+                    budget_reservation_digest=entry.entry_digest,
+                    fixed_candidate_admission_digest=admission.admission_digest,
+                    semantic_candidate_reservation_digest=entry.entry_digest,
                     terminal_class=(
                         "eligible" if eligible else "business_terminal"
                     ),
@@ -1122,6 +1126,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_phase3_objects(
                     reader_total_bytes=100,
                     reader_estimated_tokens=25,
                     semantic_request_count=len(stage_telemetry),
+                    semantic_request_reservation_digests=attempt_digests,
                     semantic_attempt_digests=attempt_digests,
                     semantic_telemetry=stage_telemetry,
                     actual_models=tuple(
@@ -1142,8 +1147,30 @@ def test_production_replay_rejects_synthetic_scenarios_without_phase3_objects(
                     workflow_spec_authority_digest=(
                         entry.entry_digest if eligible else None
                     ),
+                    workflow_execution_authority_digests=(
+                        (entry.entry_digest,) if eligible else ()
+                    ),
+                    workflow_spec_authority_digests=(
+                        (entry.entry_digest,) if eligible else ()
+                    ),
+                    candidate_terminal_digest=entry.entry_digest,
+                    workflow_terminal_digests=(
+                        (entry.entry_digest,) if eligible else ()
+                    ),
+                    phase3_terminal_summary_digests=(
+                        (entry.entry_digest,) if eligible else ()
+                    ),
+                    skill_artifact_digests=(
+                        (entry.entry_digest,) if eligible else ()
+                    ),
+                    package_digests=(
+                        (entry.entry_digest,) if eligible else ()
+                    ),
                     eligible_locator=(
                         "state/objects/eligible.json" if eligible else None
+                    ),
+                    eligible_object_digest=(
+                        entry.entry_digest if eligible else None
                     ),
                     expected_coverage_role=entry.coverage_role,
                     evaluator_matches_observed=True,
@@ -1154,8 +1181,17 @@ def test_production_replay_rejects_synthetic_scenarios_without_phase3_objects(
                     ),
                     warnings=(),
                     recorded_at=timestamp,
-                ),
             )
+            with pytest.raises(
+                operations_state.OperationsIntegrityError,
+                match="scenario budget or admission binding",
+            ):
+                operations.record_acceptance_fact(
+                    run_id,
+                    "acceptance_scenario",
+                    scenario,
+                )
+            return
         pipeline = pipeline_state.SQLiteStateStore(pipeline_path)
         publication = publication_state.PublicationStateStore(
             publication_path

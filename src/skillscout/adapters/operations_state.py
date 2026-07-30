@@ -1034,13 +1034,17 @@ def _validate_acceptance_references(
             )
         entry = entries[0]
         if (
-            entry.repository_full_name,
-            entry.exact_commit_sha,
-            entry.license_spdx,
-        ) != (
-            fact.repository_full_name,
-            fact.exact_commit_sha,
-            fact.license_spdx,
+            entry.entry_digest != fact.benchmark_entry_digest
+            or (
+                entry.repository_full_name,
+                entry.exact_commit_sha,
+                entry.license_spdx,
+            )
+            != (
+                fact.repository_full_name,
+                fact.exact_commit_sha,
+                fact.license_spdx,
+            )
         ):
             raise OperationsIntegrityError(
                 "scenario benchmark repository binding mismatch"
@@ -1101,6 +1105,9 @@ def _validate_acceptance_references(
             or admission.exact_commit_sha != fact.exact_commit_sha
             or admission.license_spdx != fact.license_spdx
             or budget.ordinal != admission.ordinal
+            or budget.reservation_digest != fact.budget_reservation_digest
+            or admission.admission_digest
+            != fact.fixed_candidate_admission_digest
         ):
             raise OperationsIntegrityError(
                 "scenario budget or admission binding mismatch"
@@ -1127,14 +1134,140 @@ def _validate_acceptance_references(
             )
             for item in fact.semantic_telemetry
         }
+        run_row = connection.execute(
+            """SELECT authority_digest FROM operations_runs
+               WHERE run_id = ?""",
+            (fact.discovery_run_id,),
+        ).fetchone()
+        semantic_rows = connection.execute(
+            """SELECT reservation_json FROM operations_semantic_reservations
+               WHERE run_id = ? AND repository_id = ?""",
+            (fact.discovery_run_id, fact.repository_id),
+        ).fetchall()
+        semantic_reservations = tuple(
+            SemanticReservationV1.model_validate_json(
+                row["reservation_json"],
+                strict=True,
+            )
+            for row in semantic_rows
+        )
+        attempt_rows = connection.execute(
+            """SELECT attempt_digest, workflow_authority_digest, stage,
+                      attempt_no
+               FROM operations_semantic_attempts
+               WHERE run_id = ? AND repository_id = ?
+               ORDER BY attempt_digest""",
+            (fact.discovery_run_id, fact.repository_id),
+        ).fetchall()
+        attempt_digests = tuple(
+            sorted(str(row["attempt_digest"]) for row in attempt_rows)
+        )
+        attempt_keys = {
+            (
+                str(row["stage"]),
+                str(row["workflow_authority_digest"]),
+                int(row["attempt_no"]),
+            )
+            for row in attempt_rows
+        }
+        candidate_rows = connection.execute(
+            """SELECT terminal_json FROM operations_candidate_terminals
+               WHERE run_id = ? AND repository_id = ?""",
+            (fact.discovery_run_id, fact.repository_id),
+        ).fetchall()
+        candidate_terminals = tuple(
+            DiscoveryCandidateTerminalV1.model_validate_json(
+                row["terminal_json"],
+                strict=True,
+            )
+            for row in candidate_rows
+        )
+        workflow_rows = connection.execute(
+            """SELECT workflow_authority_digest, eligible_locator,
+                      eligible_object_digest, terminal_digest
+               FROM operations_workflow_terminals
+               WHERE run_id = ? AND repository_id = ?
+               ORDER BY terminal_digest""",
+            (fact.discovery_run_id, fact.repository_id),
+        ).fetchall()
+        workflow_digests = tuple(
+            sorted(str(row["terminal_digest"]) for row in workflow_rows)
+        )
+        workflow_authorities = tuple(
+            sorted(str(row["workflow_authority_digest"]) for row in workflow_rows)
+        )
+        eligible_rows = tuple(
+            row for row in workflow_rows if row["eligible_locator"] is not None
+        )
+        expected_evidence = {
+            fact.live_acceptance_authority_digest,
+            fact.benchmark_manifest_digest,
+            entry.nomination_entry_digest,
+            fact.benchmark_entry_digest,
+            fact.budget_reservation_digest,
+            fact.fixed_candidate_admission_digest,
+            fact.candidate_terminal_digest,
+            *fact.semantic_request_reservation_digests,
+            *fact.semantic_attempt_digests,
+            *fact.workflow_execution_authority_digests,
+            *fact.workflow_spec_authority_digests,
+            *fact.workflow_terminal_digests,
+            *fact.phase3_terminal_summary_digests,
+            *fact.skill_artifact_digests,
+            *fact.package_digests,
+        }
+        if fact.semantic_candidate_reservation_digest is not None:
+            expected_evidence.add(fact.semantic_candidate_reservation_digest)
+        if fact.eligible_object_digest is not None:
+            expected_evidence.add(fact.eligible_object_digest)
         if (
             len(requests) != fact.semantic_request_count
+            or tuple(sorted(item.reservation_digest for item in requests))
+            != fact.semantic_request_reservation_digests
             or any(
                 item.fixed_candidate_admission_digest
                 != admission.admission_digest
                 for item in requests
             )
             or not telemetry_keys.issubset(request_keys)
+            or run_row is None
+            or str(run_row["authority_digest"])
+            != fact.discovery_run_authority_digest
+            or len(semantic_reservations)
+            != (1 if fact.semantic_candidate_reservation_digest is not None else 0)
+            or (
+                semantic_reservations
+                and semantic_reservations[0].reservation_digest
+                != fact.semantic_candidate_reservation_digest
+            )
+            or request_keys != attempt_keys
+            or attempt_digests != fact.semantic_attempt_digests
+            or len(candidate_terminals) != 1
+            or candidate_terminals[0].terminal_digest
+            != fact.candidate_terminal_digest
+            or candidate_terminals[0].discovery_run_authority_digest
+            != fact.discovery_run_authority_digest
+            or candidate_terminals[0].repository_id != fact.repository_id
+            or tuple(sorted(candidate_terminals[0].workflow_authority_digests))
+            != fact.workflow_execution_authority_digests
+            or workflow_digests != fact.workflow_terminal_digests
+            or workflow_authorities
+            != fact.workflow_execution_authority_digests
+            or (
+                fact.eligible_locator is None
+                and eligible_rows
+            )
+            or (
+                fact.eligible_locator is not None
+                and (
+                    len(eligible_rows) != 1
+                    or eligible_rows[0]["eligible_locator"]
+                    != fact.eligible_locator
+                    or eligible_rows[0]["eligible_object_digest"]
+                    != fact.eligible_object_digest
+                )
+            )
+            or set(fact.evidence_digests) != expected_evidence
         ):
             raise OperationsIntegrityError(
                 "scenario semantic request binding mismatch"
