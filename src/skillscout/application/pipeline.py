@@ -12,9 +12,7 @@ from pathlib import Path
 from typing import Callable, Final, Iterable, Literal, Mapping, Protocol
 
 from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject
-from skillscout.adapters.github import GitHubReadClient
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
-from skillscout.adapters.openai_extract import OpenAIExtractionClient
 from skillscout.adapters.semantic_provider import (
     SemanticProviderFailure,
     SemanticTransportDisposition,

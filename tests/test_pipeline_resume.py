@@ -2169,9 +2169,9 @@ def test_phase_two_runtime_does_not_reuse_import_poisoned_adapter_types(
     class LazyRemote:
         effect_scope = pipeline_module.EffectScope.REMOTE_READ
 
+    assert not hasattr(pipeline_module, "GitHubReadClient")
+    assert not hasattr(pipeline_module, "OpenAIExtractionClient")
     monkeypatch.setattr(pipeline_module, "SQLiteStateStore", object)
-    monkeypatch.setattr(pipeline_module, "GitHubReadClient", object)
-    monkeypatch.setattr(pipeline_module, "OpenAIExtractionClient", object)
     store = SQLiteStateStore(tmp_path / "import-order.sqlite3")
     try:
         runtime = build_phase_two_runtime(
