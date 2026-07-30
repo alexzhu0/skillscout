@@ -1107,6 +1107,7 @@ def build_discovery_application(
             observed_head = arguments.get("observed_head")
             prior_root = arguments.get("prior_root_digest")
             pinned_commit_sha = arguments.get("pinned_commit_sha")
+            recovery_only = arguments.get("recovery_only", False)
             if (
                 type(candidate) not in {
                     DiscoveredCandidateV1,
@@ -1117,6 +1118,7 @@ def build_discovery_application(
                 or not callable(phase3_builder)
                 or type(observed_head) is not str
                 or type(prior_root) is not str
+                or type(recovery_only) is not bool
                 or (
                     pinned_commit_sha is not None
                     and (
@@ -1171,6 +1173,18 @@ def build_discovery_application(
                 ),
                 None,
             )
+            if recovery_only:
+                recovered_extractor_attempts = tuple(
+                    item
+                    for item in restored_snapshot.semantic_attempts
+                    if item.repository_id
+                    == candidate.repository.repository_id
+                    and item.workflow_authority_digest
+                    == phase2_authority_digest
+                    and item.stage == "extractor"
+                )
+                if len(recovered_extractor_attempts) != 3:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             fixed_admission = (
                 candidate.admission
                 if type(candidate) is FixedAcceptanceCandidate
@@ -1286,20 +1300,32 @@ def build_discovery_application(
             )
             phase2_state = SQLiteStateStore(config.pipeline_state)
             github = _LazyDiscoveryCapability(
-                lambda: GitHubReadClient(
-                    token=_required_credential(
-                        source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
+                (
+                    lambda: (_ for _ in ()).throw(
+                        SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    )
+                    if recovery_only
+                    else lambda: GitHubReadClient(
+                        token=_required_credential(
+                            source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
+                        )
                     )
                 ),
                 EffectScope.REMOTE_READ,
             )
             extractor = _LazyDiscoveryCapability(
-                lambda: (
-                    OpenAIExtractionClient()
-                    if provider.provider is SemanticProvider.OPENAI
-                    else OpenAIExtractionClient(
-                        model=provider.extract_model,
-                        provider_settings=provider,
+                (
+                    lambda: (_ for _ in ()).throw(
+                        SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    )
+                    if recovery_only
+                    else lambda: (
+                        OpenAIExtractionClient()
+                        if provider.provider is SemanticProvider.OPENAI
+                        else OpenAIExtractionClient(
+                            model=provider.extract_model,
+                            provider_settings=provider,
+                        )
                     )
                 ),
                 EffectScope.REMOTE_READ,
@@ -1454,7 +1480,11 @@ def build_discovery_application(
                 state_root = phase2_guard.state_root_digest
                 outcome = (
                     "confirmed_retryable"
-                    if failure.code is ErrorCode.STAGE_TRANSIENT_FAILURE
+                    if failure.code
+                    in {
+                        ErrorCode.STAGE_TRANSIENT_FAILURE,
+                        ErrorCode.RETRY_EXHAUSTED,
+                    }
                     else "state_integrity_conflict"
                     if failure.code
                     in {
@@ -1487,6 +1517,11 @@ def build_discovery_application(
                     eligible_candidates=(),
                     state_commit_sha=state_head,
                     state_root_digest=state_root,
+                    acceptance_system_outcome=(
+                        "provider_exhausted"
+                        if failure.code is ErrorCode.RETRY_EXHAUSTED
+                        else None
+                    ),
                 )
             finally:
                 _close_discovery_resources(
@@ -1606,6 +1641,8 @@ def build_discovery_application(
                         clients: list[object] = []
 
                         def generator_factory() -> object:
+                            if recovery_only:
+                                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                             client = (
                                 OpenAIGenerationClient(
                                     model=profile.configured_generator_model_id,
@@ -1626,6 +1663,8 @@ def build_discovery_application(
                             return client
 
                         def reviewer_factory() -> object:
+                            if recovery_only:
+                                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                             client = (
                                 OpenAIReviewClient(
                                     model=profile.configured_reviewer_model_id,
@@ -2669,25 +2708,19 @@ class _FixedRepositoryAcceptanceRunner:
             if execution.terminal.outcome != "confirmed_retryable":
                 break
         if execution is None:
-            terminals = tuple(
-                item
-                for item in snapshot.candidate_terminals
-                if item.repository_id == repository_id
-                and item.outcome == "confirmed_retryable"
+            execution = self._phase2_factory(
+                candidate=candidate,
+                discovery_authority=self._authority,
+                operations_store=self._operations,
+                durability_barrier=self._barrier,
+                observed_head=self._state_head,
+                prior_root_digest=self._state_root,
+                phase3_factory=self._phase3_factory,
+                pinned_commit_sha=pinned_commit_sha,
+                recovery_only=True,
             )
-            if len(terminals) != 1:
-                raise ValueError("fixed acceptance execution is missing")
-            from skillscout.application.discovery import (
-                DiscoveryCandidateExecution,
-            )
-
-            execution = DiscoveryCandidateExecution(
-                terminal=terminals[0],
-                eligible_candidates=(),
-                state_commit_sha=self._state_head,
-                state_root_digest=self._state_root,
-                acceptance_system_outcome="provider_exhausted",
-            )
+            self._state_head = execution.state_commit_sha
+            self._state_root = execution.state_root_digest
         return execution
 
     def run(self, authority: object) -> object:

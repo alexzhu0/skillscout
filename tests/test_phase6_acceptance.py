@@ -1453,10 +1453,21 @@ def test_fixed_runner_does_not_issue_fourth_request_after_durable_exhaustion() -
     runner._barrier = object()
     runner._phase3_factory = object()
 
-    def forbidden_factory(**_kwargs: object) -> object:
-        raise AssertionError("durable exhaustion issued a fourth request")
+    recovery_calls = 0
 
-    runner._phase2_factory = forbidden_factory
+    def recovery_factory(**kwargs: object) -> object:
+        nonlocal recovery_calls
+        recovery_calls += 1
+        assert kwargs["recovery_only"] is True
+        return SimpleNamespace(
+            terminal=terminal,
+            eligible_candidates=(),
+            state_commit_sha=runner._state_head,
+            state_root_digest=runner._state_root,
+            acceptance_system_outcome="provider_exhausted",
+        )
+
+    runner._phase2_factory = recovery_factory
     result = runner._run_phase2_with_retries(
         candidate=SimpleNamespace(
             repository=SimpleNamespace(repository_id=101)
@@ -1466,6 +1477,7 @@ def test_fixed_runner_does_not_issue_fourth_request_after_durable_exhaustion() -
 
     assert result.terminal is terminal
     assert result.acceptance_system_outcome == "provider_exhausted"
+    assert recovery_calls == 1
 
 
 @pytest.mark.parametrize(
