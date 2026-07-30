@@ -673,7 +673,7 @@ def test_acceptance_cli_exposes_only_exact_resume_lineage_inputs() -> None:
 
 
 def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> None:
-    """A locator anchor may safely admit its parent or one verified crash suffix."""
+    """A locator anchor admits its verified commit or one verified crash suffix."""
 
     from dataclasses import replace
 
@@ -735,8 +735,8 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
         CampaignStateLineageObservation(
             commit_sha=original_commit,
             root_digest=original_root,
-            parent_commit_sha=None,
-            prior_root_digest=None,
+            parent_commit_sha="0" * 40,
+            prior_root_digest="sha256:" + ("0" * 64),
             resume_locators=(),
         ),
         CampaignStateLineageObservation(
@@ -782,8 +782,8 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
     )
 
     assert (anchored.state_commit_sha, anchored.state_root_digest) == (
-        current_commit,
-        current_root,
+        anchor_commit,
+        anchor_root,
     )
     assert (crashed.state_commit_sha, crashed.state_root_digest) == (
         crash_commit,
