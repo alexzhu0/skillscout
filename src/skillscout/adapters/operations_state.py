@@ -35,6 +35,7 @@ from skillscout.adapters.state_branch import (
 )
 from skillscout.domain.acceptance import (
     AcceptanceBudgetReservationV1,
+    AcceptanceCampaignResumeLocatorV1,
     AcceptanceFixedCandidateAdmissionV1,
     AcceptanceSemanticRequestReservationV1,
     AcceptanceEvidenceRootV1,
@@ -177,6 +178,7 @@ _AcceptanceFactKind = Literal[
     "acceptance_nomination",
     "acceptance_benchmark_lock",
     "acceptance_live_authority",
+    "acceptance_campaign_resume_locator",
     "acceptance_budget_reservation",
     "acceptance_fixed_candidate_admission",
     "acceptance_semantic_request_reservation",
@@ -210,6 +212,7 @@ _FactKind = Literal[
     "acceptance_nomination",
     "acceptance_benchmark_lock",
     "acceptance_live_authority",
+    "acceptance_campaign_resume_locator",
     "acceptance_budget_reservation",
     "acceptance_fixed_candidate_admission",
     "acceptance_semantic_request_reservation",
@@ -233,6 +236,7 @@ _AcceptanceFactModel: TypeAlias = (
     NominationSetV1
     | LockedBenchmarkManifestV1
     | LiveAcceptanceAuthorityV1
+    | AcceptanceCampaignResumeLocatorV1
     | AcceptanceBudgetReservationV1
     | AcceptanceFixedCandidateAdmissionV1
     | AcceptanceSemanticRequestReservationV1
@@ -256,6 +260,7 @@ _ACCEPTANCE_FACT_MODEL_VALUES: Final = {
     "acceptance_nomination": NominationSetV1,
     "acceptance_benchmark_lock": LockedBenchmarkManifestV1,
     "acceptance_live_authority": LiveAcceptanceAuthorityV1,
+    "acceptance_campaign_resume_locator": AcceptanceCampaignResumeLocatorV1,
     "acceptance_budget_reservation": AcceptanceBudgetReservationV1,
     "acceptance_fixed_candidate_admission": AcceptanceFixedCandidateAdmissionV1,
     "acceptance_semantic_request_reservation": (
@@ -284,6 +289,7 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
         "acceptance_nomination": "nomination_set_digest",
         "acceptance_benchmark_lock": "manifest_digest",
         "acceptance_live_authority": "authority_digest",
+        "acceptance_campaign_resume_locator": "locator_digest",
         "acceptance_budget_reservation": "reservation_digest",
         "acceptance_fixed_candidate_admission": "admission_digest",
         "acceptance_semantic_request_reservation": "reservation_digest",
@@ -327,7 +333,11 @@ _PRE_BUDGET_ACCEPTANCE_FACT_KINDS: Final = tuple(
 _LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _PRE_BUDGET_ACCEPTANCE_FACT_KINDS
-    if kind != "acceptance_live_authority"
+    if kind
+    not in {
+        "acceptance_live_authority",
+        "acceptance_campaign_resume_locator",
+    }
 )
 
 
@@ -382,6 +392,10 @@ class OperationsStateProjectionV1(StrictFrozenModel):
     acceptance_nomination_digests: tuple[Digest, ...]
     acceptance_benchmark_lock_digests: tuple[Digest, ...]
     acceptance_live_authority_digests: tuple[Digest, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
+    acceptance_campaign_resume_locator_digests: tuple[Digest, ...] = Field(
         default=(),
         exclude_if=lambda value: not value,
     )
@@ -1427,6 +1441,34 @@ def _validate_acceptance_references(
             != manifest.lock_attestation.attestation_digest
         ):
             raise OperationsIntegrityError("live authority manifest binding mismatch")
+    elif kind == "acceptance_campaign_resume_locator":
+        assert isinstance(fact, AcceptanceCampaignResumeLocatorV1)
+        authority = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_live_authority",
+            digest=fact.live_acceptance_authority_digest,
+        )
+        assert isinstance(authority, LiveAcceptanceAuthorityV1)
+        if (
+            fact.source_commit_sha != authority.source_commit_sha
+            or fact.manifest_digest != authority.manifest_digest
+            or fact.state_repository_id != authority.state_repository_id
+            or fact.state_repository_full_name
+            != authority.state_repository_full_name
+            or fact.original_state_commit_sha
+            != authority.state_commit_sha
+            or fact.original_state_root_digest
+            != authority.state_root_digest
+            or fact.semantic_provider != authority.semantic_provider
+            or fact.stage_models != authority.stage_models
+            or fact.prompt_versions != authority.prompt_versions
+            or fact.schema_versions != authority.schema_versions
+            or fact.policy_versions != authority.policy_versions
+        ):
+            raise OperationsIntegrityError(
+                "campaign resume locator authority binding mismatch"
+            )
     elif kind == "acceptance_budget_reservation":
         assert isinstance(fact, AcceptanceBudgetReservationV1)
         manifest = _acceptance_fact_by_digest(
@@ -1540,6 +1582,7 @@ def _projection_from_facts(
         "acceptance_nomination_digests": [],
         "acceptance_benchmark_lock_digests": [],
         "acceptance_live_authority_digests": [],
+        "acceptance_campaign_resume_locator_digests": [],
         "acceptance_budget_reservation_digests": [],
         "acceptance_fixed_candidate_admission_digests": [],
         "acceptance_semantic_request_reservation_digests": [],
@@ -1583,6 +1626,10 @@ def _projection_from_facts(
         "acceptance_live_authority": (
             "acceptance_live_authority_digests",
             "authority_digest",
+        ),
+        "acceptance_campaign_resume_locator": (
+            "acceptance_campaign_resume_locator_digests",
+            "locator_digest",
         ),
         "acceptance_budget_reservation": (
             "acceptance_budget_reservation_digests",
@@ -1660,6 +1707,7 @@ def _projection_from_facts(
     digest_values = dict(values)
     for field in (
         "acceptance_live_authority_digests",
+        "acceptance_campaign_resume_locator_digests",
         "acceptance_budget_reservation_digests",
         "acceptance_fixed_candidate_admission_digests",
         "acceptance_semantic_request_reservation_digests",
