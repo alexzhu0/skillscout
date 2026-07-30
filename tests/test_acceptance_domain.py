@@ -878,6 +878,7 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
     def telemetry(stage: str, attempt: int) -> object:
         return telemetry_type(
             schema_version="acceptance-semantic-telemetry-v1",
+            live_acceptance_authority_digest=DIGEST_C,
             stage=stage,
             workflow_spec_authority_digest=DIGEST_A,
             attempt_no=attempt,
@@ -887,9 +888,21 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
                 if stage == "reviewer"
                 else "deepseek-v4-flash"
             ),
-            prompt_version=f"{stage}-prompt-v1",
-            output_schema_version=f"{stage}-schema-v1",
-            policy_version=f"{stage}-policy-v1",
+            prompt_version={
+                "extractor": "extract-prompt-v1",
+                "generator": "generator-prompt-v1",
+                "reviewer": "reviewer-prompt-v1",
+            }[stage],
+            output_schema_version={
+                "extractor": "workflow-spec-v1",
+                "generator": "generation-draft-v1",
+                "reviewer": "reviewer-judgment-v1",
+            }[stage],
+            policy_version={
+                "extractor": "extract-policy-v1",
+                "generator": "generator-policy-v1",
+                "reviewer": "reviewer-policy-v1",
+            }[stage],
             prompt_tokens=10,
             completion_tokens=5,
             total_tokens=15,
@@ -912,6 +925,7 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
         "exact_commit_sha": SHA_A,
         "license_spdx": "MIT",
         "benchmark_manifest_digest": DIGEST_B,
+        "live_acceptance_authority_digest": DIGEST_C,
         "terminal_class": "eligible",
         "outcome": "eligible_local_candidate",
         "reason_code": "eligible_candidate_completed",

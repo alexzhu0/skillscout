@@ -452,6 +452,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                 outcome="no_workflow",
                 reason_code="no_reusable_workflow",
                 evidence_digests=(authority.entry_digest,),
+                live_acceptance_authority_digest=authority.entry_digest,
                 workflow_fingerprint=None,
                 workflow_spec_authority_digest=None,
                 eligible_locator=None,
@@ -460,6 +461,9 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                     semantic_telemetry=(
                         module.AcceptanceSemanticTelemetryV1(
                             schema_version="acceptance-semantic-telemetry-v1",
+                            live_acceptance_authority_digest=(
+                                authority.entry_digest
+                            ),
                             stage="extractor",
                             workflow_spec_authority_digest=authority.entry_digest,
                             attempt_no=1,

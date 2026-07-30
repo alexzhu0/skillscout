@@ -133,6 +133,7 @@ class AcceptanceRuntimeConfig:
     extractor_model_id: str
     generator_model_id: str
     reviewer_model_id: str
+    live_acceptance_authority_digest: str
 
     def __post_init__(self) -> None:
         from skillscout.domain.acceptance import LockedBenchmarkManifestV1
@@ -143,6 +144,7 @@ class AcceptanceRuntimeConfig:
             or type(self.manifest) is not LockedBenchmarkManifestV1
             or not _is_commit_sha(self.state_commit_sha)
             or not _is_digest(self.state_root_digest)
+            or not _is_digest(self.live_acceptance_authority_digest)
             or self.semantic_provider not in {"openai", "deepseek"}
             or not all(
                 _closed_identity(value)
@@ -227,6 +229,25 @@ def verify_live_acceptance_authority(
             DiscoveryBudgetPolicyV1,
             DiscoveryQuerySetV1,
         )
+        from skillscout.adapters.openai_generate import (
+            GENERATOR_POLICY_VERSION,
+            GENERATOR_PROMPT_VERSION,
+        )
+        from skillscout.domain.extraction import (
+            EXTRACT_POLICY_VERSION,
+            EXTRACT_PROMPT_VERSION,
+            WORKFLOW_SPEC_SCHEMA_VERSION,
+        )
+        from skillscout.domain.qualification import QUALIFICATION_POLICY_VERSION
+        from skillscout.domain.reading import READER_POLICY_VERSION
+        from skillscout.domain.review import (
+            REVIEW_OUTPUT_SCHEMA_VERSION,
+            REVIEW_POLICY_VERSION,
+            REVIEW_PROMPT_VERSION,
+        )
+        from skillscout.domain.skill_artifacts import (
+            GENERATION_DRAFT_SCHEMA_VERSION,
+        )
 
         authority = LiveAcceptanceAuthorityV1.model_validate_json(
             authority_bytes,
@@ -270,6 +291,31 @@ def verify_live_acceptance_authority(
                 provider.reviewer_model,
             )
             != authority.stage_models
+            or authority.prompt_versions
+            != (
+                EXTRACT_PROMPT_VERSION,
+                GENERATOR_PROMPT_VERSION,
+                REVIEW_PROMPT_VERSION,
+            )
+            or authority.schema_versions
+            != (
+                WORKFLOW_SPEC_SCHEMA_VERSION,
+                GENERATION_DRAFT_SCHEMA_VERSION,
+                REVIEW_OUTPUT_SCHEMA_VERSION,
+            )
+            or authority.policy_versions
+            != tuple(
+                sorted(
+                    (
+                        budget.budget_policy_version,
+                        EXTRACT_POLICY_VERSION,
+                        GENERATOR_POLICY_VERSION,
+                        QUALIFICATION_POLICY_VERSION,
+                        READER_POLICY_VERSION,
+                        REVIEW_POLICY_VERSION,
+                    )
+                )
+            )
         ):
             raise ValueError
         return authority
@@ -504,6 +550,9 @@ def load_acceptance_runtime_config(
             extractor_model_id=provider.extract_model,
             generator_model_id=provider.generator_model,
             reviewer_model_id=provider.reviewer_model,
+            live_acceptance_authority_digest=source[
+                "PHASE6_AUTHORITY_DIGEST"
+            ],
         )
     except Exception:
         raise ValueError("acceptance runtime configuration rejected") from None
@@ -2151,6 +2200,31 @@ class _FixedRepositoryAcceptanceRunner:
         self._operations = OperationsStateStore(discovery_config.operations_state)
         self._operations.upgrade_acceptance_schema()
         self._acceptance_run_id = acceptance_run_id
+        authority_records = tuple(
+            record.fact
+            for record in self._operations.acceptance_snapshot(
+                acceptance_run_id
+            ).facts
+            if record.kind == "acceptance_live_authority"
+            and record.fact_digest
+            == config.live_acceptance_authority_digest
+        )
+        if len(authority_records) != 1:
+            raise ValueError("live acceptance authority is missing")
+        self._live_authority = authority_records[0]
+        if (
+            self._live_authority.manifest_digest
+            != config.manifest.manifest_digest
+            or self._live_authority.semantic_provider
+            != config.semantic_provider
+            or self._live_authority.stage_models
+            != (
+                config.extractor_model_id,
+                config.generator_model_id,
+                config.reviewer_model_id,
+            )
+        ):
+            raise ValueError("live acceptance runtime authority mismatch")
         application = build_discovery_application(
             discovery_config,
             environ=source,
@@ -2424,6 +2498,9 @@ class _FixedRepositoryAcceptanceRunner:
         semantic_telemetry = tuple(
             AcceptanceSemanticTelemetryV1(
                 schema_version="acceptance-semantic-telemetry-v1",
+                live_acceptance_authority_digest=(
+                    self._live_authority.authority_digest
+                ),
                 stage=item.stage,
                 workflow_spec_authority_digest=(
                     item.workflow_authority_digest
@@ -2486,6 +2563,9 @@ class _FixedRepositoryAcceptanceRunner:
                 "pipeline_permanent_failure",
             ),
             evidence_digests=tuple(sorted(evidence)),
+            live_acceptance_authority_digest=(
+                self._live_authority.authority_digest
+            ),
             workflow_fingerprint=(
                 selected_workflow.workflow_fingerprint
                 if selected_workflow is not None

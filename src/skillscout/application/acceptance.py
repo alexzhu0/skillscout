@@ -555,6 +555,7 @@ class LiveScenarioObservation:
     outcome: str
     reason_code: str
     evidence_digests: tuple[str, ...]
+    live_acceptance_authority_digest: str
     workflow_fingerprint: str | None
     workflow_spec_authority_digest: str | None
     eligible_locator: str | None
@@ -840,6 +841,9 @@ def run_locked_benchmark(
                 exact_commit_sha=entry.exact_commit_sha,
                 license_spdx=entry.license_spdx,
                 benchmark_manifest_digest=manifest.manifest_digest,
+                live_acceptance_authority_digest=(
+                    observation.live_acceptance_authority_digest
+                ),
                 terminal_class=terminal_class,
                 outcome=observation.outcome,
                 reason_code=observation.reason_code,

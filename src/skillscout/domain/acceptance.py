@@ -462,6 +462,7 @@ class AcceptanceSemanticTelemetryV1(_SelfDigestedModel):
     _digest_field = "telemetry_digest"
 
     schema_version: Literal["acceptance-semantic-telemetry-v1"]
+    live_acceptance_authority_digest: Digest
     stage: Literal["extractor", "generator", "reviewer"]
     workflow_spec_authority_digest: Digest
     attempt_no: Annotated[int, Field(ge=1, le=16)]
@@ -481,13 +482,34 @@ class AcceptanceSemanticTelemetryV1(_SelfDigestedModel):
 
     @model_validator(mode="after")
     def validate_provider_response(self) -> Self:
-        expected_model = {
-            "extractor": "deepseek-v4-flash",
-            "generator": "deepseek-v4-flash",
-            "reviewer": "deepseek-v4-pro",
+        expected = {
+            "extractor": (
+                "deepseek-v4-flash",
+                "extract-prompt-v1",
+                "workflow-spec-v1",
+                "extract-policy-v1",
+            ),
+            "generator": (
+                "deepseek-v4-flash",
+                "generator-prompt-v1",
+                "generation-draft-v1",
+                "generator-policy-v1",
+            ),
+            "reviewer": (
+                "deepseek-v4-pro",
+                "reviewer-prompt-v1",
+                "reviewer-judgment-v1",
+                "reviewer-policy-v1",
+            ),
         }[self.stage]
         if (
-            self.actual_model != expected_model
+            (
+                self.actual_model,
+                self.prompt_version,
+                self.output_schema_version,
+                self.policy_version,
+            )
+            != expected
             or self.total_tokens
             != self.prompt_tokens + self.completion_tokens
         ):
@@ -506,6 +528,7 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
     exact_commit_sha: _Sha
     license_spdx: _Spdx
     benchmark_manifest_digest: Digest
+    live_acceptance_authority_digest: Digest
     terminal_class: Literal["eligible", "business_terminal", "system_failure"]
     outcome: Literal["eligible_local_candidate"] | _BusinessOutcome | _SystemOutcome
     reason_code: Annotated[
@@ -628,6 +651,11 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             != tuple(item.output_schema_version for item in self.semantic_telemetry)
             or self.policy_versions
             != tuple(item.policy_version for item in self.semantic_telemetry)
+            or any(
+                item.live_acceptance_authority_digest
+                != self.live_acceptance_authority_digest
+                for item in self.semantic_telemetry
+            )
             or (
                 self.publication_decision == "eligible_for_later_publication"
                 and self.terminal_class != AcceptanceTerminalClass.ELIGIBLE

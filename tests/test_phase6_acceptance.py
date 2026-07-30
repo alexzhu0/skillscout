@@ -693,6 +693,7 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
         extractor_model_id="deepseek-v4-flash",
         generator_model_id="deepseek-v4-flash",
         reviewer_model_id="deepseek-v4-pro",
+        live_acceptance_authority_digest="sha256:" + ("9" * 64),
     )
     discovery_config = SimpleNamespace(
         operations_state=Path("state/databases/operations.sqlite3"),
@@ -850,6 +851,7 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
     ) -> object:
         return acceptance_domain.AcceptanceSemanticTelemetryV1(
             schema_version="acceptance-semantic-telemetry-v1",
+            live_acceptance_authority_digest=manifest.manifest_digest,
             stage=stage,
             workflow_spec_authority_digest=authority_digest,
             attempt_no=1,
@@ -859,9 +861,21 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
                 if stage == "reviewer"
                 else "deepseek-v4-flash"
             ),
-            prompt_version=f"{stage}-prompt-v1",
-            output_schema_version=f"{stage}-schema-v1",
-            policy_version=f"{stage}-policy-v1",
+            prompt_version={
+                "extractor": "extract-prompt-v1",
+                "generator": "generator-prompt-v1",
+                "reviewer": "reviewer-prompt-v1",
+            }[stage],
+            output_schema_version={
+                "extractor": "workflow-spec-v1",
+                "generator": "generation-draft-v1",
+                "reviewer": "reviewer-judgment-v1",
+            }[stage],
+            policy_version={
+                "extractor": "extract-policy-v1",
+                "generator": "generator-policy-v1",
+                "reviewer": "reviewer-policy-v1",
+            }[stage],
             prompt_tokens=10,
             completion_tokens=5,
             total_tokens=15,
@@ -974,6 +988,7 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
                     exact_commit_sha=entry.exact_commit_sha,
                     license_spdx=entry.license_spdx,
                     benchmark_manifest_digest=manifest.manifest_digest,
+                    live_acceptance_authority_digest=manifest.manifest_digest,
                     terminal_class=(
                         "eligible" if eligible else "business_terminal"
                     ),
@@ -1086,6 +1101,7 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
         extractor_model_id="deepseek-v4-flash",
         generator_model_id="deepseek-v4-flash",
         reviewer_model_id="deepseek-v4-pro",
+        live_acceptance_authority_digest=manifest.manifest_digest,
     )
     commits = iter(("e" * 40, "f" * 40))
     roots = iter(
