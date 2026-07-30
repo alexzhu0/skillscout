@@ -60,6 +60,9 @@ EXPECTED_STATE_BRANCH_CLIENT_METHODS = frozenset(
         "update_state_ref",
     }
 )
+EXPECTED_STATE_BRANCH_READ_METHODS = frozenset(
+    {"close", "get_state_ref", "get_commit", "get_tree", "get_blob"}
+)
 EXPECTED_CHECK_IDS = (
     "dependency_bootstrap_authority",
     "import_capability_isolation",
@@ -365,19 +368,36 @@ def _check_import_capability_isolation(repository_root: Path) -> tuple[str, ...]
     state_raw = _read_source(repository_root, state_relative)
     state_source = state_raw.decode("utf-8")
     state_tree = ast.parse(state_raw, filename=state_relative.as_posix())
-    state_clients = [
-        node
+    state_classes = {
+        node.name: node
         for node in state_tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "StateBranchClient"
-    ]
-    _require(len(state_clients) == 1)
-    state_public_methods = {
-        node.name
-        for node in state_clients[0].body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not node.name.startswith("_")
+        if isinstance(node, ast.ClassDef)
     }
+    _require(
+        {"_StateBranchReadClientBase", "StateBranchReadClient", "StateBranchClient"}
+        <= set(state_classes)
+    )
+
+    def inherited_public_methods(class_name: str) -> frozenset[str]:
+        node = state_classes[class_name]
+        own = {
+            item.name
+            for item in node.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not item.name.startswith("_")
+        }
+        inherited: set[str] = set()
+        for base in node.bases:
+            if isinstance(base, ast.Name) and base.id in state_classes:
+                inherited.update(inherited_public_methods(base.id))
+        return frozenset(own | inherited)
+
+    state_public_methods = inherited_public_methods("StateBranchClient")
     _require(state_public_methods == EXPECTED_STATE_BRANCH_CLIENT_METHODS)
+    _require(
+        inherited_public_methods("StateBranchReadClient")
+        == EXPECTED_STATE_BRANCH_READ_METHODS
+    )
     state_refs = [
         node.value.value
         for node in state_tree.body

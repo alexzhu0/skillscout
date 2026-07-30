@@ -406,6 +406,20 @@ def _authority_checkout_is_closed(step: _Step) -> bool:
     return legacy_authority or verified_handoff
 
 
+def _campaign_candidate_checkout_is_closed(step: _Step) -> bool:
+    return (
+        CHECKOUT in step.source
+        and (
+            "repository: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}"
+            in step.source
+        )
+        and "ref: skillscout-state" in step.source
+        and "path: .phase6-campaign-state" in step.source
+        and "persist-credentials: false" in step.source
+        and "token: ${{ github.token }}" in step.source
+    )
+
+
 def _setup_is_closed(step: _Step) -> bool:
     return (
         SETUP_UV in step.source
@@ -628,6 +642,37 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
             checkout_indexes = tuple(
                 index for index, step in enumerate(job.steps) if CHECKOUT in step.source
             )
+            campaign_candidate_indexes = tuple(
+                index
+                for index, step in enumerate(job.steps)
+                if _campaign_candidate_checkout_is_closed(step)
+            )
+            if job.name == "live_authority_preflight":
+                authority_verification_indexes = tuple(
+                    index
+                    for index, step in enumerate(job.steps)
+                    if step.run is not None
+                    and "python -m skillscout.cli verify-live-authority" in step.run
+                )
+                resume_resolution_indexes = tuple(
+                    index
+                    for index, step in enumerate(job.steps)
+                    if step.run is not None
+                    and "python -m skillscout.cli resolve-acceptance-resume" in step.run
+                )
+                _require(
+                    len(authority_verification_indexes)
+                    == len(campaign_candidate_indexes)
+                    == len(resume_resolution_indexes)
+                    == 1
+                )
+                _require(
+                    authority_verification_indexes[0]
+                    < campaign_candidate_indexes[0]
+                    < resume_resolution_indexes[0]
+                )
+            else:
+                _require(not campaign_candidate_indexes)
             setup_indexes = tuple(
                 index for index, step in enumerate(job.steps) if SETUP_UV in step.source
             )
@@ -664,6 +709,10 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     all(
                         _checkout_is_closed(job.steps[item])
                         or _authority_checkout_is_closed(job.steps[item])
+                        or (
+                            job.name == "live_authority_preflight"
+                            and _campaign_candidate_checkout_is_closed(job.steps[item])
+                        )
                         for item in earlier_checkout
                     )
                 )
