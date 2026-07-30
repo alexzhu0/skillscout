@@ -20,6 +20,7 @@ from skillscout.adapters.operations_state import (
     AcceptanceRunSnapshot,
 )
 from skillscout.domain.acceptance import (
+    AcceptanceCampaignResumeLocatorV1,
     AcceptanceFixedCandidateAdmissionV1,
     AcceptanceScenarioResultV1,
     AcceptanceSemanticTelemetryV1,
@@ -56,6 +57,130 @@ _BUSINESS_TERMINALS: Final = frozenset(
         "review_rejected",
     }
 )
+
+
+@dataclass(frozen=True)
+class CampaignStateLineageObservation:
+    """One fully verified state commit/root pair in authority-to-head order."""
+
+    commit_sha: str
+    root_digest: str
+    parent_commit_sha: str | None
+    prior_root_digest: str | None
+    resume_locators: tuple[AcceptanceCampaignResumeLocatorV1, ...]
+
+
+@dataclass(frozen=True)
+class VerifiedCampaignResume:
+    """Exact descendant state selected without trusting a mutable branch tip."""
+
+    state_commit_sha: str
+    state_root_digest: str
+    locator_digest: str | None
+    lineage_commit_shas: tuple[str, ...]
+    lineage_root_digests: tuple[str, ...]
+
+
+def resolve_campaign_resume_lineage(
+    *,
+    authority_digest: str,
+    acceptance_run_id: str,
+    original_state_commit_sha: str,
+    original_state_root_digest: str,
+    campaign_head_commit_sha: str,
+    observations: tuple[CampaignStateLineageObservation, ...],
+) -> VerifiedCampaignResume:
+    """Resolve an exact descendant from a completely verified root chain."""
+
+    digest = re.compile(r"sha256:[0-9a-f]{64}")
+    commit = re.compile(r"[0-9a-f]{40}")
+    if (
+        digest.fullmatch(authority_digest) is None
+        or not acceptance_run_id
+        or commit.fullmatch(original_state_commit_sha) is None
+        or digest.fullmatch(original_state_root_digest) is None
+        or commit.fullmatch(campaign_head_commit_sha) is None
+        or not observations
+        or len(observations) > 256
+        or any(type(item) is not CampaignStateLineageObservation for item in observations)
+    ):
+        raise ValueError("campaign resume lineage rejected")
+    commits = tuple(item.commit_sha for item in observations)
+    roots = tuple(item.root_digest for item in observations)
+    if (
+        commits[0] != original_state_commit_sha
+        or roots[0] != original_state_root_digest
+        or commits[-1] != campaign_head_commit_sha
+        or len(set(commits)) != len(commits)
+        or any(commit.fullmatch(item) is None for item in commits)
+        or any(digest.fullmatch(item) is None for item in roots)
+    ):
+        raise ValueError("campaign resume lineage rejected")
+    for index, item in enumerate(observations):
+        expected_parent = None if index == 0 else commits[index - 1]
+        expected_root = None if index == 0 else roots[index - 1]
+        if (
+            item.parent_commit_sha != expected_parent
+            or item.prior_root_digest != expected_root
+        ):
+            raise ValueError("campaign resume lineage rejected")
+
+    locator_first_seen: dict[str, int] = {}
+    for index, item in enumerate(observations):
+        for locator in item.resume_locators:
+            locator_digest = locator.locator_digest or ""
+            locator_first_seen.setdefault(locator_digest, index)
+            if (
+                locator.acceptance_run_id != acceptance_run_id
+                or locator.live_acceptance_authority_digest
+                != authority_digest
+                or locator.original_state_commit_sha
+                != original_state_commit_sha
+                or locator.original_state_root_digest
+                != original_state_root_digest
+                or locator.lineage_commit_shas
+                != commits[: len(locator.lineage_commit_shas)]
+                or locator.lineage_root_digests
+                != roots[: len(locator.lineage_root_digests)]
+            ):
+                raise ValueError("campaign resume locator rejected")
+
+    final_locators = observations[-1].resume_locators
+    if not final_locators:
+        if len(observations) != 1:
+            raise ValueError("campaign resume locator missing")
+        return VerifiedCampaignResume(
+            state_commit_sha=original_state_commit_sha,
+            state_root_digest=original_state_root_digest,
+            locator_digest=None,
+            lineage_commit_shas=commits,
+            lineage_root_digests=roots,
+        )
+    maximum = max(len(item.lineage_commit_shas) for item in final_locators)
+    latest = tuple(
+        item for item in final_locators if len(item.lineage_commit_shas) == maximum
+    )
+    if len(latest) != 1:
+        raise ValueError("campaign resume locator is ambiguous")
+    locator = latest[0]
+    current_index = commits.index(locator.current_state_commit_sha)
+    suffix_length = len(commits) - current_index - 1
+    first_seen = locator_first_seen[locator.locator_digest or ""]
+    if suffix_length == 1 and first_seen == len(observations) - 1:
+        selected_index = current_index
+    elif 1 <= suffix_length <= 3 and first_seen <= current_index + 1:
+        selected_index = len(observations) - 1
+    else:
+        raise ValueError("campaign resume locator is stale")
+    return VerifiedCampaignResume(
+        state_commit_sha=commits[selected_index],
+        state_root_digest=roots[selected_index],
+        locator_digest=locator.locator_digest,
+        lineage_commit_shas=commits[: selected_index + 1],
+        lineage_root_digests=roots[: selected_index + 1],
+    )
+
+
 _ELIGIBLE_TERMINALS: Final = frozenset({"eligible", "eligible_local_candidate"})
 _SYSTEM_FAILURES: Final = frozenset(
     {
