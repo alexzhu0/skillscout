@@ -526,9 +526,9 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
         Field(max_length=20),
     ]
     actual_models: Annotated[tuple[str, ...], Field(max_length=20)]
-    prompt_versions: Annotated[tuple[_Version, ...], Field(min_length=3, max_length=3)]
-    schema_versions: Annotated[tuple[_Version, ...], Field(min_length=3, max_length=3)]
-    policy_versions: Annotated[tuple[_Version, ...], Field(min_length=3, max_length=16)]
+    prompt_versions: Annotated[tuple[_Version, ...], Field(max_length=20)]
+    schema_versions: Annotated[tuple[_Version, ...], Field(max_length=20)]
+    policy_versions: Annotated[tuple[_Version, ...], Field(max_length=20)]
     workflow_fingerprint: Digest | None
     workflow_spec_authority_digest: Digest | None
     eligible_locator: _Identifier | None
@@ -570,6 +570,25 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
         )
         if self.terminal_class != expected:
             raise ValueError("acceptance terminal class and outcome disagree")
+        reason_by_outcome = {
+            "filter_rejected": "deterministic_filter_rejected",
+            "no_workflow": "no_reusable_workflow",
+            "qualification_rejected": "qualification_policy_rejected",
+            "validation_rejected": "skill_validation_rejected",
+            "review_rejected": "independent_review_rejected",
+            "eligible_local_candidate": "eligible_candidate_completed",
+            "provider_exhausted": "provider_outcome_unknown",
+            "schema_exhausted": "provider_schema_exhausted",
+            "evidence_missing": "state_integrity_conflict",
+            "duplicate_effect": "duplicate_effect_observed",
+            "unauthorized_effect": "unauthorized_effect_observed",
+            "secret_exposure": "secret_exposure_observed",
+            "untrusted_execution": "untrusted_execution_observed",
+            "harness_failed": "pipeline_permanent_failure",
+            "rebuild_failed": "state_rebuild_failed",
+        }
+        if self.reason_code != reason_by_outcome[self.outcome]:
+            raise ValueError("acceptance outcome and reason code disagree")
         if (
             self.evidence_digests != tuple(sorted(self.evidence_digests))
             or len(set(self.evidence_digests)) != len(self.evidence_digests)
@@ -602,26 +621,99 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             )
             or self.actual_models
             != tuple(item.actual_model for item in self.semantic_telemetry)
+            or self.prompt_versions
+            != tuple(item.prompt_version for item in self.semantic_telemetry)
+            or self.schema_versions
+            != tuple(item.output_schema_version for item in self.semantic_telemetry)
+            or self.policy_versions
+            != tuple(item.policy_version for item in self.semantic_telemetry)
             or (
                 self.publication_decision == "eligible_for_later_publication"
                 and self.terminal_class != AcceptanceTerminalClass.ELIGIBLE
             )
+            or (
+                self.terminal_class == AcceptanceTerminalClass.ELIGIBLE
+                and self.publication_decision
+                != "eligible_for_later_publication"
+            )
         ):
             raise ValueError("scenario telemetry or publication decision is incoherent")
-        allowed_funnel = (
-            "fixed_identity",
-            "deterministic_filter",
-            "bounded_read",
-            "semantic_terminal",
-        )
+        funnel_by_outcome = {
+            "filter_rejected": ("fixed_identity", "deterministic_filter"),
+            "no_workflow": (
+                "fixed_identity",
+                "deterministic_filter",
+                "bounded_read",
+                "extractor",
+            ),
+            "qualification_rejected": (
+                "fixed_identity",
+                "deterministic_filter",
+                "bounded_read",
+                "extractor",
+                "qualification",
+            ),
+            "validation_rejected": (
+                "fixed_identity",
+                "deterministic_filter",
+                "bounded_read",
+                "extractor",
+                "qualification",
+                "generator",
+                "validation",
+            ),
+            "review_rejected": (
+                "fixed_identity",
+                "deterministic_filter",
+                "bounded_read",
+                "extractor",
+                "qualification",
+                "generator",
+                "validation",
+                "reviewer",
+            ),
+            "eligible_local_candidate": (
+                "fixed_identity",
+                "deterministic_filter",
+                "bounded_read",
+                "extractor",
+                "qualification",
+                "generator",
+                "validation",
+                "reviewer",
+            ),
+        }
+        expected_funnel = funnel_by_outcome.get(self.outcome)
         if (
-            self.candidate_funnel != allowed_funnel
+            (
+                expected_funnel is not None
+                and self.candidate_funnel != expected_funnel
+            )
             or (
                 self.terminal_class == AcceptanceTerminalClass.ELIGIBLE
                 and (
                     self.workflow_fingerprint is None
                     or self.workflow_spec_authority_digest is None
                     or self.eligible_locator is None
+                )
+            )
+            or (
+                self.outcome in {"filter_rejected", "no_workflow"}
+                and (
+                    self.workflow_fingerprint is not None
+                    or self.workflow_spec_authority_digest is not None
+                )
+            )
+            or (
+                self.outcome
+                in {
+                    "qualification_rejected",
+                    "validation_rejected",
+                    "review_rejected",
+                }
+                and (
+                    self.workflow_fingerprint is None
+                    or self.workflow_spec_authority_digest is None
                 )
             )
             or (

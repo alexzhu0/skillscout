@@ -649,6 +649,71 @@ class CompletedBenchmarkProjection:
         return sha256_digest(asdict(self))
 
 
+def _candidate_funnel_for_observation(
+    outcome: str,
+    telemetry: tuple[AcceptanceSemanticTelemetryV1, ...],
+) -> tuple[str, ...]:
+    """Derive the exact reached stage boundary from terminal facts."""
+
+    business_funnels = {
+        "filter_rejected": ("fixed_identity", "deterministic_filter"),
+        "no_workflow": (
+            "fixed_identity",
+            "deterministic_filter",
+            "bounded_read",
+            "extractor",
+        ),
+        "qualification_rejected": (
+            "fixed_identity",
+            "deterministic_filter",
+            "bounded_read",
+            "extractor",
+            "qualification",
+        ),
+        "validation_rejected": (
+            "fixed_identity",
+            "deterministic_filter",
+            "bounded_read",
+            "extractor",
+            "qualification",
+            "generator",
+            "validation",
+        ),
+        "review_rejected": (
+            "fixed_identity",
+            "deterministic_filter",
+            "bounded_read",
+            "extractor",
+            "qualification",
+            "generator",
+            "validation",
+            "reviewer",
+        ),
+        "eligible_local_candidate": (
+            "fixed_identity",
+            "deterministic_filter",
+            "bounded_read",
+            "extractor",
+            "qualification",
+            "generator",
+            "validation",
+            "reviewer",
+        ),
+    }
+    exact = business_funnels.get(outcome)
+    if exact is not None:
+        return exact
+    reached = {item.stage for item in telemetry}
+    funnel = ["fixed_identity", "deterministic_filter", "bounded_read"]
+    if reached:
+        funnel.append("extractor")
+    if "generator" in reached or "reviewer" in reached:
+        funnel.extend(("qualification", "generator"))
+    if "reviewer" in reached:
+        funnel.extend(("validation", "reviewer"))
+    return tuple(funnel)
+
+
 def load_locked_benchmark_manifest(path: Path) -> LockedBenchmarkManifestV1:
     """Strictly load the sole canonical checked-in manifest path."""
 
@@ -773,7 +838,10 @@ def run_locked_benchmark(
                 outcome=observation.outcome,
                 reason_code=observation.reason_code,
                 evidence_digests=tuple(sorted(set(observation.evidence_digests))),
-                candidate_funnel=observation.candidate_funnel,
+                candidate_funnel=_candidate_funnel_for_observation(
+                    observation.outcome,
+                    observation.semantic_telemetry,
+                ),
                 reader_order="readme_docs_examples_manifests_source",
                 reader_file_count=observation.reader_file_count,
                 reader_source_file_count=observation.reader_source_file_count,
@@ -783,24 +851,15 @@ def run_locked_benchmark(
                 semantic_attempt_digests=tuple(sorted(observation.semantic_attempt_digests)),
                 semantic_telemetry=observation.semantic_telemetry,
                 actual_models=observation.actual_models,
-                prompt_versions=(
-                    "extract-prompt-v1",
-                    "generator-prompt-v1",
-                    "reviewer-prompt-v1",
+                prompt_versions=tuple(
+                    item.prompt_version for item in observation.semantic_telemetry
                 ),
-                schema_versions=(
-                    "workflow-spec-v1",
-                    "generation-draft-v1",
-                    "reviewer-judgment-v1",
+                schema_versions=tuple(
+                    item.output_schema_version
+                    for item in observation.semantic_telemetry
                 ),
-                policy_versions=(
-                    "discovery-budget-policy-v1",
-                    "eligibility-policy-v1",
-                    "generator-policy-v1",
-                    "qualification-policy-v1",
-                    "reader-policy-v1",
-                    "reviewer-policy-v1",
-                    "validation-policy-v1",
+                policy_versions=tuple(
+                    item.policy_version for item in observation.semantic_telemetry
                 ),
                 workflow_fingerprint=observation.workflow_fingerprint,
                 workflow_spec_authority_digest=(observation.workflow_spec_authority_digest),
