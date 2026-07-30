@@ -99,7 +99,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -429,7 +429,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -537,7 +537,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -944,7 +944,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -1048,7 +1048,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -1143,7 +1143,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -1248,7 +1248,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -1364,7 +1364,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -1464,7 +1464,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
@@ -1564,7 +1564,7 @@ jobs:
             test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
             rm -rf -- "${venv_root}"
           fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --no-install-project --python "${managed_python_executable}" --managed-python --no-python-downloads
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
           python_executable="$(realpath -e -- .venv/bin/python)"
           python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
           [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]

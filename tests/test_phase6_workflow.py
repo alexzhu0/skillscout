@@ -24,7 +24,7 @@ MANAGED_PYTHON_INSTALL = (
 MANAGED_PYTHON_SYNC = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     "UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked "
-    '--no-install-project --python "${managed_python_executable}" '
+    '--python "${managed_python_executable}" '
     "--managed-python --no-python-downloads"
 )
 PYTHON_BASE_PREFIX_PREFLIGHT = (

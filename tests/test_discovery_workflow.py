@@ -145,10 +145,10 @@ def test_discovery_workflow_has_exact_triggers_and_shared_non_cancel_group() -> 
         assert f'uv_version_output="$({local_uv} --version)"' in job
         assert (
             'if [[ "$uv_version_output" != "uv 0.11.29" && '
-            '! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then'
-            in job
+            '! "$uv_version_output" =~ ^uv\\ 0\\.11\\.29\\ \\([^()]+\\)$ ]]; then' in job
         )
-        assert f"{local_uv} sync --locked --no-install-project" in job
+        assert f"{local_uv} sync --locked --python" in job
+        assert "--no-install-project" not in job
     assert "UV_LINK_MODE: hardlink" not in text
     assert "--link-mode hardlink" not in text
 

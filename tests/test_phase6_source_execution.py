@@ -35,7 +35,7 @@ MANAGED_PYTHON_INSTALL = (
 MANAGED_PYTHON_SYNC = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     "UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked "
-    '--no-install-project --python "${managed_python_executable}" '
+    '--python "${managed_python_executable}" '
     "--managed-python --no-python-downloads"
 )
 CONTAINER_MANAGED_ENV = (
@@ -273,6 +273,12 @@ def _run_fresh_control_import(repository: Path) -> subprocess.CompletedProcess[s
 
 
 def _run_fresh_control_test(repository: Path) -> subprocess.CompletedProcess[str]:
+    environment = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "UV_OFFLINE": "1",
+    }
+    environment.pop("VIRTUAL_ENV", None)
     return subprocess.run(
         [
             str(repository / ".tools/uv-0.11.29/bin/uv"),
@@ -280,6 +286,8 @@ def _run_fresh_control_test(repository: Path) -> subprocess.CompletedProcess[str
             "--locked",
             "--offline",
             "--no-sync",
+            "python",
+            "-m",
             "pytest",
             "-q",
             "tests/test_phase6_adversarial.py::"
@@ -288,7 +296,7 @@ def _run_fresh_control_test(repository: Path) -> subprocess.CompletedProcess[str
             "no:cacheprovider",
         ],
         cwd=repository,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "UV_OFFLINE": "1"},
+        env=environment,
         text=True,
         capture_output=True,
         check=False,

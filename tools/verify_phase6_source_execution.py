@@ -35,7 +35,7 @@ MANAGED_PYTHON_INSTALL = (
 MANAGED_PYTHON_SYNC = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     f"UV_PYTHON_DOWNLOADS=never {LOCAL_UV} sync --locked "
-    '--no-install-project --python "${managed_python_executable}" '
+    '--python "${managed_python_executable}" '
     "--managed-python --no-python-downloads"
 )
 MANAGED_PYTHON_TOOLCHAIN = (

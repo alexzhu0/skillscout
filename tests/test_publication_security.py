@@ -256,7 +256,7 @@ _MANAGED_PYTHON_INSTALL = (
 _MANAGED_PYTHON_SYNC = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     f"UV_PYTHON_DOWNLOADS=never {_LOCAL_UV} sync --locked "
-    '--no-install-project --python "${managed_python_executable}" '
+    '--python "${managed_python_executable}" '
     "--managed-python --no-python-downloads"
 )
 _HANDOFF_FIELDS = (
