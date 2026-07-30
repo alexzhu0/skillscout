@@ -667,6 +667,27 @@ class _StateRemote:
         return self.blobs[sha]
 
 
+def test_restore_commit_verifies_exact_immutable_commit_not_current_ref() -> None:
+    module = _state_module()
+    remote = _StateRemote(module, "4" * 40)
+    store = module.StateBranchStore(remote)
+    first_bundle = _bundle(module, parent="4" * 40)
+    first = store.sync(first_bundle, observed_head="4" * 40)
+    second_bundle = _bundle(
+        module,
+        parent=first.commit_sha,
+        prior_root_digest=first_bundle.root.root_digest,
+        object_count=2,
+    )
+    store.sync(second_bundle, observed_head=first.commit_sha)
+
+    restored = store.restore_commit(first.commit_sha)
+
+    assert restored.root.root_digest == first_bundle.root.root_digest
+    assert restored.root.state_parent_commit_sha == "4" * 40
+    assert remote.head != first.commit_sha
+
+
 @pytest.mark.parametrize(
     "mutation",
     (None, "missing", "extra", "wrong_sha", "duplicate", "wrong_mode"),
