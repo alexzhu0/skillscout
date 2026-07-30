@@ -296,6 +296,9 @@ class SemanticDurabilityGuard:
         expected_prior_state_head: str,
         expected_prior_root_digest: str,
         reservation_hook: Callable[..., SemanticReservationReceipt] | None = None,
+        request_reservation_hook: (
+            Callable[..., SemanticReservationReceipt] | None
+        ) = None,
         operations_run_id: str | None = None,
     ) -> None:
         if (
@@ -317,6 +320,7 @@ class SemanticDurabilityGuard:
         self._expected_prior_state_head = expected_prior_state_head
         self._expected_prior_root_digest = expected_prior_root_digest
         self._reservation_hook = reservation_hook
+        self._request_reservation_hook = request_reservation_hook
         self._operations_run_id = operations_run_id
 
     def reserve_before_extractor(
@@ -375,6 +379,23 @@ class SemanticDurabilityGuard:
 
         try:
             operations_run_id = self._operations_run_id or run_id
+            if status == "started" and self._request_reservation_hook is not None:
+                request_receipt = self._request_reservation_hook(
+                    pipeline_store=pipeline_store,
+                    run_id=operations_run_id,
+                    repository_id=self._repository_id,
+                    workflow_authority_digest=self._workflow_authority_digest,
+                    stage=stage,
+                    attempt_no=attempt_no,
+                )
+                if type(request_receipt) is not SemanticReservationReceipt:
+                    raise TypeError("invalid semantic request reservation receipt")
+                self._expected_prior_state_head = (
+                    request_receipt.verified_state_head
+                )
+                self._expected_prior_root_digest = (
+                    request_receipt.state_root_digest
+                )
             record = self._operations_store.record_semantic_attempt(
                 run_id=operations_run_id,
                 repository_id=self._repository_id,

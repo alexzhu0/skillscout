@@ -403,6 +403,23 @@ class AcceptanceFixedCandidateAdmissionV1(_SelfDigestedModel):
     admission_digest: Digest | None = None
 
 
+class AcceptanceSemanticRequestReservationV1(_SelfDigestedModel):
+    """One non-refundable campaign request slot reserved before provider I/O."""
+
+    _digest_field = "reservation_digest"
+
+    schema_version: Literal["acceptance-semantic-request-reservation-v1"]
+    acceptance_run_id: _Identifier
+    fixed_candidate_admission_digest: Digest
+    repository_id: _Positive
+    workflow_spec_authority_digest: Digest
+    stage: Literal["extractor", "generator", "reviewer"]
+    attempt_no: Annotated[int, Field(ge=1, le=16)]
+    request_ordinal: Annotated[int, Field(ge=1, le=20)]
+    reserved_at: _Timestamp
+    reservation_digest: Digest | None = None
+
+
 class AcceptanceTerminalClass(StrEnum):
     ELIGIBLE = "eligible"
     BUSINESS_TERMINAL = "business_terminal"

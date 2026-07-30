@@ -1177,6 +1177,47 @@ def build_discovery_application(
                     state_root_digest=state_root,
                 )
 
+            def reserve_before_request(
+                *,
+                pipeline_store: object,
+                run_id: str,
+                repository_id: int,
+                workflow_authority_digest: str,
+                stage: str,
+                attempt_no: int,
+            ) -> SemanticReservationReceipt:
+                del run_id
+                nonlocal state_head, state_root
+                if fixed_admission is None:
+                    raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+                request = operations.reserve_acceptance_semantic_request(
+                    acceptance_run_id=fixed_admission.acceptance_run_id,
+                    fixed_candidate_admission_digest=(
+                        fixed_admission.admission_digest or ""
+                    ),
+                    repository_id=repository_id,
+                    workflow_spec_authority_digest=(
+                        workflow_authority_digest
+                    ),
+                    stage=stage,  # type: ignore[arg-type]
+                    attempt_no=attempt_no,
+                    reserved_at=_discovery_timestamp(),
+                )
+                synchronized = barrier.sync_discovery(
+                    operations_store=operations,
+                    observed_head=state_head,
+                    prior_root_digest=state_root,
+                    created_at=_discovery_timestamp(),
+                    pipeline_store=pipeline_store,
+                )
+                state_head = synchronized.commit_sha
+                state_root = synchronized.root_digest
+                return SemanticReservationReceipt(
+                    reservation_digest=request.reservation_digest or "",
+                    verified_state_head=state_head,
+                    state_root_digest=state_root,
+                )
+
             publication = (
                 _FrozenOwnedState(frozen_owner_export)
                 if frozen_owner_export is not None
@@ -1215,6 +1256,11 @@ def build_discovery_application(
                 expected_prior_state_head=state_head,
                 expected_prior_root_digest=state_root,
                 reservation_hook=reserve_before_extractor,
+                request_reservation_hook=(
+                    reserve_before_request
+                    if fixed_admission is not None
+                    else None
+                ),
                 operations_run_id=discovery_authority.run_id,
             )
             try:
@@ -1469,6 +1515,11 @@ def build_discovery_application(
                             expected_prior_state_head=state_head,
                             expected_prior_root_digest=state_root,
                             operations_run_id=discovery_authority.run_id,
+                            request_reservation_hook=(
+                                reserve_before_request
+                                if fixed_admission is not None
+                                else None
+                            ),
                         )
                         clients: list[object] = []
 

@@ -36,6 +36,7 @@ from skillscout.adapters.state_branch import (
 from skillscout.domain.acceptance import (
     AcceptanceBudgetReservationV1,
     AcceptanceFixedCandidateAdmissionV1,
+    AcceptanceSemanticRequestReservationV1,
     AcceptanceEvidenceRootV1,
     AcceptanceGateResultV1,
     AcceptanceScenarioResultV1,
@@ -177,6 +178,7 @@ _AcceptanceFactKind = Literal[
     "acceptance_live_authority",
     "acceptance_budget_reservation",
     "acceptance_fixed_candidate_admission",
+    "acceptance_semantic_request_reservation",
     "acceptance_scenario",
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
@@ -208,6 +210,7 @@ _FactKind = Literal[
     "acceptance_live_authority",
     "acceptance_budget_reservation",
     "acceptance_fixed_candidate_admission",
+    "acceptance_semantic_request_reservation",
     "acceptance_scenario",
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
@@ -229,6 +232,7 @@ _AcceptanceFactModel: TypeAlias = (
     | LiveAcceptanceAuthorityV1
     | AcceptanceBudgetReservationV1
     | AcceptanceFixedCandidateAdmissionV1
+    | AcceptanceSemanticRequestReservationV1
     | AcceptanceScenarioResultV1
     | HostedIsolationCapabilityV1
     | OfflineAdversarialRunV1
@@ -250,6 +254,9 @@ _ACCEPTANCE_FACT_MODEL_VALUES: Final = {
     "acceptance_live_authority": LiveAcceptanceAuthorityV1,
     "acceptance_budget_reservation": AcceptanceBudgetReservationV1,
     "acceptance_fixed_candidate_admission": AcceptanceFixedCandidateAdmissionV1,
+    "acceptance_semantic_request_reservation": (
+        AcceptanceSemanticRequestReservationV1
+    ),
     "acceptance_scenario": AcceptanceScenarioResultV1,
     "acceptance_hosted_isolation_capability": HostedIsolationCapabilityV1,
     "acceptance_offline_adversarial_run": OfflineAdversarialRunV1,
@@ -274,6 +281,7 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
         "acceptance_live_authority": "authority_digest",
         "acceptance_budget_reservation": "reservation_digest",
         "acceptance_fixed_candidate_admission": "admission_digest",
+        "acceptance_semantic_request_reservation": "reservation_digest",
         "acceptance_scenario": "result_digest",
         "acceptance_hosted_isolation_capability": "capability_digest",
         "acceptance_offline_adversarial_run": "run_digest",
@@ -290,9 +298,14 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 _ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
-_PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS: Final = tuple(
+_PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_semantic_request_reservation"
+)
+_PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind
+    for kind in _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_fixed_candidate_admission"
 )
 _PRE_BUDGET_ACCEPTANCE_FACT_KINDS: Final = tuple(
@@ -366,6 +379,10 @@ class OperationsStateProjectionV1(StrictFrozenModel):
         exclude_if=lambda value: not value,
     )
     acceptance_fixed_candidate_admission_digests: tuple[Digest, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
+    acceptance_semantic_request_reservation_digests: tuple[Digest, ...] = Field(
         default=(),
         exclude_if=lambda value: not value,
     )
@@ -620,6 +637,9 @@ def _expected_schema(
 
 
 _EXPECTED_SCHEMA: Final = _expected_schema()
+_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
+)
 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
 )
@@ -782,6 +802,7 @@ def _schema_fingerprint() -> str:
 _SCHEMA_FINGERPRINTS: Final = frozenset(
     {
         _fingerprint_for_schema(_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_BUDGET_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_LEGACY_EXPECTED_SCHEMA),
@@ -1109,6 +1130,19 @@ def _validate_acceptance_references(
             raise OperationsIntegrityError(
                 "fixed acceptance admission binding mismatch"
             )
+    elif kind == "acceptance_semantic_request_reservation":
+        assert isinstance(fact, AcceptanceSemanticRequestReservationV1)
+        admission = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_fixed_candidate_admission",
+            digest=fact.fixed_candidate_admission_digest,
+        )
+        assert isinstance(admission, AcceptanceFixedCandidateAdmissionV1)
+        if fact.repository_id != admission.repository_id:
+            raise OperationsIntegrityError(
+                "semantic request reservation admission mismatch"
+            )
     elif kind == "acceptance_cleanup":
         assert isinstance(fact, ProbeCleanupAttestationV1)
         binding = _acceptance_fact_by_digest(
@@ -1161,6 +1195,7 @@ def _projection_from_facts(
         "acceptance_live_authority_digests": [],
         "acceptance_budget_reservation_digests": [],
         "acceptance_fixed_candidate_admission_digests": [],
+        "acceptance_semantic_request_reservation_digests": [],
         "acceptance_scenario_digests": [],
         "acceptance_hosted_isolation_capability_digests": [],
         "acceptance_offline_adversarial_run_digests": [],
@@ -1208,6 +1243,10 @@ def _projection_from_facts(
         "acceptance_fixed_candidate_admission": (
             "acceptance_fixed_candidate_admission_digests",
             "admission_digest",
+        ),
+        "acceptance_semantic_request_reservation": (
+            "acceptance_semantic_request_reservation_digests",
+            "reservation_digest",
         ),
         "acceptance_scenario": ("acceptance_scenario_digests", "result_digest"),
         "acceptance_hosted_isolation_capability": (
@@ -1271,6 +1310,7 @@ def _projection_from_facts(
         "acceptance_live_authority_digests",
         "acceptance_budget_reservation_digests",
         "acceptance_fixed_candidate_admission_digests",
+        "acceptance_semantic_request_reservation_digests",
     ):
         if not fields[field]:
             digest_values.pop(field)
@@ -1443,6 +1483,7 @@ class OperationsStateStore:
             }
             if actual not in (
                 _EXPECTED_SCHEMA,
+                _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
                 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                 _PRE_BUDGET_EXPECTED_SCHEMA,
                 _LEGACY_EXPECTED_SCHEMA,
@@ -1815,6 +1856,7 @@ class OperationsStateStore:
             if actual == _EXPECTED_SCHEMA:
                 return
             if actual not in (
+                _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
                 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                 _PRE_BUDGET_EXPECTED_SCHEMA,
                 _LEGACY_EXPECTED_SCHEMA,
@@ -2587,6 +2629,111 @@ class OperationsStateStore:
                     for row in rows
                 ),
             )
+
+    def reserve_acceptance_semantic_request(
+        self,
+        *,
+        acceptance_run_id: str,
+        fixed_candidate_admission_digest: str,
+        repository_id: int,
+        workflow_spec_authority_digest: str,
+        stage: Literal["extractor", "generator", "reviewer"],
+        attempt_no: int,
+        reserved_at: str,
+    ) -> AcceptanceSemanticRequestReservationV1:
+        """Atomically consume one of the campaign's twenty provider requests."""
+
+        def mutate(
+            connection: sqlite3.Connection,
+        ) -> AcceptanceSemanticRequestReservationV1:
+            rows = connection.execute(
+                """SELECT * FROM operations_acceptance_facts
+                   WHERE acceptance_run_id = ?
+                     AND fact_kind = 'acceptance_semantic_request_reservation'
+                   ORDER BY fact_digest""",
+                (acceptance_run_id,),
+            ).fetchall()
+            reservations = tuple(
+                _acceptance_row_fact(row) for row in rows
+            )
+            if any(
+                not isinstance(
+                    item,
+                    AcceptanceSemanticRequestReservationV1,
+                )
+                for item in reservations
+            ):
+                raise OperationsIntegrityError(
+                    "semantic request ledger type mismatch"
+                )
+            existing = next(
+                (
+                    item
+                    for item in reservations
+                    if (
+                        item.fixed_candidate_admission_digest,
+                        item.workflow_spec_authority_digest,
+                        item.stage,
+                        item.attempt_no,
+                    )
+                    == (
+                        fixed_candidate_admission_digest,
+                        workflow_spec_authority_digest,
+                        stage,
+                        attempt_no,
+                    )
+                ),
+                None,
+            )
+            if existing is not None:
+                return existing
+            if len(reservations) >= 20:
+                raise BudgetExhausted(
+                    "acceptance semantic request budget exhausted"
+                )
+            reservation = AcceptanceSemanticRequestReservationV1(
+                schema_version="acceptance-semantic-request-reservation-v1",
+                acceptance_run_id=acceptance_run_id,
+                fixed_candidate_admission_digest=(
+                    fixed_candidate_admission_digest
+                ),
+                repository_id=repository_id,
+                workflow_spec_authority_digest=(
+                    workflow_spec_authority_digest
+                ),
+                stage=stage,
+                attempt_no=attempt_no,
+                request_ordinal=len(reservations) + 1,
+                reserved_at=reserved_at,
+            )
+            _validate_acceptance_references(
+                connection,
+                acceptance_run_id=acceptance_run_id,
+                kind="acceptance_semantic_request_reservation",
+                fact=reservation,
+            )
+            raw = reservation.model_dump(mode="json", exclude_none=False)
+            connection.execute(
+                """INSERT INTO operations_acceptance_facts
+                   (fact_digest, acceptance_run_id, fact_kind, schema_version,
+                    recorded_identity, fact_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    reservation.reservation_digest,
+                    acceptance_run_id,
+                    "acceptance_semantic_request_reservation",
+                    reservation.schema_version,
+                    _acceptance_recorded_identity(
+                        acceptance_run_id,
+                        "acceptance_semantic_request_reservation",
+                        reservation,
+                    ),
+                    _json_text(raw),
+                ),
+            )
+            return reservation
+
+        return self._snapshot_transaction(mutate)
 
     def record_semantic_attempt(
         self,

@@ -29,7 +29,10 @@ from skillscout.domain.discovery import (
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.acceptance import (
     AcceptanceFixedCandidateAdmissionV1,
+    BenchmarkEntryV1,
+    BenchmarkLockAttestationV1,
     HostedIsolationCapabilityV1,
+    LockedBenchmarkManifestV1,
     NominationEntryV1,
     NominationSetV1,
     OfflineAdversarialRunV1,
@@ -319,6 +322,58 @@ def _nomination_set() -> NominationSetV1:
     )
 
 
+def _locked_manifest(
+    nomination: NominationSetV1,
+) -> LockedBenchmarkManifestV1:
+    roles = ("positive", "positive_multi_workflow", "negative", "negative", "borderline")
+    entries = tuple(
+        sorted(
+            (
+                BenchmarkEntryV1(
+                    schema_version="benchmark-entry-v1",
+                    repository_full_name=entry.repository_full_name,
+                    repository_id=entry.repository_id,
+                    exact_commit_sha=entry.exact_commit_sha,
+                    license_spdx=entry.license_spdx,
+                    selection_source=entry.selection_source,
+                    coverage_role=role,
+                    nomination_entry_digest=entry.entry_digest,
+                    selection_evidence_digests=entry.selection_evidence_digests,
+                )
+                for entry, role in zip(
+                    nomination.search_derived_entries,
+                    roles,
+                    strict=True,
+                )
+            ),
+            key=lambda entry: entry.entry_digest,
+        )
+    )
+    preimage = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": nomination.nomination_set_digest,
+        "entries": [
+            entry.model_dump(mode="json", exclude_none=False)
+            for entry in entries
+        ],
+        "prior_manifest_digest": None,
+    }
+    manifest_digest = sha256_digest(preimage)
+    return LockedBenchmarkManifestV1(
+        **preimage,
+        lock_attestation=BenchmarkLockAttestationV1(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=nomination.nomination_set_digest,
+            manifest_digest=manifest_digest,
+            reviewer_id="reviewer",
+            locked_at=TIMESTAMP,
+        ),
+        manifest_digest=manifest_digest,
+    )
+
+
 def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     module = _operations_module()
     assert tuple(module.ACCEPTANCE_FACT_MODELS) == (
@@ -327,6 +382,7 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
         "acceptance_live_authority",
         "acceptance_budget_reservation",
         "acceptance_fixed_candidate_admission",
+        "acceptance_semantic_request_reservation",
         "acceptance_scenario",
         "acceptance_hosted_isolation_capability",
         "acceptance_offline_adversarial_run",
@@ -388,6 +444,78 @@ def test_fixed_acceptance_candidate_never_fabricates_search_page_or_candidate(
     assert snapshot.discovery_reservations == ()
     assert candidate_count == 0
     assert page_count == 0
+
+
+def test_acceptance_semantic_request_budget_blocks_twenty_first_before_attempt(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    nomination = _nomination_set()
+    manifest = _locked_manifest(nomination)
+    entry = manifest.entries[0]
+    admission = AcceptanceFixedCandidateAdmissionV1(
+        schema_version="acceptance-fixed-candidate-admission-v1",
+        acceptance_run_id="acceptance-fixed",
+        benchmark_manifest_digest=manifest.manifest_digest,
+        nomination_entry_digest=entry.nomination_entry_digest,
+        benchmark_entry_digest=entry.entry_digest,
+        repository_id=entry.repository_id,
+        repository_full_name=entry.repository_full_name,
+        exact_commit_sha=entry.exact_commit_sha,
+        license_spdx=entry.license_spdx,
+        ordinal=1,
+        admitted_at=TIMESTAMP,
+    )
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        store.record_acceptance_fact(
+            admission.acceptance_run_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            admission.acceptance_run_id,
+            "acceptance_benchmark_lock",
+            manifest,
+        )
+        store.record_acceptance_fact(
+            admission.acceptance_run_id,
+            "acceptance_fixed_candidate_admission",
+            admission,
+        )
+        for ordinal in range(1, 21):
+            store.reserve_acceptance_semantic_request(
+                acceptance_run_id=admission.acceptance_run_id,
+                fixed_candidate_admission_digest=admission.admission_digest,
+                repository_id=admission.repository_id,
+                workflow_spec_authority_digest=(
+                    "sha256:" + f"{ordinal:064x}"
+                ),
+                stage="extractor",
+                attempt_no=1,
+                reserved_at=TIMESTAMP,
+            )
+        with pytest.raises(module.BudgetExhausted):
+            store.reserve_acceptance_semantic_request(
+                acceptance_run_id=admission.acceptance_run_id,
+                fixed_candidate_admission_digest=admission.admission_digest,
+                repository_id=admission.repository_id,
+                workflow_spec_authority_digest="sha256:" + ("f" * 64),
+                stage="reviewer",
+                attempt_no=1,
+                reserved_at=TIMESTAMP,
+            )
+        snapshot = store.acceptance_snapshot(admission.acceptance_run_id)
+
+    assert (
+        len(
+            tuple(
+                fact
+                for fact in snapshot.facts
+                if fact.kind == "acceptance_semantic_request_reservation"
+            )
+        )
+        == 20
+    )
 
 
 def test_pre_budget_state_requires_explicit_acceptance_schema_upgrade(
