@@ -177,17 +177,13 @@ class LiveAcceptanceAuthority:
 def verify_live_acceptance_authority(
     *,
     repository_root: Path,
-    authority_path: Path,
+    authority_bytes: bytes,
     observed_source_commit_sha: str,
     environ: Mapping[str, str] | None = None,
 ) -> object:
     """Verify a human-approved authority and its exact repository-owned bytes."""
 
     try:
-        authority_relative = Path(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-LIVE-AUTHORITY.json"
-        )
         manifest_relative = Path(
             ".planning/phases/06-adversarial-mvp-acceptance/"
             "06-BENCHMARK-MANIFEST.json"
@@ -195,9 +191,12 @@ def verify_live_acceptance_authority(
         workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
         query_relative = Path("config/discovery-queries-v1.json")
         root = _trusted_repository_root(repository_root)
-        authority_bytes = _read_exact_repository_file(
-            root, authority_path, authority_relative, _ACCEPTANCE_MANIFEST_BYTES
-        )
+        if (
+            type(authority_bytes) is not bytes
+            or not authority_bytes
+            or len(authority_bytes) > _ACCEPTANCE_MANIFEST_BYTES
+        ):
+            raise ValueError
         manifest_bytes = _read_exact_repository_file(
             root,
             root / manifest_relative,

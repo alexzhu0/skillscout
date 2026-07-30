@@ -393,7 +393,7 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
         )
 
 
-def test_live_authority_verifier_requires_approved_file_under_trusted_root(
+def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     tmp_path: Path,
 ) -> None:
     """Self-hashed workflow inputs cannot replace a human-approved authority file."""
