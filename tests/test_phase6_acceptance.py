@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -410,6 +411,119 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
     )
     assert authority.max_candidates == 100
     assert authority.max_semantic_candidates == 20
+
+
+def test_live_authority_verifier_requires_approved_file_under_trusted_root(
+    tmp_path: Path,
+) -> None:
+    """Self-hashed workflow inputs cannot replace a human-approved authority file."""
+
+    import shutil
+
+    import skillscout.bootstrap as bootstrap
+    from skillscout.domain.acceptance import (
+        LiveAcceptanceAuthorityV1,
+        LockedBenchmarkManifestV1,
+    )
+    from skillscout.domain.canonical import canonical_json_bytes
+    from skillscout.domain.discovery import DiscoveryBudgetPolicyV1, DiscoveryQuerySetV1
+
+    manifest_relative = Path(
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    )
+    authority_relative = manifest_relative.with_name("06-LIVE-AUTHORITY.json")
+    workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
+    query_relative = Path("config/discovery-queries-v1.json")
+    for relative in (manifest_relative, workflow_relative, query_relative):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    manifest = LockedBenchmarkManifestV1.model_validate_json(
+        (tmp_path / manifest_relative).read_bytes(),
+        strict=True,
+    )
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (tmp_path / query_relative).read_bytes(),
+        strict=True,
+    )
+    workflow_digest = "sha256:" + hashlib.sha256(
+        (tmp_path / workflow_relative).read_bytes()
+    ).hexdigest()
+    authority = LiveAcceptanceAuthorityV1(
+        schema_version="live-acceptance-authority-v1",
+        authority_version=1,
+        source_commit_sha="c" * 40,
+        acceptance_workflow_sha256=workflow_digest,
+        manifest_path=manifest_relative.as_posix(),
+        manifest_digest=manifest.manifest_digest,
+        nomination_set_digest=manifest.nomination_set_digest,
+        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
+        state_commit_sha="e" * 40,
+        state_root_digest="sha256:" + ("f" * 64),
+        query_set_digest=query_set.query_set_digest,
+        budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        reviewer_id="alexzhu0",
+        approved_at="2026-07-30T00:00:00.000000Z",
+    )
+    (tmp_path / authority_relative).write_bytes(canonical_json_bytes(authority) + b"\n")
+
+    verified = bootstrap.verify_live_acceptance_authority(
+        repository_root=tmp_path,
+        authority_path=tmp_path / authority_relative,
+        observed_source_commit_sha="c" * 40,
+        environ={
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+        },
+    )
+
+    assert verified == authority
+    with pytest.raises(ValueError):
+        bootstrap.verify_live_acceptance_authority(
+            repository_root=tmp_path,
+            authority_path=tmp_path / authority_relative,
+            observed_source_commit_sha="d" * 40,
+            environ={
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            },
+        )
 
 
 @pytest.mark.parametrize(
