@@ -5,27 +5,27 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Completed 06-06-PLAN.md
-last_updated: "2026-07-30T06:51:19.814Z"
+stopped_at: Completed 06-07-PLAN.md
+last_updated: "2026-07-30T08:52:45.995Z"
 last_activity: 2026-07-30
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 76
-  completed_plans: 68
-  percent: 89
+  completed_plans: 69
+  percent: 91
 ---
 
 # Project State: SkillScout
 
-**Last updated:** 2026-07-29
+**Last updated:** 2026-07-30
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
 **Status:** Ready to execute
 
 ## Current Position
 
 **Phase:** 06 (adversarial-mvp-acceptance) — EXECUTING
-**Plan:** 7 of 15
+**Plan:** 8 of 15
 **Verification:** Phase 6 plan checker passed with TEST-01..04, D-01..D-27, 38/38 task-map, dependency, threat-model, workflow-freeze, and post-planning gap gates green
 **Next command:** `$gsd-execute-phase 6`
 
@@ -42,7 +42,7 @@ Phase 3 implementation  [██████████] 100%
 Phase 3 verification    [██████████] 100%
 Phase 4 publication     [██████████] 100%
 Phase 5 operations      [██████████] 100%
-Phase 6 acceptance      [█████░░░░░]  47%
+Phase 6 acceptance      [█████░░░░░]  53%
 ```
 
 | Metric | Value |
@@ -51,7 +51,7 @@ Phase 6 acceptance      [█████░░░░░]  47%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 5/6 |
-| Plans completed | 68/76 authored plans |
+| Plans completed | 69/76 authored plans |
 
 ## Project Reference
 
@@ -149,8 +149,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-30
-**Last session:** 2026-07-30T06:51:19.807Z
-**Stopped at:** Completed 06-06-PLAN.md
+**Last session:** 2026-07-30T08:52:29.101Z
+**Stopped at:** Completed 06-07-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -224,6 +224,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 | Phase 06 P05 | 12min | 2 tasks | 6 files |
 | Phase 06 P15 | 9min | 1 tasks | 8 files |
 | Phase 06 P06 | 21min | 3 tasks | 3 files |
+| Phase 06 P07 | 95min | 3 tasks | 12 files |
 
 ## Decisions
 
@@ -385,3 +386,6 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - [Phase 06]: Promote only the validated offline evidence JSON digest — Retain the ZIP digest as non-authoritative transport metadata and avoid promoting archive packaging as fact authority.
 - [Phase 06]: Replay verified pre-Phase-6 operations facts through the current owner before CAS — Preserve every prior fact digest while adding the acceptance projection schema required by the current owner.
 - [Phase 06]: Persist exactly two offline acceptance facts — Only acceptance_hosted_isolation_capability and acceptance_offline_adversarial_run are authorized; no third acceptance fact is admitted.
+- [Phase 06]: Search nominations remain role-neutral; evaluator roles enter only through the human-locked manifest.
+- [Phase 06]: Historical acceptance evidence rebuilds from its immutable exact commit object rather than the mutable current state head.
+- [Phase 06]: Strict canonical manifest JSON normalizes arrays to tuple contracts before validation without relaxing digests or fields.
