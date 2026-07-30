@@ -1376,6 +1376,8 @@ def build_discovery_application(
                 for attempt in getattr(chain, "attempts", ()):
                     if attempt.stage.value != "extractor":
                         continue
+                    if attempt.status.value == "failed":
+                        continue
                     if (
                         attempt.status.value != "succeeded"
                         or attempt.request_id is None
@@ -2282,6 +2284,36 @@ class _FixedRepositoryAcceptanceRunner:
         self._state_root = config.state_root_digest
         self._ordinal = 0
 
+    def _run_phase2_with_retries(
+        self,
+        *,
+        candidate: object,
+        pinned_commit_sha: str,
+    ) -> object:
+        """Resume only confirmed retryable work under the Phase 2 policy cap."""
+
+        from skillscout.application.pipeline import RetryPolicy
+
+        execution = None
+        for _attempt in range(RetryPolicy().max_attempts):
+            execution = self._phase2_factory(
+                candidate=candidate,
+                discovery_authority=self._authority,
+                operations_store=self._operations,
+                durability_barrier=self._barrier,
+                observed_head=self._state_head,
+                prior_root_digest=self._state_root,
+                phase3_factory=self._phase3_factory,
+                pinned_commit_sha=pinned_commit_sha,
+            )
+            self._state_head = execution.state_commit_sha
+            self._state_root = execution.state_root_digest
+            if execution.terminal.outcome != "confirmed_retryable":
+                break
+        if execution is None:
+            raise ValueError("fixed acceptance execution is missing")
+        return execution
+
     def run(self, authority: object) -> object:
         from skillscout.adapters.github import GitHubReadClient
         from skillscout.application.acceptance import (
@@ -2450,14 +2482,8 @@ class _FixedRepositoryAcceptanceRunner:
         )
         self._state_head = synchronized.commit_sha
         self._state_root = synchronized.root_digest
-        execution = self._phase2_factory(
+        execution = self._run_phase2_with_retries(
             candidate=candidate,
-            discovery_authority=self._authority,
-            operations_store=self._operations,
-            durability_barrier=self._barrier,
-            observed_head=self._state_head,
-            prior_root_digest=self._state_root,
-            phase3_factory=self._phase3_factory,
             pinned_commit_sha=authority.exact_commit_sha,
         )
         for workflow in execution.workflows:
@@ -2491,8 +2517,6 @@ class _FixedRepositoryAcceptanceRunner:
             self._authority.run_id,
             execution.terminal,
         )
-        self._state_head = execution.state_commit_sha
-        self._state_root = execution.state_root_digest
         semantic_attempts = tuple(
             attempt
             for attempt in self._operations.snapshot_run(
@@ -2516,7 +2540,19 @@ class _FixedRepositoryAcceptanceRunner:
             )
             for item in semantic_attempts
         }
-        if telemetry_keys != attempt_keys:
+        if (
+            not telemetry_keys.issubset(attempt_keys)
+            or any(
+                attempt.status == "decided"
+                and (
+                    attempt.stage,
+                    attempt.workflow_authority_digest,
+                    attempt.attempt_no,
+                )
+                not in telemetry_keys
+                for attempt in semantic_attempts
+            )
+        ):
             raise ValueError("semantic provider telemetry is incomplete")
         semantic_telemetry = tuple(
             AcceptanceSemanticTelemetryV1(

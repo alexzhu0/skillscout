@@ -624,7 +624,7 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             or len(set(self.semantic_attempt_digests))
             != len(self.semantic_attempt_digests)
             or len(self.semantic_attempt_digests) != self.semantic_request_count
-            or len(self.semantic_telemetry) != self.semantic_request_count
+            or len(self.semantic_telemetry) > self.semantic_request_count
             or tuple(
                 (
                     item.stage,
@@ -697,8 +697,10 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
                 required_stages is None
                 and observed_stages not in valid_system_prefixes
             )
-            or bool(self.semantic_telemetry)
-            != bool(self.semantic_request_count)
+            or (
+                self.semantic_request_count == 0
+                and bool(self.semantic_telemetry)
+            )
         ):
             raise ValueError("scenario semantic stages do not match terminal")
         funnel_by_outcome = {
