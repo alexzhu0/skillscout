@@ -2132,6 +2132,7 @@ def _semantic_guard(
     *,
     provider: str = "openai",
     reservation_hook=None,
+    request_reservation_hook=None,
 ) -> SemanticDurabilityGuard:
     return SemanticDurabilityGuard(
         barrier=barrier,
@@ -2143,6 +2144,7 @@ def _semantic_guard(
         expected_prior_state_head="a" * 40,
         expected_prior_root_digest=sha256_digest({"prior": 101}),
         reservation_hook=reservation_hook,
+        request_reservation_hook=request_reservation_hook,
     )
 
 
@@ -2216,6 +2218,55 @@ def test_failed_extractor_reservation_blocks_provider_request(tmp_path: Path) ->
 
     assert failure.value.code is ErrorCode.STATE_OPERATION_FAILED
     assert processor.extractor_requests == 0
+
+
+def test_each_semantic_request_is_reserved_before_started_and_provider(
+    tmp_path: Path,
+) -> None:
+    """The campaign request ledger is durable before every provider call."""
+
+    events: list[str] = []
+    processor = _SemanticPhaseTwoProcessor([])
+    original_process = processor.process
+
+    def process(stage_input: StageInput, context) -> StageOutcome:
+        if stage_input.stage is PipelineStage.EXTRACTOR:
+            events.append("provider")
+        return original_process(stage_input, context)
+
+    processor.process = process  # type: ignore[method-assign]
+
+    def reserve_candidate(**_kwargs):
+        events.append("candidate")
+        return SemanticReservationReceipt(
+            reservation_digest=sha256_digest({"candidate": 101}),
+            verified_state_head="b" * 40,
+            state_root_digest=sha256_digest({"root": "candidate"}),
+        )
+
+    def reserve_request(**_kwargs):
+        events.append("request")
+        return SemanticReservationReceipt(
+            reservation_digest=sha256_digest({"request": 1}),
+            verified_state_head="c" * 40,
+            state_root_digest=sha256_digest({"root": "request"}),
+        )
+
+    store = SQLiteStateStore(tmp_path / "request-reservation.sqlite3")
+    try:
+        PipelineRunner(
+            store,
+            processor,
+            semantic_durability=_semantic_guard(
+                _RecordingBarrier(),
+                reservation_hook=reserve_candidate,
+                request_reservation_hook=reserve_request,
+            ),
+        ).run(_repository_subject(), tmp_path / "out")
+    finally:
+        store.close()
+
+    assert events == ["candidate", "request", "provider"]
 
 
 def test_semantic_guard_accepts_narrow_barrier_protocol() -> None:
