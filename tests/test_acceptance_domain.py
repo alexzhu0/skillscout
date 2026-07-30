@@ -807,6 +807,7 @@ def test_live_authority_contract_binds_human_approval_and_every_effect_identity(
         ),
         "policy_versions": (
             "discovery-budget-policy-v1",
+            "extract-policy-v1",
             "generator-policy-v1",
             "qualification-policy-v1",
             "reader-policy-v1",

@@ -346,6 +346,7 @@ class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
     def validate_complete_authority(self) -> Self:
         required_policies = {
             "discovery-budget-policy-v1",
+            "extract-policy-v1",
             "generator-policy-v1",
             "qualification-policy-v1",
             "reader-policy-v1",

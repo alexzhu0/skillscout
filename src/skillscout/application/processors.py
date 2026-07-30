@@ -20,6 +20,7 @@ from skillscout.application.ports import (
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.enums import EffectScope, PipelineStage
 from skillscout.domain.extraction import (
+    EXTRACT_POLICY_VERSION,
     EXTRACT_PROMPT_VERSION,
     FINGERPRINT_VERSION,
     MAX_WORKFLOWS_PER_REPO,
@@ -457,6 +458,7 @@ class PhaseTwoProcessor:
         )
         telemetry = StageTelemetry(
             prompt_version=EXTRACT_PROMPT_VERSION,
+            policy_version=EXTRACT_POLICY_VERSION,
             model_id=result.model,
             request_id=result.request_id,
             latency_ms=result.latency_ms,

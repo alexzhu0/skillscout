@@ -12,6 +12,7 @@ from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.models import Digest, StrictFrozenModel
 
 EXTRACT_PROMPT_VERSION = "extract-prompt-v1"
+EXTRACT_POLICY_VERSION = "extract-policy-v1"
 FINGERPRINT_VERSION = "wf-fingerprint-v1"
 WORKFLOW_SPEC_SCHEMA_VERSION = "workflow-spec-v1"
 MAX_WORKFLOWS_PER_REPO = 3

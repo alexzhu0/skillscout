@@ -468,6 +468,7 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
         ),
         policy_versions=(
             "discovery-budget-policy-v1",
+            "extract-policy-v1",
             "generator-policy-v1",
             "qualification-policy-v1",
             "reader-policy-v1",
