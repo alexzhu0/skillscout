@@ -8,6 +8,7 @@ import hashlib
 import importlib
 import importlib.metadata
 import io
+import json
 import os
 import stat
 import sys

@@ -241,6 +241,66 @@ def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
     assert tuple(kind.choices) == ("human-review", "probe-cleanup")
 
 
+def test_acceptance_runtime_loads_only_exact_resolver_proof(
+    tmp_path: Path,
+) -> None:
+    import skillscout.bootstrap as bootstrap
+
+    commit = "a" * 40
+    root = "sha256:" + ("b" * 64)
+    authority = "sha256:" + ("c" * 64)
+    proof_path = tmp_path / "resume.json"
+    proof = {
+        "acceptance_run_id": "acceptance-proof",
+        "authority_digest": authority,
+        "lineage_commit_shas": [commit],
+        "lineage_root_digests": [root],
+        "locator_digest": None,
+        "state_commit_sha": commit,
+        "state_root_digest": root,
+        "status": "acceptance_resume_verified",
+    }
+    proof_path.write_text(
+        json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    environment = {
+        "PHASE6_AUTHORITY_DIGEST": authority,
+        "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+        "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+    }
+
+    config = bootstrap.load_acceptance_runtime_config(
+        manifest_path=(
+            ROOT
+            / ".planning/phases/06-adversarial-mvp-acceptance"
+            / "06-BENCHMARK-MANIFEST.json"
+        ),
+        state_commit_sha=commit,
+        state_root_digest=root,
+        acceptance_run_id="acceptance-proof",
+        resume_proof_path=proof_path,
+        environ=environment,
+    )
+
+    assert config.resume_lineage_commit_shas == (commit,)
+    assert config.resume_lineage_root_digests == (root,)
+    proof["state_commit_sha"] = "d" * 40
+    proof_path.write_text(
+        json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="runtime configuration"):
+        bootstrap.load_acceptance_runtime_config(
+            manifest_path=config.manifest_path,
+            state_commit_sha=commit,
+            state_root_digest=root,
+            acceptance_run_id="acceptance-proof",
+            resume_proof_path=proof_path,
+            environ=environment,
+        )
+
+
 def test_acceptance_bootstrap_target_is_fixed_and_fact_validation_is_pre_secret() -> None:
     import skillscout.bootstrap as bootstrap
 
