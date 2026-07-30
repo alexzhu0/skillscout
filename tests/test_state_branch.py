@@ -57,6 +57,71 @@ def test_state_branch_read_client_exposes_no_remote_write_capability() -> None:
         client.close()
 
 
+def test_resume_read_budget_enforces_requests_bytes_and_deadline() -> None:
+    """The resolver budget charges actual reads rather than predicting them."""
+
+    module = _state_module()
+    now = [100.0]
+    budget = module.ResolverReadBudget(clock=lambda: now[0])
+
+    for _ in range(1_024):
+        assert budget.begin_request() > 0
+    with pytest.raises(module.StateIntegrityFailure):
+        budget.begin_request()
+    assert budget.request_count == 1_024
+
+    byte_budget = module.ResolverReadBudget(clock=lambda: now[0])
+    byte_budget.charge_response_bytes(268_435_456)
+    with pytest.raises(module.StateIntegrityFailure):
+        byte_budget.charge_response_bytes(1)
+    assert byte_budget.response_bytes == 268_435_456
+
+    deadline_budget = module.ResolverReadBudget(clock=lambda: now[0])
+    now[0] += 45.0
+    with pytest.raises(module.StateIntegrityFailure):
+        deadline_budget.begin_request()
+
+
+def test_resume_read_budget_sets_remaining_timeout_and_rejects_blocking_call() -> None:
+    """A call that consumes the deadline fails even when transport returns a body."""
+
+    module = _state_module()
+    now = [10.0]
+    observed_timeout: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed_timeout.append(request.extensions["timeout"]["read"])
+        now[0] += 45.0
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/json",
+                "x-github-request-id": "REQ-budget",
+            },
+            json={
+                "ref": module.STATE_REF,
+                "object": {"sha": "a" * 40},
+            },
+        )
+
+    budget = module.ResolverReadBudget(clock=lambda: now[0])
+    client = module.StateBranchReadClient(
+        token="test-token",
+        repository_id=101,
+        repository_full_name="source-org/source",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(Exception):
+            client.get_state_ref(read_budget=budget)
+    finally:
+        client.close()
+
+    assert observed_timeout == [45.0]
+    assert budget.request_count == 1
+    assert budget.response_bytes == 0
+
+
 def test_valid_state_fixture_parses_strict_root_and_exact_paths() -> None:
     fixture = json.loads((FIXTURES / "valid_state.json").read_bytes())
     root = DiscoveryStateRootV1.model_validate(fixture["root"], strict=True)
