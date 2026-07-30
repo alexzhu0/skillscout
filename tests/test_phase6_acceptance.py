@@ -858,6 +858,7 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
         operations.record_acceptance_fact(
             run_id, "acceptance_benchmark_lock", manifest
         )
+        request_ordinal = 0
         for ordinal, entry in enumerate(manifest.entries, start=1):
             eligible = ordinal == 1
             stages = (
@@ -869,6 +870,69 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
                 telemetry(stage, entry.entry_digest, str(ordinal))
                 for stage in stages
             )
+            operations.record_acceptance_fact(
+                run_id,
+                "acceptance_budget_reservation",
+                acceptance_domain.AcceptanceBudgetReservationV1(
+                    schema_version="acceptance-budget-reservation-v1",
+                    acceptance_run_id=run_id,
+                    benchmark_manifest_digest=manifest.manifest_digest,
+                    nomination_entry_digest=entry.nomination_entry_digest,
+                    benchmark_entry_digest=entry.entry_digest,
+                    repository_id=entry.repository_id,
+                    repository_full_name=entry.repository_full_name,
+                    ordinal=ordinal,
+                    max_files=25,
+                    max_source_files=5,
+                    max_file_bytes=131_072,
+                    max_total_bytes=524_288,
+                    max_estimated_tokens=40_000,
+                    semantic_candidate_slots=1,
+                    campaign_semantic_request_limit=20,
+                    reserved_at=timestamp,
+                ),
+            )
+            admission = acceptance_domain.AcceptanceFixedCandidateAdmissionV1(
+                schema_version="acceptance-fixed-candidate-admission-v1",
+                acceptance_run_id=run_id,
+                benchmark_manifest_digest=manifest.manifest_digest,
+                nomination_entry_digest=entry.nomination_entry_digest,
+                benchmark_entry_digest=entry.entry_digest,
+                repository_id=entry.repository_id,
+                repository_full_name=entry.repository_full_name,
+                exact_commit_sha=entry.exact_commit_sha,
+                license_spdx=entry.license_spdx,
+                ordinal=ordinal,
+                admitted_at=timestamp,
+            )
+            operations.record_acceptance_fact(
+                run_id,
+                "acceptance_fixed_candidate_admission",
+                admission,
+            )
+            for item in stage_telemetry:
+                request_ordinal += 1
+                operations.record_acceptance_fact(
+                    run_id,
+                    "acceptance_semantic_request_reservation",
+                    acceptance_domain.AcceptanceSemanticRequestReservationV1(
+                        schema_version=(
+                            "acceptance-semantic-request-reservation-v1"
+                        ),
+                        acceptance_run_id=run_id,
+                        fixed_candidate_admission_digest=(
+                            admission.admission_digest
+                        ),
+                        repository_id=entry.repository_id,
+                        workflow_spec_authority_digest=(
+                            item.workflow_spec_authority_digest
+                        ),
+                        stage=item.stage,
+                        attempt_no=item.attempt_no,
+                        request_ordinal=request_ordinal,
+                        reserved_at=timestamp,
+                    ),
+                )
             attempt_digests = tuple(
                 sorted(
                     "sha256:" + f"{ordinal * 10 + index:064x}"

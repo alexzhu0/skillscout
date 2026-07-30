@@ -2020,8 +2020,11 @@ class _CompletedBenchmarkStateProjector:
         if not eligible:
             raise ValueError("completed benchmark has no value-positive scenario")
         selected = sorted(eligible, key=lambda item: item.repository_id)[0]
-        with SQLiteStateStore(self._pipeline_path) as pipeline:
+        pipeline = SQLiteStateStore(self._pipeline_path)
+        try:
             pipeline_export = pipeline.export_owned_state()
+        finally:
+            pipeline.close()
         semantic_attempt_digests = tuple(
             sorted(
                 {
