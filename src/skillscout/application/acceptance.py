@@ -116,9 +116,9 @@ def resolve_campaign_resume_lineage(
         or any(digest.fullmatch(item) is None for item in roots)
     ):
         raise ValueError("campaign resume lineage rejected")
-    for index, item in enumerate(observations):
-        expected_parent = None if index == 0 else commits[index - 1]
-        expected_root = None if index == 0 else roots[index - 1]
+    for index, item in enumerate(observations[1:], start=1):
+        expected_parent = commits[index - 1]
+        expected_root = roots[index - 1]
         if (
             item.parent_commit_sha != expected_parent
             or item.prior_root_digest != expected_root
@@ -166,9 +166,7 @@ def resolve_campaign_resume_lineage(
     current_index = commits.index(locator.current_state_commit_sha)
     suffix_length = len(commits) - current_index - 1
     first_seen = locator_first_seen[locator.locator_digest or ""]
-    if suffix_length == 1 and first_seen == len(observations) - 1:
-        selected_index = current_index
-    elif 1 <= suffix_length <= 3 and first_seen <= current_index + 1:
+    if 1 <= suffix_length <= 3 and first_seen <= current_index + 1:
         selected_index = len(observations) - 1
     else:
         raise ValueError("campaign resume locator is stale")
