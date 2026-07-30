@@ -382,11 +382,7 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
     with pytest.raises(ValueError):
         bootstrap.verify_live_acceptance_authority(
             repository_root=ROOT,
-            authority_path=(
-                ROOT
-                / ".planning/phases/06-adversarial-mvp-acceptance"
-                / "06-LIVE-AUTHORITY.json"
-            ),
+            authority_bytes=b"{}",
             observed_source_commit_sha="c" * 40,
             environ=ForbiddenCredentials(
                 {
@@ -416,7 +412,6 @@ def test_live_authority_verifier_requires_approved_file_under_trusted_root(
         ".planning/phases/06-adversarial-mvp-acceptance/"
         "06-BENCHMARK-MANIFEST.json"
     )
-    authority_relative = manifest_relative.with_name("06-LIVE-AUTHORITY.json")
     workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
     query_relative = Path("config/discovery-queries-v1.json")
     for relative in (manifest_relative, workflow_relative, query_relative):
@@ -485,11 +480,11 @@ def test_live_authority_verifier_requires_approved_file_under_trusted_root(
         reviewer_id="alexzhu0",
         approved_at="2026-07-30T00:00:00.000000Z",
     )
-    (tmp_path / authority_relative).write_bytes(canonical_json_bytes(authority) + b"\n")
+    authority_bytes = canonical_json_bytes(authority) + b"\n"
 
     verified = bootstrap.verify_live_acceptance_authority(
         repository_root=tmp_path,
-        authority_path=tmp_path / authority_relative,
+        authority_bytes=authority_bytes,
         observed_source_commit_sha="c" * 40,
         environ={
             "SKILLSCOUT_LLM_PROVIDER": "deepseek",
@@ -501,13 +496,16 @@ def test_live_authority_verifier_requires_approved_file_under_trusted_root(
     with pytest.raises(ValueError):
         bootstrap.verify_live_acceptance_authority(
             repository_root=tmp_path,
-            authority_path=tmp_path / authority_relative,
+            authority_bytes=authority_bytes,
             observed_source_commit_sha="d" * 40,
             environ={
                 "SKILLSCOUT_LLM_PROVIDER": "deepseek",
                 "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
             },
         )
+    assert "06-LIVE-AUTHORITY.json" not in inspect.getsource(
+        bootstrap.verify_live_acceptance_authority
+    )
 
 
 @pytest.mark.parametrize(
