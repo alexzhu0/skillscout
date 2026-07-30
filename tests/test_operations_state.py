@@ -325,6 +325,7 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     assert tuple(module.ACCEPTANCE_FACT_MODELS) == (
         "acceptance_nomination",
         "acceptance_benchmark_lock",
+        "acceptance_live_authority",
         "acceptance_scenario",
         "acceptance_hosted_isolation_capability",
         "acceptance_offline_adversarial_run",
