@@ -28,6 +28,8 @@ tech-stack:
 key-files:
   created:
     - tools/verify_phase6_source_execution.py
+    - src/skillscout/application/phase6_adversarial_runner.py
+    - tests/test_phase6_campaign_runner.py
   modified:
     - .github/workflows/phase6-acceptance.yml
     - .github/workflows/discover.yml
@@ -46,6 +48,7 @@ key-decisions:
   - "Admit uv only when the program token is exactly uv and the version token is exactly 0.11.29; allow only an optional non-empty parenthesized build-metadata suffix."
   - "Materialize exact CPython 3.13.14 under ${GITHUB_WORKSPACE}/.tools/python in every authoritative job; network-none containers receive only the read-only repository mount and closed uv managed-runtime environment."
   - "Install the current locked SkillScout project in all 15 fresh authoritative venvs; --no-install-project is a fail-closed mutation because the src-layout control runtime otherwise cannot import SkillScout."
+  - "Run the hosted adversarial campaign through an installed-package deterministic runner with a closed 25-node registry; pytest remains only a development test consumer and cannot produce hosted evidence."
 
 patterns-established:
   - "Authoritative workflow execution: checkout current github.sha with credentials disabled, pin setup-uv 0.11.29, copy and verify local uv, then invoke checked-out source directly with run --locked."
@@ -165,6 +168,11 @@ The sixth post-merge correction followed hosted run `30508458266` under strict T
 12. **RED: reproduce the missing project in a fresh authoritative venv** - `5aa3aa2` (test; real locked initialization completed but isolated SkillScout import returned 1)
 13. **GREEN: install the current project in all fresh authoritative venvs** - `e425de3` (fix; all 15 jobs, the independent verifier, and workflow-owner contracts now require project installation)
 
+The seventh post-checkpoint correction followed the user-approved deterministic-runner architecture under strict TDD:
+
+14. **RED: require production-owned campaign execution and distinct failure classes** - `f32fa2d` (test; missing runner, pytest teardown evidence, and collapsed control failure diagnostics all failed)
+15. **GREEN: execute the closed campaign through the installed package** - `e5ab102` (fix; exact 25-node registry, canonical atomic report, bounded scenario/report-write diagnostics, and direct `python -I -m` workflow execution)
+
 ## Files Created/Modified
 
 - `.github/workflows/phase6-acceptance.yml` - Defines the closed action grammar and separated nomination, offline, semantic, publication, attestation, cleanup, and rebuild jobs.
@@ -190,6 +198,8 @@ The sixth post-merge correction followed hosted run `30508458266` under strict T
 - Failure diagnostics are never campaign evidence: they contain only the fixed schema, source/workflow identities, hosted run identity, one closed stage, four integer statuses, and retention value `1`; the existing offline-evidence upload remains success-only and canonical state admission remains unchanged.
 - Fresh authoritative venv creation must install the current locked project. Dependency-only initialization is insufficient for a src-layout checkout: `uv run --locked --offline --no-sync` cannot resolve `skillscout.application.acceptance` unless sync records the project installation.
 - Hosted run `30508458266` is a failure fact only. Its control returned 1 while direct and child network-denial probes remained 97; it grants no hosted campaign, canonical state, Gate B4, dispatch, or publication authority.
+- Hosted run `30510875649` proves only that the old pytest control process returned 1 before its session teardown produced a report. The `campaign-report` stage label and statuses `1/1/97/97` cannot distinguish a scenario/assertion failure from a final report-write failure, so they are deliberately treated as ambiguous diagnostics rather than root-cause evidence.
+- The approved correction moves campaign ownership into `skillscout.application.phase6_adversarial_runner`: a closed 25-node committed registry runs the existing controlled evaluator without network, tools, subprocesses, caller-supplied paths, or arbitrary scenario authority. It emits canonical bounded success bytes atomically and distinguishes `scenario_assertion_failure`, `scenario_evaluation_failure`, and `report_write_failure` without raw exceptions, paths, canary values, or free text.
 
 ## Deviations from Plan
 
@@ -266,10 +276,19 @@ The sixth post-merge correction followed hosted run `30508458266` under strict T
 - **Verification:** 130 four-workflow owner tests and 137 Phase 6 workflow/adversarial/source tests passed; the independent verifier reported `phase6 source execution valid`; all 35 workflow run blocks passed `bash -n`; full locked pytest classified 2,169 passed, 14 skipped, and only the unchanged planned repository-verifier RED failure.
 - **Committed in:** `5aa3aa2` (RED), `e425de3` (GREEN)
 
+**9. [Rule 4 - User approved] Replaced pytest teardown evidence with an independent deterministic runner**
+- **Found during:** Review of the bounded diagnostic from hosted run `30510875649`
+- **Issue:** The workflow executed the entire development pytest module and relied on a session teardown to write campaign evidence. A control status of 1 stopped the teardown report but could not safely distinguish scenario/assertion failure from report-write failure.
+- **Approved change:** Add an installed-package Phase 6 runner with an exact ordered 25-node registry, closed binding inputs, synthetic-canary scans, canonical bounded atomic output, and distinct closed diagnostics; keep pytest only as a consumer that executes and mutation-tests real runner behavior.
+- **Security boundary:** The runner has no network, tool, subprocess, untrusted-code, arbitrary path, caller-supplied scenario, credential, catalog, publication, or canonical-state authority. Empty-rootfs, read-only same-path repository mount, `--network none`, direct/child denial probes, one-day failure-only artifact, and exact exit status remain unchanged.
+- **Files modified:** `src/skillscout/application/phase6_adversarial_runner.py`, `.github/workflows/phase6-acceptance.yml`, `tools/verify_phase6_source_execution.py`, `tests/test_phase6_campaign_runner.py`, `tests/test_phase6_adversarial.py`, `tests/test_phase6_workflow.py`
+- **Verification:** RED produced exactly five expected failures. GREEN passed 270 affected tests with 12 skips and only the future repository-verifier node deselected; the independent source verifier passed; all 35 workflow run blocks passed `bash -n`; full Ruff passed; full locked pytest classified 2,175 passed, 14 skipped, and only `test_required_phase6_repository_verifier_is_missing` failed.
+- **Committed in:** `f32fa2d` (RED), `e5ab102` (GREEN)
+
 ---
 
-**Total deviations:** 7 auto-fixed (5 bugs, 1 blocking issue, 1 missing critical diagnostic boundary) plus 1 user-approved architectural correction
-**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The first post-merge fix restored historical Phase 5 fixture correctness. The second made the pinned official uv executable admissible without widening its authority. The third attempted to expose the hosted Python runtime but was superseded when the toolcache assumption failed deterministically. The fourth added bounded diagnostic observability. The approved fifth correction now owns the exact Python runtime inside the repository without widening container mounts or provider/publication authority. The sixth post-checkpoint correction restores the project installation required by every authoritative source entry without changing the lock or execution boundary. Every workflow-byte authorization remains stale.
+**Total deviations:** 7 auto-fixed (5 bugs, 1 blocking issue, 1 missing critical diagnostic boundary) plus 2 user-approved architectural corrections
+**Impact on plan:** The original two fixes were necessary to execute the pre-existing RED contract and preserve prior security ownership under the stricter planned baseline. The first post-merge fix restored historical Phase 5 fixture correctness. The second made the pinned official uv executable admissible without widening its authority. The third attempted to expose the hosted Python runtime but was superseded when the toolcache assumption failed deterministically. The fourth added bounded diagnostic observability. The approved fifth correction now owns the exact Python runtime inside the repository without widening container mounts or provider/publication authority. The sixth post-checkpoint correction restores the project installation required by every authoritative source entry without changing the lock or execution boundary. The seventh correction removes pytest lifecycle ownership from hosted evidence and makes the two previously ambiguous internal failure classes independently observable. Every workflow-byte authorization remains stale.
 
 ## Issues Encountered
 
@@ -285,7 +304,8 @@ The sixth post-merge correction followed hosted run `30508458266` under strict T
 - After explicit fresh authorization, remote `main` and local `main`/`HEAD` were revalidated at `b1425f7f72407f08463578db387e84d79d72e2df`, with Phase 6 workflow SHA-256 `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`. GitHub rejected the exact-SHA dispatch ref with HTTP 422 and created no run; after a fresh remote-main equality check, the authorized `main` fallback created exactly run `30510875649` attempt 1.
 - Run `30510875649` failed in `offline_adversarial`. Its only artifact was the one-day bounded diagnostic `8747046558`, named `phase6-offline-adversarial-diagnostic-30510875649-1`, with metadata size 416 bytes, ZIP SHA-256 `26faa56b695126a6d65cea55209787911973570b072f2e39251ba976b1306755`, and exact JSON SHA-256 `112b9c040433f10524b08a62d6e11764146b6e08f64e17a1fa3ed316641142ff` over 378 bytes. The strict diagnostic was bound to the exact source/workflow/run/attempt, stopped at `campaign-report`, and recorded overall/control/direct/child statuses `1/1/97/97`.
 - The failed run grants no campaign or hosted-isolation credit. No raw logs or other artifacts were opened, no retry occurred, and neither `acceptance_hosted_isolation_capability` nor `acceptance_offline_adversarial_run` was written to canonical state.
-- The current workflow SHA-256 values are `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4` (discover), `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19` (publish), `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc` (canary), and `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5` (Phase 6 acceptance). All earlier workflow digests, workflow approvals, exact-source authorizations, dispatch approvals, and Gate B4 bindings are stale.
+- The bounded run `30510875649` diagnostic is now explicitly classified as ambiguous: its old pytest-owned control status does not identify whether scenario evaluation/assertion or final report writing failed. No root cause is fabricated from that artifact.
+- The current workflow SHA-256 values are `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4` (discover), `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19` (publish), `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc` (canary), and `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef` (Phase 6 acceptance). All earlier workflow digests, workflow approvals, exact-source authorizations, dispatch approvals, and Gate B4 bindings are stale.
 
 ## Authentication Gates
 
@@ -302,7 +322,7 @@ None - no new dependency or external service configuration is required by this p
 ## Next Phase Readiness
 
 - Plan 06-06 Task 3 remains incomplete. Do not create `06-06-SUMMARY.md` or grant campaign credit from any failed run.
-- Any retry requires a new human authorization bound to the then-exact local/remote HEAD and Phase 6 workflow SHA-256; it cannot inherit the authorization consumed by run `30510875649` and grants no Gate B4, publication, artifact-read, or canonical-state authority.
+- Any retry requires a new human authorization bound to the then-exact local/remote HEAD and Phase 6 workflow SHA-256 `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef`; it cannot inherit the authorization consumed by run `30510875649` and grants no Gate B4, publication, artifact-read, or canonical-state authority.
 - Plans 06-07 through 06-14 remain blocked from treating the workflow as hosted evidence until an authorized exact run succeeds and its bounded facts rebuild canonically.
 - Fresh Gate B4 and value publication remain unauthorized until later checkpoints bind the corrected exact workflow bytes and fixed catalog identity.
 
@@ -339,7 +359,13 @@ None - no new dependency or external service configuration is required by this p
 - The four workflow owner suites passed 130 tests; the Phase 6 workflow/adversarial/source suites passed 137 tests; the independent verifier reported `phase6 source execution valid`; and all 35 workflow run blocks passed `bash -n`.
 - Full locked pytest classified 2,169 passed, 14 skipped, and only the unchanged planned `tests/test_phase6_acceptance.py::test_required_phase6_repository_verifier_is_missing` RED failure.
 - Full Ruff lint, changed-file Ruff format, and `git diff --check` passed. Neither `pyproject.toml` nor `uv.lock` changed.
-- The exact current workflow SHA-256 values were recomputed from disk as discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`.
+- Deterministic-runner RED commit `f32fa2d` and GREEN commit `e5ab102` exist and contain no file deletions.
+- The runner registry exactly matches all 25 committed matrix nodes; its real module/CLI behavior separately classifies scenario assertion and final report-write failures, and restoring pytest teardown ownership fails the behavior suite.
+- The affected regression passed with 270 tests, 12 skips, and only the future repository-verifier node deselected; the independent source verifier reported `phase6 source execution valid`; all 35 workflow run blocks passed `bash -n`; and full Ruff lint plus changed-file formatting passed.
+- Full locked pytest classified 2,175 passed, 14 skipped, and only the unchanged planned `tests/test_phase6_acceptance.py::test_required_phase6_repository_verifier_is_missing` RED failure.
+- The independent offline acceptance verifier correctly remains `phase6 acceptance incomplete`; no hosted success or canonical fact was fabricated.
+- Final workflow SHA-256 values are discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef`.
+- Before the deterministic-runner correction, the workflow SHA-256 values bound to the failed dispatch were discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`; those bindings are historical only.
 - The fresh local/remote preflight matched `b1425f7f72407f08463578db387e84d79d72e2df`; the four frozen workflow SHA-256 values matched the approved bindings; 109 acceptance-domain/operations tests, 8 exact offline/canonical selector tests, the independent source verifier, and the fixed registry verifier passed before dispatch.
 - Exact-SHA ref dispatch was rejected with HTTP 422 and created no run; the authorized `main` fallback created only run `30510875649` attempt 1.
 - Artifact metadata contained exactly one one-day failure diagnostic. Its strict source/workflow/run/attempt/schema/status/digest checks passed; no raw logs or other artifact were read.
