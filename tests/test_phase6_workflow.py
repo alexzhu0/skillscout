@@ -955,6 +955,34 @@ def test_deepseek_only_exact_manifest_jobs_are_distinct_and_bounded() -> None:
     assert "OPENAI_API_KEY" not in live
 
 
+def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
+    """Replay cannot inherit the live reader, provider, or publication graph."""
+
+    source = _source(required=False)
+    benchmark = _job(source, "live_benchmark")
+    replay = _job(source, "live_replay")
+
+    benchmark_prefix, _, benchmark_execution = benchmark.partition(
+        "      - name: Execute the approved live benchmark"
+    )
+    assert benchmark_execution
+    assert "DEEPSEEK_API_KEY" not in benchmark_prefix
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in benchmark_prefix
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in benchmark_prefix
+    assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in benchmark_execution
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}" in benchmark_execution
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in benchmark_execution
+    assert "--action benchmark" in benchmark_execution
+
+    assert re.search(r"^    needs: live_authority_preflight$", replay, re.MULTILINE)
+    assert "DEEPSEEK" not in replay
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in replay
+    assert "SKILLSCOUT_CATALOG" not in replay
+    assert "actions/create-github-app-token" not in replay
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in replay
+    assert "--action replay" in replay
+
+
 def test_nomination_installation_and_state_cas_are_source_bound() -> None:
     nomination = _job(_source(required=False), "nominate")
 
