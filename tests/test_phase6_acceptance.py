@@ -669,6 +669,35 @@ def test_acceptance_restore_never_opens_mutable_publication_owner() -> None:
     assert "restore_acceptance_state_bundle" in discovery_source
 
 
+def test_completed_projector_rejects_unverified_state_locator(
+    tmp_path: Path,
+) -> None:
+    import skillscout.bootstrap as bootstrap
+    from skillscout.application.acceptance import load_locked_benchmark_manifest
+
+    manifest = load_locked_benchmark_manifest(
+        ROOT
+        / ".planning/phases/06-adversarial-mvp-acceptance"
+        / "06-BENCHMARK-MANIFEST.json"
+    )
+    verified = {
+        ("a" * 40, "sha256:" + ("b" * 64)),
+    }
+    projector = bootstrap._CompletedBenchmarkStateProjector(
+        operations_path=tmp_path / "operations.sqlite3",
+        pipeline_path=tmp_path / "pipeline.sqlite3",
+        acceptance_run_id="acceptance-projector-locator",
+        verified_state_locators=verified,
+    )
+
+    with pytest.raises(ValueError, match="state locator"):
+        projector.project(
+            manifest=manifest,
+            state_commit_sha="c" * 40,
+            state_root_digest="sha256:" + ("d" * 64),
+        )
+
+
 def test_live_replay_builder_dispatches_state_only_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
