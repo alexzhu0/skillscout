@@ -638,8 +638,14 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
     assert replay.duplicate_skill_count == 0
     assert replay.duplicate_fact_count == 0
     assert replay.remote_effect_count == 0
-    assert replay.before_state_root_digest == replay.after_state_root_digest
-    assert replay.before_state_commit_sha == replay.after_state_commit_sha
+    assert replay.before_state_root_digest == "sha256:" + ("d" * 64)
+    assert replay.after_state_root_digest == "sha256:" + ("f" * 64)
+    assert replay.before_state_commit_sha == "c" * 40
+    assert replay.after_state_commit_sha == "e" * 40
+    assert replay.before_projection_digest == replay.after_projection_digest
+    assert replay.before_object_digests == replay.after_object_digests
+    assert replay.replay_fact_digest.startswith("sha256:")
+    assert events == ["project", "record", "sync", "project"]
 
 
 def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> None:
