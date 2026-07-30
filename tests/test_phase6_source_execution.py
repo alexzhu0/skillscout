@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +115,186 @@ def _run_guard(repository: Path, guard: str) -> subprocess.CompletedProcess[str]
     )
 
 
+def _fresh_toolchain_fragment(repository: Path) -> str:
+    module = _module()
+    fragments: list[str] = []
+    for relative in WORKFLOW_PATHS:
+        source = (repository / relative).read_text(encoding="utf-8")
+        for job in module._parse_jobs(source):
+            materialization = tuple(
+                step
+                for step in job.steps
+                if step.name == "Verify the repository-local locked toolchain"
+            )
+            assert len(materialization) == 1
+            run = materialization[0].run
+            assert run is not None
+            lines = run.splitlines()
+            start = lines.index('venv_root="${repository_root}/.venv"')
+            end = lines.index(MANAGED_PYTHON_SYNC, start) + 1
+            fragments.append("\n".join(lines[start:end]))
+    assert len(fragments) == 15
+    assert len(set(fragments)) == 1
+    return fragments[0]
+
+
+def _copy_fresh_control_repository(tmp_path: Path) -> Path:
+    repository = tmp_path / "fresh-control-repository"
+    repository.mkdir()
+    for filename in ("pyproject.toml", "uv.lock"):
+        shutil.copy2(ROOT / filename, repository / filename)
+    shutil.copytree(ROOT / "src", repository / "src")
+    tests = repository / "tests"
+    tests.mkdir()
+    shutil.copy2(ROOT / "tests/conftest.py", tests / "conftest.py")
+    shutil.copy2(
+        ROOT / "tests/test_phase6_adversarial.py",
+        tests / "test_phase6_adversarial.py",
+    )
+    for fixture_directory in ("acceptance", "injection"):
+        shutil.copytree(
+            ROOT / "tests/fixtures" / fixture_directory,
+            tests / "fixtures" / fixture_directory,
+        )
+    local_uv = repository / ".tools/uv-0.11.29/bin/uv"
+    local_uv.parent.mkdir(parents=True)
+    shutil.copy2(ROOT / ".tools/uv-0.11.29/bin/uv", local_uv)
+    local_uv.chmod(0o755)
+    return repository
+
+
+def _initialize_fresh_control_runtime(
+    repository: Path,
+    fragment: str,
+) -> subprocess.CompletedProcess[str]:
+    stale_venv = repository / ".venv"
+    stale_venv.mkdir(exist_ok=True)
+    stale_marker = stale_venv / "preexisting-environment"
+    stale_marker.write_text("must be removed\n", encoding="utf-8")
+    shim_root = repository / ".test-bin"
+    shim_root.mkdir(exist_ok=True)
+    realpath_shim = shim_root / "realpath"
+    realpath_shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "${1:-}" = "-e" ]; then shift; fi\n'
+        'if [ "${1:-}" = "--" ]; then shift; fi\n'
+        'exec "${PHASE6_TEST_REALPATH}" "$@"\n',
+        encoding="utf-8",
+    )
+    realpath_shim.chmod(0o755)
+    system_realpath = shutil.which("realpath")
+    assert system_realpath is not None
+    environment = {
+        **os.environ,
+        "GITHUB_WORKSPACE": str(repository),
+        "PATH": str(shim_root) + os.pathsep + os.environ["PATH"],
+        "PHASE6_TEST_REALPATH": system_realpath,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "UV_LINK_MODE": "copy",
+        "UV_OFFLINE": "1",
+        "managed_python_executable": str(Path(sys.executable).resolve()),
+        "managed_python_root": str(Path(sys.base_prefix).resolve().parent),
+        "repository_root": str(repository),
+    }
+    environment.pop("VIRTUAL_ENV", None)
+    deletion_fragment, sync_command = fragment.rsplit("\n", 1)
+    deletion = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + deletion_fragment],
+        cwd=repository,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert deletion.returncode == 0, deletion.stderr
+    assert not stale_marker.exists()
+    assert not stale_venv.exists()
+
+    create_venv = subprocess.run(
+        [
+            str(repository / ".tools/uv-0.11.29/bin/uv"),
+            "venv",
+            "--prompt",
+            "skillscout",
+            "--python",
+            environment["managed_python_executable"],
+            "--managed-python",
+            "--no-python-downloads",
+        ],
+        cwd=repository,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert create_venv.returncode == 0, create_venv.stderr
+    source_site_packages = tuple((ROOT / ".venv/lib").glob("python3.*/site-packages"))
+    destination_site_packages = tuple((stale_venv / "lib").glob("python3.*/site-packages"))
+    assert len(source_site_packages) == len(destination_site_packages) == 1
+    for installed_path in source_site_packages[0].iterdir():
+        if installed_path.name == "skillscout.pth" or (
+            installed_path.name.startswith("skillscout-")
+            and installed_path.name.endswith(".dist-info")
+        ):
+            continue
+        destination = destination_site_packages[0] / installed_path.name
+        if installed_path.is_dir():
+            shutil.copytree(installed_path, destination, symlinks=True)
+        else:
+            shutil.copy2(installed_path, destination, follow_symlinks=False)
+    assert not (destination_site_packages[0] / "skillscout.pth").exists()
+    assert not tuple(destination_site_packages[0].glob("skillscout-*.dist-info"))
+
+    sync = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + sync_command],
+        cwd=repository,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert sync.returncode == 0, sync.stderr
+    return sync
+
+
+def _run_fresh_control_import(repository: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(repository / ".venv/bin/python"),
+            "-I",
+            "-c",
+            "import skillscout.application.acceptance",
+        ],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _run_fresh_control_test(repository: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(repository / ".tools/uv-0.11.29/bin/uv"),
+            "run",
+            "--locked",
+            "--offline",
+            "--no-sync",
+            "pytest",
+            "-q",
+            "tests/test_phase6_adversarial.py::"
+            "test_required_phase6_adversarial_contract_is_missing",
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=repository,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "UV_OFFLINE": "1"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def test_required_phase6_source_execution_verifier_is_missing() -> None:
     _module(skip_if_missing=False)
 
@@ -147,6 +329,32 @@ def test_source_execution_verifier_requires_repo_managed_cpython_for_every_job(
     assert result.managed_python_version == MANAGED_PYTHON_VERSION
     assert result.managed_python_root == MANAGED_PYTHON_ROOT
     assert result.network_none_invocation_count == 6
+
+
+def test_fresh_locked_toolchain_installs_project_for_phase6_control_runtime(
+    tmp_path: Path,
+) -> None:
+    repository = _copy_fresh_control_repository(tmp_path)
+    fragment = _fresh_toolchain_fragment(ROOT)
+
+    _initialize_fresh_control_runtime(repository, fragment)
+    import_result = _run_fresh_control_import(repository)
+    assert import_result.returncode == 0, import_result.stderr
+    control_result = _run_fresh_control_test(repository)
+    assert control_result.returncode == 0, control_result.stderr
+
+    no_project_fragment = fragment.replace(
+        " sync --locked ",
+        " sync --locked --no-install-project ",
+        1,
+    )
+    assert no_project_fragment != fragment
+    _initialize_fresh_control_runtime(repository, no_project_fragment)
+    mutated_import = _run_fresh_control_import(repository)
+    assert mutated_import.returncode == 1
+    assert "ModuleNotFoundError" in mutated_import.stderr
+    mutated_control = _run_fresh_control_test(repository)
+    assert mutated_control.returncode == 1
 
 
 def test_source_execution_verifier_requires_one_failure_only_diagnostic_upload(
