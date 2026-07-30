@@ -575,6 +575,102 @@ def test_live_authority_cli_accepts_only_a_complete_state_bundle_root() -> None:
     assert "--authority-operations-state" not in options
 
 
+def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() -> None:
+    """A resume pointer is a typed parent-state fact, not a mutable branch label."""
+
+    from pydantic import ValidationError
+
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    values = {
+        "schema_version": "acceptance-campaign-resume-locator-v1",
+        "acceptance_run_id": "acceptance-resume",
+        "live_acceptance_authority_digest": "sha256:" + ("1" * 64),
+        "source_commit_sha": "2" * 40,
+        "manifest_digest": "sha256:" + ("3" * 64),
+        "state_repository_id": 123,
+        "state_repository_full_name": "example/state",
+        "original_state_commit_sha": "4" * 40,
+        "original_state_root_digest": "sha256:" + ("5" * 64),
+        "current_state_commit_sha": "6" * 40,
+        "current_state_root_digest": "sha256:" + ("7" * 64),
+        "semantic_provider": "deepseek",
+        "stage_models": (
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        "prompt_versions": (
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        "schema_versions": (
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        "policy_versions": (
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        "lineage_commit_shas": ("4" * 40, "6" * 40),
+        "lineage_root_digests": (
+            "sha256:" + ("5" * 64),
+            "sha256:" + ("7" * 64),
+        ),
+        "recorded_at": "2026-07-30T12:00:00.000000Z",
+    }
+    locator = AcceptanceCampaignResumeLocatorV1(**values)
+
+    assert locator.locator_digest == sha256_digest(values)
+    assert locator.current_state_commit_sha == locator.lineage_commit_shas[-1]
+    assert locator.current_state_root_digest == locator.lineage_root_digests[-1]
+    with pytest.raises(ValidationError):
+        AcceptanceCampaignResumeLocatorV1(
+            **{
+                **values,
+                "current_state_commit_sha": "8" * 40,
+            }
+        )
+    with pytest.raises(ValidationError):
+        AcceptanceCampaignResumeLocatorV1(
+            **{
+                **values,
+                "live_acceptance_authority_digest": "sha256:" + ("9" * 64),
+                "locator_digest": locator.locator_digest,
+            }
+        )
+
+
+def test_acceptance_cli_exposes_only_exact_resume_lineage_inputs() -> None:
+    """Workflow preflight resolves a descendant checkout without a mutable SHA var."""
+
+    parser = _cli_subcommands()["resolve-acceptance-resume"]
+    options = {
+        option
+        for action in parser._actions
+        for option in action.option_strings
+    }
+
+    assert options == {
+        "-h",
+        "--help",
+        "--authority-state-root",
+        "--authority-state-root-digest",
+        "--campaign-state-root",
+        "--acceptance-run-id",
+        "--authority-digest",
+        "--source-commit-sha",
+        "--state-repository-id",
+        "--state-repository-full-name",
+    }
+
+
 @pytest.mark.parametrize(
     ("action", "expected_handler"),
     (("benchmark", "benchmark"), ("replay", "replay")),
