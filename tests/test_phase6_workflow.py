@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -136,6 +141,7 @@ OFFLINE_DIAGNOSTIC_STAGES = (
     "synthetic-scan",
     "complete",
 )
+CONTROL_USER_OPTION = '--user "${host_uid}:${host_gid}"'
 
 
 def _source(*, required: bool = True) -> str:
@@ -157,6 +163,143 @@ def _job(source: str, name: str) -> str:
     )
     assert match is not None
     return match.group("body")
+
+
+def _offline_campaign_script(source: str) -> str:
+    job = _job(source, "offline_adversarial")
+    match = re.search(
+        r"^      - name: Run the fresh kernel-isolated adversarial campaign\n"
+        r"        id: offline_campaign\n"
+        r"        run: \|\n"
+        r"(?P<body>.*?)(?=^      - name: )",
+        job,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None
+    return textwrap.dedent(match.group("body"))
+
+
+def _control_fragment(script: str) -> str:
+    start = script.index('export PHASE6_SYNTHETIC_HEADER_CANARY="phase6-synthetic-header-canary-')
+    end = script.index("control_status=$?", start) + len("control_status=$?")
+    return script[start:end] + '\ntest "${control_status}" -eq 0\n'
+
+
+def _synthetic_scan_program(script: str) -> str:
+    marker = ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync python - <<'PY'\n"
+    start = script.index(marker) + len(marker)
+    end = script.index("\nPY", start)
+    return script[start:end]
+
+
+def _write_control_docker_fake(directory: Path) -> None:
+    fake = directory / "docker"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "\n"
+        "arguments = sys.argv[1:]\n"
+        "users = [arguments[index + 1] for index, value in enumerate(arguments) "
+        "if value == '--user' and index + 1 < len(arguments)]\n"
+        "if users != [os.environ['EXPECTED_CONTROL_USER']]:\n"
+        "    raise SystemExit(64)\n"
+        "mounts = [arguments[index + 1] for index, value in enumerate(arguments) "
+        "if value == '--volume' and index + 1 < len(arguments)]\n"
+        "writable = [value for value in mounts if value.endswith(':/probe:rw')]\n"
+        "if len(writable) != 1:\n"
+        "    raise SystemExit(65)\n"
+        "root = Path(writable[0].removesuffix(':/probe:rw'))\n"
+        "scenario_ids = [f'scenario-{index:02d}' for index in range(15)]\n"
+        "report = {\n"
+        "    'schema_version': 'phase6.offline-campaign-report.v1',\n"
+        "    'scenario_matrix_digest': 'sha256:' + 'a' * 64,\n"
+        "    'required_scenario_ids': scenario_ids,\n"
+        "    'completed_scenario_ids': scenario_ids,\n"
+        "    'scenario_result_digests': ['sha256:' + f'{index:064x}' "
+        "for index in range(15)],\n"
+        "    'controlled_scenario_count': 15,\n"
+        "    'untrusted_execution_count': 0,\n"
+        "    'unapproved_network_effect_count': 0,\n"
+        "    'unauthorized_effect_count': 0,\n"
+        "    'synthetic_canary_hit_count': 0,\n"
+        "}\n"
+        "payload = (json.dumps(report, sort_keys=True) + '\\n').encode('ascii')\n"
+        "descriptor = os.open(\n"
+        "    root / 'campaign-report.json',\n"
+        "    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,\n"
+        "    0o600,\n"
+        ")\n"
+        "with os.fdopen(descriptor, 'wb') as stream:\n"
+        "    stream.write(payload)\n"
+        "    stream.flush()\n"
+        "    os.fsync(stream.fileno())\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+
+def _execute_control_fragment(tmp_path: Path) -> tuple[Path, str]:
+    source = _source(required=False)
+    script = _offline_campaign_script(source)
+    campaign_root = tmp_path / "campaign"
+    campaign_root.mkdir()
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_control_docker_fake(fake_bin)
+    environment = {
+        **os.environ,
+        "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+        "EXPECTED_CONTROL_USER": f"{os.getuid()}:{os.getgid()}",
+        "PHASE6_RUN_ID": "123456789",
+        "PHASE6_RUN_ATTEMPT": "1",
+        "PHASE6_SOURCE_COMMIT": "a" * 40,
+        "PHASE6_WORKFLOW_SHA256": "b" * 64,
+        "repository_root": str(ROOT),
+        "campaign_root": str(campaign_root),
+        "image_tag": "phase6-test:local",
+    }
+    completed = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + _control_fragment(script)],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    report = campaign_root / "campaign-report.json"
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+    return campaign_root, _synthetic_scan_program(script)
+
+
+def _run_synthetic_scan(campaign_root: Path, program: str) -> subprocess.CompletedProcess[str]:
+    (campaign_root / "direct_probe.py").write_text("raise SystemExit(97)\n", encoding="utf-8")
+    (campaign_root / "child_probe.py").write_text("raise SystemExit(97)\n", encoding="utf-8")
+    environment = {
+        **os.environ,
+        "PHASE6_CAMPAIGN_ROOT": str(campaign_root),
+        "PHASE6_PRIOR_FAILED_PROBE_RUN_ID": "30430010273",
+        "PHASE6_CONTROL_OUTCOME": "passed",
+        "PHASE6_DIRECT_OUTCOME": "denied",
+        "PHASE6_CHILD_OUTCOME": "denied",
+        "PHASE6_SYNTHETIC_HEADER_CANARY": "phase6-synthetic-header-canary-123456789-1",
+        "PHASE6_SYNTHETIC_PAYLOAD_CANARY": "phase6-synthetic-payload-canary-123456789-1",
+        "PHASE6_WORKFLOW_SHA256": "b" * 64,
+        "PHASE6_SOURCE_COMMIT": "a" * 40,
+        "PHASE6_RUN_ID": "123456789",
+        "PHASE6_RUN_ATTEMPT": "1",
+    }
+    return subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def _assert_network_none_python_runtime_mounts(job: str) -> None:
@@ -510,6 +653,56 @@ def test_offline_adversarial_synthetic_scan_manifest_is_explicit_and_path_closed
     assert all(token not in job.casefold() for token in forbidden)
     assert re.search(r"""(?i)(?:["'/])\.env(?:["'/\s]|$)""", job) is None
     assert 'raise SystemExit("synthetic canary reached an allowlisted surface")' in job
+
+
+def test_control_report_created_with_mode_0600_is_readable_by_host_synthetic_scanner(
+    tmp_path: Path,
+) -> None:
+    campaign_root, scan_program = _execute_control_fragment(tmp_path)
+    completed = _run_synthetic_scan(campaign_root, scan_program)
+    assert completed.returncode == 0, completed.stderr
+    assert (campaign_root / "offline-evidence.json").is_file()
+
+
+def test_host_synthetic_scanner_fails_closed_when_control_report_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("mode-only unreadability requires a non-root scanner identity")
+    campaign_root, scan_program = _execute_control_fragment(tmp_path)
+    report = campaign_root / "campaign-report.json"
+    report.chmod(0)
+    completed = _run_synthetic_scan(campaign_root, scan_program)
+    assert completed.returncode != 0
+    assert "PermissionError" in completed.stderr
+
+
+def test_host_synthetic_scanner_detects_exact_canary_in_control_report(
+    tmp_path: Path,
+) -> None:
+    campaign_root, scan_program = _execute_control_fragment(tmp_path)
+    report = campaign_root / "campaign-report.json"
+    payload = json.loads(report.read_bytes())
+    canary = "phase6-synthetic-header-canary-123456789-1"
+    payload["mutation_probe"] = canary
+    report.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    report.chmod(0o600)
+    completed = _run_synthetic_scan(campaign_root, scan_program)
+    assert completed.returncode != 0
+    assert completed.stderr.strip() == "synthetic canary reached an allowlisted surface"
+    assert canary not in completed.stderr
+
+
+def test_offline_control_container_has_one_numeric_host_identity_mapping() -> None:
+    job = _job(_source(required=False), "offline_adversarial")
+    assert job.count('host_uid="$(id -u)"') == 1
+    assert job.count('host_gid="$(id -g)"') == 1
+    assert job.count(CONTROL_USER_OPTION) == 1
+    control = job.partition('diagnostic_stage="control"')[2].partition(
+        'diagnostic_stage="direct-probe"'
+    )[0]
+    assert control.count(CONTROL_USER_OPTION) == 1
+    assert CONTROL_USER_OPTION not in job.partition('diagnostic_stage="direct-probe"')[2]
 
 
 @pytest.mark.parametrize(

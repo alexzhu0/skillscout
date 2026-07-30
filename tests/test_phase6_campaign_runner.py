@@ -323,3 +323,16 @@ def test_runner_main_produces_bound_canonical_success_report() -> None:
         )
         + "\n"
     ).encode("ascii")
+
+
+def test_atomic_campaign_sink_keeps_report_owner_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runner()
+    monkeypatch.setattr(module, "_OUTPUT_ROOT", tmp_path)
+    sink = module.AtomicCampaignSink()
+    sink.write_report(b'{"bounded":true}\n')
+    report = tmp_path / "campaign-report.json"
+    assert report.read_bytes() == b'{"bounded":true}\n'
+    assert report.stat().st_mode & 0o777 == 0o600

@@ -44,6 +44,7 @@ CONTAINER_MANAGED_ENV = (
     "--env UV_PYTHON_DOWNLOADS=never",
 )
 REPOSITORY_MOUNT = '--volume "${repository_root}:${repository_root}:ro"'
+CONTROL_USER_OPTION = '--user "${host_uid}:${host_gid}"'
 
 
 def _module(*, skip_if_missing: bool = True) -> Any:
@@ -371,6 +372,40 @@ def test_source_execution_verifier_requires_one_failure_only_diagnostic_upload(
     module = _module()
     result = module.verify_source_execution(_copy_workflows(tmp_path))
     assert getattr(result, "diagnostic_upload_count", 0) == 1
+
+
+def test_source_execution_verifier_binds_one_control_container_to_host_numeric_identity(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    result = module.verify_source_execution(_copy_workflows(tmp_path))
+    assert getattr(result, "control_user_mapping_count", 0) == 1
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        ('host_uid="$(id -u)"', 'host_uid="0"'),
+        ('host_gid="$(id -g)"', 'host_gid="0"'),
+        (CONTROL_USER_OPTION, '--user "0:0"'),
+        (CONTROL_USER_OPTION, ""),
+        (CONTROL_USER_OPTION, CONTROL_USER_OPTION + " \\\n            " + CONTROL_USER_OPTION),
+        (CONTROL_USER_OPTION, '--user "$(id -u):$(id -g)"'),
+    ),
+)
+def test_source_execution_verifier_rejects_control_user_mapping_mutations(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    source = path.read_text(encoding="utf-8")
+    assert needle in source
+    path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
 
 
 @pytest.mark.parametrize(
