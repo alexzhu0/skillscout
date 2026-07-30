@@ -719,6 +719,133 @@ def test_resolve_acceptance_resume_cli_dispatches_verified_locator(
     assert json.loads(capsys.readouterr().out) == expected
 
 
+def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.cli as cli
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    original_commit = "4" * 40
+    anchor_commit = "8" * 40
+    original_root = "sha256:" + ("5" * 64)
+    anchor_root = "sha256:" + ("9" * 64)
+    authority_digest = "sha256:" + ("1" * 64)
+    events: list[str] = []
+    locator = AcceptanceCampaignResumeLocatorV1.model_construct(
+        acceptance_run_id="acceptance-resume",
+        live_acceptance_authority_digest=authority_digest,
+        original_state_commit_sha=original_commit,
+        original_state_root_digest=original_root,
+        current_state_commit_sha=original_commit,
+        lineage_commit_shas=(original_commit,),
+        lineage_root_digests=(original_root,),
+        locator_digest="sha256:" + ("a" * 64),
+    )
+    bundles = {
+        original_commit: SimpleNamespace(
+            root=SimpleNamespace(
+                root_digest=original_root,
+                state_parent_commit_sha="0" * 40,
+                prior_root_digest="sha256:" + ("0" * 64),
+            )
+        ),
+        anchor_commit: SimpleNamespace(
+            root=SimpleNamespace(
+                root_digest=anchor_root,
+                state_parent_commit_sha=original_commit,
+                prior_root_digest=original_root,
+            )
+        ),
+    }
+
+    class Reader:
+        def __init__(self, **_kwargs: object) -> None:
+            assert events == ["authority"]
+            events.append("reader")
+
+        def close(self) -> None:
+            events.append("closed")
+
+        def get_state_ref(self) -> object:
+            return SimpleNamespace(sha=anchor_commit)
+
+        def get_commit(self, sha: str) -> object:
+            parent = (
+                ("0" * 40,) if sha == original_commit else (original_commit,)
+            )
+            return SimpleNamespace(sha=sha, parents=parent)
+
+    class Store:
+        def __init__(self, _reader: object) -> None:
+            pass
+
+        def restore_commit(self, sha: str) -> object:
+            return bundles[sha]
+
+    monkeypatch.setattr(
+        cli,
+        "_run_verify_live_authority",
+        lambda _arguments: events.append("authority")
+        or {
+            "acceptance_run_id": "acceptance-resume",
+            "authority_digest": authority_digest,
+            "source_commit_sha": "2" * 40,
+            "state_commit_sha": original_commit,
+            "state_root_digest": original_root,
+            "state_repository_id": 123,
+            "state_repository_full_name": "example/state",
+        },
+    )
+    monkeypatch.setattr(state_branch, "StateBranchReadClient", Reader)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        cli,
+        "_acceptance_resume_locators_from_bundle",
+        lambda bundle, _run_id: (
+            (locator,) if bundle is bundles[anchor_commit] else ()
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_checked_out_git_commit",
+        lambda _path: anchor_commit,
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_verified_state_checkout",
+        lambda **_kwargs: bundles[anchor_commit],
+    )
+    monkeypatch.setenv("SKILLSCOUT_STATE_GITHUB_TOKEN", "fixture-token")
+
+    result = cli._run_resolve_acceptance_resume(
+        SimpleNamespace(
+            authority_state_root=tmp_path,
+            authority_state_root_digest=original_root,
+            campaign_state_root=tmp_path,
+            acceptance_run_id="acceptance-resume",
+            authority_digest=authority_digest,
+            source_commit_sha="2" * 40,
+            state_repository_id=123,
+            state_repository_full_name="example/state",
+        )
+    )
+
+    assert result == {
+        "authority_digest": authority_digest,
+        "acceptance_run_id": "acceptance-resume",
+        "lineage_commit_shas": [original_commit, anchor_commit],
+        "lineage_root_digests": [original_root, anchor_root],
+        "locator_digest": locator.locator_digest,
+        "state_commit_sha": anchor_commit,
+        "state_root_digest": anchor_root,
+        "status": "acceptance_resume_verified",
+    }
+    assert events == ["authority", "reader", "closed"]
+
+
 def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> None:
     """A locator anchor admits its verified commit or one verified crash suffix."""
 
