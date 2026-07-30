@@ -649,9 +649,14 @@ jobs:
 
           export PHASE6_SYNTHETIC_HEADER_CANARY="phase6-synthetic-header-canary-${PHASE6_RUN_ID}-${PHASE6_RUN_ATTEMPT}"
           export PHASE6_SYNTHETIC_PAYLOAD_CANARY="phase6-synthetic-payload-canary-${PHASE6_RUN_ID}-${PHASE6_RUN_ATTEMPT}"
+          host_uid="$(id -u)"
+          host_gid="$(id -g)"
+          [[ -n "$host_uid" && "$host_uid" != *$'\n'* && "$host_uid" =~ ^(0|[1-9][0-9]*)$ ]]
+          [[ -n "$host_gid" && "$host_gid" != *$'\n'* && "$host_gid" =~ ^(0|[1-9][0-9]*)$ ]]
           diagnostic_stage="control"
           set +e
           docker run --network none --rm \
+            --user "${host_uid}:${host_gid}" \
             --volume /bin:/bin:ro \
             --volume /etc:/etc:ro \
             --volume /lib:/lib:ro \

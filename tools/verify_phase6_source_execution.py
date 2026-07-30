@@ -117,6 +117,16 @@ ALLOWED_NETWORK_NONE_VOLUMES = frozenset(
     }
 )
 EXPECTED_NETWORK_NONE_INVOCATIONS = 6
+EXPECTED_CONTROL_USER_MAPPINGS = 1
+CONTROL_USER_OPTION = '--user "${host_uid}:${host_gid}"'
+HOST_UID_DERIVATION = 'host_uid="$(id -u)"'
+HOST_GID_DERIVATION = 'host_gid="$(id -g)"'
+HOST_UID_VALIDATION = (
+    '[[ -n "$host_uid" && "$host_uid" != *$\'\\n\'* && "$host_uid" =~ ^(0|[1-9][0-9]*)$ ]]'
+)
+HOST_GID_VALIDATION = (
+    '[[ -n "$host_gid" && "$host_gid" != *$\'\\n\'* && "$host_gid" =~ ^(0|[1-9][0-9]*)$ ]]'
+)
 OFFLINE_DIAGNOSTIC_STAGES = (
     "runtime-preflight",
     "control",
@@ -173,6 +183,7 @@ class SourceExecutionResult(NamedTuple):
     managed_python_version: str
     managed_python_root: str
     network_none_invocation_count: int
+    control_user_mapping_count: int
     diagnostic_upload_count: int
 
 
@@ -419,6 +430,47 @@ def _closed_network_none_invocation_count(run: str) -> int:
     return len(invocations)
 
 
+def _closed_control_user_mapping_count(jobs: tuple[_Job, ...]) -> int:
+    offline_jobs = tuple(job for job in jobs if job.name == "offline_adversarial")
+    _require(len(offline_jobs) == 1)
+    campaign_steps = tuple(
+        step
+        for step in offline_jobs[0].steps
+        if step.name == "Run the fresh kernel-isolated adversarial campaign"
+    )
+    _require(len(campaign_steps) == 1)
+    campaign = campaign_steps[0].run
+    _require(campaign is not None)
+    for required in (
+        HOST_UID_DERIVATION,
+        HOST_GID_DERIVATION,
+        HOST_UID_VALIDATION,
+        HOST_GID_VALIDATION,
+    ):
+        _require(campaign.count(required) == 1)
+    invocations = campaign.split("docker run --network none --rm \\")[1:]
+    _require(len(invocations) == 3)
+    mapping_count = 0
+    for invocation in invocations:
+        options, separator, _ = invocation.partition(f"{LOCAL_UV} run --locked --offline --no-sync")
+        is_control = False
+        if not separator:
+            options, separator, _ = invocation.partition(CAMPAIGN_RUNNER)
+            is_control = bool(separator)
+        _require(bool(separator))
+        user_options = tuple(
+            line.strip().removesuffix(" \\")
+            for line in options.splitlines()
+            if line.strip().startswith("--user")
+        )
+        if is_control:
+            _require(user_options == (CONTROL_USER_OPTION,))
+            mapping_count += 1
+        else:
+            _require(not user_options)
+    return mapping_count
+
+
 def _closed_offline_diagnostic_upload_count(jobs: tuple[_Job, ...]) -> int:
     offline_jobs = tuple(job for job in jobs if job.name == "offline_adversarial")
     _require(len(offline_jobs) == 1)
@@ -532,6 +584,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     findings: list[AuthoritativeStep] = []
     managed_python_job_count = 0
     network_none_invocation_count = 0
+    control_user_mapping_count = 0
     diagnostic_upload_count = 0
     for relative in WORKFLOW_PATHS:
         source = _read(root, relative)
@@ -539,6 +592,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
         _reject_forbidden_sources(source, jobs)
         if relative == Path(".github/workflows/phase6-acceptance.yml"):
             diagnostic_upload_count += _closed_offline_diagnostic_upload_count(jobs)
+            control_user_mapping_count += _closed_control_user_mapping_count(jobs)
         for job in jobs:
             checkout_indexes = tuple(
                 index for index, step in enumerate(job.steps) if CHECKOUT in step.source
@@ -585,6 +639,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     _require(bool(findings))
     _require(managed_python_job_count == 15)
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
+    _require(control_user_mapping_count == EXPECTED_CONTROL_USER_MAPPINGS)
     _require(diagnostic_upload_count == 1)
     return SourceExecutionResult(
         workflow_paths=tuple(path.as_posix() for path in WORKFLOW_PATHS),
@@ -594,6 +649,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
         managed_python_version=MANAGED_PYTHON_VERSION,
         managed_python_root=MANAGED_PYTHON_ROOT,
         network_none_invocation_count=network_none_invocation_count,
+        control_user_mapping_count=control_user_mapping_count,
         diagnostic_upload_count=diagnostic_upload_count,
     )
 
