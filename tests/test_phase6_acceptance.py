@@ -487,6 +487,8 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
         repository_root=tmp_path,
         authority_bytes=authority_bytes,
         observed_source_commit_sha="c" * 40,
+        observed_state_commit_sha="e" * 40,
+        observed_state_root_digest="sha256:" + ("f" * 64),
         environ={
             "SKILLSCOUT_LLM_PROVIDER": "deepseek",
             "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
@@ -499,6 +501,20 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
             repository_root=tmp_path,
             authority_bytes=authority_bytes,
             observed_source_commit_sha="d" * 40,
+            observed_state_commit_sha="e" * 40,
+            observed_state_root_digest="sha256:" + ("f" * 64),
+            environ={
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            },
+        )
+    with pytest.raises(ValueError):
+        bootstrap.verify_live_acceptance_authority(
+            repository_root=tmp_path,
+            authority_bytes=authority_bytes,
+            observed_source_commit_sha="c" * 40,
+            observed_state_commit_sha="d" * 40,
+            observed_state_root_digest="sha256:" + ("f" * 64),
             environ={
                 "SKILLSCOUT_LLM_PROVIDER": "deepseek",
                 "DEEPSEEK_BASE_URL": "https://api.deepseek.com",

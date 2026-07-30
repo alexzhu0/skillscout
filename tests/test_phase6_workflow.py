@@ -991,6 +991,63 @@ def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
     assert "--action replay" in replay
 
 
+def test_live_preflight_exports_complete_immutable_handoff_to_consumers() -> None:
+    """Benchmark/replay may consume only verified preflight outputs, never vars."""
+
+    source = _source(required=False)
+    preflight = _job(source, "live_authority_preflight")
+    benchmark = _job(source, "live_benchmark")
+    replay = _job(source, "live_replay")
+    required = {
+        "acceptance_run_id",
+        "authority_digest",
+        "authority_state_commit_sha",
+        "authority_state_root_digest",
+        "state_commit_sha",
+        "state_root_digest",
+        "state_repository_id",
+        "state_repository_full_name",
+        "source_commit_sha",
+        "manifest_digest",
+    }
+    assert "outputs:" in preflight
+    for name in required:
+        assert (
+            f"{name}: ${{{{ steps.authority_handoff.outputs.{name} }}}}"
+            in preflight
+        )
+        expression = (
+            "${{ needs.live_authority_preflight.outputs." + name + " }}"
+        )
+        assert expression in benchmark
+        assert expression in replay
+    for consumer in (benchmark, replay):
+        assert "${{ vars." not in consumer
+        assert "SKILLSCOUT_STATE_REPOSITORY_ID" in consumer
+        assert "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" in consumer
+        assert "PHASE6_ACCEPTANCE_RUN_ID" in consumer
+
+
+def test_benchmark_repeats_authority_and_complete_state_gate_before_secrets() -> None:
+    """The final secret-bearing step is preceded by a full local re-verification."""
+
+    benchmark = _job(_source(required=False), "live_benchmark")
+    prefix, separator, execution = benchmark.partition(
+        "      - name: Execute the approved live benchmark"
+    )
+    assert separator and execution
+    assert "Check out the exact independently approved authority state" in prefix
+    assert "Check out the exact complete campaign state" in prefix
+    assert "verify-live-authority" in prefix
+    assert "--runtime-state-commit-sha \"$PHASE6_STATE_COMMIT_SHA\"" in prefix
+    assert "--runtime-state-root-digest \"$PHASE6_STATE_ROOT_DIGEST\"" in prefix
+    assert "verify-acceptance-state" in prefix
+    assert "DEEPSEEK_API_KEY" not in prefix
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in prefix
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in prefix
+    assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in execution
+
+
 def test_nomination_installation_and_state_cas_are_source_bound() -> None:
     nomination = _job(_source(required=False), "nominate")
 
