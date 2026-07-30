@@ -52,6 +52,28 @@ def test_outcome_matrix_keeps_business_quarantine_and_fatal_classes_distinct() -
     assert "semantic_outcome_unknown" in CONTINUABLE_OUTCOMES
 
 
+@pytest.mark.parametrize(
+    ("extractor_outcome", "terminal_outcome", "acceptance_outcome"),
+    (
+        ("no_workflow", "no_workflow", None),
+        ("refused", "semantic_outcome_unknown", "provider_exhausted"),
+        ("incomplete", "semantic_outcome_unknown", "provider_exhausted"),
+        ("schema_failure", "permanent_failure", "schema_exhausted"),
+    ),
+)
+def test_extractor_terminal_classification_never_turns_system_failure_into_business_negative(
+    extractor_outcome: str,
+    terminal_outcome: str,
+    acceptance_outcome: str | None,
+) -> None:
+    module = _module()
+
+    assert module.classify_extractor_terminal(extractor_outcome) == (
+        terminal_outcome,
+        acceptance_outcome,
+    )
+
+
 def test_crash_matrix_names_every_non_refundable_durability_seam() -> None:
     seams = (
         "before_page_dedup",

@@ -67,6 +67,7 @@ README_SIZE = json.loads(recorded_fixture("blob_readme").body)["size"]
 
 PAYLOAD_KEYS = {
     "schema_version",
+    "output_schema_version",
     "stage",
     "subject_id",
     "outcome",
@@ -364,6 +365,7 @@ def test_zero_workflows_yields_the_no_workflow_outcome() -> None:
 
     assert set(payload) == PAYLOAD_KEYS
     assert payload["outcome"] == "no_workflow"
+    assert payload["output_schema_version"] == WORKFLOW_SPEC_SCHEMA_VERSION
     assert payload["workflows"] == []
     assert payload["dropped"] == []
     assert payload["rejection_reason"] == (
