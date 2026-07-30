@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 after run 30517690161 failed at synthetic-scan; no canonical facts or retry authorized
-last_updated: "2026-07-30T05:55:00Z"
+stopped_at: Blocked 06-06 Task 3 pending separately authorized hosted success after local ownership correction; no canonical facts or retry authorized
+last_updated: "2026-07-30T06:11:01Z"
 last_activity: 2026-07-30
 progress:
   total_phases: 6
@@ -111,7 +111,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - Plan 06-06 hosted isolation ingestion is blocked: run 30430010273 failed before the network probe, upload was skipped, and artifact count is zero.
 - Plan 06-06 Task 3 blocked: exact offline-adversarial run 30441596331 attempt 1 at source 27d7a41f0e7c7ffeb2991110f44eab6a977c78ca failed during repository-local locked-toolchain verification; campaign and upload were skipped, artifact count is zero, and no hosted-isolation or offline-run canonical fact was persisted. No retry is authorized.
 - Proven common cause for runs 30430010273 and 30441596331 was the exact-full-output guard rejecting the official pinned output `uv 0.11.29 (901092ee1 2026-07-15 aarch64-apple-darwin)`. Strict-TDD correction commits are RED `49a548261c84f81628d301f5bf4eba603c0c18ee` and GREEN `3b6b189cc848ab083cf83bf4489a5c91945f5aed`.
-- The current authoritative workflow SHA-256 values are discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef`.
+- The current authoritative workflow SHA-256 values are discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `7eca32de7c0468d18c180ebecf567d7239412e54c2776e43621930b894570f63`.
 - Every earlier workflow digest, dispatch approval, Gate B4 approval, and exact-source authorization is stale after the current workflow-byte changes. A new human checkpoint must bind the final local HEAD and current Phase 6 workflow digest before any retry; no push, dispatch, artifact access, canonical fact write, or approval inference has occurred.
 - Plan 06-06 Task 3 remains blocked: authorized one-shot offline-adversarial run 30443794922 attempt 1 at source 5997ceaac5fc137971d031750be98323b5745591 passed checkout, pinned uv materialization, and locked-toolchain verification, then failed in the fresh kernel-isolated adversarial campaign; bounded evidence upload was skipped, artifact count is zero, and no acceptance_hosted_isolation_capability or acceptance_offline_adversarial_run canonical fact was persisted. No retry is authorized.
 - Proven cause for run 30443794922 was the repository-visible `.venv/bin/python` resolving to a hosted Python base prefix outside the repository while the empty-rootfs Docker invocations did not mount that prefix. Strict-TDD correction commits RED `e86c8091279757fb43ffdb2dcac7afe364e79f91` and GREEN `b48e1fddc058e44a355ebc09086ec6a2aa65ee8d` attempted an exact `${RUNNER_TOOL_CACHE}/Python/` mount; that approach is historical and superseded by the repository-managed correction below.
@@ -134,6 +134,10 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - The fresh user authorization bound exact source/local/remote `main` `aacd2f2efb5db8e32728fba002f2d2f23dbed2d4`, Phase 6 workflow SHA-256 `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef`, unchanged discover/publish/canary digests, and corpus aggregate `sha256:809fdb625fc9340ff6c4effa2dd5252311ea485bb4ec2c164aafb0835545d032`. The exact-SHA dispatch returned HTTP 422 and created no run; fresh remote equality then authorized the one `main` fallback, which created run `30517690161` attempt 1 at that exact source.
 - Run `30517690161` failed at the closed `synthetic-scan` stage with overall/control/direct/child statuses `1/0/97/97`. Its inventory contained exactly the one-day diagnostic artifact `8749511557`, named `phase6-offline-adversarial-diagnostic-30517690161-1`, with metadata size 416 bytes and expiry `2026-07-31T05:49:11Z`; the strict 377-byte JSON SHA-256 is `cffaf349b538c8dfcd4a8dfbf2125d6a38c1e6666050e7102a8ffc1b66f54370` and ZIP SHA-256 is `dc70b3523520f7aa6ed17bfd551266357a4c10e02eda21bb915b90dec1711792`.
 - The sole artifact was the workflow-owned bounded schema `phase6.offline-diagnostic.v1`, not runner diagnostic v2 or success evidence. It proves the control and both denial probes reached their required statuses but grants no synthetic-scan, hosted-isolation, or completed-campaign credit. No raw logs or other artifact were opened, no canonical acceptance fact was written, no retry is authorized, and no `06-06-SUMMARY.md` exists.
+- Confirmed root cause for run `30517690161`: `AtomicCampaignSink` created `campaign-report.json` with required mode `0600` inside the root-default control container, so the bind-mounted report was root-owned. Host `test -s` could stat it, but the non-root host synthetic scanner's `read_bytes()` raised `PermissionError`; an exact readable copy scanned with zero canary hits, and making only the report unreadable reproduced the failure.
+- Strict-TDD ownership correction commits are RED `d4d7b5dd4858fc88c38f8d0db561cc28c62c3430` and GREEN `1c8aaf8359a3ff1eeea56b2cf10d151db71767db`. Only the report-writing control invocation receives exactly one validated numeric `--user "${host_uid}:${host_gid}"`; mode `0600`, direct/child probes, `--network none`, read-only repository mount, scan manifest, one-day artifacts, and no-retry policy remain unchanged.
+- Local verification passed 124 focused tests and a 276-pass/12-skip wider Phase 6 matrix; all 35 workflow blocks passed `bash -n`; the independent source verifier passed; full locked pytest reported 2,193 passed, 14 skipped, and only the planned repository-verifier RED failure. The offline verifier remains correctly incomplete. `pyproject.toml` and `uv.lock` are unchanged.
+- Every prior exact-source/workflow authorization, dispatch approval, and Gate B4 binding is stale after this workflow-byte correction. No push, dispatch, remote or artifact access, canonical write, credential inspection, publication, or cleanup occurred; Task 06-06-03 remains incomplete pending separately authorized hosted success.
 
 ### Quick Tasks Completed
 
@@ -144,8 +148,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-30
-**Last session:** 2026-07-30T05:55:00Z
-**Stopped at:** Blocked 06-06 Task 3 after run 30517690161 failed at synthetic-scan; no canonical facts or retry authorized
+**Last session:** 2026-07-30T06:11:01Z
+**Stopped at:** Blocked 06-06 Task 3 pending separately authorized hosted success after local ownership correction; no canonical facts or retry authorized
 **Resume file:** None
 
 ### Next
