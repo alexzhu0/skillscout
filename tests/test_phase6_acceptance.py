@@ -123,6 +123,34 @@ def test_wave_zero_never_fabricates_a_positive_release_verdict() -> None:
     assert not (ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-RELEASE-REQUIREMENTS.json").exists()
 
 
+def test_search_credential_gate_rebuilds_exact_plan_06_06_offline_state() -> None:
+    module = _verifier()
+
+    report = module.verify_offline_state(ROOT)
+
+    assert report.state_commit_sha == ("37f8dcbf74c85f2471670373fd03f71d9f155bae")
+    assert report.state_root_digest == (
+        "sha256:b4167cffc31969854260d4acd58b804f4823a4d25d078ef3b5dc88445b75c2e5"
+    )
+    assert report.workflow_sha256 == (
+        "sha256:7eca32de7c0468d18c180ebecf567d7239412e54c2776e43621930b894570f63"
+    )
+    assert report.source_commit_sha == ("a3c41cf8501bec435a646f140f52acedf1c5f312")
+    assert report.hosted_run_id == 30519607061
+    assert report.run_attempt == 1
+    assert report.isolation_mechanism == "docker_network_none"
+
+
+def test_search_credential_gate_rejects_a_stale_canonical_state_identity() -> None:
+    module = _verifier()
+
+    with pytest.raises(module.OfflineStateError):
+        module.verify_offline_state(
+            ROOT,
+            expected_state_commit="0" * 40,
+        )
+
+
 def test_future_requirement_map_must_be_canonical_and_exactly_all_44() -> None:
     path = (
         ROOT
