@@ -488,8 +488,16 @@ class StateBranchStore:
             ref = self._remote.get_state_ref()
         except StateRefNotFound:
             return StateRestoreObservation("absent", None, None)
-        commit = self._remote.get_commit(ref.sha)
-        if commit.sha != ref.sha or len(commit.parents) > 1:
+        return StateRestoreObservation(
+            "verified",
+            ref.sha,
+            self.restore_commit(ref.sha),
+        )
+
+    def restore_commit(self, commit_sha: str) -> VerifiedStateBundle:
+        expected_commit_sha = _sha(commit_sha)
+        commit = self._remote.get_commit(expected_commit_sha)
+        if commit.sha != expected_commit_sha or len(commit.parents) > 1:
             raise StateIntegrityFailure
         entries = self._remote.get_tree(commit.tree_sha)
         entry_map = _validate_tree_shape(entries)
@@ -530,7 +538,7 @@ class StateBranchStore:
             files.append(StateOwnedFile(path, content))
         bundle = VerifiedStateBundle(root, tuple(files))
         _validate_bundle(bundle, expected_parent=commit.parents[0] if commit.parents else None)
-        return StateRestoreObservation("verified", ref.sha, bundle)
+        return bundle
 
     @staticmethod
     def restore_from_fixture(
