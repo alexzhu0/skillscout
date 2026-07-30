@@ -846,6 +846,132 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
     assert events == ["authority", "reader", "closed"]
 
 
+def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import skillscout.bootstrap as bootstrap
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    original_commit = "4" * 40
+    anchor_commit = "8" * 40
+    second_commit = "a" * 40
+    original_root = "sha256:" + ("5" * 64)
+    anchor_root = "sha256:" + ("9" * 64)
+    second_root = "sha256:" + ("b" * 64)
+    authority = LiveAcceptanceAuthorityV1.model_construct(
+        authority_digest="sha256:" + ("1" * 64),
+        source_commit_sha="2" * 40,
+        manifest_digest="sha256:" + ("3" * 64),
+        state_commit_sha=original_commit,
+        state_root_digest=original_root,
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        semantic_provider="deepseek",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+    )
+    recorded: list[object] = []
+    synchronized = iter(
+        (
+            SimpleNamespace(
+                status="verified",
+                previous_head=original_commit,
+                commit_sha=anchor_commit,
+                root_digest=anchor_root,
+            ),
+            SimpleNamespace(
+                status="verified",
+                previous_head=anchor_commit,
+                commit_sha=second_commit,
+                root_digest=second_root,
+            ),
+        )
+    )
+
+    class Operations:
+        def record_acceptance_fact(
+            self, run_id: str, kind: str, fact: object
+        ) -> object:
+            assert run_id == "acceptance-resume"
+            assert kind == "acceptance_campaign_resume_locator"
+            recorded.append(fact)
+            return object()
+
+    barrier = object.__new__(bootstrap._LateStateDurabilityBarrier)
+    monkeypatch.setattr(
+        barrier,
+        "sync_discovery",
+        lambda **_kwargs: next(synchronized),
+    )
+    barrier.configure_acceptance_resume(
+        authority=authority,
+        acceptance_run_id="acceptance-resume",
+        lineage_commit_shas=(original_commit,),
+        lineage_root_digests=(original_root,),
+    )
+
+    first = barrier.anchor_acceptance_resume(
+        operations_store=Operations(),
+        observed_head=original_commit,
+        prior_root_digest=original_root,
+        created_at="2026-07-30T12:00:00.000000Z",
+        pipeline_store=object(),
+    )
+    second = barrier.anchor_acceptance_resume(
+        operations_store=Operations(),
+        observed_head=anchor_commit,
+        prior_root_digest=anchor_root,
+        created_at="2026-07-30T12:01:00.000000Z",
+        pipeline_store=object(),
+    )
+
+    assert first.commit_sha == anchor_commit
+    assert second.commit_sha == second_commit
+    assert [
+        (
+            item.current_state_commit_sha,
+            item.current_state_root_digest,
+            item.lineage_commit_shas,
+            item.lineage_root_digests,
+        )
+        for item in recorded
+    ] == [
+        (
+            original_commit,
+            original_root,
+            (original_commit,),
+            (original_root,),
+        ),
+        (
+            anchor_commit,
+            anchor_root,
+            (original_commit, anchor_commit),
+            (original_root, anchor_root),
+        ),
+    ]
+
+
 def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> None:
     """A locator anchor admits its verified commit or one verified crash suffix."""
 
