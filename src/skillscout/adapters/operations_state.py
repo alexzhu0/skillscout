@@ -943,6 +943,26 @@ def _acceptance_recorded_identity(
     elif kind == "acceptance_scenario":
         assert isinstance(fact, AcceptanceScenarioResultV1)
         values = (acceptance_run_id, kind, fact.scenario_id)
+    elif kind == "acceptance_budget_reservation":
+        assert isinstance(fact, AcceptanceBudgetReservationV1)
+        values = (
+            acceptance_run_id,
+            kind,
+            fact.benchmark_manifest_digest,
+            fact.benchmark_entry_digest,
+            fact.repository_id,
+            fact.ordinal,
+        )
+    elif kind == "acceptance_fixed_candidate_admission":
+        assert isinstance(fact, AcceptanceFixedCandidateAdmissionV1)
+        values = (
+            acceptance_run_id,
+            kind,
+            fact.benchmark_manifest_digest,
+            fact.benchmark_entry_digest,
+            fact.repository_id,
+            fact.ordinal,
+        )
     else:
         values = (acceptance_run_id, kind, _acceptance_fact_digest(kind, fact))
     return _json_text(values)
@@ -3052,6 +3072,37 @@ class OperationsStateStore:
                 (acceptance_run_id, kind, recorded_identity),
             ).fetchone()
             if identity_row is not None:
+                if kind in {
+                    "acceptance_budget_reservation",
+                    "acceptance_fixed_candidate_admission",
+                }:
+                    existing = _acceptance_row_fact(identity_row)
+                    timestamp_field = (
+                        "reserved_at"
+                        if kind == "acceptance_budget_reservation"
+                        else "admitted_at"
+                    )
+                    digest_field = (
+                        "reservation_digest"
+                        if kind == "acceptance_budget_reservation"
+                        else "admission_digest"
+                    )
+                    if existing.model_dump(
+                        mode="json",
+                        exclude={timestamp_field, digest_field},
+                    ) != validated.model_dump(
+                        mode="json",
+                        exclude={timestamp_field, digest_field},
+                    ):
+                        raise OperationsIntegrityError(
+                            "acceptance fact natural identity conflict"
+                        )
+                    return AcceptanceFactRecord(
+                        acceptance_run_id=acceptance_run_id,
+                        kind=kind,
+                        fact_digest=str(identity_row["fact_digest"]),
+                        fact=existing,
+                    )
                 raise OperationsIntegrityError("acceptance fact natural identity conflict")
             _validate_acceptance_references(
                 connection,

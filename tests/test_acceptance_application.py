@@ -578,6 +578,15 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                         fact_digest=live_authority.authority_digest,
                         fact=live_authority,
                     ),
+                    *(
+                        module.AcceptanceFactRecord(
+                            acceptance_run_id=acceptance_run_id,
+                            kind="acceptance_scenario",
+                            fact_digest=fact.result_digest,
+                            fact=fact,
+                        )
+                        for fact in persisted
+                    ),
                 ),
             )
 
@@ -646,6 +655,20 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
     assert all(item.policy_versions == ("extract-policy-v1",) for item in persisted)
     assert result.state_commit_sha == f"{5:040x}"
     assert result.state_root_digest == "sha256:" + f"{5:064x}"
+
+    resumed = module.run_locked_benchmark(
+        dependencies,
+        manifest=manifest,
+        acceptance_run_id="acceptance-live-five",
+        observed_head=result.state_commit_sha,
+        prior_root_digest=result.state_root_digest,
+        recorded_at="2026-07-27T12:00:01.000000Z",
+    )
+
+    assert resumed.scenario_results == result.scenario_results
+    assert len(observed) == len(persisted) == len(sync_calls) == 5
+    assert resumed.state_commit_sha == result.state_commit_sha
+    assert resumed.state_root_digest == result.state_root_digest
 
 
 def _live_authority_for_manifest(manifest: Any) -> LiveAcceptanceAuthorityV1:

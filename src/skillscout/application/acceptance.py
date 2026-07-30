@@ -798,12 +798,49 @@ def run_locked_benchmark(
         if len(live_authorities) != 1:
             raise AcceptanceApplicationError("evidence_missing")
         live_authority = live_authorities[0]
+        existing_scenarios = {
+            scenario.benchmark_entry_digest: scenario
+            for scenario in (
+                record.fact
+                for record in snapshot.facts
+                if record.kind == "acceptance_scenario"
+                and isinstance(record.fact, AcceptanceScenarioResultV1)
+            )
+        }
+        if (
+            len(existing_scenarios)
+            != len(
+                tuple(
+                    record
+                    for record in snapshot.facts
+                    if record.kind == "acceptance_scenario"
+                )
+            )
+            or not set(existing_scenarios).issubset(
+                {entry.entry_digest for entry in manifest.entries}
+            )
+        ):
+            raise AcceptanceApplicationError("evidence_missing")
+        semantic_requests = sum(
+            scenario.semantic_request_count
+            for scenario in existing_scenarios.values()
+        )
+        if semantic_requests > 20:
+            raise AcceptanceApplicationError("unauthorized_effect")
 
         runner = dependencies.discovery_factory()
         run = getattr(runner, "run", None)
         if not callable(run):
             raise AcceptanceApplicationError("evidence_missing")
         for ordinal, entry in enumerate(manifest.entries, start=1):
+            existing = existing_scenarios.get(entry.entry_digest)
+            if existing is not None:
+                if existing.scenario_id != f"locked-{ordinal}-{entry.repository_id}":
+                    raise AcceptanceApplicationError("evidence_missing")
+                results.append(existing)
+                if existing.terminal_class == "system_failure":
+                    raise AcceptanceApplicationError(existing.outcome)
+                continue
             authority = LiveRepositoryAuthority(
                 repository_full_name=entry.repository_full_name,
                 repository_id=entry.repository_id,

@@ -1310,7 +1310,7 @@ def test_fixed_runner_exhausts_only_after_three_same_authority_retries() -> None
     runner = object.__new__(bootstrap._FixedRepositoryAcceptanceRunner)
     runner._state_head = "a" * 40
     runner._state_root = "sha256:" + ("b" * 64)
-    runner._authority = object()
+    runner._authority = SimpleNamespace(run_id="acceptance-retry-semantic")
     runner._operations = SimpleNamespace(
         snapshot_run=lambda _run_id: SimpleNamespace(
             semantic_attempts=(),
@@ -1327,7 +1327,9 @@ def test_fixed_runner_exhausts_only_after_three_same_authority_retries() -> None
 
     runner._phase2_factory = factory
     result = runner._run_phase2_with_retries(
-        candidate=object(),
+        candidate=SimpleNamespace(
+            repository=SimpleNamespace(repository_id=101)
+        ),
         pinned_commit_sha="d" * 40,
     )
 
@@ -1407,6 +1409,65 @@ def test_fixed_runner_resumes_only_remaining_same_authority_attempts(
     assert calls == remaining_calls
 
 
+def test_fixed_runner_does_not_issue_fourth_request_after_durable_exhaustion() -> None:
+    """Three durable retry attempts are terminal across process restarts."""
+
+    import skillscout.bootstrap as bootstrap
+    from skillscout.domain.discovery import DiscoveryCandidateTerminalV1
+
+    phase2_authority = "sha256:" + ("a" * 64)
+    terminal = DiscoveryCandidateTerminalV1.model_construct(
+        schema_version="discovery-candidate-terminal-v1",
+        discovery_run_authority_digest="sha256:" + ("b" * 64),
+        repository_id=101,
+        semantic_reservation_digest="sha256:" + ("c" * 64),
+        outcome="confirmed_retryable",
+        workflow_authority_digests=(),
+        recorded_at="2026-07-27T12:00:00.000000Z",
+        terminal_digest="sha256:" + ("d" * 64),
+    )
+    runner = object.__new__(bootstrap._FixedRepositoryAcceptanceRunner)
+    runner._state_head = "a" * 40
+    runner._state_root = "sha256:" + ("b" * 64)
+    runner._authority = SimpleNamespace(run_id="acceptance-exhausted-semantic")
+    runner._operations = SimpleNamespace(
+        snapshot_run=lambda _run_id: SimpleNamespace(
+            semantic_attempts=tuple(
+                SimpleNamespace(
+                    repository_id=101,
+                    workflow_authority_digest=phase2_authority,
+                    stage="extractor",
+                    attempt_no=attempt_no,
+                )
+                for attempt_no in range(1, 4)
+            ),
+            semantic_reservations=(
+                SimpleNamespace(
+                    repository_id=101,
+                    phase2_run_authority_digest=phase2_authority,
+                ),
+            ),
+            candidate_terminals=(terminal,),
+        )
+    )
+    runner._barrier = object()
+    runner._phase3_factory = object()
+
+    def forbidden_factory(**_kwargs: object) -> object:
+        raise AssertionError("durable exhaustion issued a fourth request")
+
+    runner._phase2_factory = forbidden_factory
+    result = runner._run_phase2_with_retries(
+        candidate=SimpleNamespace(
+            repository=SimpleNamespace(repository_id=101)
+        ),
+        pinned_commit_sha="e" * 40,
+    )
+
+    assert result.terminal is terminal
+    assert result.acceptance_system_outcome == "provider_exhausted"
+
+
 @pytest.mark.parametrize(
     "terminal_outcome",
     ("semantic_outcome_unknown", "completed_reuse"),
@@ -1427,7 +1488,7 @@ def test_fixed_runner_never_replays_unknown_or_completed_phase2(
     runner = object.__new__(bootstrap._FixedRepositoryAcceptanceRunner)
     runner._state_head = "a" * 40
     runner._state_root = "sha256:" + ("b" * 64)
-    runner._authority = object()
+    runner._authority = SimpleNamespace(run_id="acceptance-terminal-semantic")
     runner._operations = SimpleNamespace(
         snapshot_run=lambda _run_id: SimpleNamespace(
             semantic_attempts=(),
@@ -1446,7 +1507,9 @@ def test_fixed_runner_never_replays_unknown_or_completed_phase2(
     runner._phase2_factory = factory
     assert (
         runner._run_phase2_with_retries(
-            candidate=object(),
+            candidate=SimpleNamespace(
+                repository=SimpleNamespace(repository_id=101)
+            ),
             pinned_commit_sha="d" * 40,
         )
         is terminal

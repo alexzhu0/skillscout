@@ -28,6 +28,7 @@ from skillscout.domain.discovery import (
 )
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.acceptance import (
+    AcceptanceBudgetReservationV1,
     AcceptanceFixedCandidateAdmissionV1,
     AcceptanceScenarioResultV1,
     BenchmarkEntryV1,
@@ -430,6 +431,120 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     )
     with pytest.raises(TypeError):
         module.ACCEPTANCE_FACT_MODELS["acceptance_replay"] = object
+
+
+def test_acceptance_budget_and_admission_redispatch_returns_original_fact(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    run_id = "acceptance-natural-identity"
+    nomination = _nomination_set()
+    manifest = _locked_manifest(nomination)
+    entry = manifest.entries[0]
+    budget_values = {
+        "schema_version": "acceptance-budget-reservation-v1",
+        "acceptance_run_id": run_id,
+        "benchmark_manifest_digest": manifest.manifest_digest,
+        "nomination_entry_digest": entry.nomination_entry_digest,
+        "benchmark_entry_digest": entry.entry_digest,
+        "repository_id": entry.repository_id,
+        "repository_full_name": entry.repository_full_name,
+        "ordinal": 1,
+        "max_files": 25,
+        "max_source_files": 5,
+        "max_file_bytes": 131_072,
+        "max_total_bytes": 524_288,
+        "max_estimated_tokens": 40_000,
+        "semantic_candidate_slots": 1,
+        "campaign_semantic_request_limit": 20,
+    }
+    admission_values = {
+        "schema_version": "acceptance-fixed-candidate-admission-v1",
+        "acceptance_run_id": run_id,
+        "benchmark_manifest_digest": manifest.manifest_digest,
+        "nomination_entry_digest": entry.nomination_entry_digest,
+        "benchmark_entry_digest": entry.entry_digest,
+        "repository_id": entry.repository_id,
+        "repository_full_name": entry.repository_full_name,
+        "exact_commit_sha": entry.exact_commit_sha,
+        "license_spdx": entry.license_spdx,
+        "ordinal": 1,
+    }
+    original_budget = AcceptanceBudgetReservationV1(
+        **budget_values,
+        reserved_at=TIMESTAMP,
+    )
+    redispatched_budget = AcceptanceBudgetReservationV1(
+        **budget_values,
+        reserved_at="2026-07-27T12:00:01.000000Z",
+    )
+    original_admission = AcceptanceFixedCandidateAdmissionV1(
+        **admission_values,
+        admitted_at=TIMESTAMP,
+    )
+    redispatched_admission = AcceptanceFixedCandidateAdmissionV1(
+        **admission_values,
+        admitted_at="2026-07-27T12:00:01.000000Z",
+    )
+
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        store.record_acceptance_fact(
+            run_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            run_id,
+            "acceptance_benchmark_lock",
+            manifest,
+        )
+        first_budget = store.record_acceptance_fact(
+            run_id,
+            "acceptance_budget_reservation",
+            original_budget,
+        )
+        second_budget = store.record_acceptance_fact(
+            run_id,
+            "acceptance_budget_reservation",
+            redispatched_budget,
+        )
+        first_admission = store.record_acceptance_fact(
+            run_id,
+            "acceptance_fixed_candidate_admission",
+            original_admission,
+        )
+        second_admission = store.record_acceptance_fact(
+            run_id,
+            "acceptance_fixed_candidate_admission",
+            redispatched_admission,
+        )
+        with pytest.raises(
+            module.OperationsIntegrityError,
+            match="natural identity conflict",
+        ):
+            store.record_acceptance_fact(
+                run_id,
+                "acceptance_budget_reservation",
+                AcceptanceBudgetReservationV1(
+                    **(
+                        budget_values
+                        | {"nomination_entry_digest": DIGEST_C}
+                    ),
+                    reserved_at="2026-07-27T12:00:02.000000Z",
+                ),
+            )
+        snapshot = store.acceptance_snapshot(run_id)
+
+    assert second_budget == first_budget
+    assert second_admission == first_admission
+    assert sum(
+        record.kind == "acceptance_budget_reservation"
+        for record in snapshot.facts
+    ) == 1
+    assert sum(
+        record.kind == "acceptance_fixed_candidate_admission"
+        for record in snapshot.facts
+    ) == 1
 
 
 def test_acceptance_scenario_identity_rejects_mutated_same_scenario(

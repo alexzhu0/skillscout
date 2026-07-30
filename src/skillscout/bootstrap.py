@@ -2571,7 +2571,7 @@ class _FixedRepositoryAcceptanceRunner:
             "extractor_model_id": discovery_config.extractor_model_id,
             "generator_model_id": discovery_config.generator_model_id,
             "reviewer_model_id": discovery_config.reviewer_model_id,
-            "initial_state_root_digest": discovery_config.initial_state_root_digest,
+            "initial_state_root_digest": self._live_authority.state_root_digest,
         }
         self._authority = DiscoveryRunAuthorityV1(
             **authority_values,
@@ -2580,7 +2580,6 @@ class _FixedRepositoryAcceptanceRunner:
         self._operations.create_run(self._authority, _discovery_timestamp())
         self._state_head = config.state_commit_sha
         self._state_root = config.state_root_digest
-        self._ordinal = 0
 
     def _run_phase2_with_retries(
         self,
@@ -2592,8 +2591,41 @@ class _FixedRepositoryAcceptanceRunner:
 
         from skillscout.application.pipeline import RetryPolicy
 
+        repository_id = candidate.repository.repository_id
+        snapshot = self._operations.snapshot_run(self._authority.run_id)
+        reservations = tuple(
+            item
+            for item in snapshot.semantic_reservations
+            if item.repository_id == repository_id
+        )
+        if len(reservations) > 1:
+            raise ValueError("fixed acceptance semantic reservation conflict")
+        phase2_authority = (
+            reservations[0].phase2_run_authority_digest
+            if reservations
+            else None
+        )
+        prior_attempts = tuple(
+            item
+            for item in snapshot.semantic_attempts
+            if item.repository_id == repository_id
+            and item.stage == "extractor"
+            and (
+                phase2_authority is None
+                or item.workflow_authority_digest == phase2_authority
+            )
+        )
+        prior_attempt_count = max(
+            (item.attempt_no for item in prior_attempts),
+            default=0,
+        )
+        remaining_attempts = (
+            RetryPolicy().max_attempts - prior_attempt_count
+        )
+        if remaining_attempts < 0:
+            raise ValueError("fixed acceptance semantic retry ledger exceeded")
         execution = None
-        for _attempt in range(RetryPolicy().max_attempts):
+        for _attempt in range(remaining_attempts):
             execution = self._phase2_factory(
                 candidate=candidate,
                 discovery_authority=self._authority,
@@ -2609,7 +2641,25 @@ class _FixedRepositoryAcceptanceRunner:
             if execution.terminal.outcome != "confirmed_retryable":
                 break
         if execution is None:
-            raise ValueError("fixed acceptance execution is missing")
+            terminals = tuple(
+                item
+                for item in snapshot.candidate_terminals
+                if item.repository_id == repository_id
+                and item.outcome == "confirmed_retryable"
+            )
+            if len(terminals) != 1:
+                raise ValueError("fixed acceptance execution is missing")
+            from skillscout.application.discovery import (
+                DiscoveryCandidateExecution,
+            )
+
+            execution = DiscoveryCandidateExecution(
+                terminal=terminals[0],
+                eligible_candidates=(),
+                state_commit_sha=self._state_head,
+                state_root_digest=self._state_root,
+                acceptance_system_outcome="provider_exhausted",
+            )
         return execution
 
     def run(self, authority: object) -> object:
@@ -2667,7 +2717,25 @@ class _FixedRepositoryAcceptanceRunner:
             )
         ):
             raise ValueError("locked repository nomination mismatch")
-        self._ordinal += 1
+        matching_entries = tuple(
+            (ordinal, entry)
+            for ordinal, entry in enumerate(
+                self._config.manifest.entries,
+                start=1,
+            )
+            if entry.entry_digest == authority.entry_digest
+        )
+        if len(matching_entries) != 1:
+            raise ValueError("locked repository manifest entry missing")
+        ordinal = matching_entries[0][0]
+        existing_budget = tuple(
+            record.fact
+            for record in snapshot.facts
+            if record.kind == "acceptance_budget_reservation"
+            and record.fact.benchmark_entry_digest == authority.entry_digest
+        )
+        if len(existing_budget) > 1:
+            raise ValueError("locked repository budget reservation conflict")
         budget_reservation = AcceptanceBudgetReservationV1(
             schema_version="acceptance-budget-reservation-v1",
             acceptance_run_id=self._acceptance_run_id,
@@ -2676,7 +2744,7 @@ class _FixedRepositoryAcceptanceRunner:
             benchmark_entry_digest=authority.entry_digest,
             repository_id=authority.repository_id,
             repository_full_name=authority.repository_full_name,
-            ordinal=self._ordinal,
+            ordinal=ordinal,
             max_files=25,
             max_source_files=5,
             max_file_bytes=131_072,
@@ -2686,19 +2754,22 @@ class _FixedRepositoryAcceptanceRunner:
             campaign_semantic_request_limit=20,
             reserved_at=_discovery_timestamp(),
         )
-        self._operations.record_acceptance_fact(
-            self._acceptance_run_id,
-            "acceptance_budget_reservation",
-            budget_reservation,
-        )
-        synchronized = self._barrier.sync_discovery(
-            operations_store=self._operations,
-            observed_head=self._state_head,
-            prior_root_digest=self._state_root,
-            created_at=_discovery_timestamp(),
-        )
-        self._state_head = synchronized.commit_sha
-        self._state_root = synchronized.root_digest
+        if existing_budget:
+            budget_reservation = existing_budget[0]
+        else:
+            budget_reservation = self._operations.record_acceptance_fact(
+                self._acceptance_run_id,
+                "acceptance_budget_reservation",
+                budget_reservation,
+            ).fact
+            synchronized = self._barrier.sync_discovery(
+                operations_store=self._operations,
+                observed_head=self._state_head,
+                prior_root_digest=self._state_root,
+                created_at=_discovery_timestamp(),
+            )
+            self._state_head = synchronized.commit_sha
+            self._state_root = synchronized.root_digest
         owner, repository_name = authority.repository_full_name.split("/")
         github = GitHubReadClient(
             token=_required_credential(
@@ -2760,26 +2831,38 @@ class _FixedRepositoryAcceptanceRunner:
             repository_full_name=authority.repository_full_name,
             exact_commit_sha=authority.exact_commit_sha,
             license_spdx=authority.license_spdx,
-            ordinal=self._ordinal,
+            ordinal=ordinal,
             admitted_at=_discovery_timestamp(),
         )
-        self._operations.record_acceptance_fact(
-            self._acceptance_run_id,
-            "acceptance_fixed_candidate_admission",
-            admission,
+        existing_admissions = tuple(
+            record.fact
+            for record in snapshot.facts
+            if record.kind == "acceptance_fixed_candidate_admission"
+            and record.fact.benchmark_entry_digest == authority.entry_digest
         )
+        if len(existing_admissions) > 1:
+            raise ValueError("locked repository candidate admission conflict")
+        if existing_admissions:
+            admission = existing_admissions[0]
+        else:
+            admission = self._operations.record_acceptance_fact(
+                self._acceptance_run_id,
+                "acceptance_fixed_candidate_admission",
+                admission,
+            ).fact
         candidate = FixedAcceptanceCandidate(
             repository=repository,
             admission=admission,
         )
-        synchronized = self._barrier.sync_discovery(
-            operations_store=self._operations,
-            observed_head=self._state_head,
-            prior_root_digest=self._state_root,
-            created_at=_discovery_timestamp(),
-        )
-        self._state_head = synchronized.commit_sha
-        self._state_root = synchronized.root_digest
+        if not existing_admissions:
+            synchronized = self._barrier.sync_discovery(
+                operations_store=self._operations,
+                observed_head=self._state_head,
+                prior_root_digest=self._state_root,
+                created_at=_discovery_timestamp(),
+            )
+            self._state_head = synchronized.commit_sha
+            self._state_root = synchronized.root_digest
         execution = self._run_phase2_with_retries(
             candidate=candidate,
             pinned_commit_sha=authority.exact_commit_sha,
