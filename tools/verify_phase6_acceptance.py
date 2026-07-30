@@ -18,7 +18,6 @@ OFFLINE_SUCCESS = "phase6 offline authorization prerequisite valid"
 INCOMPLETE = "phase6 acceptance incomplete"
 INVALID = "phase6 acceptance registry invalid"
 
-PLAN_06_06_STATE_REF = "refs/remotes/origin/skillscout-state"
 PLAN_06_06_STATE_COMMIT = "37f8dcbf74c85f2471670373fd03f71d9f155bae"
 PLAN_06_06_STATE_ROOT = "sha256:b4167cffc31969854260d4acd58b804f4823a4d25d078ef3b5dc88445b75c2e5"
 PLAN_06_06_WORKFLOW_SHA256 = (
@@ -133,13 +132,13 @@ def _local_state_remote(repository_root: Path, expected_state_commit: str) -> ob
                     repository_root,
                     "rev-parse",
                     "--verify",
-                    f"{PLAN_06_06_STATE_REF}^{{commit}}",
+                    f"{expected_state_commit}^{{commit}}",
                 )
                 .decode("ascii")
                 .strip()
             )
             if observed != expected_state_commit:
-                raise OfflineStateError("canonical_state_ref_mismatch")
+                raise OfflineStateError("canonical_state_object_mismatch")
             return StateRefObservation(STATE_REF, observed)
 
         def get_commit(self, sha: str) -> StateCommitObservation:

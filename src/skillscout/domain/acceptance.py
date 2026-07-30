@@ -140,6 +140,18 @@ class BenchmarkEntryV1(_SelfDigestedModel):
     ]
     entry_digest: Digest | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_selection_evidence(cls, value: object) -> object:
+        if isinstance(value, dict):
+            payload = dict(value)
+            if isinstance(payload.get("selection_evidence_digests"), list):
+                payload["selection_evidence_digests"] = tuple(
+                    payload["selection_evidence_digests"]
+                )
+            return payload
+        return value
+
     @model_validator(mode="after")
     def validate_selection_evidence(self) -> Self:
         if (
@@ -210,6 +222,16 @@ class LockedBenchmarkManifestV1(StrictFrozenModel):
     lock_attestation: BenchmarkLockAttestationV1
     prior_manifest_digest: Digest | None
     manifest_digest: Digest
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_entries(cls, value: object) -> object:
+        if isinstance(value, dict):
+            payload = dict(value)
+            if isinstance(payload.get("entries"), list):
+                payload["entries"] = tuple(payload["entries"])
+            return payload
+        return value
 
     @model_validator(mode="after")
     def validate_locked_manifest(self) -> Self:

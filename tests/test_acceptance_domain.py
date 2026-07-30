@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from skillscout.domain.canonical import canonical_json_bytes
+from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -649,6 +649,75 @@ def test_benchmark_contracts_freeze_fixed_identity_distribution_and_human_lock()
         "prior_manifest_digest",
         "manifest_digest",
     } <= set(manifest.model_fields)
+
+
+def test_locked_manifest_strict_json_round_trip_preserves_tuple_contracts() -> None:
+    entry_model = _symbol("BenchmarkEntryV1")
+    attestation_model = _symbol("BenchmarkLockAttestationV1")
+    manifest_model = _symbol("LockedBenchmarkManifestV1")
+    roles = (
+        "positive",
+        "positive_multi_workflow",
+        "negative",
+        "negative",
+        "borderline",
+    )
+    entries = tuple(
+        sorted(
+            (
+                entry_model(
+                    schema_version="benchmark-entry-v1",
+                    repository_full_name=f"octo-org/workflow-{index}",
+                    repository_id=910000 + index,
+                    exact_commit_sha=f"{index:040x}",
+                    license_spdx="MIT",
+                    selection_source="search_derived",
+                    coverage_role=role,
+                    nomination_entry_digest=sha256_digest(
+                        {"nomination": index}
+                    ),
+                    selection_evidence_digests=(
+                        sha256_digest({"evidence": index}),
+                    ),
+                )
+                for index, role in enumerate(roles, 1)
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+    preimage = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": DIGEST_A,
+        "entries": [
+            item.model_dump(mode="json", exclude_none=False)
+            for item in entries
+        ],
+        "prior_manifest_digest": None,
+    }
+    manifest_digest = sha256_digest(preimage)
+    attestation = attestation_model(
+        schema_version="benchmark-lock-attestation-v1",
+        manifest_version=1,
+        nomination_set_digest=DIGEST_A,
+        manifest_digest=manifest_digest,
+        reviewer_id="reviewer",
+        locked_at=TIMESTAMP_A,
+    )
+    manifest = manifest_model(
+        schema_version="locked-benchmark-manifest-v1",
+        manifest_version=1,
+        nomination_set_digest=DIGEST_A,
+        entries=entries,
+        lock_attestation=attestation,
+        prior_manifest_digest=None,
+        manifest_digest=manifest_digest,
+    )
+
+    assert manifest_model.model_validate_json(
+        canonical_json_bytes(manifest),
+        strict=True,
+    ) == manifest
 
 
 def test_human_review_contract_requires_exact_head_and_complete_d17_checklist() -> None:
