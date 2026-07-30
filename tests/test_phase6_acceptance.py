@@ -1812,6 +1812,7 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
     assert extractor_constructions == 2
     with operations_state.OperationsStateStore(operations_path) as operations:
         snapshot = operations.snapshot_run(f"{run_id}-semantic")
+        acceptance_snapshot = operations.acceptance_snapshot(run_id)
     assert {item.stage for item in snapshot.semantic_attempts} == {
         "extractor",
         "generator",
@@ -1829,6 +1830,28 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
         ("extractor", 1, "confirmed_retryable"),
         ("extractor", 2, "decided"),
     )
+    linked_digests = {
+        authority.authority_digest,
+        manifest.manifest_digest,
+        entry.nomination_entry_digest,
+        entry.entry_digest,
+        *(item.reservation_digest for item in snapshot.semantic_reservations),
+        *(item.attempt_digest for item in snapshot.semantic_attempts),
+        *(item.terminal_digest for item in snapshot.workflow_terminals),
+        *(item.terminal_digest for item in snapshot.candidate_terminals),
+        *(
+            record.fact_digest
+            for record in acceptance_snapshot.facts
+            if record.kind
+            in {
+                "acceptance_budget_reservation",
+                "acceptance_fixed_candidate_admission",
+                "acceptance_semantic_request_reservation",
+            }
+            and getattr(record.fact, "repository_id", None) == entry.repository_id
+        ),
+    }
+    assert linked_digests.issubset(observation.evidence_digests)
 
 
 @pytest.mark.parametrize(

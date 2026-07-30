@@ -940,6 +940,9 @@ def _acceptance_recorded_identity(
             fact.pull_request_number,
             fact.new_head_commit_sha,
         )
+    elif kind == "acceptance_scenario":
+        assert isinstance(fact, AcceptanceScenarioResultV1)
+        values = (acceptance_run_id, kind, fact.scenario_id)
     else:
         values = (acceptance_run_id, kind, _acceptance_fact_digest(kind, fact))
     return _json_text(values)

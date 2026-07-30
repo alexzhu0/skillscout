@@ -2041,10 +2041,21 @@ class _CompletedBenchmarkStateProjector:
         operations_path: Path,
         pipeline_path: Path,
         acceptance_run_id: str,
+        verified_state_locators: set[tuple[str, str]],
     ) -> None:
+        if (
+            type(verified_state_locators) is not set
+            or not verified_state_locators
+            or any(
+                not _is_commit_sha(commit_sha) or not _is_digest(root_digest)
+                for commit_sha, root_digest in verified_state_locators
+            )
+        ):
+            raise ValueError("completed benchmark state locators rejected")
         self._operations_path = operations_path
         self._pipeline_path = pipeline_path
         self._acceptance_run_id = acceptance_run_id
+        self._verified_state_locators = verified_state_locators
 
     def project(
         self,
@@ -2053,7 +2064,11 @@ class _CompletedBenchmarkStateProjector:
         state_commit_sha: str,
         state_root_digest: str,
     ) -> object:
-        del state_commit_sha, state_root_digest
+        if (
+            state_commit_sha,
+            state_root_digest,
+        ) not in self._verified_state_locators:
+            raise ValueError("completed benchmark state locator rejected")
         from skillscout.adapters.operations_state import OperationsStateStore
         from skillscout.adapters.state import SQLiteStateStore
         from skillscout.application.acceptance import CompletedBenchmarkProjection
@@ -2486,43 +2501,63 @@ class _FixedRepositoryAcceptanceRunner:
             candidate=candidate,
             pinned_commit_sha=authority.exact_commit_sha,
         )
+        workflow_terminals = []
         for workflow in execution.workflows:
-            self._operations.record_acceptance_workflow_terminal(
-                acceptance_run_id=self._acceptance_run_id,
-                fixed_candidate_admission_digest=admission.admission_digest,
-                semantic_reservation_digest=(
-                    execution.terminal.semantic_reservation_digest
-                ),
-                run_id=self._authority.run_id,
-                repository_id=authority.repository_id,
-                workflow_authority_digest=workflow.workflow_authority_digest,
-                outcome=(
-                    "eligible_local_candidate"
-                    if workflow.outcome == "eligible"
-                    else workflow.outcome
-                ),
-                eligible_locator=(
-                    workflow.locator.locator
-                    if workflow.locator is not None
-                    else None
-                ),
-                eligible_object_digest=(
-                    workflow.locator.authority_digest
-                    if workflow.locator is not None
-                    else None
-                ),
-                recorded_at=_discovery_timestamp(),
+            workflow_terminals.append(
+                self._operations.record_acceptance_workflow_terminal(
+                    acceptance_run_id=self._acceptance_run_id,
+                    fixed_candidate_admission_digest=admission.admission_digest,
+                    semantic_reservation_digest=(
+                        execution.terminal.semantic_reservation_digest
+                    ),
+                    run_id=self._authority.run_id,
+                    repository_id=authority.repository_id,
+                    workflow_authority_digest=workflow.workflow_authority_digest,
+                    outcome=(
+                        "eligible_local_candidate"
+                        if workflow.outcome == "eligible"
+                        else workflow.outcome
+                    ),
+                    eligible_locator=(
+                        workflow.locator.locator
+                        if workflow.locator is not None
+                        else None
+                    ),
+                    eligible_object_digest=(
+                        workflow.locator.authority_digest
+                        if workflow.locator is not None
+                        else None
+                    ),
+                    recorded_at=_discovery_timestamp(),
+                )
             )
-        self._operations.record_candidate_terminal(
+        candidate_terminal = self._operations.record_candidate_terminal(
             self._authority.run_id,
             execution.terminal,
         )
+        operations_snapshot = self._operations.snapshot_run(
+            self._authority.run_id
+        )
         semantic_attempts = tuple(
             attempt
-            for attempt in self._operations.snapshot_run(
-                self._authority.run_id
-            ).semantic_attempts
+            for attempt in operations_snapshot.semantic_attempts
             if attempt.repository_id == authority.repository_id
+        )
+        semantic_reservations = tuple(
+            reservation
+            for reservation in operations_snapshot.semantic_reservations
+            if reservation.repository_id == authority.repository_id
+        )
+        acceptance_snapshot = self._operations.acceptance_snapshot(
+            self._acceptance_run_id
+        )
+        request_reservations = tuple(
+            record
+            for record in acceptance_snapshot.facts
+            if record.kind == "acceptance_semantic_request_reservation"
+            and record.fact.repository_id == authority.repository_id
+            and record.fact.fixed_candidate_admission_digest
+            == admission.admission_digest
         )
         telemetry_keys = {
             (
@@ -2587,12 +2622,23 @@ class _FixedRepositoryAcceptanceRunner:
             workflows[0] if workflows else None,
         )
         evidence = {
+            self._live_authority.authority_digest,
+            self._config.manifest.manifest_digest,
+            authority.nomination_entry_digest,
             authority.entry_digest,
             budget_reservation.reservation_digest,
             admission.admission_digest,
-            execution.terminal.terminal_digest,
+            candidate_terminal.terminal_digest,
+            *(item.reservation_digest for item in semantic_reservations),
+            *(record.fact_digest for record in request_reservations),
             *(attempt.attempt_digest for attempt in semantic_attempts),
             *(workflow.workflow_authority_digest for workflow in workflows),
+            *(terminal.terminal_digest for terminal in workflow_terminals),
+            *(
+                terminal.eligible_object_digest
+                for terminal in workflow_terminals
+                if terminal.eligible_object_digest is not None
+            ),
         }
         acceptance_outcome = execution.acceptance_system_outcome or {
             "confirmed_retryable": "provider_exhausted",
@@ -2759,6 +2805,9 @@ def build_live_acceptance_execution(
     source = os.environ if environ is None else environ
     discovery_config = _acceptance_discovery_config(config, source)
     _, _, frozen_owner_export, _ = _parse_bundle_exports(restored.bundle)
+    verified_state_locators = {
+        (config.state_commit_sha, config.state_root_digest),
+    }
     barrier = _LateStateDurabilityBarrier(
         discovery_config,
         source,
@@ -2769,7 +2818,16 @@ def build_live_acceptance_execution(
         return OperationsStateStore(discovery_config.operations_state)
 
     def state_sync(**arguments: object) -> object:
-        return barrier.sync_discovery(**arguments)
+        synchronized = barrier.sync_discovery(**arguments)
+        if (
+            getattr(synchronized, "status", None) == "verified"
+            and _is_commit_sha(getattr(synchronized, "commit_sha", ""))
+            and _is_digest(getattr(synchronized, "root_digest", ""))
+        ):
+            verified_state_locators.add(
+                (synchronized.commit_sha, synchronized.root_digest)
+            )
+        return synchronized
 
     if action == "replay":
         def projector_factory() -> object:
@@ -2777,6 +2835,7 @@ def build_live_acceptance_execution(
                 operations_path=discovery_config.operations_state,
                 pipeline_path=discovery_config.pipeline_state,
                 acceptance_run_id=acceptance_run_id,
+                verified_state_locators=verified_state_locators,
             )
 
         def execute_replay() -> dict[str, object]:
