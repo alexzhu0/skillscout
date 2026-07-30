@@ -326,6 +326,7 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
         "acceptance_nomination",
         "acceptance_benchmark_lock",
         "acceptance_live_authority",
+        "acceptance_budget_reservation",
         "acceptance_scenario",
         "acceptance_hosted_isolation_capability",
         "acceptance_offline_adversarial_run",
@@ -342,6 +343,30 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     )
     with pytest.raises(TypeError):
         module.ACCEPTANCE_FACT_MODELS["acceptance_replay"] = object
+
+
+def test_pre_budget_state_requires_explicit_acceptance_schema_upgrade(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    path = tmp_path / "operations.sqlite3"
+    connection = sqlite3.connect(path)
+    try:
+        for statement in module._schema_statements(
+            module._PRE_BUDGET_ACCEPTANCE_FACT_KINDS
+        ):
+            connection.execute(statement)
+        connection.execute(f"PRAGMA user_version = {module.OPERATIONS_SCHEMA_VERSION}")
+        connection.commit()
+    finally:
+        connection.close()
+    path.chmod(0o600)
+
+    with module.OperationsStateStore(path) as store:
+        store.upgrade_acceptance_schema()
+        exported = store.export_owned_state()
+
+    assert exported.schema_fingerprint == module._schema_fingerprint()
 
 
 def test_acceptance_intent_and_completion_coexist_idempotently(
