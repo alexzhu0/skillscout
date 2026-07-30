@@ -466,6 +466,7 @@ class PhaseTwoProcessor:
         )
         base: dict[str, object] = {
             "schema_version": stage_input.schema_version,
+            "output_schema_version": WORKFLOW_SPEC_SCHEMA_VERSION,
             "stage": stage_input.stage.value,
             "subject_id": stage_input.subject_id,
             "prompt_version": EXTRACT_PROMPT_VERSION,

@@ -1013,6 +1013,7 @@ def build_discovery_application(
                 DiscoveryReaderTelemetry,
                 DiscoverySemanticTelemetry,
                 DiscoveryWorkflowExecution,
+                classify_extractor_terminal,
                 eligible_candidate_locator,
             )
             from skillscout.application.phase3 import (
@@ -1293,6 +1294,14 @@ def build_discovery_application(
                         subject, Path(phase2_output)
                     )
                 chain = phase2_state.verify_run_chain(phase2_summary.run_id)
+                extractor_result = next(
+                    (
+                        result
+                        for result in chain.results
+                        if result.stage.value == "extractor"
+                    ),
+                    None,
+                )
                 reader_result = next(
                     (
                         result
@@ -1337,7 +1346,13 @@ def build_discovery_application(
                             request_id=attempt.request_id,
                             actual_model=attempt.model_id,
                             prompt_version=attempt.prompt_version,
-                            schema_version="workflow-spec-v1",
+                            schema_version=str(
+                                extractor_result.payload[
+                                    "output_schema_version"
+                                ]
+                            )
+                            if extractor_result is not None
+                            else "",
                             policy_version=attempt.policy_version,
                             prompt_tokens=attempt.prompt_tokens,
                             completion_tokens=attempt.completion_tokens,
@@ -1461,17 +1476,23 @@ def build_discovery_application(
                     state_root_digest=state_root,
                 )
             workflow_executions: list[DiscoveryWorkflowExecution] = []
+            acceptance_system_outcome = None
             if not descriptors:
                 filter_result = next(
                     result
                     for result in chain.results
                     if result.stage.value == "filter"
                 )
-                outcome = (
-                    "filter_rejected"
-                    if filter_result.payload.get("outcome") == "rejected"
-                    else "no_workflow"
-                )
+                if filter_result.payload.get("outcome") == "rejected":
+                    outcome = "filter_rejected"
+                elif extractor_result is None:
+                    outcome = "permanent_failure"
+                else:
+                    outcome, acceptance_system_outcome = (
+                        classify_extractor_terminal(
+                            str(extractor_result.payload.get("outcome"))
+                        )
+                    )
                 workflow_authorities: list[str] = []
                 eligible = []
             else:
@@ -1909,6 +1930,7 @@ def build_discovery_application(
                     )
                 ),
                 reader_telemetry=reader_telemetry,
+                acceptance_system_outcome=acceptance_system_outcome,
             )
 
         phase2_factory = default_phase2_factory
@@ -2447,7 +2469,7 @@ class _FixedRepositoryAcceptanceRunner:
             "state_integrity_conflict": "state_integrity_conflict",
             "permanent_failure": "pipeline_permanent_failure",
         }
-        acceptance_outcome = {
+        acceptance_outcome = execution.acceptance_system_outcome or {
             "confirmed_retryable": "provider_exhausted",
             "semantic_outcome_unknown": "provider_exhausted",
             "state_integrity_conflict": "evidence_missing",

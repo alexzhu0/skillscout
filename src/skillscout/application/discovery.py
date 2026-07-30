@@ -59,6 +59,7 @@ WorkflowOutcome = Literal[
     "review_rejected",
     "semantic_outcome_unknown",
 ]
+AcceptanceSystemOutcome = Literal["provider_exhausted", "schema_exhausted"]
 
 _BUSINESS_OUTCOMES = frozenset(
     {
@@ -80,6 +81,23 @@ _WORKFLOW_RESULT = {
     "review_rejected": "review_rejected",
     "semantic_outcome_unknown": "semantic_outcome_unknown",
 }
+
+
+def classify_extractor_terminal(
+    extractor_outcome: str,
+) -> tuple[
+    Literal["no_workflow", "semantic_outcome_unknown", "permanent_failure"],
+    AcceptanceSystemOutcome | None,
+]:
+    """Keep provider/schema failures out of the business-negative bucket."""
+
+    if extractor_outcome == "no_workflow":
+        return "no_workflow", None
+    if extractor_outcome in {"refused", "incomplete"}:
+        return "semantic_outcome_unknown", "provider_exhausted"
+    if extractor_outcome == "schema_failure":
+        return "permanent_failure", "schema_exhausted"
+    return "permanent_failure", None
 
 
 class _SearchPort(Protocol):
@@ -252,6 +270,7 @@ class DiscoveryCandidateExecution:
     workflows: tuple[DiscoveryWorkflowExecution, ...] = ()
     semantic_telemetry: tuple[DiscoverySemanticTelemetry, ...] = ()
     reader_telemetry: DiscoveryReaderTelemetry | None = None
+    acceptance_system_outcome: AcceptanceSystemOutcome | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -286,6 +305,15 @@ class DiscoveryCandidateExecution:
             or (
                 self.reader_telemetry is not None
                 and type(self.reader_telemetry) is not DiscoveryReaderTelemetry
+            )
+            or (
+                self.acceptance_system_outcome == "provider_exhausted"
+                and self.terminal.outcome
+                not in {"confirmed_retryable", "semantic_outcome_unknown"}
+            )
+            or (
+                self.acceptance_system_outcome == "schema_exhausted"
+                and self.terminal.outcome != "permanent_failure"
             )
         ):
             raise ValueError("invalid discovery candidate execution")
