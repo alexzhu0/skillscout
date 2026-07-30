@@ -532,7 +532,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
 
 
 def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> None:
-    """Catches replay opening a live runner or mutable state before completed lookup."""
+    """Catches replay claiming zero effects without a measured post-write reread."""
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
@@ -542,8 +542,12 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
     )
     events: list[str] = []
 
+    projections = 0
+
     class Projector:
         def project(self, **_: object) -> object:
+            nonlocal projections
+            projections += 1
             events.append("project")
             return module.CompletedBenchmarkProjection(
                 manifest_digest=manifest.manifest_digest,
@@ -556,7 +560,21 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
                 workflow_spec_authority_digest="sha256:" + ("b" * 64),
                 eligible_locators=("state/objects/eligible.json",),
                 semantic_attempt_count=5,
+                semantic_attempt_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(11, 16)
+                ),
+                workflow_spec_authority_digests=(
+                    "sha256:" + ("b" * 64),
+                ),
+                skill_identity_digests=("sha256:" + ("c" * 64),),
+                candidate_fact_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(21, 26)
+                ),
+                semantic_request_count=5,
             )
+
+        def close(self) -> None:
+            return None
 
     class Store:
         def record_acceptance_fact(
@@ -573,9 +591,19 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
         def close(self) -> None:
             return None
 
+    def sync(**_: object) -> object:
+        events.append("sync")
+        return SimpleNamespace(
+            status="verified",
+            previous_head="c" * 40,
+            commit_sha="e" * 40,
+            root_digest="sha256:" + ("f" * 64),
+        )
+
     dependencies = module.ReplayUpdateDependencies(
         completed_projector_factory=Projector,
         operations_store_factory=Store,
+        state_sync=sync,
     )
     replay = module.run_exact_replay(
         dependencies,
@@ -586,7 +614,8 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
         recorded_at=TIMESTAMP,
     )
 
-    assert events == ["project", "record"]
+    assert events == ["project", "record", "sync", "project"]
+    assert projections == 2
     assert replay.semantic_request_count == 0
     assert replay.duplicate_workflow_spec_count == 0
     assert replay.duplicate_skill_count == 0
@@ -596,3 +625,72 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
     assert replay.reviewer_effect_count == 0
     assert replay.before_state_root_digest == replay.after_state_root_digest
     assert replay.before_state_commit_sha == replay.after_state_commit_sha
+
+
+def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> None:
+    """The replay fact write is allowed; any campaign-effect drift is not."""
+
+    module = _application_module(skip_if_missing=False)
+    manifest = module.load_locked_benchmark_manifest(
+        ROOT
+        / ".planning/phases/06-adversarial-mvp-acceptance"
+        / "06-BENCHMARK-MANIFEST.json"
+    )
+    calls = 0
+
+    class Projector:
+        def project(self, **_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return module.CompletedBenchmarkProjection(
+                manifest_digest=manifest.manifest_digest,
+                scenario_result_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(1, 6)
+                ),
+                repository_id=manifest.entries[0].repository_id,
+                source_commit_sha=manifest.entries[0].exact_commit_sha,
+                workflow_fingerprint="sha256:" + ("a" * 64),
+                workflow_spec_authority_digest="sha256:" + ("b" * 64),
+                eligible_locators=("state/objects/eligible.json",),
+                semantic_attempt_count=5 + (calls - 1),
+                semantic_attempt_digests=tuple(
+                    "sha256:" + f"{index:064x}"
+                    for index in range(11, 16 + (calls - 1))
+                ),
+                workflow_spec_authority_digests=("sha256:" + ("b" * 64),),
+                skill_identity_digests=("sha256:" + ("c" * 64),),
+                candidate_fact_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(21, 26)
+                ),
+                semantic_request_count=5 + (calls - 1),
+            )
+
+        def close(self) -> None:
+            return None
+
+    class Store:
+        def record_acceptance_fact(self, *_: object) -> object:
+            return object()
+
+        def close(self) -> None:
+            return None
+
+    dependencies = module.ReplayUpdateDependencies(
+        completed_projector_factory=Projector,
+        operations_store_factory=Store,
+        state_sync=lambda **_: SimpleNamespace(
+            status="verified",
+            previous_head="c" * 40,
+            commit_sha="e" * 40,
+            root_digest="sha256:" + ("f" * 64),
+        ),
+    )
+    with pytest.raises(module.AcceptanceApplicationError, match="duplicate_effect"):
+        module.run_exact_replay(
+            dependencies,
+            manifest=manifest,
+            acceptance_run_id="acceptance-live-five",
+            state_commit_sha="c" * 40,
+            state_root_digest="sha256:" + ("d" * 64),
+            recorded_at=TIMESTAMP,
+        )
