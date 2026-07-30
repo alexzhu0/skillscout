@@ -29,6 +29,7 @@ from skillscout.domain.discovery import (
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.acceptance import (
     AcceptanceFixedCandidateAdmissionV1,
+    AcceptanceScenarioResultV1,
     BenchmarkEntryV1,
     BenchmarkLockAttestationV1,
     HostedIsolationCapabilityV1,
@@ -429,6 +430,63 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     )
     with pytest.raises(TypeError):
         module.ACCEPTANCE_FACT_MODELS["acceptance_replay"] = object
+
+
+def test_acceptance_scenario_identity_rejects_mutated_same_scenario() -> None:
+    module = _operations_module()
+    shared = {
+        "schema_version": "acceptance-scenario-result-v1",
+        "acceptance_run_id": "acceptance-scenario-identity",
+        "scenario_id": "locked-1-101",
+        "repository_id": 101,
+        "repository_full_name": "example/workflow",
+        "exact_commit_sha": "a" * 40,
+        "license_spdx": "MIT",
+        "benchmark_manifest_digest": DIGEST_A,
+        "live_acceptance_authority_digest": DIGEST_B,
+        "terminal_class": "business_terminal",
+        "outcome": "filter_rejected",
+        "reason_code": "deterministic_filter_rejected",
+        "candidate_funnel": ("fixed_identity", "deterministic_filter"),
+        "reader_order": "readme_docs_examples_manifests_source",
+        "reader_file_count": 0,
+        "reader_source_file_count": 0,
+        "reader_total_bytes": 0,
+        "reader_estimated_tokens": 0,
+        "semantic_request_count": 0,
+        "semantic_attempt_digests": (),
+        "semantic_telemetry": (),
+        "actual_models": (),
+        "prompt_versions": (),
+        "schema_versions": (),
+        "policy_versions": (),
+        "workflow_fingerprint": None,
+        "workflow_spec_authority_digest": None,
+        "eligible_locator": None,
+        "expected_coverage_role": "negative",
+        "evaluator_matches_observed": True,
+        "publication_decision": "not_eligible",
+        "warnings": (),
+        "recorded_at": TIMESTAMP,
+    }
+    original = AcceptanceScenarioResultV1(
+        **shared,
+        evidence_digests=(DIGEST_A,),
+    )
+    mutated = AcceptanceScenarioResultV1(
+        **shared,
+        evidence_digests=(DIGEST_C,),
+    )
+
+    assert module._acceptance_recorded_identity(
+        shared["acceptance_run_id"],
+        "acceptance_scenario",
+        original,
+    ) == module._acceptance_recorded_identity(
+        shared["acceptance_run_id"],
+        "acceptance_scenario",
+        mutated,
+    )
 
 
 def test_fixed_acceptance_candidate_never_fabricates_search_page_or_candidate(
