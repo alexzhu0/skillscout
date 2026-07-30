@@ -1202,6 +1202,8 @@ jobs:
     permissions:
       contents: write
     env:
+      SKILLSCOUT_LLM_PROVIDER: deepseek
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
       PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
       PHASE6_ACCEPTANCE_RUN_ID: ${{ needs.live_authority_preflight.outputs.acceptance_run_id }}
       PHASE6_AUTHORITY_DIGEST: ${{ needs.live_authority_preflight.outputs.authority_digest }}
@@ -1296,6 +1298,44 @@ jobs:
             printf 'UV_MANAGED_PYTHON=1\n'
             printf 'UV_PYTHON_DOWNLOADS=never\n'
           } >> "${GITHUB_ENV}"
+      - name: Check out the exact independently approved authority state
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ needs.live_authority_preflight.outputs.state_repository_full_name }}
+          ref: ${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}
+          path: .phase6-authority-state
+          persist-credentials: false
+          token: ''
+      - name: Check out the exact complete campaign state
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ needs.live_authority_preflight.outputs.state_repository_full_name }}
+          ref: ${{ needs.live_authority_preflight.outputs.state_commit_sha }}
+          path: .phase6-campaign-state
+          persist-credentials: false
+          token: ''
+      - name: Reconstruct the approved replay authority
+        run: |
+          set -euo pipefail
+          test "${{ github.sha }}" = "$PHASE6_SOURCE_COMMIT_SHA"
+          test "$(git -C .phase6-authority-state rev-parse HEAD)" = "$PHASE6_AUTHORITY_STATE_COMMIT_SHA"
+          test "$(git -C .phase6-campaign-state rev-parse HEAD)" = "$PHASE6_STATE_COMMIT_SHA"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-live-authority \
+            --authority-state-root ".phase6-authority-state" \
+            --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
+            --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
+            --authority-digest "$PHASE6_AUTHORITY_DIGEST" \
+            --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA" \
+            --runtime-state-commit-sha "$PHASE6_STATE_COMMIT_SHA" \
+            --runtime-state-root-digest "$PHASE6_STATE_ROOT_DIGEST" \
+            --state-repository-id "$SKILLSCOUT_STATE_REPOSITORY_ID" \
+            --state-repository-full-name "$SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" \
+            > "${RUNNER_TEMP}/phase6-replay-authority.json"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-acceptance-state \
+            --checkout-root ".phase6-campaign-state" \
+            --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" \
+            --state-root-digest "$PHASE6_STATE_ROOT_DIGEST" \
+            > "${RUNNER_TEMP}/phase6-replay-state.json"
       - name: Execute the approved zero-effect replay
         env:
           SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}

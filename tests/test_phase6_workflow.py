@@ -959,7 +959,7 @@ def test_deepseek_only_exact_manifest_jobs_are_distinct_and_bounded() -> None:
     assert "--action replay" in replay
     assert "SKILLSCOUT_LLM_PROVIDER: deepseek" in live
     assert "OPENAI_API_KEY" not in live
-    assert "DEEPSEEK" not in replay
+    assert "DEEPSEEK_API_KEY" not in replay
 
 
 def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
@@ -982,7 +982,7 @@ def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
     assert "--action benchmark" in benchmark_execution
 
     assert re.search(r"^    needs: live_authority_preflight$", replay, re.MULTILINE)
-    assert "DEEPSEEK" not in replay
+    assert "DEEPSEEK_API_KEY" not in replay
     assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in replay
     assert "SKILLSCOUT_CATALOG" not in replay
     assert "actions/create-github-app-token" not in replay
