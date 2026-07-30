@@ -2654,6 +2654,7 @@ def test_generator_retry_exhaustion_is_durable_across_restarts(
 ) -> None:
     state_path = tmp_path / "generator-exhausted-restart.db"
     calls = 0
+    constructions = 0
 
     class AlwaysTransient:
         model = "generator-configured"
@@ -2668,13 +2669,18 @@ def test_generator_retry_exhaustion_is_durable_across_restarts(
         def find_completed_candidate(self, _authority):
             return None
 
+    def generator_factory() -> object:
+        nonlocal constructions
+        constructions += 1
+        return AlwaysTransient()
+
     application = PhaseThreeApplication(
         source=_CompositionSource(),
         profile=_composition_profile(),
         dependencies=PhaseThreeDependencies(
             completed_projector_factory=lambda: Miss(),
             mutable_state_factory=lambda: SQLiteStateStore(state_path),
-            generator_factory=lambda: AlwaysTransient(),
+            generator_factory=generator_factory,
             validator_factory=lambda: pytest.fail("validator must not run"),
             reviewer_factory=lambda: pytest.fail("reviewer must not run"),
             artifact_projector_factory=lambda: pytest.fail("output must not run"),
@@ -2688,6 +2694,7 @@ def test_generator_retry_exhaustion_is_durable_across_restarts(
             application.run(descriptor)
         assert exhausted.value.code is ErrorCode.RETRY_EXHAUSTED
         assert calls == 3
+        assert constructions == 1
 
     store = SQLiteStateStore(state_path)
     try:
@@ -3746,7 +3753,6 @@ def test_generator_decided_result_barrier_recovers_without_second_request(
     assert calls.count("generator") == 1
     assert [item.transition for item in barrier.transitions] == [
         "attempt_started",
-        "result_decided",
         "result_decided",
     ]
 
