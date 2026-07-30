@@ -2460,6 +2460,151 @@ class OperationsStateStore:
 
         return self._snapshot_transaction(mutate)
 
+    def record_acceptance_workflow_terminal(
+        self,
+        *,
+        acceptance_run_id: str,
+        fixed_candidate_admission_digest: str,
+        semantic_reservation_digest: str,
+        run_id: str,
+        repository_id: int,
+        workflow_authority_digest: str,
+        outcome: Literal[
+            "qualification_rejected",
+            "validation_rejected",
+            "review_rejected",
+            "completed_reuse",
+            "eligible_local_candidate",
+            "semantic_outcome_unknown",
+            "permanent_failure",
+        ],
+        eligible_locator: str | None,
+        eligible_object_digest: str | None,
+        recorded_at: str,
+    ) -> WorkflowTerminalRecord:
+        """Write a fixed-candidate terminal without inventing Search lineage."""
+
+        eligible = outcome == "eligible_local_candidate"
+        if (
+            type(repository_id) is not int
+            or repository_id <= 0
+            or _DIGEST_PATTERN.fullmatch(fixed_candidate_admission_digest)
+            is None
+            or _DIGEST_PATTERN.fullmatch(semantic_reservation_digest) is None
+            or _DIGEST_PATTERN.fullmatch(workflow_authority_digest) is None
+            or _TIMESTAMP_PATTERN.fullmatch(recorded_at) is None
+            or (
+                eligible
+                and (
+                    type(eligible_locator) is not str
+                    or _STATE_OBJECT_LOCATOR.fullmatch(eligible_locator)
+                    is None
+                    or _DIGEST_PATTERN.fullmatch(
+                        eligible_object_digest or ""
+                    )
+                    is None
+                    or not eligible_locator.endswith(
+                        eligible_object_digest.removeprefix("sha256:")
+                        + ".json"
+                    )
+                )
+            )
+            or (
+                not eligible
+                and (
+                    eligible_locator is not None
+                    or eligible_object_digest is not None
+                )
+            )
+        ):
+            raise ValueError("invalid acceptance workflow terminal")
+
+        def mutate(connection: sqlite3.Connection) -> WorkflowTerminalRecord:
+            admission = _acceptance_fact_by_digest(
+                connection,
+                acceptance_run_id=acceptance_run_id,
+                kind="acceptance_fixed_candidate_admission",
+                digest=fixed_candidate_admission_digest,
+            )
+            assert isinstance(admission, AcceptanceFixedCandidateAdmissionV1)
+            reservation_row = connection.execute(
+                """SELECT reservation_json
+                   FROM operations_semantic_reservations
+                   WHERE reservation_digest = ? AND run_id = ?
+                     AND repository_id = ?""",
+                (semantic_reservation_digest, run_id, repository_id),
+            ).fetchone()
+            if reservation_row is None:
+                raise OperationsIntegrityError(
+                    "acceptance terminal semantic reservation is missing"
+                )
+            reservation = SemanticReservationV1.model_validate_json(
+                reservation_row["reservation_json"],
+                strict=True,
+            )
+            if (
+                admission.repository_id != repository_id
+                or reservation.discovery_reservation_digest
+                != fixed_candidate_admission_digest
+            ):
+                raise OperationsIntegrityError(
+                    "acceptance terminal admission binding mismatch"
+                )
+            values: dict[str, object] = {
+                "schema_version": "operations-workflow-terminal-v1",
+                "run_id": run_id,
+                "repository_id": repository_id,
+                "workflow_authority_digest": workflow_authority_digest,
+                "outcome": outcome,
+                "eligible_locator": eligible_locator,
+                "eligible_object_digest": eligible_object_digest,
+                "recorded_at": recorded_at,
+            }
+            values["terminal_digest"] = sha256_digest(values)
+            existing = connection.execute(
+                """SELECT terminal_json FROM operations_workflow_terminals
+                   WHERE run_id = ? AND repository_id = ?
+                     AND workflow_authority_digest = ?""",
+                (run_id, repository_id, workflow_authority_digest),
+            ).fetchone()
+            payload = _json_text(values)
+            if existing is not None:
+                if existing["terminal_json"] != payload:
+                    raise OperationsIntegrityError(
+                        "workflow terminal conflict"
+                    )
+            else:
+                connection.execute(
+                    """INSERT INTO operations_workflow_terminals
+                       (terminal_digest, run_id, repository_id,
+                        workflow_authority_digest, outcome, eligible_locator,
+                        eligible_object_digest, recorded_at, terminal_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        values["terminal_digest"],
+                        run_id,
+                        repository_id,
+                        workflow_authority_digest,
+                        outcome,
+                        eligible_locator,
+                        eligible_object_digest,
+                        recorded_at,
+                        payload,
+                    ),
+                )
+            return WorkflowTerminalRecord(
+                run_id=run_id,
+                repository_id=repository_id,
+                workflow_authority_digest=workflow_authority_digest,
+                outcome=outcome,
+                eligible_locator=eligible_locator,
+                eligible_object_digest=eligible_object_digest,
+                recorded_at=recorded_at,
+                terminal_digest=str(values["terminal_digest"]),
+            )
+
+        return self._snapshot_transaction(mutate)
+
     def snapshot_run(self, run_id: str) -> DiscoveryRunSnapshot:
         """Return the complete typed persisted prefix for one discovery run."""
 

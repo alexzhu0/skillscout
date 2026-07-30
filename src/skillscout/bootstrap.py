@@ -2342,7 +2342,12 @@ class _FixedRepositoryAcceptanceRunner:
             pinned_commit_sha=authority.exact_commit_sha,
         )
         for workflow in execution.workflows:
-            self._operations.record_workflow_terminal(
+            self._operations.record_acceptance_workflow_terminal(
+                acceptance_run_id=self._acceptance_run_id,
+                fixed_candidate_admission_digest=admission.admission_digest,
+                semantic_reservation_digest=(
+                    execution.terminal.semantic_reservation_digest
+                ),
                 run_id=self._authority.run_id,
                 repository_id=authority.repository_id,
                 workflow_authority_digest=workflow.workflow_authority_digest,
