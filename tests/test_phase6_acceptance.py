@@ -1493,6 +1493,183 @@ def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> No
         )
 
 
+def test_resume_transition_requires_exact_typed_fact_first_appearance() -> None:
+    """Terminal and scenario children cannot exchange their owned fact delta."""
+
+    from dataclasses import replace
+
+    from skillscout.application.acceptance import (
+        CampaignOwnedFactObservation,
+        CampaignResumeLocatorObservation,
+        CampaignStateLineageObservation,
+        resolve_campaign_resume_lineage,
+    )
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    original_commit = "1" * 40
+    terminal_commit = "2" * 40
+    scenario_commit = "3" * 40
+    original_root = "sha256:" + ("1" * 64)
+    terminal_root = "sha256:" + ("2" * 64)
+    scenario_root = "sha256:" + ("3" * 64)
+    common = {
+        "schema_version": "acceptance-campaign-resume-locator-v1",
+        "acceptance_run_id": "exact-first-appearance",
+        "live_acceptance_authority_digest": "sha256:" + ("4" * 64),
+        "source_commit_sha": "4" * 40,
+        "manifest_digest": "sha256:" + ("5" * 64),
+        "state_repository_id": 123,
+        "state_repository_full_name": "example/state",
+        "original_state_commit_sha": original_commit,
+        "original_state_root_digest": original_root,
+        "semantic_stage": None,
+        "attempt_no": None,
+        "semantic_status": None,
+        "workflow_authority_digest": None,
+        "semantic_provider": "deepseek",
+        "stage_models": (
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        "prompt_versions": (
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        "schema_versions": (
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        "policy_versions": (
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+    }
+    terminal_locator = AcceptanceCampaignResumeLocatorV1(
+        **common,
+        parent_state_commit_sha=original_commit,
+        parent_state_root_digest=original_root,
+        transition_index=1,
+        previous_locator_digest=None,
+        transition_phase="terminal",
+        recorded_at="2026-07-30T12:00:00.000000Z",
+    )
+    scenario_locator = AcceptanceCampaignResumeLocatorV1(
+        **common,
+        parent_state_commit_sha=terminal_commit,
+        parent_state_root_digest=terminal_root,
+        transition_index=2,
+        previous_locator_digest=terminal_locator.locator_digest,
+        transition_phase="scenario",
+        recorded_at="2026-07-30T12:01:00.000000Z",
+    )
+    terminal_locator_object = "sha256:" + ("6" * 64)
+    scenario_locator_object = "sha256:" + ("7" * 64)
+    candidate_terminal_object = "sha256:" + ("8" * 64)
+    scenario_object = "sha256:" + ("9" * 64)
+    terminal_fact = CampaignOwnedFactObservation(
+        kind="candidate_terminal",
+        object_digest=candidate_terminal_object,
+    )
+    scenario_fact = CampaignOwnedFactObservation(
+        kind="acceptance_scenario",
+        object_digest=scenario_object,
+    )
+    observations = (
+        CampaignStateLineageObservation(
+            commit_sha=original_commit,
+            root_digest=original_root,
+            parent_commit_sha="0" * 40,
+            prior_root_digest="sha256:" + ("0" * 64),
+            object_digests=(),
+            owned_facts=(),
+        ),
+        CampaignStateLineageObservation(
+            commit_sha=terminal_commit,
+            root_digest=terminal_root,
+            parent_commit_sha=original_commit,
+            prior_root_digest=original_root,
+            object_digests=(
+                terminal_locator_object,
+                candidate_terminal_object,
+            ),
+            owned_facts=(terminal_fact,),
+        ),
+        CampaignStateLineageObservation(
+            commit_sha=scenario_commit,
+            root_digest=scenario_root,
+            parent_commit_sha=terminal_commit,
+            prior_root_digest=terminal_root,
+            object_digests=(
+                terminal_locator_object,
+                scenario_locator_object,
+                candidate_terminal_object,
+                scenario_object,
+            ),
+            owned_facts=(terminal_fact, scenario_fact),
+            resume_locators=(
+                CampaignResumeLocatorObservation(
+                    terminal_locator,
+                    terminal_locator_object,
+                ),
+                CampaignResumeLocatorObservation(
+                    scenario_locator,
+                    scenario_locator_object,
+                ),
+            ),
+        ),
+    )
+
+    resolved = resolve_campaign_resume_lineage(
+        authority_digest=terminal_locator.live_acceptance_authority_digest,
+        acceptance_run_id=terminal_locator.acceptance_run_id,
+        original_state_commit_sha=original_commit,
+        original_state_root_digest=original_root,
+        campaign_head_commit_sha=scenario_commit,
+        observations=observations,
+    )
+    assert resolved.state_commit_sha == scenario_commit
+
+    reversed_facts = (
+        observations[0],
+        replace(
+            observations[1],
+            object_digests=(terminal_locator_object, scenario_object),
+            owned_facts=(scenario_fact,),
+        ),
+        replace(
+            observations[2],
+            owned_facts=(scenario_fact, terminal_fact),
+        ),
+    )
+    with pytest.raises(ValueError, match="typed fact delta"):
+        resolve_campaign_resume_lineage(
+            authority_digest=terminal_locator.live_acceptance_authority_digest,
+            acceptance_run_id=terminal_locator.acceptance_run_id,
+            original_state_commit_sha=original_commit,
+            original_state_root_digest=original_root,
+            campaign_head_commit_sha=scenario_commit,
+            observations=reversed_facts,
+        )
+
+
+def test_acceptance_cas_has_no_generic_transition_default() -> None:
+    """Every CAS caller must name the fact phase it is making durable."""
+
+    import skillscout.bootstrap as bootstrap
+
+    parameter = inspect.signature(
+        bootstrap._LateStateDurabilityBarrier.sync_discovery
+    ).parameters["transition_phase"]
+    assert parameter.default is inspect.Parameter.empty
+
+
 @pytest.mark.parametrize(
     ("action", "expected_handler"),
     (("benchmark", "benchmark"), ("replay", "replay")),
