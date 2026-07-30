@@ -580,6 +580,7 @@ def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() 
 
     from pydantic import ValidationError
 
+    from skillscout.domain.canonical import sha256_digest
     from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
 
     values = {

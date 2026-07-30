@@ -361,6 +361,93 @@ class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
         return self
 
 
+class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
+    """Non-self-referential locator to an exact authorized campaign parent."""
+
+    _digest_field = "locator_digest"
+
+    schema_version: Literal["acceptance-campaign-resume-locator-v1"]
+    acceptance_run_id: _Identifier
+    live_acceptance_authority_digest: Digest
+    source_commit_sha: _Sha
+    manifest_digest: Digest
+    state_repository_id: _Positive
+    state_repository_full_name: _FullName
+    original_state_commit_sha: _Sha
+    original_state_root_digest: Digest
+    current_state_commit_sha: _Sha
+    current_state_root_digest: Digest
+    semantic_provider: Literal["deepseek"]
+    stage_models: tuple[
+        Literal["deepseek-v4-flash"],
+        Literal["deepseek-v4-flash"],
+        Literal["deepseek-v4-pro"],
+    ]
+    prompt_versions: tuple[
+        Literal["extract-prompt-v1"],
+        Literal["generator-prompt-v1"],
+        Literal["reviewer-prompt-v1"],
+    ]
+    schema_versions: tuple[
+        Literal["workflow-spec-v1"],
+        Literal["generation-draft-v1"],
+        Literal["reviewer-judgment-v1"],
+    ]
+    policy_versions: Annotated[
+        tuple[_Version, ...],
+        Field(min_length=5, max_length=16),
+    ]
+    lineage_commit_shas: Annotated[
+        tuple[_Sha, ...],
+        Field(min_length=1, max_length=256),
+    ]
+    lineage_root_digests: Annotated[
+        tuple[Digest, ...],
+        Field(min_length=1, max_length=256),
+    ]
+    recorded_at: _Timestamp
+    locator_digest: Digest | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_sequences(cls, value: object) -> object:
+        if isinstance(value, dict):
+            payload = dict(value)
+            for field in (
+                "stage_models",
+                "prompt_versions",
+                "schema_versions",
+                "policy_versions",
+                "lineage_commit_shas",
+                "lineage_root_digests",
+            ):
+                if isinstance(payload.get(field), list):
+                    payload[field] = tuple(payload[field])
+            return payload
+        return value
+
+    @model_validator(mode="after")
+    def validate_lineage(self) -> Self:
+        if (
+            len(self.lineage_commit_shas) != len(self.lineage_root_digests)
+            or len(set(self.lineage_commit_shas)) != len(
+                self.lineage_commit_shas
+            )
+            or self.lineage_commit_shas[0]
+            != self.original_state_commit_sha
+            or self.lineage_root_digests[0]
+            != self.original_state_root_digest
+            or self.lineage_commit_shas[-1]
+            != self.current_state_commit_sha
+            or self.lineage_root_digests[-1]
+            != self.current_state_root_digest
+            or self.policy_versions != tuple(sorted(self.policy_versions))
+            or len(set(self.policy_versions)) != len(self.policy_versions)
+        ):
+            raise ValueError("acceptance campaign resume lineage is invalid")
+        return self
+
+
 class AcceptanceBudgetReservationV1(_SelfDigestedModel):
     """Non-refundable fixed-entry read and semantic budget reservation."""
 

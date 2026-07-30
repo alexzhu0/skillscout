@@ -174,6 +174,33 @@ def build_parser() -> SafeArgumentParser:
     verify_state.add_argument("--checkout-root", required=True, type=Path)
     verify_state.add_argument("--state-commit-sha", required=True)
     verify_state.add_argument("--state-root-digest", required=True)
+    resolve_resume = commands.add_parser("resolve-acceptance-resume")
+    resolve_resume.add_argument(
+        "--authority-state-root",
+        required=True,
+        type=Path,
+    )
+    resolve_resume.add_argument(
+        "--authority-state-root-digest",
+        required=True,
+    )
+    resolve_resume.add_argument(
+        "--campaign-state-root",
+        required=True,
+        type=Path,
+    )
+    resolve_resume.add_argument("--acceptance-run-id", required=True)
+    resolve_resume.add_argument("--authority-digest", required=True)
+    resolve_resume.add_argument("--source-commit-sha", required=True)
+    resolve_resume.add_argument(
+        "--state-repository-id",
+        required=True,
+        type=int,
+    )
+    resolve_resume.add_argument(
+        "--state-repository-full-name",
+        required=True,
+    )
     record_attestation = commands.add_parser("record-acceptance-attestation")
     record_attestation.add_argument("--attestation", required=True, type=Path)
     record_attestation.add_argument(
