@@ -834,3 +834,115 @@ def test_live_authority_contract_binds_human_approval_and_every_effect_identity(
         contract(**{**values, "semantic_provider": "openai"})
     with pytest.raises(ValueError):
         contract(**{**values, "max_semantic_requests": 21})
+
+
+def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
+    module = _acceptance_module(skip_if_missing=False)
+    telemetry_type = module.AcceptanceSemanticTelemetryV1
+    scenario_type = module.AcceptanceScenarioResultV1
+
+    def telemetry(stage: str, attempt: int) -> object:
+        return telemetry_type(
+            schema_version="acceptance-semantic-telemetry-v1",
+            stage=stage,
+            workflow_spec_authority_digest=DIGEST_A,
+            attempt_no=attempt,
+            request_id=f"request-{stage}-{attempt}",
+            actual_model=(
+                "deepseek-v4-pro"
+                if stage == "reviewer"
+                else "deepseek-v4-flash"
+            ),
+            prompt_version=f"{stage}-prompt-v1",
+            output_schema_version=f"{stage}-schema-v1",
+            policy_version=f"{stage}-policy-v1",
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            latency_ms=20,
+        )
+
+    complete = tuple(
+        telemetry(stage, ordinal)
+        for ordinal, stage in enumerate(
+            ("extractor", "generator", "reviewer"),
+            start=1,
+        )
+    )
+    base = {
+        "schema_version": "acceptance-scenario-result-v1",
+        "acceptance_run_id": "acceptance-live-five",
+        "scenario_id": "locked-1-101",
+        "repository_id": 101,
+        "repository_full_name": "example/repository",
+        "exact_commit_sha": SHA_A,
+        "license_spdx": "MIT",
+        "benchmark_manifest_digest": DIGEST_B,
+        "terminal_class": "eligible",
+        "outcome": "eligible_local_candidate",
+        "reason_code": "eligible_candidate_completed",
+        "evidence_digests": (DIGEST_A,),
+        "candidate_funnel": (
+            "fixed_identity",
+            "deterministic_filter",
+            "bounded_read",
+            "extractor",
+            "qualification",
+            "generator",
+            "validation",
+            "reviewer",
+        ),
+        "reader_order": "readme_docs_examples_manifests_source",
+        "reader_file_count": 2,
+        "reader_source_file_count": 0,
+        "reader_total_bytes": 100,
+        "reader_estimated_tokens": 25,
+        "semantic_request_count": 3,
+        "semantic_attempt_digests": (DIGEST_A, DIGEST_B, DIGEST_C),
+        "semantic_telemetry": complete,
+        "actual_models": tuple(item.actual_model for item in complete),
+        "prompt_versions": tuple(item.prompt_version for item in complete),
+        "schema_versions": tuple(item.output_schema_version for item in complete),
+        "policy_versions": tuple(item.policy_version for item in complete),
+        "workflow_fingerprint": DIGEST_A,
+        "workflow_spec_authority_digest": DIGEST_A,
+        "eligible_locator": "state/objects/eligible.json",
+        "expected_coverage_role": "positive",
+        "evaluator_matches_observed": True,
+        "publication_decision": "eligible_for_later_publication",
+        "warnings": (),
+        "recorded_at": TIMESTAMP_A,
+    }
+    assert scenario_type(**base).terminal_class == "eligible"
+    for missing_stage in ("generator", "reviewer"):
+        reduced = tuple(item for item in complete if item.stage != missing_stage)
+        with pytest.raises(ValueError):
+            scenario_type(
+                **{
+                    **base,
+                    "semantic_request_count": len(reduced),
+                    "semantic_attempt_digests": tuple(
+                        (DIGEST_A, DIGEST_B, DIGEST_C)[: len(reduced)]
+                    ),
+                    "semantic_telemetry": reduced,
+                    "actual_models": tuple(item.actual_model for item in reduced),
+                    "prompt_versions": tuple(item.prompt_version for item in reduced),
+                    "schema_versions": tuple(
+                        item.output_schema_version for item in reduced
+                    ),
+                    "policy_versions": tuple(item.policy_version for item in reduced),
+                }
+            )
+    with pytest.raises(ValueError):
+        scenario_type(
+            **{
+                **base,
+                "semantic_request_count": 0,
+                "semantic_attempt_digests": (),
+                "semantic_telemetry": (),
+                "actual_models": (),
+                "prompt_versions": (),
+                "schema_versions": (),
+                "policy_versions": (),
+            }
+        )
