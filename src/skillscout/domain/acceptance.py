@@ -289,6 +289,8 @@ class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
     lock_attestation_digest: Digest
     state_commit_sha: _Sha
     state_root_digest: Digest
+    state_repository_id: _Positive
+    state_repository_full_name: _FullName
     query_set_digest: Digest
     budget_policy_digest: Digest
     semantic_provider: Literal["deepseek"]

@@ -177,6 +177,10 @@ def verify_live_acceptance_authority(
     repository_root: Path,
     authority_bytes: bytes,
     observed_source_commit_sha: str,
+    observed_state_commit_sha: str,
+    observed_state_root_digest: str,
+    observed_state_repository_id: int,
+    observed_state_repository_full_name: str,
     environ: Mapping[str, str] | None = None,
 ) -> object:
     """Verify a human-approved authority and its exact repository-owned bytes."""
@@ -244,6 +248,11 @@ def verify_live_acceptance_authority(
         budget = DiscoveryBudgetPolicyV1()
         if (
             authority.source_commit_sha != observed_source_commit_sha
+            or authority.state_commit_sha != observed_state_commit_sha
+            or authority.state_root_digest != observed_state_root_digest
+            or authority.state_repository_id != observed_state_repository_id
+            or authority.state_repository_full_name
+            != observed_state_repository_full_name
             or authority.acceptance_workflow_sha256
             != "sha256:" + hashlib.sha256(workflow_bytes).hexdigest()
             or authority.manifest_path != manifest_relative.as_posix()

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import json
 import os
 import stat
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -165,6 +166,14 @@ def build_parser() -> SafeArgumentParser:
     verify_live.add_argument("--acceptance-run-id", required=True)
     verify_live.add_argument("--authority-digest", required=True)
     verify_live.add_argument("--source-commit-sha", required=True)
+    verify_live.add_argument("--runtime-state-commit-sha", required=True)
+    verify_live.add_argument("--runtime-state-root-digest", required=True)
+    verify_live.add_argument("--state-repository-id", required=True, type=int)
+    verify_live.add_argument("--state-repository-full-name", required=True)
+    verify_state = commands.add_parser("verify-acceptance-state")
+    verify_state.add_argument("--checkout-root", required=True, type=Path)
+    verify_state.add_argument("--state-commit-sha", required=True)
+    verify_state.add_argument("--state-root-digest", required=True)
     record_attestation = commands.add_parser("record-acceptance-attestation")
     record_attestation.add_argument("--attestation", required=True, type=Path)
     record_attestation.add_argument(
@@ -760,6 +769,34 @@ def _restore_acceptance_state(
     return observation
 
 
+def _run_verify_acceptance_state(arguments: argparse.Namespace) -> dict[str, object]:
+    """Verify a credential-free complete state checkout and its exact git identity."""
+
+    try:
+        checkout = arguments.checkout_root.resolve(strict=True)
+        completed = subprocess.run(
+            ["git", "-C", os.fspath(checkout), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if completed.stdout.strip() != arguments.state_commit_sha:
+            raise ValueError
+        bundle = load_verified_state_checkout(
+            checkout_root=checkout,
+            expected_root_digest=arguments.state_root_digest,
+        )
+        if bundle.root.root_digest != arguments.state_root_digest:
+            raise ValueError
+        return {
+            "state_commit_sha": arguments.state_commit_sha,
+            "state_root_digest": bundle.root.root_digest,
+            "status": "acceptance_state_verified",
+        }
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
     """Dispatch one closed acceptance action after immutable state readmission."""
 
@@ -872,8 +909,15 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
             repository_root=Path.cwd().resolve(strict=True),
             authority_bytes=canonical_json_bytes(records[0].fact) + b"\n",
             observed_source_commit_sha=arguments.source_commit_sha,
+            observed_state_commit_sha=arguments.runtime_state_commit_sha,
+            observed_state_root_digest=arguments.runtime_state_root_digest,
+            observed_state_repository_id=arguments.state_repository_id,
+            observed_state_repository_full_name=(
+                arguments.state_repository_full_name
+            ),
         )
         return {
+            "acceptance_run_id": arguments.acceptance_run_id,
             "acceptance_workflow_sha256": authority.acceptance_workflow_sha256,
             "authority_digest": authority.authority_digest,
             "manifest_digest": authority.manifest_digest,
@@ -881,6 +925,10 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
             "provider": authority.semantic_provider,
             "source_commit_sha": authority.source_commit_sha,
             "state_commit_sha": authority.state_commit_sha,
+            "state_repository_full_name": (
+                authority.state_repository_full_name
+            ),
+            "state_repository_id": authority.state_repository_id,
             "state_root_digest": authority.state_root_digest,
             "status": "live_authority_verified",
         }
@@ -1124,6 +1172,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_acceptance(arguments)
         elif arguments.command == "verify-live-authority":
             payload = _run_verify_live_authority(arguments)
+        elif arguments.command == "verify-acceptance-state":
+            payload = _run_verify_acceptance_state(arguments)
         elif arguments.command == "record-acceptance-attestation":
             payload = _run_record_acceptance_attestation(arguments)
         elif arguments.command == "rebuild-acceptance":

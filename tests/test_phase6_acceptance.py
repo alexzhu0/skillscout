@@ -385,6 +385,10 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
             repository_root=ROOT,
             authority_bytes=b"{}",
             observed_source_commit_sha="c" * 40,
+            observed_state_commit_sha="d" * 40,
+            observed_state_root_digest="sha256:" + ("e" * 64),
+            observed_state_repository_id=123,
+            observed_state_repository_full_name="example/state",
             environ=ForbiddenCredentials(
                 {
                     "SKILLSCOUT_LLM_PROVIDER": "deepseek",
@@ -441,6 +445,8 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
         lock_attestation_digest=manifest.lock_attestation.attestation_digest,
         state_commit_sha="e" * 40,
         state_root_digest="sha256:" + ("f" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
         query_set_digest=query_set.query_set_digest,
         budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
         semantic_provider="deepseek",
@@ -489,6 +495,8 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
         observed_source_commit_sha="c" * 40,
         observed_state_commit_sha="e" * 40,
         observed_state_root_digest="sha256:" + ("f" * 64),
+        observed_state_repository_id=123,
+        observed_state_repository_full_name="example/state",
         environ={
             "SKILLSCOUT_LLM_PROVIDER": "deepseek",
             "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
@@ -503,6 +511,8 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
             observed_source_commit_sha="d" * 40,
             observed_state_commit_sha="e" * 40,
             observed_state_root_digest="sha256:" + ("f" * 64),
+            observed_state_repository_id=123,
+            observed_state_repository_full_name="example/state",
             environ={
                 "SKILLSCOUT_LLM_PROVIDER": "deepseek",
                 "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
@@ -515,6 +525,8 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
             observed_source_commit_sha="c" * 40,
             observed_state_commit_sha="d" * 40,
             observed_state_root_digest="sha256:" + ("f" * 64),
+            observed_state_repository_id=123,
+            observed_state_repository_full_name="example/state",
             environ={
                 "SKILLSCOUT_LLM_PROVIDER": "deepseek",
                 "DEEPSEEK_BASE_URL": "https://api.deepseek.com",

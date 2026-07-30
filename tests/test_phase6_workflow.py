@@ -919,7 +919,6 @@ def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:
     source = _source(required=False)
     preflight = _job(source, "live_authority_preflight")
     live = _job(source, "live_benchmark")
-    replay = _job(source, "live_replay")
 
     assert "contents: read" in preflight
     assert "${{ secrets." not in preflight

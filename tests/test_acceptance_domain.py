@@ -784,6 +784,8 @@ def test_live_authority_contract_binds_human_approval_and_every_effect_identity(
         "lock_attestation_digest": "sha256:" + ("d" * 64),
         "state_commit_sha": SHA_B,
         "state_root_digest": "sha256:" + ("e" * 64),
+        "state_repository_id": 123,
+        "state_repository_full_name": "example/state",
         "query_set_digest": "sha256:" + ("f" * 64),
         "budget_policy_digest": "sha256:" + ("1" * 64),
         "semantic_provider": "deepseek",
