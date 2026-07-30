@@ -178,7 +178,7 @@ def _acceptance_replay() -> ReplayEvidenceV1:
         source_commit_sha="a" * 40,
         workflow_fingerprint=DIGEST_A,
         workflow_spec_authority_digest=DIGEST_B,
-        publication_policy_version="publication-policy-v1",
+        replay_policy_version="acceptance-replay-policy-v1",
         benchmark_manifest_digest=DIGEST_C,
         before_state_commit_sha="c" * 40,
         before_state_root_digest="sha256:" + ("d" * 64),
@@ -192,9 +192,7 @@ def _acceptance_replay() -> ReplayEvidenceV1:
         duplicate_workflow_spec_count=0,
         duplicate_skill_count=0,
         duplicate_fact_count=0,
-        branch_effect_count=0,
-        pull_request_effect_count=0,
-        reviewer_effect_count=0,
+        remote_effect_count=0,
         recorded_at=TIMESTAMP,
     )
 
@@ -212,7 +210,7 @@ def _acceptance_replay_completion(
         source_commit_sha=replay.source_commit_sha,
         workflow_fingerprint=replay.workflow_fingerprint,
         workflow_spec_authority_digest=replay.workflow_spec_authority_digest,
-        publication_policy_version=replay.publication_policy_version,
+        publication_policy_version="publication-policy-v1",
         publication_key=DIGEST_A,
         publication_marker=DIGEST_B,
         target_repository_id=202,

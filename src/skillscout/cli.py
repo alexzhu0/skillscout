@@ -156,6 +156,7 @@ def build_parser() -> SafeArgumentParser:
         choices=("benchmark", "replay", "changed-source", "publication"),
     )
     run_acceptance.add_argument("--manifest", required=True, type=Path)
+    run_acceptance.add_argument("--acceptance-run-id", required=True)
     run_acceptance.add_argument("--state-commit-sha", required=True)
     run_acceptance.add_argument("--state-root-digest", required=True)
     verify_live = commands.add_parser("verify-live-authority")
@@ -773,9 +774,17 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             state_root_digest=config.state_root_digest,
         )
         if arguments.action == "benchmark":
-            return _run_live_benchmark(config=config, restored=restored)
+            return _run_live_benchmark(
+                config=config,
+                restored=restored,
+                acceptance_run_id=arguments.acceptance_run_id,
+            )
         if arguments.action == "replay":
-            return _run_live_replay(config=config, restored=restored)
+            return _run_live_replay(
+                config=config,
+                restored=restored,
+                acceptance_run_id=arguments.acceptance_run_id,
+            )
         raise ValueError
     except SafeFailure:
         raise
@@ -783,7 +792,12 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
-def _run_live_benchmark(*, config: object, restored: object) -> dict[str, object]:
+def _run_live_benchmark(
+    *,
+    config: object,
+    restored: object,
+    acceptance_run_id: str,
+) -> dict[str, object]:
     """Execute the benchmark through the protected production composition."""
 
     from skillscout.bootstrap import build_live_acceptance_execution
@@ -792,6 +806,7 @@ def _run_live_benchmark(*, config: object, restored: object) -> dict[str, object
         config=config,
         restored=restored,
         action="benchmark",
+        acceptance_run_id=acceptance_run_id,
     )
     result = runtime.run()
     if type(result) is not dict or result.get("status") != "benchmark_complete":
@@ -799,7 +814,12 @@ def _run_live_benchmark(*, config: object, restored: object) -> dict[str, object
     return result
 
 
-def _run_live_replay(*, config: object, restored: object) -> dict[str, object]:
+def _run_live_replay(
+    *,
+    config: object,
+    restored: object,
+    acceptance_run_id: str,
+) -> dict[str, object]:
     """Execute replay through a composition with no semantic/publication factory."""
 
     from skillscout.bootstrap import build_live_acceptance_execution
@@ -808,6 +828,7 @@ def _run_live_replay(*, config: object, restored: object) -> dict[str, object]:
         config=config,
         restored=restored,
         action="replay",
+        acceptance_run_id=acceptance_run_id,
     )
     result = runtime.run()
     if type(result) is not dict or result.get("status") != "replay_complete":

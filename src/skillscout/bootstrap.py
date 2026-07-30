@@ -129,7 +129,6 @@ class AcceptanceRuntimeConfig:
     manifest: object
     state_commit_sha: str
     state_root_digest: str
-    catalog_full_name: str
     semantic_provider: str
     extractor_model_id: str
     generator_model_id: str
@@ -144,7 +143,6 @@ class AcceptanceRuntimeConfig:
             or type(self.manifest) is not LockedBenchmarkManifestV1
             or not _is_commit_sha(self.state_commit_sha)
             or not _is_digest(self.state_root_digest)
-            or self.catalog_full_name != ACCEPTANCE_CATALOG_FULL_NAME
             or self.semantic_provider not in {"openai", "deepseek"}
             or not all(
                 _closed_identity(value)
@@ -487,19 +485,12 @@ def load_acceptance_runtime_config(
             raise ValueError
 
         source = os.environ if environ is None else environ
-        configured_catalog = source.get(
-            "SKILLSCOUT_CATALOG_FULL_NAME",
-            ACCEPTANCE_CATALOG_FULL_NAME,
-        )
-        if configured_catalog != ACCEPTANCE_CATALOG_FULL_NAME:
-            raise ValueError
         provider = resolve_semantic_provider(source)
         return AcceptanceRuntimeConfig(
             manifest_path=manifest_path,
             manifest=manifest,
             state_commit_sha=state_commit_sha,
             state_root_digest=state_root_digest,
-            catalog_full_name=ACCEPTANCE_CATALOG_FULL_NAME,
             semantic_provider=provider.provider.value,
             extractor_model_id=provider.extract_model,
             generator_model_id=provider.generator_model,
@@ -708,6 +699,33 @@ def discovery_run_authority(config: DiscoveryRuntimeConfig) -> object:
     )
 
 
+class _FrozenOwnedState:
+    """Read-only owner export carried forward without opening its state adapter."""
+
+    def __init__(self, exported: object) -> None:
+        if exported is None or not hasattr(exported, "export_digest"):
+            raise ValueError("frozen owned state rejected")
+        self._exported = exported
+
+    def export_owned_state(self) -> object:
+        return self._exported
+
+    def close(self) -> None:
+        return None
+
+
+def _default_publication_state(config: object) -> object:
+    from skillscout.adapters.publication_state import PublicationStateStore
+
+    return PublicationStateStore(
+        getattr(
+            config,
+            "publication_state",
+            Path(_DISCOVERY_DATABASE_LOCATORS[2]),
+        )
+    )
+
+
 class _LateStateDurabilityBarrier:
     """Open the state writer only for one exact durability confirmation."""
 
@@ -715,9 +733,12 @@ class _LateStateDurabilityBarrier:
         self,
         config: DiscoveryRuntimeConfig | NominationRuntimeConfig,
         source: Mapping[str, str],
+        *,
+        frozen_publication_export: object | None = None,
     ) -> None:
         self._config = config
         self._source = source
+        self._frozen_publication_export = frozen_publication_export
 
     def confirm(self, **arguments: object) -> object:
         from skillscout.adapters.state_branch import (
@@ -758,7 +779,6 @@ class _LateStateDurabilityBarrier:
         """Synchronize one non-semantic discovery checkpoint and reread it."""
 
         from skillscout.adapters.operations_state import assemble_three_store_bundle
-        from skillscout.adapters.publication_state import PublicationStateStore
         from skillscout.adapters.state import SQLiteStateStore
         from skillscout.adapters.state_branch import (
             StateBranchClient,
@@ -779,12 +799,10 @@ class _LateStateDurabilityBarrier:
             )
         )
         owns_pipeline = pipeline_store is None
-        publication = PublicationStateStore(
-            getattr(
-                self._config,
-                "publication_state",
-                Path(_DISCOVERY_DATABASE_LOCATORS[2]),
-            )
+        publication = (
+            _FrozenOwnedState(self._frozen_publication_export)
+            if self._frozen_publication_export is not None
+            else _default_publication_state(self._config)
         )
         client = StateBranchClient(
             token=_required_credential(
@@ -887,6 +905,7 @@ def build_discovery_application(
     operations_store_factory: Callable[[], object] | None = None,
     phase2_factory: Callable[..., object] | None = None,
     phase3_factory: Callable[..., object] | None = None,
+    frozen_owner_export: object | None = None,
 ) -> object:
     """Build a publication-incapable discovery application with lazy remotes."""
 
@@ -957,7 +976,6 @@ def build_discovery_application(
             from skillscout.adapters.openai_review import OpenAIReviewClient
             from skillscout.adapters.operations_state import OperationsStateStore
             from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
-            from skillscout.adapters.publication_state import PublicationStateStore
             from skillscout.adapters.semantic_provider import (
                 SemanticProvider,
                 SemanticProviderFailure,
@@ -974,6 +992,8 @@ def build_discovery_application(
             )
             from skillscout.application.discovery import (
                 DiscoveryCandidateExecution,
+                DiscoveryReaderTelemetry,
+                DiscoverySemanticTelemetry,
                 DiscoveryWorkflowExecution,
                 eligible_candidate_locator,
             )
@@ -1004,7 +1024,10 @@ def build_discovery_application(
                 DiscoveryRunAuthorityV1,
                 SemanticReservationV1,
             )
-            from skillscout.domain.review import candidate_terminal_summary_bytes
+            from skillscout.domain.review import (
+                ReviewAttestationV1,
+                candidate_terminal_summary_bytes,
+            )
             from skillscout.domain.subjects import RepositorySubject
             from skillscout.domain.enums import EffectScope
 
@@ -1015,6 +1038,7 @@ def build_discovery_application(
             phase3_builder = arguments.get("phase3_factory")
             observed_head = arguments.get("observed_head")
             prior_root = arguments.get("prior_root_digest")
+            pinned_commit_sha = arguments.get("pinned_commit_sha")
             if (
                 type(candidate) is not DiscoveredCandidateV1
                 or type(discovery_authority) is not DiscoveryRunAuthorityV1
@@ -1022,6 +1046,13 @@ def build_discovery_application(
                 or not callable(phase3_builder)
                 or type(observed_head) is not str
                 or type(prior_root) is not str
+                or (
+                    pinned_commit_sha is not None
+                    and (
+                        type(pinned_commit_sha) is not str
+                        or not _is_commit_sha(pinned_commit_sha)
+                    )
+                )
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
@@ -1046,6 +1077,8 @@ def build_discovery_application(
             )
             state_head = observed_head
             state_root = prior_root
+            semantic_telemetry: list[DiscoverySemanticTelemetry] = []
+            reader_telemetry: DiscoveryReaderTelemetry | None = None
             restored_snapshot = operations.snapshot_run(
                 discovery_authority.run_id
             )
@@ -1109,9 +1142,13 @@ def build_discovery_application(
                     state_root_digest=state_root,
                 )
 
-            publication = _LazyDiscoveryCapability(
-                lambda: PublicationStateStore(config.publication_state),
-                EffectScope.LOCAL_STATE,
+            publication = (
+                _FrozenOwnedState(frozen_owner_export)
+                if frozen_owner_export is not None
+                else _LazyDiscoveryCapability(
+                    lambda: _default_publication_state(config),
+                    EffectScope.LOCAL_STATE,
+                )
             )
             phase2_state = SQLiteStateStore(config.pipeline_state)
             github = _LazyDiscoveryCapability(
@@ -1158,6 +1195,7 @@ def build_discovery_application(
                     repository=(
                         f"https://github.com/{candidate.repository.full_name}"
                     ),
+                    ref=pinned_commit_sha,
                 )
                 with tempfile.TemporaryDirectory(
                     prefix="skillscout-discovery-phase2-"
@@ -1166,6 +1204,58 @@ def build_discovery_application(
                         subject, Path(phase2_output)
                     )
                 chain = phase2_state.verify_run_chain(phase2_summary.run_id)
+                reader_result = next(
+                    (
+                        result
+                        for result in chain.results
+                        if result.stage.value == "reader"
+                    ),
+                    None,
+                )
+                if reader_result is not None:
+                    reader_budgets = reader_result.payload.get("budgets")
+                    if isinstance(reader_budgets, dict):
+                        reader_telemetry = DiscoveryReaderTelemetry(
+                            file_count=int(reader_budgets["files_read"]),
+                            source_file_count=int(
+                                reader_budgets["source_files_read"]
+                            ),
+                            total_bytes=int(reader_budgets["total_bytes"]),
+                            estimated_tokens=int(
+                                reader_budgets["estimated_input_tokens"]
+                            ),
+                        )
+                for attempt in getattr(chain, "attempts", ()):
+                    if attempt.stage.value != "extractor":
+                        continue
+                    if (
+                        attempt.status.value != "succeeded"
+                        or attempt.request_id is None
+                        or attempt.model_id is None
+                        or attempt.prompt_version is None
+                        or attempt.policy_version is None
+                        or attempt.prompt_tokens is None
+                        or attempt.completion_tokens is None
+                        or attempt.total_tokens is None
+                        or attempt.latency_ms is None
+                    ):
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    semantic_telemetry.append(
+                        DiscoverySemanticTelemetry(
+                            stage="extractor",
+                            workflow_authority_digest=phase2_authority_digest,
+                            attempt_no=attempt.attempt_no,
+                            request_id=attempt.request_id,
+                            actual_model=attempt.model_id,
+                            prompt_version=attempt.prompt_version,
+                            schema_version="workflow-spec-v1",
+                            policy_version=attempt.policy_version,
+                            prompt_tokens=attempt.prompt_tokens,
+                            completion_tokens=attempt.completion_tokens,
+                            total_tokens=attempt.total_tokens,
+                            latency_ms=attempt.latency_ms,
+                        )
+                    )
                 state_head = phase2_guard.verified_state_head
                 state_root = phase2_guard.state_root_digest
             except SemanticProviderFailure as failure:
@@ -1324,11 +1414,13 @@ def build_discovery_application(
                         workflow_authorities.append(
                             workflow_authority.authority_digest
                         )
-                        phase3_publication = _LazyDiscoveryCapability(
-                            lambda: PublicationStateStore(
-                                config.publication_state
-                            ),
-                            EffectScope.LOCAL_STATE,
+                        phase3_publication = (
+                            _FrozenOwnedState(frozen_owner_export)
+                            if frozen_owner_export is not None
+                            else _LazyDiscoveryCapability(
+                                lambda: _default_publication_state(config),
+                                EffectScope.LOCAL_STATE,
+                            )
                         )
                         phase3_guard = SemanticDurabilityGuard(
                             barrier=barrier,
@@ -1426,6 +1518,9 @@ def build_discovery_application(
                                                 workflow_authority.authority_digest
                                             ),
                                             outcome="semantic_outcome_unknown",
+                                            workflow_fingerprint=(
+                                                workflow_authority.selected_workflow_fingerprint
+                                            ),
                                         )
                                     )
                                     state_head = (
@@ -1442,6 +1537,9 @@ def build_discovery_application(
                                             workflow_authority.authority_digest
                                         ),
                                         outcome="permanent_failure",
+                                        workflow_fingerprint=(
+                                            workflow_authority.selected_workflow_fingerprint
+                                        ),
                                     )
                                 )
                                 fatal_outcome = "permanent_failure"
@@ -1456,6 +1554,9 @@ def build_discovery_application(
                                             workflow_authority.authority_digest
                                         ),
                                         outcome="permanent_failure",
+                                        workflow_fingerprint=(
+                                            workflow_authority.selected_workflow_fingerprint
+                                        ),
                                     )
                                 )
                                 fatal_outcome = (
@@ -1487,6 +1588,125 @@ def build_discovery_application(
                                 None,
                             )
                         )
+                        completed_projector = (
+                            DescriptorAnchoredCompletedCandidateProjector(
+                                config.pipeline_state
+                            )
+                        )
+                        try:
+                            completed_projection = (
+                                completed_projector.find_completed_candidate(
+                                    workflow_authority
+                                )
+                            )
+                        finally:
+                            completed_projector.close()
+                        if completed_projection is None:
+                            raise SafeFailure(
+                                ErrorCode.STATE_INTEGRITY_ERROR
+                            )
+                        generator_evidence = (
+                            terminal_summary.generator_outcome_evidence
+                            if terminal_summary is not None
+                            else None
+                        )
+                        if generator_evidence is not None:
+                            generator_attempts = tuple(
+                                attempt
+                                for attempt in completed_projection.chain.attempts
+                                if attempt.stage.value == "generator"
+                            )
+                            if (
+                                generator_evidence.actual_generator_model_id
+                                is None
+                                or generator_evidence.request_id is None
+                                or generator_evidence.usage is None
+                                or not generator_attempts
+                            ):
+                                raise SafeFailure(
+                                    ErrorCode.STATE_INTEGRITY_ERROR
+                                )
+                            semantic_telemetry.append(
+                                DiscoverySemanticTelemetry(
+                                    stage="generator",
+                                    workflow_authority_digest=(
+                                        workflow_authority.authority_digest
+                                    ),
+                                    attempt_no=generator_attempts[-1].attempt_no,
+                                    request_id=generator_evidence.request_id,
+                                    actual_model=(
+                                        generator_evidence.actual_generator_model_id
+                                    ),
+                                    prompt_version=(
+                                        generator_evidence.generator_prompt_version
+                                    ),
+                                    schema_version=(
+                                        generator_evidence.generator_output_schema_version
+                                    ),
+                                    policy_version=(
+                                        generator_evidence.generator_policy_version
+                                    ),
+                                    prompt_tokens=(
+                                        generator_evidence.usage.prompt_tokens
+                                    ),
+                                    completion_tokens=(
+                                        generator_evidence.usage.completion_tokens
+                                    ),
+                                    total_tokens=(
+                                        generator_evidence.usage.total_tokens
+                                    ),
+                                    latency_ms=generator_evidence.latency_ms,
+                                )
+                            )
+                        review_payload = completed_projection.artifacts.get(
+                            "review_attestation"
+                        )
+                        if review_payload is not None:
+                            attestation = ReviewAttestationV1.model_validate_json(
+                                review_payload,
+                                strict=True,
+                            )
+                            reviewer_attempts = tuple(
+                                attempt
+                                for attempt in completed_projection.chain.attempts
+                                if attempt.stage.value == "reviewer"
+                            )
+                            if (
+                                attestation.request_id is None
+                                or attestation.usage is None
+                                or not reviewer_attempts
+                            ):
+                                raise SafeFailure(
+                                    ErrorCode.STATE_INTEGRITY_ERROR
+                                )
+                            semantic_telemetry.append(
+                                DiscoverySemanticTelemetry(
+                                    stage="reviewer",
+                                    workflow_authority_digest=(
+                                        workflow_authority.authority_digest
+                                    ),
+                                    attempt_no=reviewer_attempts[-1].attempt_no,
+                                    request_id=attestation.request_id,
+                                    actual_model=(
+                                        attestation.actual_reviewer_model_id
+                                    ),
+                                    prompt_version=(
+                                        attestation.reviewer_prompt_version
+                                    ),
+                                    schema_version=(
+                                        attestation.reviewer_output_schema_version
+                                    ),
+                                    policy_version=(
+                                        attestation.reviewer_policy_version
+                                    ),
+                                    prompt_tokens=attestation.usage.prompt_tokens,
+                                    completion_tokens=(
+                                        attestation.usage.completion_tokens
+                                    ),
+                                    total_tokens=attestation.usage.total_tokens,
+                                    latency_ms=attestation.latency_ms,
+                                )
+                            )
                         if (
                             result.outcome == "eligible_local_candidate"
                             and terminal_summary is not None
@@ -1528,6 +1748,9 @@ def build_discovery_application(
                                         workflow_authority.authority_digest
                                     ),
                                     outcome="eligible",
+                                    workflow_fingerprint=(
+                                        workflow_authority.selected_workflow_fingerprint
+                                    ),
                                     locator=locator,
                                 )
                             )
@@ -1538,6 +1761,9 @@ def build_discovery_application(
                                         workflow_authority.authority_digest
                                     ),
                                     outcome=result.outcome,
+                                    workflow_fingerprint=(
+                                        workflow_authority.selected_workflow_fingerprint
+                                    ),
                                 )
                             )
                 if fatal_outcome is not None:
@@ -1578,6 +1804,17 @@ def build_discovery_application(
                 state_commit_sha=state_head,
                 state_root_digest=state_root,
                 workflows=tuple(workflow_executions),
+                semantic_telemetry=tuple(
+                    sorted(
+                        semantic_telemetry,
+                        key=lambda item: (
+                            item.stage,
+                            item.workflow_authority_digest,
+                            item.attempt_no,
+                        ),
+                    )
+                ),
+                reader_telemetry=reader_telemetry,
             )
 
         phase2_factory = default_phase2_factory
@@ -1599,13 +1836,745 @@ def build_discovery_application(
             search_factory=search_factory,
             operations_store_factory=operations_store_factory,
             state_restore=state_restore,
-            durability_barrier=_LateStateDurabilityBarrier(config, source),
+            durability_barrier=_LateStateDurabilityBarrier(
+                config,
+                source,
+                frozen_publication_export=frozen_owner_export,
+            ),
             phase2_factory=phase2_factory,
             phase3_factory=phase3_factory,
             query_set=config.query_set,  # type: ignore[arg-type]
             initial_state_root_digest=config.initial_state_root_digest,
         )
     )
+
+
+class _LiveAcceptanceExecution:
+    """Single closed action selected before any action-specific capability opens."""
+
+    def __init__(self, action: str, execute: Callable[[], dict[str, object]]) -> None:
+        if action not in {"benchmark", "replay"} or not callable(execute):
+            raise ValueError("live acceptance execution rejected")
+        self._action = action
+        self._execute = execute
+
+    def run(self) -> dict[str, object]:
+        result = self._execute()
+        expected = f"{self._action}_complete"
+        if type(result) is not dict or result.get("status") != expected:
+            raise ValueError("live acceptance execution result rejected")
+        return result
+
+
+class _CompletedBenchmarkStateProjector:
+    """Measure the exact persisted campaign without opening a live capability."""
+
+    def __init__(
+        self,
+        *,
+        operations_path: Path,
+        pipeline_path: Path,
+        acceptance_run_id: str,
+    ) -> None:
+        self._operations_path = operations_path
+        self._pipeline_path = pipeline_path
+        self._acceptance_run_id = acceptance_run_id
+
+    def project(
+        self,
+        *,
+        manifest: object,
+        state_commit_sha: str,
+        state_root_digest: str,
+    ) -> object:
+        del state_commit_sha, state_root_digest
+        from skillscout.adapters.operations_state import OperationsStateStore
+        from skillscout.adapters.state import SQLiteStateStore
+        from skillscout.application.acceptance import CompletedBenchmarkProjection
+        from skillscout.domain.acceptance import (
+            AcceptanceScenarioResultV1,
+            LockedBenchmarkManifestV1,
+        )
+
+        if type(manifest) is not LockedBenchmarkManifestV1:
+            raise ValueError("completed benchmark manifest rejected")
+        with OperationsStateStore(self._operations_path) as operations:
+            snapshot = operations.acceptance_snapshot(self._acceptance_run_id)
+        scenarios = tuple(
+            record.fact
+            for record in snapshot.facts
+            if record.kind == "acceptance_scenario"
+            and isinstance(record.fact, AcceptanceScenarioResultV1)
+            and record.fact.benchmark_manifest_digest == manifest.manifest_digest
+        )
+        if (
+            len(scenarios) != 5
+            or {scenario.repository_id for scenario in scenarios}
+            != {entry.repository_id for entry in manifest.entries}
+            or any(scenario.terminal_class == "system_failure" for scenario in scenarios)
+        ):
+            raise ValueError("completed benchmark projection rejected")
+        eligible = tuple(
+            scenario
+            for scenario in scenarios
+            if scenario.terminal_class == "eligible"
+            and scenario.workflow_fingerprint is not None
+            and scenario.workflow_spec_authority_digest is not None
+            and scenario.eligible_locator is not None
+        )
+        if not eligible:
+            raise ValueError("completed benchmark has no value-positive scenario")
+        selected = sorted(eligible, key=lambda item: item.repository_id)[0]
+        with SQLiteStateStore(self._pipeline_path) as pipeline:
+            pipeline_export = pipeline.export_owned_state()
+        semantic_attempt_digests = tuple(
+            sorted(
+                {
+                    digest
+                    for scenario in scenarios
+                    for digest in scenario.semantic_attempt_digests
+                }
+            )
+        )
+        workflow_authority_digests = tuple(
+            sorted(
+                {
+                    scenario.workflow_spec_authority_digest
+                    for scenario in scenarios
+                    if scenario.workflow_spec_authority_digest is not None
+                }
+            )
+        )
+        candidate_fact_digests = tuple(
+            sorted(fact.object_digest for fact in pipeline_export.facts)
+        )
+        skill_identity_digests = tuple(
+            sorted(
+                fact.object_digest
+                for fact in pipeline_export.facts
+                if fact.kind == "phase3_artifact"
+            )
+        )
+        return CompletedBenchmarkProjection(
+            manifest_digest=manifest.manifest_digest,
+            scenario_result_digests=tuple(
+                sorted(scenario.result_digest for scenario in scenarios)
+            ),
+            repository_id=selected.repository_id,
+            source_commit_sha=selected.exact_commit_sha,
+            workflow_fingerprint=selected.workflow_fingerprint,
+            workflow_spec_authority_digest=(
+                selected.workflow_spec_authority_digest
+            ),
+            eligible_locators=tuple(
+                sorted(
+                    scenario.eligible_locator
+                    for scenario in eligible
+                    if scenario.eligible_locator is not None
+                )
+            ),
+            semantic_attempt_count=len(semantic_attempt_digests),
+            semantic_attempt_digests=semantic_attempt_digests,
+            workflow_spec_authority_digests=workflow_authority_digests,
+            skill_identity_digests=skill_identity_digests,
+            candidate_fact_digests=candidate_fact_digests,
+            semantic_request_count=sum(
+                scenario.semantic_request_count for scenario in scenarios
+            ),
+        )
+
+    def close(self) -> None:
+        return None
+
+
+class _FixedRepositoryAcceptanceRunner:
+    """Run one locked identity through the existing production Phase 2/3 graph."""
+
+    def __init__(
+        self,
+        *,
+        config: AcceptanceRuntimeConfig,
+        discovery_config: DiscoveryRuntimeConfig,
+        barrier: object,
+        source: Mapping[str, str],
+        frozen_owner_export: object,
+        acceptance_run_id: str,
+    ) -> None:
+        from skillscout.adapters.operations_state import OperationsStateStore
+        from skillscout.domain.canonical import sha256_digest
+        from skillscout.domain.discovery import DiscoveryBudgetPolicyV1, DiscoveryRunAuthorityV1
+
+        self._config = config
+        self._discovery_config = discovery_config
+        self._barrier = barrier
+        self._source = source
+        self._operations = OperationsStateStore(discovery_config.operations_state)
+        self._operations.upgrade_acceptance_schema()
+        self._acceptance_run_id = acceptance_run_id
+        application = build_discovery_application(
+            discovery_config,
+            environ=source,
+            frozen_owner_export=frozen_owner_export,
+        )
+        (
+            self._phase2_factory,
+            self._phase3_factory,
+            _unused_barrier,
+        ) = application.candidate_execution_graph()
+        run_id = f"{acceptance_run_id}-semantic"
+        budget = DiscoveryBudgetPolicyV1()
+        authority_values = {
+            "schema_version": "discovery-run-authority-v1",
+            "run_id": run_id,
+            "query_set_digest": discovery_config.query_set_digest,
+            "budget_policy_digest": budget.budget_policy_digest,
+            "phase2_profile_version": discovery_config.phase2_profile_version,
+            "phase3_profile_version": discovery_config.phase3_profile_version,
+            "semantic_provider": discovery_config.semantic_provider,
+            "extractor_model_id": discovery_config.extractor_model_id,
+            "generator_model_id": discovery_config.generator_model_id,
+            "reviewer_model_id": discovery_config.reviewer_model_id,
+            "initial_state_root_digest": discovery_config.initial_state_root_digest,
+        }
+        self._authority = DiscoveryRunAuthorityV1(
+            **authority_values,
+            authority_digest=sha256_digest(authority_values),
+        )
+        self._operations.create_run(self._authority, _discovery_timestamp())
+        self._state_head = config.state_commit_sha
+        self._state_root = config.state_root_digest
+        self._ordinal = 0
+
+    def run(self, authority: object) -> object:
+        from skillscout.adapters.github import GitHubReadClient
+        from skillscout.application.acceptance import (
+            LiveRepositoryAuthority,
+            LiveScenarioObservation,
+        )
+        from skillscout.domain.acceptance import (
+            AcceptanceBudgetReservationV1,
+            AcceptanceSemanticTelemetryV1,
+            NominationSetV1,
+        )
+        from skillscout.domain.canonical import sha256_digest
+        from skillscout.domain.discovery import (
+            DiscoveredCandidateV1,
+            SearchRepositoryObservationV1,
+        )
+
+        if type(authority) is not LiveRepositoryAuthority:
+            raise ValueError("locked repository authority rejected")
+        snapshot = self._operations.acceptance_snapshot(self._acceptance_run_id)
+        nominations = tuple(
+            record.fact
+            for record in snapshot.facts
+            if record.kind == "acceptance_nomination"
+            and record.fact_digest == self._config.manifest.nomination_set_digest
+            and isinstance(record.fact, NominationSetV1)
+        )
+        if len(nominations) != 1:
+            raise ValueError("locked repository nomination missing")
+        nominated = tuple(
+            entry
+            for entry in (
+                nominations[0].search_derived_entries
+                + nominations[0].user_nominated_entries
+            )
+            if entry.entry_digest == authority.nomination_entry_digest
+        )
+        if (
+            len(nominated) != 1
+            or nominated[0].selection_source != "search_derived"
+            or (
+                nominated[0].repository_full_name,
+                nominated[0].repository_id,
+                nominated[0].exact_commit_sha,
+                nominated[0].license_spdx,
+                nominated[0].selection_evidence_digests,
+            )
+            != (
+                authority.repository_full_name,
+                authority.repository_id,
+                authority.exact_commit_sha,
+                authority.license_spdx,
+                authority.selection_evidence_digests,
+            )
+        ):
+            raise ValueError("locked repository nomination mismatch")
+        self._ordinal += 1
+        budget_reservation = AcceptanceBudgetReservationV1(
+            schema_version="acceptance-budget-reservation-v1",
+            acceptance_run_id=self._acceptance_run_id,
+            benchmark_manifest_digest=self._config.manifest.manifest_digest,
+            nomination_entry_digest=authority.nomination_entry_digest,
+            benchmark_entry_digest=authority.entry_digest,
+            repository_id=authority.repository_id,
+            repository_full_name=authority.repository_full_name,
+            ordinal=self._ordinal,
+            max_files=25,
+            max_source_files=5,
+            max_file_bytes=131_072,
+            max_total_bytes=524_288,
+            max_estimated_tokens=40_000,
+            semantic_candidate_slots=1,
+            campaign_semantic_request_limit=20,
+            reserved_at=_discovery_timestamp(),
+        )
+        self._operations.record_acceptance_fact(
+            self._acceptance_run_id,
+            "acceptance_budget_reservation",
+            budget_reservation,
+        )
+        synchronized = self._barrier.sync_discovery(
+            operations_store=self._operations,
+            observed_head=self._state_head,
+            prior_root_digest=self._state_root,
+            created_at=_discovery_timestamp(),
+        )
+        self._state_head = synchronized.commit_sha
+        self._state_root = synchronized.root_digest
+        owner, repository_name = authority.repository_full_name.split("/")
+        github = GitHubReadClient(
+            token=_required_credential(
+                self._source,
+                "SKILLSCOUT_SOURCE_GITHUB_TOKEN",
+            )
+        )
+        try:
+            metadata = github.get_repo_metadata(owner, repository_name)
+            commit_sha = github.resolve_commit(
+                owner,
+                repository_name,
+                authority.exact_commit_sha,
+            )
+            license_observation = github.get_license(
+                owner,
+                repository_name,
+                authority.exact_commit_sha,
+            )
+        finally:
+            github.close()
+        if (
+            metadata.id != authority.repository_id
+            or f"{metadata.owner}/{metadata.name}" != authority.repository_full_name
+            or metadata.private
+            or metadata.visibility != "public"
+            or metadata.fork
+            or metadata.archived
+            or metadata.disabled
+            or commit_sha != authority.exact_commit_sha
+            or license_observation.status != "confirmed"
+            or license_observation.spdx_id != authority.license_spdx
+        ):
+            raise ValueError("locked repository live admission mismatch")
+        repository_values = {
+            "schema_version": "search-repository-observation-v1",
+            "repository_id": metadata.id,
+            "owner": metadata.owner,
+            "name": metadata.name,
+            "full_name": authority.repository_full_name,
+            "private": metadata.private,
+            "visibility": metadata.visibility,
+            "fork": metadata.fork,
+            "archived": metadata.archived,
+            "disabled": metadata.disabled,
+            "default_branch": metadata.default_branch,
+        }
+        repository = SearchRepositoryObservationV1(
+            **repository_values,
+            observation_digest=sha256_digest(repository_values),
+        )
+        candidate_values = {
+            "schema_version": "discovered-candidate-v1",
+            "discovery_run_authority_digest": self._authority.authority_digest,
+            "repository": repository,
+            "source_page_digest": authority.selection_evidence_digests[0],
+            "query_ordinal": 1,
+            "page": 1,
+            "item_ordinal": self._ordinal,
+            "dedup_disposition": "first_seen",
+            "discovery_ordinal": self._ordinal,
+            "first_seen_query_ordinal": 1,
+            "first_seen_page": 1,
+            "first_seen_item_ordinal": self._ordinal,
+        }
+        candidate = DiscoveredCandidateV1(
+            **candidate_values,
+            candidate_digest=sha256_digest(
+                {
+                    **candidate_values,
+                    "repository": repository.model_dump(
+                        mode="json",
+                        exclude_none=False,
+                    ),
+                }
+            ),
+        )
+        reservation = self._operations.admit_locked_acceptance_candidate(
+            self._authority.run_id,
+            candidate,
+            _discovery_timestamp(),
+        )
+        synchronized = self._barrier.sync_discovery(
+            operations_store=self._operations,
+            observed_head=self._state_head,
+            prior_root_digest=self._state_root,
+            created_at=_discovery_timestamp(),
+        )
+        self._state_head = synchronized.commit_sha
+        self._state_root = synchronized.root_digest
+        execution = self._phase2_factory(
+            candidate=candidate,
+            discovery_reservation=reservation,
+            discovery_authority=self._authority,
+            operations_store=self._operations,
+            durability_barrier=self._barrier,
+            observed_head=self._state_head,
+            prior_root_digest=self._state_root,
+            phase3_factory=self._phase3_factory,
+            pinned_commit_sha=authority.exact_commit_sha,
+        )
+        for workflow in execution.workflows:
+            self._operations.record_workflow_terminal(
+                run_id=self._authority.run_id,
+                repository_id=authority.repository_id,
+                workflow_authority_digest=workflow.workflow_authority_digest,
+                outcome=(
+                    "eligible_local_candidate"
+                    if workflow.outcome == "eligible"
+                    else workflow.outcome
+                ),
+                eligible_locator=(
+                    workflow.locator.locator
+                    if workflow.locator is not None
+                    else None
+                ),
+                eligible_object_digest=(
+                    workflow.locator.authority_digest
+                    if workflow.locator is not None
+                    else None
+                ),
+                recorded_at=_discovery_timestamp(),
+            )
+        self._operations.record_candidate_terminal(
+            self._authority.run_id,
+            execution.terminal,
+        )
+        self._state_head = execution.state_commit_sha
+        self._state_root = execution.state_root_digest
+        semantic_attempts = tuple(
+            attempt
+            for attempt in self._operations.snapshot_run(
+                self._authority.run_id
+            ).semantic_attempts
+            if attempt.repository_id == authority.repository_id
+        )
+        telemetry_keys = {
+            (
+                item.stage,
+                item.workflow_authority_digest,
+                item.attempt_no,
+            )
+            for item in execution.semantic_telemetry
+        }
+        attempt_keys = {
+            (
+                item.stage,
+                item.workflow_authority_digest,
+                item.attempt_no,
+            )
+            for item in semantic_attempts
+        }
+        if telemetry_keys != attempt_keys:
+            raise ValueError("semantic provider telemetry is incomplete")
+        semantic_telemetry = tuple(
+            AcceptanceSemanticTelemetryV1(
+                schema_version="acceptance-semantic-telemetry-v1",
+                stage=item.stage,
+                workflow_spec_authority_digest=(
+                    item.workflow_authority_digest
+                ),
+                attempt_no=item.attempt_no,
+                request_id=item.request_id,
+                actual_model=item.actual_model,
+                prompt_version=item.prompt_version,
+                output_schema_version=item.schema_version,
+                policy_version=item.policy_version,
+                prompt_tokens=item.prompt_tokens,
+                completion_tokens=item.completion_tokens,
+                total_tokens=item.total_tokens,
+                latency_ms=item.latency_ms,
+            )
+            for item in execution.semantic_telemetry
+        )
+        workflows = execution.workflows
+        selected_workflow = next(
+            (
+                workflow
+                for workflow in workflows
+                if workflow.locator is not None
+            ),
+            workflows[0] if workflows else None,
+        )
+        evidence = {
+            authority.entry_digest,
+            budget_reservation.reservation_digest,
+            reservation.reservation_digest,
+            execution.terminal.terminal_digest,
+            *(attempt.attempt_digest for attempt in semantic_attempts),
+            *(workflow.workflow_authority_digest for workflow in workflows),
+        }
+        reason_codes = {
+            "filter_rejected": "deterministic_filter_rejected",
+            "no_workflow": "no_reusable_workflow",
+            "qualification_rejected": "qualification_policy_rejected",
+            "validation_rejected": "skill_validation_rejected",
+            "review_rejected": "independent_review_rejected",
+            "eligible_local_candidate": "eligible_candidate_completed",
+            "semantic_outcome_unknown": "provider_outcome_unknown",
+            "state_integrity_conflict": "state_integrity_conflict",
+            "permanent_failure": "pipeline_permanent_failure",
+        }
+        acceptance_outcome = {
+            "confirmed_retryable": "provider_exhausted",
+            "semantic_outcome_unknown": "provider_exhausted",
+            "state_integrity_conflict": "evidence_missing",
+            "permanent_failure": "harness_failed",
+        }.get(execution.terminal.outcome, execution.terminal.outcome)
+        return LiveScenarioObservation(
+            repository_id=authority.repository_id,
+            repository_full_name=authority.repository_full_name,
+            exact_commit_sha=authority.exact_commit_sha,
+            license_spdx=authority.license_spdx,
+            outcome=acceptance_outcome,
+            reason_code=reason_codes.get(
+                execution.terminal.outcome,
+                "pipeline_permanent_failure",
+            ),
+            evidence_digests=tuple(sorted(evidence)),
+            workflow_fingerprint=(
+                selected_workflow.workflow_fingerprint
+                if selected_workflow is not None
+                else None
+            ),
+            workflow_spec_authority_digest=(
+                selected_workflow.workflow_authority_digest
+                if selected_workflow is not None
+                else None
+            ),
+            eligible_locator=(
+                selected_workflow.locator.locator
+                if selected_workflow is not None
+                and selected_workflow.locator is not None
+                else None
+            ),
+            semantic_request_count=len(semantic_attempts),
+            semantic_attempt_digests=tuple(
+                sorted(attempt.attempt_digest for attempt in semantic_attempts)
+            ),
+            semantic_telemetry=semantic_telemetry,
+            actual_models=tuple(
+                item.actual_model for item in semantic_telemetry
+            ),
+            reader_file_count=(
+                execution.reader_telemetry.file_count
+                if execution.reader_telemetry is not None
+                else 0
+            ),
+            reader_source_file_count=(
+                execution.reader_telemetry.source_file_count
+                if execution.reader_telemetry is not None
+                else 0
+            ),
+            reader_total_bytes=(
+                execution.reader_telemetry.total_bytes
+                if execution.reader_telemetry is not None
+                else 0
+            ),
+            reader_estimated_tokens=(
+                execution.reader_telemetry.estimated_tokens
+                if execution.reader_telemetry is not None
+                else 0
+            ),
+            state_commit_sha=self._state_head,
+            state_root_digest=self._state_root,
+        )
+
+    def close(self) -> None:
+        self._operations.close()
+
+
+def _fixed_acceptance_runner_factory(
+    *,
+    config: AcceptanceRuntimeConfig,
+    discovery_config: DiscoveryRuntimeConfig,
+    restored: object,
+    barrier: object,
+    source: Mapping[str, str],
+    frozen_owner_export: object,
+    acceptance_run_id: str,
+) -> Callable[[], object]:
+    del restored
+
+    def factory() -> object:
+        return _FixedRepositoryAcceptanceRunner(
+            config=config,
+            discovery_config=discovery_config,
+            barrier=barrier,
+            source=source,
+            frozen_owner_export=frozen_owner_export,
+            acceptance_run_id=acceptance_run_id,
+        )
+
+    return factory
+
+
+def _acceptance_discovery_config(
+    config: AcceptanceRuntimeConfig,
+    source: Mapping[str, str],
+) -> DiscoveryRuntimeConfig:
+    from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+    query_path = Path("config") / _DISCOVERY_QUERY_SET_NAME
+    query_bytes = _read_stable_private_file(
+        query_path,
+        max_bytes=_DISCOVERY_DIGEST_BYTES,
+    )
+    query_set = DiscoveryQuerySetV1.model_validate_json(query_bytes, strict=True)
+    try:
+        repository_id = int(source["SKILLSCOUT_STATE_REPOSITORY_ID"])
+        repository_full_name = source["SKILLSCOUT_STATE_REPOSITORY_FULL_NAME"]
+    except Exception:
+        raise ValueError("acceptance state repository rejected") from None
+    return DiscoveryRuntimeConfig(
+        state_repository_id=repository_id,
+        state_repository_full_name=repository_full_name,
+        state_ref=_DISCOVERY_STATE_REF,
+        query_set_path=query_path,
+        query_set=query_set,
+        query_set_digest=query_set.query_set_digest or "",
+        pipeline_state=Path(_DISCOVERY_DATABASE_LOCATORS[0]),
+        operations_state=Path(_DISCOVERY_DATABASE_LOCATORS[1]),
+        publication_state=Path(_DISCOVERY_DATABASE_LOCATORS[2]),
+        semantic_provider=config.semantic_provider,
+        extractor_model_id=config.extractor_model_id,
+        generator_model_id=config.generator_model_id,
+        reviewer_model_id=config.reviewer_model_id,
+        initial_state_root_digest=config.state_root_digest,
+    )
+
+
+def build_live_acceptance_execution(
+    *,
+    config: object,
+    restored: object,
+    action: str,
+    acceptance_run_id: str,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Build one benchmark or replay graph from an exact restored authority."""
+
+    if (
+        type(config) is not AcceptanceRuntimeConfig
+        or action not in {"benchmark", "replay"}
+        or type(acceptance_run_id) is not str
+        or not acceptance_run_id
+        or len(acceptance_run_id) > 96
+        or getattr(restored, "status", None) != "verified"
+        or getattr(restored, "observed_head", None) != config.state_commit_sha
+        or getattr(getattr(restored, "bundle", None), "root", None) is None
+        or restored.bundle.root.root_digest != config.state_root_digest
+    ):
+        raise ValueError("live acceptance execution rejected")
+    from skillscout.adapters.operations_state import (
+        OperationsStateStore,
+        _parse_bundle_exports,
+    )
+    from skillscout.application.acceptance import (
+        LockedCampaignDependencies,
+        ReplayUpdateDependencies,
+        run_exact_replay,
+        run_locked_benchmark,
+    )
+
+    source = os.environ if environ is None else environ
+    discovery_config = _acceptance_discovery_config(config, source)
+    _, _, frozen_owner_export, _ = _parse_bundle_exports(restored.bundle)
+    barrier = _LateStateDurabilityBarrier(
+        discovery_config,
+        source,
+        frozen_publication_export=frozen_owner_export,
+    )
+
+    def operations_factory() -> object:
+        return OperationsStateStore(discovery_config.operations_state)
+
+    def state_sync(**arguments: object) -> object:
+        return barrier.sync_discovery(**arguments)
+
+    if action == "replay":
+        def projector_factory() -> object:
+            return _CompletedBenchmarkStateProjector(
+                operations_path=discovery_config.operations_state,
+                pipeline_path=discovery_config.pipeline_state,
+                acceptance_run_id=acceptance_run_id,
+            )
+
+        def execute_replay() -> dict[str, object]:
+            replay = run_exact_replay(
+                ReplayUpdateDependencies(
+                    completed_projector_factory=projector_factory,
+                    operations_store_factory=operations_factory,
+                    state_sync=state_sync,
+                ),
+                manifest=config.manifest,
+                acceptance_run_id=acceptance_run_id,
+                state_commit_sha=config.state_commit_sha,
+                state_root_digest=config.state_root_digest,
+                recorded_at=_discovery_timestamp(),
+            )
+            return {
+                "acceptance_run_id": acceptance_run_id,
+                "replay_digest": replay.replay_digest,
+                "status": "replay_complete",
+            }
+
+        return _LiveAcceptanceExecution("replay", execute_replay)
+
+    runner_factory = _fixed_acceptance_runner_factory(
+        config=config,
+        discovery_config=discovery_config,
+        restored=restored,
+        barrier=barrier,
+        source=source,
+        frozen_owner_export=frozen_owner_export,
+        acceptance_run_id=acceptance_run_id,
+    )
+
+    def execute_benchmark() -> dict[str, object]:
+        result = run_locked_benchmark(
+            LockedCampaignDependencies(
+                discovery_factory=runner_factory,
+                operations_store_factory=operations_factory,
+                state_sync=state_sync,
+            ),
+            manifest=config.manifest,
+            acceptance_run_id=acceptance_run_id,
+            observed_head=config.state_commit_sha,
+            prior_root_digest=config.state_root_digest,
+            recorded_at=_discovery_timestamp(),
+        )
+        return {
+            "acceptance_run_id": acceptance_run_id,
+            "scenario_result_digests": tuple(
+                item.result_digest for item in result.scenario_results
+            ),
+            "state_commit_sha": result.state_commit_sha,
+            "state_root_digest": result.state_root_digest,
+            "status": "benchmark_complete",
+        }
+
+    return _LiveAcceptanceExecution("benchmark", execute_benchmark)
 
 
 def build_nomination_application(

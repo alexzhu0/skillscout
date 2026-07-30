@@ -598,6 +598,85 @@ def test_live_execution_builder_has_no_publication_state_or_configuration() -> N
         assert forbidden not in source
 
 
+def test_live_replay_builder_dispatches_state_only_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the production builder without opening live or publication adapters."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.application.acceptance as acceptance
+    import skillscout.bootstrap as bootstrap
+
+    manifest_path = (
+        ROOT
+        / ".planning/phases/06-adversarial-mvp-acceptance"
+        / "06-BENCHMARK-MANIFEST.json"
+    )
+    manifest = acceptance.load_locked_benchmark_manifest(manifest_path)
+    config = bootstrap.AcceptanceRuntimeConfig(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        state_commit_sha="a" * 40,
+        state_root_digest="sha256:" + ("b" * 64),
+        semantic_provider="deepseek",
+        extractor_model_id="deepseek-v4-flash",
+        generator_model_id="deepseek-v4-flash",
+        reviewer_model_id="deepseek-v4-pro",
+    )
+    discovery_config = SimpleNamespace(
+        operations_state=Path("state/databases/operations.sqlite3"),
+        pipeline_state=Path("state/databases/pipeline.sqlite3"),
+    )
+    restored = SimpleNamespace(
+        status="verified",
+        observed_head=config.state_commit_sha,
+        bundle=SimpleNamespace(
+            root=SimpleNamespace(root_digest=config.state_root_digest)
+        ),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "_acceptance_discovery_config",
+        lambda *_args, **_kwargs: discovery_config,
+    )
+    monkeypatch.setattr(
+        operations_state,
+        "_parse_bundle_exports",
+        lambda _bundle: (object(), object(), object(), object()),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_LateStateDurabilityBarrier",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            sync_discovery=lambda **_arguments: None
+        ),
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "run_exact_replay",
+        lambda *_args, **_kwargs: (
+            calls.append("replay")
+            or SimpleNamespace(replay_digest="sha256:" + ("c" * 64))
+        ),
+    )
+
+    execution = bootstrap.build_live_acceptance_execution(
+        config=config,
+        restored=restored,
+        action="replay",
+        acceptance_run_id="acceptance-live-five",
+        environ={},
+    )
+
+    assert execution.run() == {
+        "acceptance_run_id": "acceptance-live-five",
+        "replay_digest": "sha256:" + ("c" * 64),
+        "status": "replay_complete",
+    }
+    assert calls == ["replay"]
+
+
 def test_live_runner_persists_read_and_semantic_budget_before_remote_read() -> None:
     """Every fixed repository must consume its bounded slot before GitHub I/O."""
 

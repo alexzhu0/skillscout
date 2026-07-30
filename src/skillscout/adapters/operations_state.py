@@ -34,6 +34,7 @@ from skillscout.adapters.state_branch import (
     _validate_bundle,
 )
 from skillscout.domain.acceptance import (
+    AcceptanceBudgetReservationV1,
     AcceptanceEvidenceRootV1,
     AcceptanceGateResultV1,
     AcceptanceScenarioResultV1,
@@ -173,6 +174,7 @@ _AcceptanceFactKind = Literal[
     "acceptance_nomination",
     "acceptance_benchmark_lock",
     "acceptance_live_authority",
+    "acceptance_budget_reservation",
     "acceptance_scenario",
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
@@ -202,6 +204,7 @@ _FactKind = Literal[
     "acceptance_nomination",
     "acceptance_benchmark_lock",
     "acceptance_live_authority",
+    "acceptance_budget_reservation",
     "acceptance_scenario",
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
@@ -221,6 +224,7 @@ _AcceptanceFactModel: TypeAlias = (
     NominationSetV1
     | LockedBenchmarkManifestV1
     | LiveAcceptanceAuthorityV1
+    | AcceptanceBudgetReservationV1
     | AcceptanceScenarioResultV1
     | HostedIsolationCapabilityV1
     | OfflineAdversarialRunV1
@@ -240,6 +244,7 @@ _ACCEPTANCE_FACT_MODEL_VALUES: Final = {
     "acceptance_nomination": NominationSetV1,
     "acceptance_benchmark_lock": LockedBenchmarkManifestV1,
     "acceptance_live_authority": LiveAcceptanceAuthorityV1,
+    "acceptance_budget_reservation": AcceptanceBudgetReservationV1,
     "acceptance_scenario": AcceptanceScenarioResultV1,
     "acceptance_hosted_isolation_capability": HostedIsolationCapabilityV1,
     "acceptance_offline_adversarial_run": OfflineAdversarialRunV1,
@@ -262,6 +267,7 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
         "acceptance_nomination": "nomination_set_digest",
         "acceptance_benchmark_lock": "manifest_digest",
         "acceptance_live_authority": "authority_digest",
+        "acceptance_budget_reservation": "reservation_digest",
         "acceptance_scenario": "result_digest",
         "acceptance_hosted_isolation_capability": "capability_digest",
         "acceptance_offline_adversarial_run": "run_digest",
@@ -278,8 +284,13 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 _ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
+_PRE_BUDGET_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind for kind in _ACCEPTANCE_FACT_KINDS if kind != "acceptance_budget_reservation"
+)
 _LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
-    kind for kind in _ACCEPTANCE_FACT_KINDS if kind != "acceptance_live_authority"
+    kind
+    for kind in _ACCEPTANCE_FACT_KINDS
+    if kind not in {"acceptance_live_authority", "acceptance_budget_reservation"}
 )
 
 
@@ -337,6 +348,10 @@ class OperationsStateProjectionV1(StrictFrozenModel):
         default=(),
         exclude_if=lambda value: not value,
     )
+    acceptance_budget_reservation_digests: tuple[Digest, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
     acceptance_scenario_digests: tuple[Digest, ...]
     acceptance_hosted_isolation_capability_digests: tuple[Digest, ...]
     acceptance_offline_adversarial_run_digests: tuple[Digest, ...]
@@ -355,13 +370,7 @@ class OperationsStateProjectionV1(StrictFrozenModel):
     @model_validator(mode="after")
     def validate_projection_digest(self) -> OperationsStateProjectionV1:
         values = self.model_dump(mode="json", exclude={"projection_digest"})
-        legacy_values = dict(values)
-        if not self.acceptance_live_authority_digests:
-            legacy_values.pop("acceptance_live_authority_digests", None)
-        if self.projection_digest not in {
-            sha256_digest(values),
-            sha256_digest(legacy_values),
-        }:
+        if self.projection_digest != sha256_digest(values):
             raise ValueError("operations projection digest mismatch")
         for name, value in values.items():
             if name.endswith("_digests") and (
@@ -594,6 +603,9 @@ def _expected_schema(
 
 
 _EXPECTED_SCHEMA: Final = _expected_schema()
+_PRE_BUDGET_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_BUDGET_ACCEPTANCE_FACT_KINDS
+)
 _LEGACY_EXPECTED_SCHEMA: Final = _expected_schema(_LEGACY_ACCEPTANCE_FACT_KINDS)
 _FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str, ...]], ...]] = (
     (
@@ -750,6 +762,7 @@ def _schema_fingerprint() -> str:
 _SCHEMA_FINGERPRINTS: Final = frozenset(
     {
         _fingerprint_for_schema(_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_BUDGET_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_LEGACY_EXPECTED_SCHEMA),
     }
 )
@@ -960,13 +973,11 @@ def _validate_acceptance_references(
             fact.source_commit_sha,
             fact.workflow_fingerprint,
             fact.workflow_spec_authority_digest,
-            fact.publication_policy_version,
         ) != (
             replay.repository_id,
             replay.source_commit_sha,
             replay.workflow_fingerprint,
             replay.workflow_spec_authority_digest,
-            replay.publication_policy_version,
         ):
             raise OperationsIntegrityError("publication replay intent binding mismatch")
     elif kind == "acceptance_changed_source_draft_update_completion":
@@ -1027,6 +1038,30 @@ def _validate_acceptance_references(
             != manifest.lock_attestation.attestation_digest
         ):
             raise OperationsIntegrityError("live authority manifest binding mismatch")
+    elif kind == "acceptance_budget_reservation":
+        assert isinstance(fact, AcceptanceBudgetReservationV1)
+        manifest = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_benchmark_lock",
+            digest=fact.benchmark_manifest_digest,
+        )
+        assert isinstance(manifest, LockedBenchmarkManifestV1)
+        entries = tuple(
+            entry
+            for entry in manifest.entries
+            if entry.entry_digest == fact.benchmark_entry_digest
+        )
+        if (
+            len(entries) != 1
+            or entries[0].nomination_entry_digest
+            != fact.nomination_entry_digest
+            or entries[0].repository_id != fact.repository_id
+            or entries[0].repository_full_name != fact.repository_full_name
+        ):
+            raise OperationsIntegrityError(
+                "acceptance budget reservation binding mismatch"
+            )
     elif kind == "acceptance_cleanup":
         assert isinstance(fact, ProbeCleanupAttestationV1)
         binding = _acceptance_fact_by_digest(
@@ -1077,6 +1112,7 @@ def _projection_from_facts(
         "acceptance_nomination_digests": [],
         "acceptance_benchmark_lock_digests": [],
         "acceptance_live_authority_digests": [],
+        "acceptance_budget_reservation_digests": [],
         "acceptance_scenario_digests": [],
         "acceptance_hosted_isolation_capability_digests": [],
         "acceptance_offline_adversarial_run_digests": [],
@@ -1116,6 +1152,10 @@ def _projection_from_facts(
         "acceptance_live_authority": (
             "acceptance_live_authority_digests",
             "authority_digest",
+        ),
+        "acceptance_budget_reservation": (
+            "acceptance_budget_reservation_digests",
+            "reservation_digest",
         ),
         "acceptance_scenario": ("acceptance_scenario_digests", "result_digest"),
         "acceptance_hosted_isolation_capability": (
@@ -1175,8 +1215,12 @@ def _projection_from_facts(
         **{name: tuple(sorted(digests)) for name, digests in fields.items()},
     }
     digest_values = dict(values)
-    if not fields["acceptance_live_authority_digests"]:
-        digest_values.pop("acceptance_live_authority_digests")
+    for field in (
+        "acceptance_live_authority_digests",
+        "acceptance_budget_reservation_digests",
+    ):
+        if not fields[field]:
+            digest_values.pop(field)
     return OperationsStateProjectionV1(
         **values,
         projection_digest=sha256_digest(digest_values),
@@ -1344,7 +1388,11 @@ class OperationsStateStore:
                        ORDER BY name"""
                 ).fetchall()
             }
-            if actual not in (_EXPECTED_SCHEMA, _LEGACY_EXPECTED_SCHEMA):
+            if actual not in (
+                _EXPECTED_SCHEMA,
+                _PRE_BUDGET_EXPECTED_SCHEMA,
+                _LEGACY_EXPECTED_SCHEMA,
+            ):
                 raise OperationsIntegrityError("operations schema fingerprint mismatch")
             integrity = tuple(
                 str(row[0]) for row in connection.execute("PRAGMA integrity_check").fetchall()
@@ -1698,6 +1746,51 @@ class OperationsStateStore:
         elif _decoded_json(existing["authority_json"]) != expected:
             raise OperationsIntegrityError("test run authority mismatch")
 
+    def upgrade_acceptance_schema(self) -> None:
+        """Explicitly widen only the acceptance fact-kind constraint."""
+
+        def mutate(connection: sqlite3.Connection) -> None:
+            actual = {
+                str(row["name"]): _normalize_sql(str(row["sql"]))
+                for row in connection.execute(
+                    """SELECT name, sql FROM sqlite_master
+                       WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                       ORDER BY name"""
+                ).fetchall()
+            }
+            if actual == _EXPECTED_SCHEMA:
+                return
+            if actual not in (
+                _PRE_BUDGET_EXPECTED_SCHEMA,
+                _LEGACY_EXPECTED_SCHEMA,
+            ):
+                raise OperationsIntegrityError(
+                    "operations schema cannot be upgraded"
+                )
+            connection.execute(
+                """ALTER TABLE operations_acceptance_facts
+                   RENAME TO operations_acceptance_facts_previous"""
+            )
+            statement = next(
+                item
+                for item in _schema_statements()
+                if item.lstrip().startswith(
+                    "CREATE TABLE operations_acceptance_facts"
+                )
+            )
+            connection.execute(statement)
+            connection.execute(
+                """INSERT INTO operations_acceptance_facts
+                   (fact_digest, acceptance_run_id, fact_kind, schema_version,
+                    recorded_identity, fact_json)
+                   SELECT fact_digest, acceptance_run_id, fact_kind,
+                          schema_version, recorded_identity, fact_json
+                   FROM operations_acceptance_facts_previous"""
+            )
+            connection.execute("DROP TABLE operations_acceptance_facts_previous")
+
+        self._snapshot_transaction(mutate)
+
     def create_run(
         self,
         authority: DiscoveryRunAuthorityV1,
@@ -1868,6 +1961,100 @@ class OperationsStateStore:
             ).fetchone()
             if stored is None:
                 raise OperationsIntegrityError("candidate observation is missing")
+            values = {
+                "schema_version": "discovery-reservation-v1",
+                "discovery_run_authority_digest": authority,
+                "repository_id": candidate.repository.repository_id,
+                "ordinal": ordinal,
+                "candidate_digest": candidate.candidate_digest,
+                "reserved_at": reserved_at,
+            }
+            reservation = DiscoveryReservationV1(
+                **values,
+                reservation_digest=sha256_digest(values),
+            )
+            connection.execute(
+                """INSERT INTO operations_discovery_reservations
+                   (reservation_digest, run_id, repository_id, ordinal,
+                    candidate_digest, reservation_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    reservation.reservation_digest,
+                    run_id,
+                    reservation.repository_id,
+                    reservation.ordinal,
+                    reservation.candidate_digest,
+                    _json_text(reservation),
+                ),
+            )
+            return reservation
+
+        return self._snapshot_transaction(mutate)
+
+    def admit_locked_acceptance_candidate(
+        self,
+        run_id: str,
+        candidate: DiscoveredCandidateV1,
+        reserved_at: str,
+    ) -> DiscoveryReservationV1:
+        """Persist a human-locked Search-derived candidate without a new Search page."""
+
+        if type(candidate) is not DiscoveredCandidateV1:
+            raise TypeError("invalid locked acceptance candidate")
+
+        def mutate(connection: sqlite3.Connection) -> DiscoveryReservationV1:
+            authority = self._run_authority_digest(connection, run_id)
+            existing = connection.execute(
+                """SELECT reservation_json FROM operations_discovery_reservations
+                   WHERE run_id = ? AND repository_id = ?""",
+                (run_id, candidate.repository.repository_id),
+            ).fetchone()
+            if existing is not None:
+                stored = DiscoveryReservationV1.model_validate_json(
+                    existing["reservation_json"],
+                    strict=True,
+                )
+                if (
+                    stored.candidate_digest != candidate.candidate_digest
+                    or stored.ordinal != candidate.discovery_ordinal
+                ):
+                    raise OperationsIntegrityError(
+                        "locked acceptance reservation conflict"
+                    )
+                return stored
+            count = int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM operations_discovery_reservations
+                       WHERE run_id = ?""",
+                    (run_id,),
+                ).fetchone()[0]
+            )
+            ordinal = count + 1
+            if (
+                count >= DISCOVERY_MAX_CANDIDATES
+                or candidate.discovery_run_authority_digest != authority
+                or candidate.dedup_disposition != "first_seen"
+                or candidate.discovery_ordinal != ordinal
+            ):
+                raise OperationsIntegrityError(
+                    "locked acceptance candidate is not contiguous"
+                )
+            connection.execute(
+                """INSERT INTO operations_candidates
+                   (candidate_digest, run_id, repository_id, source_page_digest,
+                    query_ordinal, page, item_ordinal, candidate_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candidate.candidate_digest,
+                    run_id,
+                    candidate.repository.repository_id,
+                    candidate.source_page_digest,
+                    candidate.query_ordinal,
+                    candidate.page,
+                    candidate.item_ordinal,
+                    _json_text(candidate),
+                ),
+            )
             values = {
                 "schema_version": "discovery-reservation-v1",
                 "discovery_run_authority_digest": authority,

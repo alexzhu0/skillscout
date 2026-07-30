@@ -358,6 +358,30 @@ class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
         return self
 
 
+class AcceptanceBudgetReservationV1(_SelfDigestedModel):
+    """Non-refundable fixed-entry read and semantic budget reservation."""
+
+    _digest_field = "reservation_digest"
+
+    schema_version: Literal["acceptance-budget-reservation-v1"]
+    acceptance_run_id: _Identifier
+    benchmark_manifest_digest: Digest
+    nomination_entry_digest: Digest
+    benchmark_entry_digest: Digest
+    repository_id: _Positive
+    repository_full_name: _FullName
+    ordinal: Annotated[int, Field(ge=1, le=5)]
+    max_files: Literal[25]
+    max_source_files: Literal[5]
+    max_file_bytes: Literal[131_072]
+    max_total_bytes: Literal[524_288]
+    max_estimated_tokens: Literal[40_000]
+    semantic_candidate_slots: Literal[1]
+    campaign_semantic_request_limit: Literal[20]
+    reserved_at: _Timestamp
+    reservation_digest: Digest | None = None
+
+
 class AcceptanceTerminalClass(StrEnum):
     ELIGIBLE = "eligible"
     BUSINESS_TERMINAL = "business_terminal"
@@ -393,6 +417,45 @@ class AcceptanceWarningV1(StrictFrozenModel):
     security_relevant: Literal[False]
 
 
+class AcceptanceSemanticTelemetryV1(_SelfDigestedModel):
+    """One provider-returned semantic response bound to its durable attempt."""
+
+    _digest_field = "telemetry_digest"
+
+    schema_version: Literal["acceptance-semantic-telemetry-v1"]
+    stage: Literal["extractor", "generator", "reviewer"]
+    workflow_spec_authority_digest: Digest
+    attempt_no: Annotated[int, Field(ge=1, le=16)]
+    request_id: _Identifier
+    actual_model: Literal[
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+    ]
+    prompt_version: _Version
+    output_schema_version: _Version
+    policy_version: _Version
+    prompt_tokens: _NonNegative
+    completion_tokens: _NonNegative
+    total_tokens: _NonNegative
+    latency_ms: _NonNegative
+    telemetry_digest: Digest | None = None
+
+    @model_validator(mode="after")
+    def validate_provider_response(self) -> Self:
+        expected_model = {
+            "extractor": "deepseek-v4-flash",
+            "generator": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro",
+        }[self.stage]
+        if (
+            self.actual_model != expected_model
+            or self.total_tokens
+            != self.prompt_tokens + self.completion_tokens
+        ):
+            raise ValueError("acceptance semantic telemetry is incoherent")
+        return self
+
+
 class AcceptanceScenarioResultV1(_SelfDigestedModel):
     _digest_field = "result_digest"
 
@@ -420,6 +483,10 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
     reader_estimated_tokens: Annotated[int, Field(ge=0, le=40_000)]
     semantic_request_count: Annotated[int, Field(ge=0, le=20)]
     semantic_attempt_digests: Annotated[tuple[Digest, ...], Field(max_length=20)]
+    semantic_telemetry: Annotated[
+        tuple[AcceptanceSemanticTelemetryV1, ...],
+        Field(max_length=20),
+    ]
     actual_models: Annotated[tuple[str, ...], Field(max_length=20)]
     prompt_versions: Annotated[tuple[_Version, ...], Field(min_length=3, max_length=3)]
     schema_versions: Annotated[tuple[_Version, ...], Field(min_length=3, max_length=3)]
@@ -475,13 +542,56 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             != tuple(sorted(self.semantic_attempt_digests))
             or len(set(self.semantic_attempt_digests))
             != len(self.semantic_attempt_digests)
-            or len(self.actual_models) > self.semantic_request_count
+            or len(self.semantic_attempt_digests) != self.semantic_request_count
+            or len(self.semantic_telemetry) != self.semantic_request_count
+            or tuple(
+                (
+                    item.stage,
+                    item.workflow_spec_authority_digest,
+                    item.attempt_no,
+                )
+                for item in self.semantic_telemetry
+            )
+            != tuple(
+                sorted(
+                    (
+                        item.stage,
+                        item.workflow_spec_authority_digest,
+                        item.attempt_no,
+                    )
+                    for item in self.semantic_telemetry
+                )
+            )
+            or self.actual_models
+            != tuple(item.actual_model for item in self.semantic_telemetry)
             or (
                 self.publication_decision == "eligible_for_later_publication"
                 and self.terminal_class != AcceptanceTerminalClass.ELIGIBLE
             )
         ):
             raise ValueError("scenario telemetry or publication decision is incoherent")
+        allowed_funnel = (
+            "fixed_identity",
+            "deterministic_filter",
+            "bounded_read",
+            "semantic_terminal",
+        )
+        if (
+            self.candidate_funnel != allowed_funnel
+            or (
+                self.terminal_class == AcceptanceTerminalClass.ELIGIBLE
+                and (
+                    self.workflow_fingerprint is None
+                    or self.workflow_spec_authority_digest is None
+                    or self.eligible_locator is None
+                )
+            )
+            or (
+                self.terminal_class != AcceptanceTerminalClass.ELIGIBLE
+                and self.eligible_locator is not None
+            )
+        ):
+            raise ValueError("scenario terminal evidence is incoherent")
         return self
 
 
@@ -599,7 +709,7 @@ class ReplayEvidenceV1(_SelfDigestedModel):
     source_commit_sha: _Sha
     workflow_fingerprint: Digest
     workflow_spec_authority_digest: Digest
-    publication_policy_version: _Version
+    replay_policy_version: Literal["acceptance-replay-policy-v1"]
     benchmark_manifest_digest: Digest
     before_state_commit_sha: _Sha
     before_state_root_digest: Digest
@@ -615,9 +725,7 @@ class ReplayEvidenceV1(_SelfDigestedModel):
     duplicate_workflow_spec_count: Literal[0]
     duplicate_skill_count: Literal[0]
     duplicate_fact_count: Literal[0]
-    branch_effect_count: Literal[0]
-    pull_request_effect_count: Literal[0]
-    reviewer_effect_count: Literal[0]
+    remote_effect_count: Literal[0]
     recorded_at: _Timestamp
     replay_digest: Digest | None = None
 

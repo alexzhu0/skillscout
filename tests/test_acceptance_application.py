@@ -455,10 +455,27 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                 workflow_fingerprint=None,
                 workflow_spec_authority_digest=None,
                 eligible_locator=None,
-                semantic_request_count=1,
-                semantic_attempt_digests=(authority.entry_digest,),
-                actual_models=("deepseek-v4-flash",),
-            )
+                    semantic_request_count=1,
+                    semantic_attempt_digests=(authority.entry_digest,),
+                    semantic_telemetry=(
+                        module.AcceptanceSemanticTelemetryV1(
+                            schema_version="acceptance-semantic-telemetry-v1",
+                            stage="extractor",
+                            workflow_spec_authority_digest=authority.entry_digest,
+                            attempt_no=1,
+                            request_id=f"request-{authority.repository_id}",
+                            actual_model="deepseek-v4-flash",
+                            prompt_version="extract-prompt-v1",
+                            output_schema_version="workflow-spec-v1",
+                            policy_version="extract-policy-v1",
+                            prompt_tokens=10,
+                            completion_tokens=5,
+                            total_tokens=15,
+                            latency_ms=20,
+                        ),
+                    ),
+                    actual_models=("deepseek-v4-flash",),
+                )
 
         def close(self) -> None:
             return None
@@ -620,9 +637,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
     assert replay.duplicate_workflow_spec_count == 0
     assert replay.duplicate_skill_count == 0
     assert replay.duplicate_fact_count == 0
-    assert replay.branch_effect_count == 0
-    assert replay.pull_request_effect_count == 0
-    assert replay.reviewer_effect_count == 0
+    assert replay.remote_effect_count == 0
     assert replay.before_state_root_digest == replay.after_state_root_digest
     assert replay.before_state_commit_sha == replay.after_state_commit_sha
 

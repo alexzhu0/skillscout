@@ -176,6 +176,72 @@ class DiscoveryApplicationResult:
 
 
 @dataclass(frozen=True)
+class DiscoverySemanticTelemetry:
+    """Provider-returned telemetry retained by the production Phase 2/3 graph."""
+
+    stage: Literal["extractor", "generator", "reviewer"]
+    workflow_authority_digest: str
+    attempt_no: int
+    request_id: str
+    actual_model: str
+    prompt_version: str
+    schema_version: str
+    policy_version: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    latency_ms: int
+
+    def __post_init__(self) -> None:
+        expected_models = {
+            "extractor": "deepseek-v4-flash",
+            "generator": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro",
+        }
+        if (
+            _DIGEST.fullmatch(self.workflow_authority_digest) is None
+            or type(self.attempt_no) is not int
+            or self.attempt_no < 1
+            or not self.request_id
+            or len(self.request_id) > 256
+            or self.actual_model != expected_models[self.stage]
+            or not self.prompt_version
+            or not self.schema_version
+            or not self.policy_version
+            or min(
+                self.prompt_tokens,
+                self.completion_tokens,
+                self.total_tokens,
+                self.latency_ms,
+            )
+            < 0
+            or self.total_tokens
+            != self.prompt_tokens + self.completion_tokens
+        ):
+            raise ValueError("invalid discovery semantic telemetry")
+
+
+@dataclass(frozen=True)
+class DiscoveryReaderTelemetry:
+    """Exact bounded-reader counters from the verified Phase 2 result."""
+
+    file_count: int
+    source_file_count: int
+    total_bytes: int
+    estimated_tokens: int
+
+    def __post_init__(self) -> None:
+        if (
+            not 0 <= self.file_count <= 25
+            or not 0 <= self.source_file_count <= 5
+            or self.source_file_count > self.file_count
+            or not 0 <= self.total_bytes <= 524_288
+            or not 0 <= self.estimated_tokens <= 40_000
+        ):
+            raise ValueError("invalid discovery reader telemetry")
+
+
+@dataclass(frozen=True)
 class DiscoveryCandidateExecution:
     """Complete Phase 2/3 result returned by the existing factory graph."""
 
@@ -184,6 +250,8 @@ class DiscoveryCandidateExecution:
     state_commit_sha: str
     state_root_digest: str
     workflows: tuple[DiscoveryWorkflowExecution, ...] = ()
+    semantic_telemetry: tuple[DiscoverySemanticTelemetry, ...] = ()
+    reader_telemetry: DiscoveryReaderTelemetry | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -197,6 +265,28 @@ class DiscoveryCandidateExecution:
                 if workflow.locator is not None
             )
             != tuple(item for item in self.eligible_candidates)
+            or tuple(
+                (
+                    item.stage,
+                    item.workflow_authority_digest,
+                    item.attempt_no,
+                )
+                for item in self.semantic_telemetry
+            )
+            != tuple(
+                sorted(
+                    (
+                        item.stage,
+                        item.workflow_authority_digest,
+                        item.attempt_no,
+                    )
+                    for item in self.semantic_telemetry
+                )
+            )
+            or (
+                self.reader_telemetry is not None
+                and type(self.reader_telemetry) is not DiscoveryReaderTelemetry
+            )
         ):
             raise ValueError("invalid discovery candidate execution")
 
@@ -209,12 +299,17 @@ class DiscoveryWorkflowExecution:
     outcome: WorkflowOutcome | Literal[
         "completed_reuse", "permanent_failure"
     ]
+    workflow_fingerprint: str | None = None
     locator: EligibleCandidateLocator | None = None
 
     def __post_init__(self) -> None:
         eligible = self.outcome == "eligible"
         if (
             _DIGEST.fullmatch(self.workflow_authority_digest) is None
+            or (
+                self.workflow_fingerprint is not None
+                and _DIGEST.fullmatch(self.workflow_fingerprint) is None
+            )
             or eligible is (self.locator is None)
             or (
                 self.locator is not None
@@ -238,6 +333,17 @@ class DiscoveryApplication:
         if type(dependencies) is not DiscoveryDependencies:
             raise TypeError("invalid discovery dependencies")
         self._dependencies = dependencies
+
+    def candidate_execution_graph(
+        self,
+    ) -> tuple[Callable[..., object], Callable[..., object], object]:
+        """Expose the existing Phase 2/3 graph for a pre-admitted fixed candidate."""
+
+        return (
+            self._dependencies.phase2_factory,
+            self._dependencies.phase3_factory,
+            self._dependencies.durability_barrier,
+        )
 
     def run(self, authority: object | None = None) -> DiscoveryApplicationResult:
         """Restore exact state and execute the owner-provided bounded controller."""

@@ -21,6 +21,8 @@ from skillscout.adapters.operations_state import (
 )
 from skillscout.domain.acceptance import (
     AcceptanceScenarioResultV1,
+    AcceptanceSemanticTelemetryV1,
+    AcceptanceWarningV1,
     ChangedSourceDraftUpdateCompletionV1,
     ChangedSourceEvidenceV1,
     HumanSkillReviewAttestationV1,
@@ -545,7 +547,10 @@ class LiveScenarioObservation:
     reader_total_bytes: int = 0
     reader_estimated_tokens: int = 0
     semantic_attempt_digests: tuple[str, ...] = ()
+    semantic_telemetry: tuple[AcceptanceSemanticTelemetryV1, ...] = ()
     actual_models: tuple[str, ...] = ()
+    state_commit_sha: str | None = None
+    state_root_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -690,6 +695,19 @@ def run_locked_benchmark(
             semantic_requests += observation.semantic_request_count
             if semantic_requests > 20:
                 raise AcceptanceApplicationError("unauthorized_effect")
+            if observation.state_commit_sha is not None:
+                if (
+                    re.fullmatch(r"[0-9a-f]{40}", observation.state_commit_sha)
+                    is None
+                    or re.fullmatch(
+                        r"sha256:[0-9a-f]{64}",
+                        observation.state_root_digest or "",
+                    )
+                    is None
+                ):
+                    raise AcceptanceApplicationError("evidence_missing")
+                current_head = observation.state_commit_sha
+                current_root = observation.state_root_digest or ""
 
             terminal_class = classify_acceptance_terminal(observation.outcome)
             evaluator_match = (
@@ -718,6 +736,7 @@ def run_locked_benchmark(
                 reader_estimated_tokens=observation.reader_estimated_tokens,
                 semantic_request_count=observation.semantic_request_count,
                 semantic_attempt_digests=tuple(sorted(observation.semantic_attempt_digests)),
+                semantic_telemetry=observation.semantic_telemetry,
                 actual_models=observation.actual_models,
                 prompt_versions=(
                     "extract-prompt-v1",
@@ -748,7 +767,20 @@ def run_locked_benchmark(
                     if terminal_class == "eligible"
                     else "not_eligible"
                 ),
-                warnings=(),
+                warnings=(
+                    AcceptanceWarningV1(
+                        warning_code="openai_live_absent",
+                        impact=(
+                            "This locked campaign exercises the approved DeepSeek "
+                            "provider path and does not provide live OpenAI evidence."
+                        ),
+                        follow_up=(
+                            "Run a separately approved OpenAI acceptance campaign "
+                            "before claiming cross-provider production authority."
+                        ),
+                        security_relevant=False,
+                    ),
+                ),
                 recorded_at=recorded_at,
             )
             _record_on_open_store(
@@ -827,7 +859,7 @@ def run_exact_replay(
         source_commit_sha=projection.source_commit_sha,
         workflow_fingerprint=projection.workflow_fingerprint,
         workflow_spec_authority_digest=projection.workflow_spec_authority_digest,
-        publication_policy_version="publication-policy-v1",
+        replay_policy_version="acceptance-replay-policy-v1",
         benchmark_manifest_digest=manifest.manifest_digest,
         before_state_commit_sha=state_commit_sha,
         before_state_root_digest=state_root_digest,
@@ -841,9 +873,7 @@ def run_exact_replay(
         duplicate_workflow_spec_count=0,
         duplicate_skill_count=0,
         duplicate_fact_count=0,
-        branch_effect_count=0,
-        pull_request_effect_count=0,
-        reviewer_effect_count=0,
+        remote_effect_count=0,
         recorded_at=recorded_at,
     )
     store = dependencies.operations_store_factory()

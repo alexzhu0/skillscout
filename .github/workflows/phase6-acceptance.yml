@@ -892,6 +892,9 @@ jobs:
       PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
       PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
       PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
     steps:
       - name: Check out the dispatched commit without credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -1097,7 +1100,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action benchmark --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action benchmark --manifest "$PHASE6_MANIFEST" --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
 
   live_replay:
     if: ${{ inputs.phase6_action == 'run-replay' }}
@@ -1110,6 +1113,9 @@ jobs:
       PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
       PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
       PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
     steps:
       - name: Check out the dispatched commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -1199,7 +1205,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action replay --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action replay --manifest "$PHASE6_MANIFEST" --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
 
   changed_source:
     if: ${{ inputs.phase6_action == 'run-changed-source' }}
