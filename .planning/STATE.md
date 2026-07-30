@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 pending separately authorized hosted success after local ownership correction; no canonical facts or retry authorized
-last_updated: "2026-07-30T06:11:01Z"
+stopped_at: Completed 06-06-PLAN.md
+last_updated: "2026-07-30T06:51:19.814Z"
 last_activity: 2026-07-30
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 76
-  completed_plans: 67
-  percent: 83
+  completed_plans: 68
+  percent: 89
 ---
 
 # Project State: SkillScout
@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 **Phase:** 06 (adversarial-mvp-acceptance) — EXECUTING
-**Plan:** 6 of 15
+**Plan:** 7 of 15
 **Verification:** Phase 6 plan checker passed with TEST-01..04, D-01..D-27, 38/38 task-map, dependency, threat-model, workflow-freeze, and post-planning gap gates green
 **Next command:** `$gsd-execute-phase 6`
 
@@ -42,7 +42,7 @@ Phase 3 implementation  [██████████] 100%
 Phase 3 verification    [██████████] 100%
 Phase 4 publication     [██████████] 100%
 Phase 5 operations      [██████████] 100%
-Phase 6 acceptance      [█░░░░░░░░░]  13%
+Phase 6 acceptance      [█████░░░░░]  47%
 ```
 
 | Metric | Value |
@@ -51,7 +51,7 @@ Phase 6 acceptance      [█░░░░░░░░░]  13%
 | Requirements mapped | 44 |
 | Roadmap phases | 6 |
 | Phases completed | 5/6 |
-| Plans completed | 63/76 authored plans |
+| Plans completed | 68/76 authored plans |
 
 ## Project Reference
 
@@ -138,6 +138,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - Strict-TDD ownership correction commits are RED `d4d7b5dd4858fc88c38f8d0db561cc28c62c3430` and GREEN `1c8aaf8359a3ff1eeea56b2cf10d151db71767db`. Only the report-writing control invocation receives exactly one validated numeric `--user "${host_uid}:${host_gid}"`; mode `0600`, direct/child probes, `--network none`, read-only repository mount, scan manifest, one-day artifacts, and no-retry policy remain unchanged.
 - Local verification passed 124 focused tests and a 276-pass/12-skip wider Phase 6 matrix; all 35 workflow blocks passed `bash -n`; the independent source verifier passed; full locked pytest reported 2,193 passed, 14 skipped, and only the planned repository-verifier RED failure. The offline verifier remains correctly incomplete. `pyproject.toml` and `uv.lock` are unchanged.
 - Every prior exact-source/workflow authorization, dispatch approval, and Gate B4 binding is stale after this workflow-byte correction. No push, dispatch, remote or artifact access, canonical write, credential inspection, publication, or cleanup occurred; Task 06-06-03 remains incomplete pending separately authorized hosted success.
+- Plan 06-06 Task 3 is resolved by authorized run `30519607061` attempt 1 at source `a3c41cf8501bec435a646f140f52acedf1c5f312`: the exact seven-fixture/22-scenario campaign passed with control/direct/child statuses `0/97/97`, the sole one-day evidence artifact passed strict validation, and canonical state commit `37f8dcbf74c85f2471670373fd03f71d9f155bae` / root `sha256:b4167cffc31969854260d4acd58b804f4823a4d25d078ef3b5dc88445b75c2e5` fresh-rebuilt exactly `acceptance_hosted_isolation_capability` and `acceptance_offline_adversarial_run`. No raw logs, retry, third fact, credential disclosure, catalog/default-branch/PR/publication mutation, or follow-up push occurred.
 
 ### Quick Tasks Completed
 
@@ -148,8 +149,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-30
-**Last session:** 2026-07-30T06:11:01Z
-**Stopped at:** Blocked 06-06 Task 3 pending separately authorized hosted success after local ownership correction; no canonical facts or retry authorized
+**Last session:** 2026-07-30T06:51:19.807Z
+**Stopped at:** Completed 06-06-PLAN.md
 **Resume file:** None
 
 ### Next
@@ -222,6 +223,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 | Phase 06 P04 | 18min | 2 tasks | 4 files |
 | Phase 06 P05 | 12min | 2 tasks | 6 files |
 | Phase 06 P15 | 9min | 1 tasks | 8 files |
+| Phase 06 P06 | 21min | 3 tasks | 3 files |
 
 ## Decisions
 
@@ -380,3 +382,6 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - [Phase 06]: Install the current locked SkillScout project in all 15 freshly recreated authoritative venvs. — A dependency-only venv cannot import the src-layout application, and the `--no-install-project` mutation must make both isolated import and the adversarial control return 1.
 - [Phase 06]: Hosted adversarial evidence is produced only by an installed-package deterministic runner with a closed 25-node registry; pytest is a development consumer and cannot own report lifecycle. — This separates scenario/assertion failure from final report-write failure without widening network, path, credential, publication, or canonical-state authority.
 - [Phase 06]: Bind the deterministic runner to seven exact production-embedded injection payloads and independent SHA-256 identities, then derive observed results through ordered in-memory application seams. — Static policy projection or synthetic-name bytes alone cannot prove the committed inert corpus crossed its intended barriers.
+- [Phase 06]: Promote only the validated offline evidence JSON digest — Retain the ZIP digest as non-authoritative transport metadata and avoid promoting archive packaging as fact authority.
+- [Phase 06]: Replay verified pre-Phase-6 operations facts through the current owner before CAS — Preserve every prior fact digest while adding the acceptance projection schema required by the current owner.
+- [Phase 06]: Persist exactly two offline acceptance facts — Only acceptance_hosted_isolation_capability and acceptance_offline_adversarial_run are authorized; no third acceptance fact is admitted.
