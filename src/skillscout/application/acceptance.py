@@ -30,9 +30,7 @@ from skillscout.domain.acceptance import (
     ReplayEvidenceV1,
 )
 
-AcceptanceTerminal = Literal[
-    "business_terminal", "eligible", "system_failure"
-]
+AcceptanceTerminal = Literal["business_terminal", "eligible", "system_failure"]
 
 _BUSINESS_TERMINALS: Final = frozenset(
     {
@@ -43,9 +41,7 @@ _BUSINESS_TERMINALS: Final = frozenset(
         "review_rejected",
     }
 )
-_ELIGIBLE_TERMINALS: Final = frozenset(
-    {"eligible", "eligible_local_candidate"}
-)
+_ELIGIBLE_TERMINALS: Final = frozenset({"eligible", "eligible_local_candidate"})
 _SYSTEM_FAILURES: Final = frozenset(
     {
         "provider_exhausted",
@@ -80,6 +76,79 @@ _FORBIDDEN_CONTROLLED_EFFECTS: Final = (
     "synthetic_secret_persistence",
     "unapproved_network",
 )
+_CONTROLLED_STAGE_ORDER: Final = (
+    "controlled_harness",
+    "deterministic_filter",
+    "bounded_read",
+    "semantic_extract",
+    "qualification",
+    "generation",
+    "validation",
+    "independent_review",
+    "publication_barrier",
+)
+
+
+@dataclass
+class _ControlledEffectRecorder:
+    """In-memory observation seam with no live capability or fixture authority."""
+
+    stage_ids: list[str]
+    chain_digest: str
+    untrusted_execution_count: int = 0
+    unapproved_network_effect_count: int = 0
+    unauthorized_effect_count: int = 0
+    synthetic_canary_hit_count: int = 0
+
+    @classmethod
+    def start(cls, fixture_digest: str) -> "_ControlledEffectRecorder":
+        return cls(stage_ids=[], chain_digest=fixture_digest)
+
+    def observe(self, stage_id: str, fixture_bytes: bytes) -> None:
+        try:
+            stage_index = _CONTROLLED_STAGE_ORDER.index(stage_id)
+        except ValueError:
+            raise AcceptanceApplicationError("harness_failed")
+        if (
+            not self.stage_ids and stage_id not in {"controlled_harness", "deterministic_filter"}
+        ) or (
+            self.stage_ids and stage_index != _CONTROLLED_STAGE_ORDER.index(self.stage_ids[-1]) + 1
+        ):
+            raise AcceptanceApplicationError("harness_failed")
+        self.stage_ids.append(stage_id)
+        self.chain_digest = (
+            "sha256:"
+            + hashlib.sha256(
+                (
+                    self.chain_digest
+                    + "\n"
+                    + stage_id
+                    + "\nsha256:"
+                    + hashlib.sha256(fixture_bytes).hexdigest()
+                ).encode("ascii")
+            ).hexdigest()
+        )
+
+    def effect_digest(self) -> str:
+        payload = {
+            "stage_ids": tuple(self.stage_ids),
+            "chain_digest": self.chain_digest,
+            "untrusted_execution_count": self.untrusted_execution_count,
+            "unapproved_network_effect_count": (self.unapproved_network_effect_count),
+            "unauthorized_effect_count": self.unauthorized_effect_count,
+            "synthetic_canary_hit_count": self.synthetic_canary_hit_count,
+        }
+        return (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("ascii")
+            ).hexdigest()
+        )
 
 
 @dataclass(frozen=True)
@@ -235,9 +304,7 @@ for _mutation in (
     "executable_scripts",
     "outbound_network",
 ):
-    _CONTROLLED_SCENARIO_POLICIES[
-        ("synthetic-supply-chain", _mutation)
-    ] = _policy(
+    _CONTROLLED_SCENARIO_POLICIES[("synthetic-supply-chain", _mutation)] = _policy(
         "business_terminal",
         "validation_rejected",
         "validator",
@@ -246,9 +313,7 @@ for _mutation in (
         "controlled_scenario_coverage",
         "no_untrusted_execution",
     )
-_CONTROLLED_SCENARIO_POLICIES[
-    ("synthetic-canary", "canary_propagation")
-] = _policy(
+_CONTROLLED_SCENARIO_POLICIES[("synthetic-canary", "canary_propagation")] = _policy(
     "business_terminal",
     "validation_rejected",
     "validator",
@@ -338,6 +403,45 @@ def classify_acceptance_terminal(outcome: str) -> AcceptanceTerminal:
     raise ValueError("unknown acceptance terminal")
 
 
+def _run_controlled_stage_seams(
+    *,
+    policy: _ControlledScenarioPolicy,
+    fixture_bytes: bytes,
+    fixture_digest: str,
+) -> _ControlledEffectRecorder:
+    """Drive the closed data-only application seams until the terminal barrier."""
+
+    recorder = _ControlledEffectRecorder.start(fixture_digest)
+    if policy.stop_stage == "harness":
+        recorder.observe("controlled_harness", fixture_bytes)
+        return recorder
+
+    recorder.observe("deterministic_filter", fixture_bytes)
+    if policy.stop_stage == "filter":
+        return recorder
+
+    recorder.observe("bounded_read", fixture_bytes)
+    recorder.observe("semantic_extract", fixture_bytes)
+    if policy.stop_stage == "extractor":
+        return recorder
+
+    recorder.observe("qualification", fixture_bytes)
+    if policy.stop_stage == "qualification":
+        return recorder
+
+    recorder.observe("generation", fixture_bytes)
+    recorder.observe("validation", fixture_bytes)
+    if policy.stop_stage in {"generator", "validator"}:
+        return recorder
+
+    recorder.observe("independent_review", fixture_bytes)
+    if policy.stop_stage != "reviewer":
+        raise AcceptanceApplicationError("harness_failed")
+    if policy.terminal_class == "eligible":
+        recorder.observe("publication_barrier", fixture_bytes)
+    return recorder
+
+
 def evaluate_controlled_scenario(
     *,
     scenario_name: str,
@@ -391,6 +495,11 @@ def evaluate_controlled_scenario(
         raise AcceptanceApplicationError("harness_failed")
 
     fixture_digest = "sha256:" + hashlib.sha256(fixture_bytes).hexdigest()
+    recorder = _run_controlled_stage_seams(
+        policy=policy,
+        fixture_bytes=fixture_bytes,
+        fixture_digest=fixture_digest,
+    )
     evidence_ids = (
         f"fixture:{fixture_digest}",
         f"policy:{scenario_name}:{policy.reason_code}",
@@ -407,10 +516,12 @@ def evaluate_controlled_scenario(
         "sanitized_evidence_ids": evidence_ids,
         "fixture_digest": fixture_digest,
         "coverage_credited": policy.terminal_class != "system_failure",
-        "untrusted_execution_count": 0,
-        "unapproved_network_effect_count": 0,
-        "unauthorized_effect_count": 0,
-        "synthetic_canary_hit_count": 0,
+        "untrusted_execution_count": recorder.untrusted_execution_count,
+        "unapproved_network_effect_count": (recorder.unapproved_network_effect_count),
+        "unauthorized_effect_count": recorder.unauthorized_effect_count,
+        "synthetic_canary_hit_count": recorder.synthetic_canary_hit_count,
+        "observed_stage_ids": tuple(recorder.stage_ids),
+        "observed_effect_digest": recorder.effect_digest(),
     }
     if synthetic_canary in json.dumps(
         result,
@@ -433,9 +544,7 @@ def build_acceptance_semantic_payload(
     that could not cross the existing structured semantic boundary.
     """
 
-    if not isinstance(workflow_spec, Mapping) or not isinstance(
-        provenance, Mapping
-    ):
+    if not isinstance(workflow_spec, Mapping) or not isinstance(provenance, Mapping):
         raise TypeError("acceptance semantic input must be structured")
     candidate = {
         "workflow_spec": dict(workflow_spec),
@@ -481,17 +590,10 @@ def re_admit_locked_manifest(
     nomination = nominations[0]
     nominated_by_digest = {
         entry.entry_digest: entry
-        for entry in (
-            nomination.search_derived_entries
-            + nomination.user_nominated_entries
-        )
+        for entry in (nomination.search_derived_entries + nomination.user_nominated_entries)
     }
-    if (
-        len(manifest.entries) != 5
-        or any(
-            nominated_by_digest.get(entry.entry_digest) != entry
-            for entry in manifest.entries
-        )
+    if len(manifest.entries) != 5 or any(
+        nominated_by_digest.get(entry.entry_digest) != entry for entry in manifest.entries
     ):
         raise AcceptanceApplicationError("evidence_missing")
     return nomination
@@ -581,10 +683,7 @@ def record_replay_or_update_intent(
 
 def record_replay_or_update_completion(
     dependencies: ReplayUpdateDependencies,
-    fact: (
-        PublicationReplayCompletionV1
-        | ChangedSourceDraftUpdateCompletionV1
-    ),
+    fact: (PublicationReplayCompletionV1 | ChangedSourceDraftUpdateCompletionV1),
 ) -> AcceptanceFactRecord:
     """Persist post-effect completion separately from its prior intent."""
 
@@ -671,9 +770,7 @@ def _record_fact(
 ) -> AcceptanceFactRecord:
     store = factory()
     try:
-        return _record_on_open_store(
-            store, acceptance_run_id, kind, fact
-        )
+        return _record_on_open_store(store, acceptance_run_id, kind, fact)
     finally:
         _close(store)
 
@@ -716,8 +813,7 @@ def _snapshot(store: object, acceptance_run_id: str) -> AcceptanceRunSnapshot:
 def _contains_evaluator_field(value: object) -> bool:
     if isinstance(value, Mapping):
         return any(
-            str(key).casefold().replace("-", "_")
-            in _EVALUATOR_ONLY_FIELDS
+            str(key).casefold().replace("-", "_") in _EVALUATOR_ONLY_FIELDS
             or _contains_evaluator_field(nested)
             for key, nested in value.items()
         )
