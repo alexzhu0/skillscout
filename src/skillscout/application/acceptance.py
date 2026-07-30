@@ -60,14 +60,24 @@ _BUSINESS_TERMINALS: Final = frozenset(
 
 
 @dataclass(frozen=True)
+class CampaignResumeLocatorObservation:
+    """One locator plus its immutable operations-owned object identity."""
+
+    locator: AcceptanceCampaignResumeLocatorV1
+    object_digest: str
+
+
+@dataclass(frozen=True)
 class CampaignStateLineageObservation:
-    """One fully verified state commit/root pair in authority-to-head order."""
+    """One bounded commit/tree/root proof in authority-to-head order."""
 
     commit_sha: str
     root_digest: str
     parent_commit_sha: str | None
     prior_root_digest: str | None
-    resume_locators: tuple[AcceptanceCampaignResumeLocatorV1, ...]
+    object_digests: tuple[str, ...]
+    declared_content_bytes: int = 0
+    resume_locators: tuple[CampaignResumeLocatorObservation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -125,26 +135,6 @@ def resolve_campaign_resume_lineage(
         ):
             raise ValueError("campaign resume lineage rejected")
 
-    locator_first_seen: dict[str, int] = {}
-    for index, item in enumerate(observations):
-        for locator in item.resume_locators:
-            locator_digest = locator.locator_digest or ""
-            locator_first_seen.setdefault(locator_digest, index)
-            if (
-                locator.acceptance_run_id != acceptance_run_id
-                or locator.live_acceptance_authority_digest
-                != authority_digest
-                or locator.original_state_commit_sha
-                != original_state_commit_sha
-                or locator.original_state_root_digest
-                != original_state_root_digest
-                or locator.lineage_commit_shas
-                != commits[: len(locator.lineage_commit_shas)]
-                or locator.lineage_root_digests
-                != roots[: len(locator.lineage_root_digests)]
-            ):
-                raise ValueError("campaign resume locator rejected")
-
     final_locators = observations[-1].resume_locators
     if not final_locators:
         if len(observations) != 1:
@@ -156,20 +146,36 @@ def resolve_campaign_resume_lineage(
             lineage_commit_shas=commits,
             lineage_root_digests=roots,
         )
-    maximum = max(len(item.lineage_commit_shas) for item in final_locators)
-    latest = tuple(
-        item for item in final_locators if len(item.lineage_commit_shas) == maximum
+    ordered = tuple(
+        sorted(final_locators, key=lambda item: item.locator.transition_index)
     )
-    if len(latest) != 1:
-        raise ValueError("campaign resume locator is ambiguous")
-    locator = latest[0]
-    current_index = commits.index(locator.current_state_commit_sha)
-    suffix_length = len(commits) - current_index - 1
-    first_seen = locator_first_seen[locator.locator_digest or ""]
-    if 1 <= suffix_length <= 3 and first_seen <= current_index + 1:
-        selected_index = len(observations) - 1
-    else:
-        raise ValueError("campaign resume locator is stale")
+    if len(ordered) != len(observations) - 1:
+        raise ValueError("campaign resume transition graph is incomplete")
+    previous_locator_digest = None
+    for index, record in enumerate(ordered, start=1):
+        locator = record.locator
+        parent = observations[index - 1]
+        child = observations[index]
+        if (
+            locator.transition_index != index
+            or locator.previous_locator_digest != previous_locator_digest
+            or locator.acceptance_run_id != acceptance_run_id
+            or locator.live_acceptance_authority_digest != authority_digest
+            or locator.original_state_commit_sha != original_state_commit_sha
+            or locator.original_state_root_digest != original_state_root_digest
+            or locator.parent_state_commit_sha != parent.commit_sha
+            or locator.parent_state_root_digest != parent.root_digest
+            or record.object_digest in parent.object_digests
+            or record.object_digest not in child.object_digests
+            or any(
+                record.object_digest not in later.object_digests
+                for later in observations[index:]
+            )
+        ):
+            raise ValueError("campaign resume transition edge rejected")
+        previous_locator_digest = locator.locator_digest
+    locator = ordered[-1].locator
+    selected_index = len(observations) - 1
     return VerifiedCampaignResume(
         state_commit_sha=commits[selected_index],
         state_root_digest=roots[selected_index],

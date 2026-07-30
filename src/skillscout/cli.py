@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import sys
+import time
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
@@ -978,6 +979,9 @@ def _acceptance_resume_locators_from_bundle(
         OperationsStateStore,
         restore_acceptance_state_bundle,
     )
+    from skillscout.application.acceptance import (
+        CampaignResumeLocatorObservation,
+    )
     from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
 
     with TemporaryDirectory(prefix="skillscout-resume-state-") as temporary:
@@ -990,15 +994,35 @@ def _acceptance_resume_locators_from_bundle(
         )
         with OperationsStateStore(operations_path) as store:
             snapshot = store.acceptance_snapshot(acceptance_run_id)
+            exported = store.export_owned_state()
     locators = tuple(
-        record.fact
+        record
         for record in snapshot.facts
         if record.kind == "acceptance_campaign_resume_locator"
         and type(record.fact) is AcceptanceCampaignResumeLocatorV1
     )
-    if len({item.locator_digest for item in locators}) != len(locators):
+    object_digests: dict[str, str] = {}
+    for fact in exported.facts:
+        if fact.kind != "acceptance_campaign_resume_locator":
+            continue
+        payload = json.loads(fact.payload_json)
+        value = payload.get("value") if type(payload) is dict else None
+        if type(value) is not dict or type(value.get("locator_digest")) is not str:
+            raise ValueError
+        object_digests[value["locator_digest"]] = fact.object_digest
+    if (
+        len({item.fact.locator_digest for item in locators}) != len(locators)
+        or set(object_digests)
+        != {item.fact.locator_digest for item in locators}
+    ):
         raise ValueError
-    return locators
+    return tuple(
+        CampaignResumeLocatorObservation(
+            locator=record.fact,
+            object_digest=object_digests[record.fact.locator_digest or ""],
+        )
+        for record in locators
+    )
 
 
 def _run_resolve_acceptance_resume(
@@ -1032,45 +1056,78 @@ def _run_resolve_acceptance_resume(
             repository_full_name=arguments.state_repository_full_name,
         )
         try:
+            started = time.monotonic()
+            max_commits = 160
+            max_requests = 1_024
+            max_declared_bytes = 268_435_456
+            max_elapsed_seconds = 45.0
             head = reader.get_state_ref().sha
             store = StateBranchStore(reader)
             descending: list[CampaignStateLineageObservation] = []
             current = head
-            head_bundle: object | None = None
-            for _index in range(256):
-                commit = reader.get_commit(current)
-                bundle = store.restore_commit(current)
-                if head_bundle is None:
-                    head_bundle = bundle
+            metadata_bytes = 0
+            for _index in range(max_commits):
+                if time.monotonic() - started > max_elapsed_seconds:
+                    raise ValueError
+                inspected = store.inspect_commit_root(current)
+                metadata_bytes += len(
+                    canonical_json_bytes(
+                        inspected.root.model_dump(
+                            mode="json",
+                            exclude_none=False,
+                        )
+                    )
+                )
+                if metadata_bytes > max_declared_bytes:
+                    raise ValueError
                 descending.append(
                     CampaignStateLineageObservation(
                         commit_sha=current,
-                        root_digest=bundle.root.root_digest,
+                        root_digest=inspected.root.root_digest,
                         parent_commit_sha=(
-                            commit.parents[0] if commit.parents else None
+                            inspected.commit.parents[0]
+                            if inspected.commit.parents
+                            else None
                         ),
-                        prior_root_digest=bundle.root.prior_root_digest,
-                        resume_locators=(
-                            _acceptance_resume_locators_from_bundle(
-                                bundle,
-                                arguments.acceptance_run_id,
-                            )
-                        ),
+                        prior_root_digest=inspected.root.prior_root_digest,
+                        object_digests=inspected.object_digests,
+                        declared_content_bytes=inspected.declared_content_bytes,
                     )
                 )
                 if current == authority.state_commit_sha:
-                    if bundle.root.root_digest != authority.state_root_digest:
+                    if inspected.root.root_digest != authority.state_root_digest:
                         raise ValueError
                     break
-                if len(commit.parents) != 1:
+                if len(inspected.commit.parents) != 1:
                     raise ValueError
-                current = commit.parents[0]
+                current = inspected.commit.parents[0]
             else:
                 raise ValueError
+            head_inspection = descending[0]
+            selected_declared_bytes = descending[0].declared_content_bytes
+            expected_paths = len(head_inspection.object_digests) + 4
+            predicted_requests = (
+                1 + 3 * len(descending) + 3 + expected_paths
+            )
+            if (
+                predicted_requests > max_requests
+                or selected_declared_bytes > max_declared_bytes
+                or time.monotonic() - started > max_elapsed_seconds
+            ):
+                raise ValueError
+            head_bundle = store.restore_commit(head)
+            locators = _acceptance_resume_locators_from_bundle(
+                head_bundle,
+                arguments.acceptance_run_id,
+            )
+            descending[0] = CampaignStateLineageObservation(
+                **{
+                    **descending[0].__dict__,
+                    "resume_locators": locators,
+                }
+            )
         finally:
             reader.close()
-        if head_bundle is None:
-            raise ValueError
         campaign_checkout = arguments.campaign_state_root.resolve(strict=True)
         if _checked_out_git_commit(campaign_checkout) != head:
             raise ValueError
@@ -1094,6 +1151,15 @@ def _run_resolve_acceptance_resume(
             "lineage_commit_shas": list(verified.lineage_commit_shas),
             "lineage_root_digests": list(verified.lineage_root_digests),
             "locator_digest": verified.locator_digest,
+            "transition_index": (
+                max(
+                    (
+                        item.locator.transition_index
+                        for item in locators
+                    ),
+                    default=0,
+                )
+            ),
             "state_commit_sha": verified.state_commit_sha,
             "state_root_digest": verified.state_root_digest,
             "status": "acceptance_resume_verified",

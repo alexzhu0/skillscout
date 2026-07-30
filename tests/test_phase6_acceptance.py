@@ -256,6 +256,7 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
         "lineage_commit_shas": [commit],
         "lineage_root_digests": [root],
         "locator_digest": None,
+        "transition_index": 0,
         "state_commit_sha": commit,
         "state_root_digest": root,
         "status": "acceptance_resume_verified",
@@ -285,6 +286,7 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
 
     assert config.resume_lineage_commit_shas == (commit,)
     assert config.resume_lineage_root_digests == (root,)
+    assert config.resume_transition_index == 0
     proof["state_commit_sha"] = "d" * 40
     proof_path.write_text(
         json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n",
@@ -655,8 +657,15 @@ def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() 
         "state_repository_full_name": "example/state",
         "original_state_commit_sha": "4" * 40,
         "original_state_root_digest": "sha256:" + ("5" * 64),
-        "current_state_commit_sha": "6" * 40,
-        "current_state_root_digest": "sha256:" + ("7" * 64),
+        "parent_state_commit_sha": "6" * 40,
+        "parent_state_root_digest": "sha256:" + ("7" * 64),
+        "transition_index": 1,
+        "previous_locator_digest": None,
+        "transition_phase": "scenario",
+        "semantic_stage": None,
+        "attempt_no": None,
+        "semantic_status": None,
+        "workflow_authority_digest": None,
         "semantic_provider": "deepseek",
         "stage_models": (
             "deepseek-v4-flash",
@@ -681,23 +690,18 @@ def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() 
             "reader-policy-v1",
             "reviewer-policy-v1",
         ),
-        "lineage_commit_shas": ("4" * 40, "6" * 40),
-        "lineage_root_digests": (
-            "sha256:" + ("5" * 64),
-            "sha256:" + ("7" * 64),
-        ),
         "recorded_at": "2026-07-30T12:00:00.000000Z",
     }
     locator = AcceptanceCampaignResumeLocatorV1(**values)
 
     assert locator.locator_digest == sha256_digest(values)
-    assert locator.current_state_commit_sha == locator.lineage_commit_shas[-1]
-    assert locator.current_state_root_digest == locator.lineage_root_digests[-1]
+    assert locator.parent_state_commit_sha == "6" * 40
+    assert locator.parent_state_root_digest == "sha256:" + ("7" * 64)
     with pytest.raises(ValidationError):
         AcceptanceCampaignResumeLocatorV1(
             **{
                 **values,
-                "current_state_commit_sha": "8" * 40,
+                "transition_index": 2,
             }
         )
     with pytest.raises(ValidationError):
@@ -888,6 +892,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
 ) -> None:
     import skillscout.adapters.state_branch as state_branch
     import skillscout.cli as cli
+    from skillscout.application.acceptance import CampaignResumeLocatorObservation
     from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
 
     original_commit = "4" * 40
@@ -901,11 +906,13 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         live_acceptance_authority_digest=authority_digest,
         original_state_commit_sha=original_commit,
         original_state_root_digest=original_root,
-        current_state_commit_sha=original_commit,
-        lineage_commit_shas=(original_commit,),
-        lineage_root_digests=(original_root,),
+        parent_state_commit_sha=original_commit,
+        parent_state_root_digest=original_root,
+        transition_index=1,
+        previous_locator_digest=None,
         locator_digest="sha256:" + ("a" * 64),
     )
+    locator_object_digest = "sha256:" + ("b" * 64)
     bundles = {
         original_commit: SimpleNamespace(
             root=SimpleNamespace(
@@ -944,6 +951,25 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         def __init__(self, _reader: object) -> None:
             pass
 
+        def inspect_commit_root(self, sha: str) -> object:
+            parent = (
+                ("0" * 40,) if sha == original_commit else (original_commit,)
+            )
+            root = bundles[sha].root
+            root.model_dump = lambda **_kwargs: {
+                "root_digest": root.root_digest,
+            }
+            return SimpleNamespace(
+                commit=SimpleNamespace(sha=sha, parents=parent),
+                root=root,
+                object_digests=(
+                    (locator_object_digest,)
+                    if sha == anchor_commit
+                    else ()
+                ),
+                declared_content_bytes=1_024,
+            )
+
         def restore_commit(self, sha: str) -> object:
             return bundles[sha]
 
@@ -967,7 +993,14 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         cli,
         "_acceptance_resume_locators_from_bundle",
         lambda bundle, _run_id: (
-            (locator,) if bundle is bundles[anchor_commit] else ()
+            (
+                CampaignResumeLocatorObservation(
+                    locator=locator,
+                    object_digest=locator_object_digest,
+                ),
+            )
+            if bundle is bundles[anchor_commit]
+            else ()
         ),
         raising=False,
     )
@@ -1002,6 +1035,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         "lineage_commit_shas": [original_commit, anchor_commit],
         "lineage_root_digests": [original_root, anchor_root],
         "locator_digest": locator.locator_digest,
+        "transition_index": 1,
         "state_commit_sha": anchor_commit,
         "state_root_digest": anchor_root,
         "status": "acceptance_resume_verified",
@@ -1082,10 +1116,27 @@ def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
             return object()
 
     barrier = object.__new__(bootstrap._LateStateDurabilityBarrier)
+
+    def synchronize(**arguments: object) -> object:
+        synchronized_result = next(synchronized)
+        barrier._record_acceptance_transition(
+            operations_store=arguments["operations_store"],
+            observed_head=str(arguments["observed_head"]),
+            prior_root_digest=str(arguments["prior_root_digest"]),
+            created_at=str(arguments["created_at"]),
+            transition_phase=str(arguments["transition_phase"]),
+            semantic_stage=arguments.get("semantic_stage"),
+            attempt_no=arguments.get("attempt_no"),
+            semantic_status=arguments.get("semantic_status"),
+            workflow_authority_digest=arguments.get("workflow_authority_digest"),
+        )
+        barrier._advance_acceptance_transition(synchronized_result)
+        return synchronized_result
+
     monkeypatch.setattr(
         barrier,
         "sync_discovery",
-        lambda **_kwargs: next(synchronized),
+        synchronize,
     )
     barrier.configure_acceptance_resume(
         authority=authority,
@@ -1113,34 +1164,38 @@ def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
     assert second.commit_sha == second_commit
     assert [
         (
-            item.current_state_commit_sha,
-            item.current_state_root_digest,
-            item.lineage_commit_shas,
-            item.lineage_root_digests,
+            item.parent_state_commit_sha,
+            item.parent_state_root_digest,
+            item.transition_index,
+            item.previous_locator_digest,
+            item.transition_phase,
         )
         for item in recorded
     ] == [
         (
             original_commit,
             original_root,
-            (original_commit,),
-            (original_root,),
+            1,
+            None,
+            "terminal",
         ),
         (
             anchor_commit,
             anchor_root,
-            (original_commit, anchor_commit),
-            (original_root, anchor_root),
+            2,
+            recorded[0].locator_digest,
+            "terminal",
         ),
     ]
 
 
-def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> None:
-    """A locator anchor admits its verified commit or one verified crash suffix."""
+def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> None:
+    """Every accepted child has a named, chained transition and durable locator."""
 
     from dataclasses import replace
 
     from skillscout.application.acceptance import (
+        CampaignResumeLocatorObservation,
         CampaignStateLineageObservation,
         resolve_campaign_resume_lineage,
     )
@@ -1154,35 +1209,33 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
     current_root = "sha256:" + ("7" * 64)
     anchor_root = "sha256:" + ("9" * 64)
     crash_root = "sha256:" + ("b" * 64)
-    locator = AcceptanceCampaignResumeLocatorV1(
-        schema_version="acceptance-campaign-resume-locator-v1",
-        acceptance_run_id="acceptance-resume",
-        live_acceptance_authority_digest="sha256:" + ("1" * 64),
-        source_commit_sha="2" * 40,
-        manifest_digest="sha256:" + ("3" * 64),
-        state_repository_id=123,
-        state_repository_full_name="example/state",
-        original_state_commit_sha=original_commit,
-        original_state_root_digest=original_root,
-        current_state_commit_sha=current_commit,
-        current_state_root_digest=current_root,
-        semantic_provider="deepseek",
-        stage_models=(
+    common = {
+        "schema_version": "acceptance-campaign-resume-locator-v1",
+        "acceptance_run_id": "acceptance-resume",
+        "live_acceptance_authority_digest": "sha256:" + ("1" * 64),
+        "source_commit_sha": "2" * 40,
+        "manifest_digest": "sha256:" + ("3" * 64),
+        "state_repository_id": 123,
+        "state_repository_full_name": "example/state",
+        "original_state_commit_sha": original_commit,
+        "original_state_root_digest": original_root,
+        "semantic_provider": "deepseek",
+        "stage_models": (
             "deepseek-v4-flash",
             "deepseek-v4-flash",
             "deepseek-v4-pro",
         ),
-        prompt_versions=(
+        "prompt_versions": (
             "extract-prompt-v1",
             "generator-prompt-v1",
             "reviewer-prompt-v1",
         ),
-        schema_versions=(
+        "schema_versions": (
             "workflow-spec-v1",
             "generation-draft-v1",
             "reviewer-judgment-v1",
         ),
-        policy_versions=(
+        "policy_versions": (
             "discovery-budget-policy-v1",
             "extract-policy-v1",
             "generator-policy-v1",
@@ -1190,9 +1243,52 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
             "reader-policy-v1",
             "reviewer-policy-v1",
         ),
-        lineage_commit_shas=(original_commit, current_commit),
-        lineage_root_digests=(original_root, current_root),
+    }
+    first = AcceptanceCampaignResumeLocatorV1(
+        **common,
+        parent_state_commit_sha=original_commit,
+        parent_state_root_digest=original_root,
+        transition_index=1,
+        previous_locator_digest=None,
+        transition_phase="scenario",
+        semantic_stage=None,
+        attempt_no=None,
+        semantic_status=None,
+        workflow_authority_digest=None,
         recorded_at="2026-07-30T12:00:00.000000Z",
+    )
+    second = AcceptanceCampaignResumeLocatorV1(
+        **common,
+        parent_state_commit_sha=current_commit,
+        parent_state_root_digest=current_root,
+        transition_index=2,
+        previous_locator_digest=first.locator_digest,
+        transition_phase="terminal",
+        semantic_stage=None,
+        attempt_no=None,
+        semantic_status=None,
+        workflow_authority_digest=None,
+        recorded_at="2026-07-30T12:01:00.000000Z",
+    )
+    third = AcceptanceCampaignResumeLocatorV1(
+        **common,
+        parent_state_commit_sha=anchor_commit,
+        parent_state_root_digest=anchor_root,
+        transition_index=3,
+        previous_locator_digest=second.locator_digest,
+        transition_phase="result_durable",
+        semantic_stage="extractor",
+        attempt_no=3,
+        semantic_status="confirmed_retryable",
+        workflow_authority_digest="sha256:" + ("c" * 64),
+        recorded_at="2026-07-30T12:02:00.000000Z",
+    )
+    first_object = "sha256:" + ("d" * 64)
+    second_object = "sha256:" + ("e" * 64)
+    third_object = "sha256:" + ("f" * 64)
+    final_graph = (
+        CampaignResumeLocatorObservation(first, first_object),
+        CampaignResumeLocatorObservation(second, second_object),
     )
     observations = (
         CampaignStateLineageObservation(
@@ -1200,6 +1296,7 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
             root_digest=original_root,
             parent_commit_sha="0" * 40,
             prior_root_digest="sha256:" + ("0" * 64),
+            object_digests=(),
             resume_locators=(),
         ),
         CampaignStateLineageObservation(
@@ -1207,6 +1304,7 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
             root_digest=current_root,
             parent_commit_sha=original_commit,
             prior_root_digest=original_root,
+            object_digests=(first_object,),
             resume_locators=(),
         ),
         CampaignStateLineageObservation(
@@ -1214,39 +1312,62 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
             root_digest=anchor_root,
             parent_commit_sha=current_commit,
             prior_root_digest=current_root,
-            resume_locators=(locator,),
+            object_digests=(first_object, second_object),
+            resume_locators=final_graph,
         ),
     )
 
     anchored = resolve_campaign_resume_lineage(
-        authority_digest=locator.live_acceptance_authority_digest,
-        acceptance_run_id=locator.acceptance_run_id,
+        authority_digest=first.live_acceptance_authority_digest,
+        acceptance_run_id=first.acceptance_run_id,
         original_state_commit_sha=original_commit,
         original_state_root_digest=original_root,
         campaign_head_commit_sha=anchor_commit,
         observations=observations,
     )
-    crashed = resolve_campaign_resume_lineage(
-        authority_digest=locator.live_acceptance_authority_digest,
-        acceptance_run_id=locator.acceptance_run_id,
-        original_state_commit_sha=original_commit,
-        original_state_root_digest=original_root,
-        campaign_head_commit_sha=crash_commit,
-        observations=(
-            *observations,
-            CampaignStateLineageObservation(
-                commit_sha=crash_commit,
-                root_digest=crash_root,
-                parent_commit_sha=anchor_commit,
-                prior_root_digest=anchor_root,
-                resume_locators=(locator,),
-            ),
-        ),
-    )
 
     assert (anchored.state_commit_sha, anchored.state_root_digest) == (
         anchor_commit,
         anchor_root,
+    )
+    unlocated_crash = (
+        *observations,
+        CampaignStateLineageObservation(
+            commit_sha=crash_commit,
+            root_digest=crash_root,
+            parent_commit_sha=anchor_commit,
+            prior_root_digest=anchor_root,
+            object_digests=(first_object, second_object),
+            resume_locators=final_graph,
+        ),
+    )
+    with pytest.raises(ValueError, match="transition graph is incomplete"):
+        resolve_campaign_resume_lineage(
+            authority_digest=first.live_acceptance_authority_digest,
+            acceptance_run_id=first.acceptance_run_id,
+            original_state_commit_sha=original_commit,
+            original_state_root_digest=original_root,
+            campaign_head_commit_sha=crash_commit,
+            observations=unlocated_crash,
+        )
+    located_crash = (
+        *observations,
+        replace(
+            unlocated_crash[-1],
+            object_digests=(first_object, second_object, third_object),
+            resume_locators=(
+                *final_graph,
+                CampaignResumeLocatorObservation(third, third_object),
+            ),
+        ),
+    )
+    crashed = resolve_campaign_resume_lineage(
+        authority_digest=first.live_acceptance_authority_digest,
+        acceptance_run_id=first.acceptance_run_id,
+        original_state_commit_sha=original_commit,
+        original_state_root_digest=original_root,
+        campaign_head_commit_sha=crash_commit,
+        observations=located_crash,
     )
     assert (crashed.state_commit_sha, crashed.state_root_digest) == (
         crash_commit,
@@ -1255,7 +1376,7 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
     with pytest.raises(ValueError):
         resolve_campaign_resume_lineage(
             authority_digest="sha256:" + ("c" * 64),
-            acceptance_run_id=locator.acceptance_run_id,
+            acceptance_run_id=first.acceptance_run_id,
             original_state_commit_sha=original_commit,
             original_state_root_digest=original_root,
             campaign_head_commit_sha=anchor_commit,
@@ -1263,8 +1384,8 @@ def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> 
         )
     with pytest.raises(ValueError):
         resolve_campaign_resume_lineage(
-            authority_digest=locator.live_acceptance_authority_digest,
-            acceptance_run_id=locator.acceptance_run_id,
+            authority_digest=first.live_acceptance_authority_digest,
+            acceptance_run_id=first.acceptance_run_id,
             original_state_commit_sha=original_commit,
             original_state_root_digest=original_root,
             campaign_head_commit_sha=anchor_commit,

@@ -127,6 +127,16 @@ class StateSyncObservation:
     root_digest: str
 
 
+@dataclass(frozen=True)
+class StateCommitRootObservation:
+    """Bounded commit/tree/root proof without database or object restoration."""
+
+    commit: StateCommitObservation
+    root: DiscoveryStateRootV1
+    object_digests: tuple[str, ...]
+    declared_content_bytes: int
+
+
 def _safe_failure(code: ErrorCode = ErrorCode.STAGE_PERMANENT_FAILURE) -> None:
     raise SafeFailure(code)
 
@@ -622,6 +632,50 @@ class StateBranchStore:
         bundle = VerifiedStateBundle(root, tuple(files))
         _validate_bundle(bundle, expected_parent=commit.parents[0] if commit.parents else None)
         return bundle
+
+    def inspect_commit_root(self, commit_sha: str) -> StateCommitRootObservation:
+        """Verify one immutable commit manifest without reading owned payload blobs."""
+
+        expected_commit_sha = _sha(commit_sha)
+        commit = self._remote.get_commit(expected_commit_sha)
+        if commit.sha != expected_commit_sha or len(commit.parents) > 1:
+            raise StateIntegrityFailure
+        entries = self._remote.get_tree(commit.tree_sha)
+        entry_map = _validate_tree_shape(entries)
+        root_entry = entry_map.get("state/root.json")
+        if root_entry is None:
+            raise StateIntegrityFailure
+        root_bytes = self._remote.get_blob(root_entry.sha)
+        if (
+            root_entry.sha != _git_blob_id(root_bytes)
+            or root_entry.size is not None
+            and root_entry.size != len(root_bytes)
+        ):
+            raise StateIntegrityFailure
+        root = _parse_root(root_bytes)
+        if (
+            commit.message != _state_commit_message(root.root_digest)
+            or commit.parents
+            and root.state_parent_commit_sha != commit.parents[0]
+            or set(entry_map) != _expected_paths(root)
+        ):
+            raise StateIntegrityFailure
+        declared_sizes = {
+            item.locator: item.size_bytes
+            for item in (*root.objects, *root.databases)
+        }
+        for path, size in declared_sizes.items():
+            entry = entry_map[path]
+            if entry.size is not None and entry.size != size:
+                raise StateIntegrityFailure
+        return StateCommitRootObservation(
+            commit=commit,
+            root=root,
+            object_digests=tuple(item.object_digest for item in root.objects),
+            declared_content_bytes=(
+                len(root_bytes) + sum(declared_sizes.values())
+            ),
+        )
 
     @staticmethod
     def restore_from_fixture(

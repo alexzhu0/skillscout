@@ -362,7 +362,7 @@ class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
 
 
 class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
-    """Non-self-referential locator to an exact authorized campaign parent."""
+    """One explicit protocol edge from an authorized parent state to its child."""
 
     _digest_field = "locator_digest"
 
@@ -375,8 +375,27 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
     state_repository_full_name: _FullName
     original_state_commit_sha: _Sha
     original_state_root_digest: Digest
-    current_state_commit_sha: _Sha
-    current_state_root_digest: Digest
+    parent_state_commit_sha: _Sha
+    parent_state_root_digest: Digest
+    transition_index: Annotated[int, Field(ge=1, le=160)]
+    previous_locator_digest: Digest | None
+    transition_phase: Literal[
+        "anchored",
+        "request_reserved",
+        "started",
+        "result_durable",
+        "terminal",
+        "scenario",
+    ]
+    semantic_stage: Literal["extractor", "generator", "reviewer"] | None
+    attempt_no: Annotated[int, Field(ge=1, le=3)] | None
+    semantic_status: Literal[
+        "started",
+        "decided",
+        "confirmed_retryable",
+        "semantic_outcome_unknown",
+    ] | None
+    workflow_authority_digest: Digest | None
     semantic_provider: Literal["deepseek"]
     stage_models: tuple[
         Literal["deepseek-v4-flash"],
@@ -397,14 +416,6 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
         tuple[_Version, ...],
         Field(min_length=5, max_length=16),
     ]
-    lineage_commit_shas: Annotated[
-        tuple[_Sha, ...],
-        Field(min_length=1, max_length=256),
-    ]
-    lineage_root_digests: Annotated[
-        tuple[Digest, ...],
-        Field(min_length=1, max_length=256),
-    ]
     recorded_at: _Timestamp
     locator_digest: Digest | None = None
 
@@ -418,8 +429,6 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
                 "prompt_versions",
                 "schema_versions",
                 "policy_versions",
-                "lineage_commit_shas",
-                "lineage_root_digests",
             ):
                 if isinstance(payload.get(field), list):
                     payload[field] = tuple(payload[field])
@@ -427,24 +436,46 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
         return value
 
     @model_validator(mode="after")
-    def validate_lineage(self) -> Self:
+    def validate_transition(self) -> Self:
+        semantic = self.transition_phase in {
+            "anchored",
+            "request_reserved",
+            "started",
+            "result_durable",
+        }
         if (
-            len(self.lineage_commit_shas) != len(self.lineage_root_digests)
-            or len(set(self.lineage_commit_shas)) != len(
-                self.lineage_commit_shas
+            (self.transition_index == 1) != (self.previous_locator_digest is None)
+            or semantic
+            != (
+                self.semantic_stage is not None
+                and self.attempt_no is not None
+                and self.workflow_authority_digest is not None
             )
-            or self.lineage_commit_shas[0]
-            != self.original_state_commit_sha
-            or self.lineage_root_digests[0]
-            != self.original_state_root_digest
-            or self.lineage_commit_shas[-1]
-            != self.current_state_commit_sha
-            or self.lineage_root_digests[-1]
-            != self.current_state_root_digest
+            or (
+                self.transition_phase in {"anchored", "request_reserved"}
+                and self.semantic_status is not None
+            )
+            or (
+                self.transition_phase == "started"
+                and self.semantic_status != "started"
+            )
+            or (
+                self.transition_phase == "result_durable"
+                and self.semantic_status
+                not in {
+                    "decided",
+                    "confirmed_retryable",
+                    "semantic_outcome_unknown",
+                }
+            )
+            or (
+                self.transition_phase in {"terminal", "scenario"}
+                and self.semantic_status is not None
+            )
             or self.policy_versions != tuple(sorted(self.policy_versions))
             or len(set(self.policy_versions)) != len(self.policy_versions)
         ):
-            raise ValueError("acceptance campaign resume lineage is invalid")
+            raise ValueError("acceptance campaign resume transition is invalid")
         return self
 
 

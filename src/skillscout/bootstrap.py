@@ -137,6 +137,7 @@ class AcceptanceRuntimeConfig:
     live_acceptance_authority_digest: str
     acceptance_run_id: str | None = None
     resume_locator_digest: str | None = None
+    resume_transition_index: int = 0
     resume_lineage_commit_shas: tuple[str, ...] = ()
     resume_lineage_root_digests: tuple[str, ...] = ()
 
@@ -174,12 +175,17 @@ class AcceptanceRuntimeConfig:
                         self.resume_locator_digest is not None
                         and not _is_digest(self.resume_locator_digest)
                     )
+                    or self.resume_transition_index < 0
+                    or self.resume_transition_index > 160
+                    or (self.resume_transition_index == 0)
+                    != (self.resume_locator_digest is None)
                 )
             )
             or (
                 self.acceptance_run_id is None
                 and (
                     self.resume_locator_digest is not None
+                    or self.resume_transition_index != 0
                     or self.resume_lineage_commit_shas
                     or self.resume_lineage_root_digests
                 )
@@ -583,6 +589,7 @@ def load_acceptance_runtime_config(
         source = os.environ if environ is None else environ
         provider = resolve_semantic_provider(source)
         resume_locator_digest: str | None = None
+        resume_transition_index = 0
         resume_commits: tuple[str, ...] = ()
         resume_roots: tuple[str, ...] = ()
         if resume_proof_path is not None:
@@ -599,6 +606,7 @@ def load_acceptance_runtime_config(
                 "lineage_commit_shas",
                 "lineage_root_digests",
                 "locator_digest",
+                "transition_index",
                 "state_commit_sha",
                 "state_root_digest",
                 "status",
@@ -612,6 +620,7 @@ def load_acceptance_runtime_config(
                 or proof["state_root_digest"] != state_root_digest
                 or type(proof["lineage_commit_shas"]) is not list
                 or type(proof["lineage_root_digests"]) is not list
+                or type(proof["transition_index"]) is not int
                 or (
                     proof["locator_digest"] is not None
                     and type(proof["locator_digest"]) is not str
@@ -619,6 +628,7 @@ def load_acceptance_runtime_config(
             ):
                 raise ValueError
             resume_locator_digest = proof["locator_digest"]
+            resume_transition_index = proof["transition_index"]
             resume_commits = tuple(proof["lineage_commit_shas"])
             resume_roots = tuple(proof["lineage_root_digests"])
         return AcceptanceRuntimeConfig(
@@ -637,6 +647,7 @@ def load_acceptance_runtime_config(
                 acceptance_run_id if resume_proof_path is not None else None
             ),
             resume_locator_digest=resume_locator_digest,
+            resume_transition_index=resume_transition_index,
             resume_lineage_commit_shas=resume_commits,
             resume_lineage_root_digests=resume_roots,
         )
@@ -884,6 +895,7 @@ class _LateStateDurabilityBarrier:
         self._source = source
         self._frozen_publication_export = frozen_publication_export
         self._acceptance_resume: dict[str, object] | None = None
+        self._pending_resume_locator: object | None = None
 
     def configure_acceptance_resume(
         self,
@@ -892,6 +904,8 @@ class _LateStateDurabilityBarrier:
         acceptance_run_id: str,
         lineage_commit_shas: tuple[str, ...],
         lineage_root_digests: tuple[str, ...],
+        locator_digest: str | None = None,
+        transition_index: int = 0,
     ) -> None:
         """Bind locator creation to one immutable authority and verified lineage."""
 
@@ -909,6 +923,10 @@ class _LateStateDurabilityBarrier:
             or lineage_root_digests[0] != authority.state_root_digest
             or any(not _is_commit_sha(item) for item in lineage_commit_shas)
             or any(not _is_digest(item) for item in lineage_root_digests)
+            or (transition_index == 0) != (locator_digest is None)
+            or transition_index < 0
+            or transition_index > 160
+            or (locator_digest is not None and not _is_digest(locator_digest))
         ):
             raise ValueError("acceptance resume authority rejected")
         self._acceptance_resume = {
@@ -916,7 +934,10 @@ class _LateStateDurabilityBarrier:
             "acceptance_run_id": acceptance_run_id,
             "lineage_commit_shas": lineage_commit_shas,
             "lineage_root_digests": lineage_root_digests,
+            "locator_digest": locator_digest,
+            "transition_index": transition_index,
         }
+        self._pending_resume_locator = None
 
     def acceptance_resume_lineage(
         self,
@@ -932,6 +953,22 @@ class _LateStateDurabilityBarrier:
             raise ValueError("acceptance resume lineage is invalid")
         return commits, roots
 
+    def acceptance_resume_locator(self) -> tuple[str | None, int]:
+        """Return the latest durable locator identity for runner reconstruction."""
+
+        resume = self._acceptance_resume
+        if resume is None:
+            raise ValueError("acceptance resume lineage is not configured")
+        digest = resume["locator_digest"]
+        index = resume["transition_index"]
+        if (
+            digest is not None
+            and (type(digest) is not str or not _is_digest(digest))
+            or type(index) is not int
+        ):
+            raise ValueError("acceptance resume locator is invalid")
+        return digest, index
+
     def anchor_acceptance_resume(
         self,
         *,
@@ -940,8 +977,38 @@ class _LateStateDurabilityBarrier:
         prior_root_digest: str,
         created_at: str,
         pipeline_store: object | None = None,
+        stage: str | None = None,
+        attempt_no: int | None = None,
+        workflow_authority_digest: str | None = None,
     ) -> object:
-        """Record the current parent locator, then make it durable by exact CAS."""
+        """Persist either a semantic request anchor or a terminal campaign edge."""
+
+        return self.sync_discovery(
+            operations_store=operations_store,
+            observed_head=observed_head,
+            prior_root_digest=prior_root_digest,
+            created_at=created_at,
+            pipeline_store=pipeline_store,
+            transition_phase="anchored" if stage is not None else "terminal",
+            semantic_stage=stage,
+            attempt_no=attempt_no,
+            workflow_authority_digest=workflow_authority_digest,
+        )
+
+    def _record_acceptance_transition(
+        self,
+        *,
+        operations_store: object,
+        observed_head: str,
+        prior_root_digest: str,
+        created_at: str,
+        transition_phase: str,
+        semantic_stage: str | None,
+        attempt_no: int | None,
+        semantic_status: str | None,
+        workflow_authority_digest: str | None,
+    ) -> object | None:
+        """Append one locator whose object must first appear in the CAS child."""
 
         from skillscout.domain.acceptance import (
             AcceptanceCampaignResumeLocatorV1,
@@ -950,18 +1017,20 @@ class _LateStateDurabilityBarrier:
 
         resume = self._acceptance_resume
         if resume is None:
-            raise ValueError("acceptance resume lineage is not configured")
+            return None
         authority = resume["authority"]
-        if type(authority) is not LiveAcceptanceAuthorityV1:
-            raise ValueError("acceptance resume authority rejected")
         commits = resume["lineage_commit_shas"]
         roots = resume["lineage_root_digests"]
+        index = resume["transition_index"]
         if (
-            type(commits) is not tuple
+            type(authority) is not LiveAcceptanceAuthorityV1
+            or type(commits) is not tuple
             or type(roots) is not tuple
+            or type(index) is not int
             or commits[-1] != observed_head
             or roots[-1] != prior_root_digest
-            or len(commits) > 255
+            or index >= 160
+            or self._pending_resume_locator is not None
         ):
             raise ValueError("acceptance resume lineage drifted")
         locator = AcceptanceCampaignResumeLocatorV1(
@@ -974,15 +1043,20 @@ class _LateStateDurabilityBarrier:
             state_repository_full_name=authority.state_repository_full_name,
             original_state_commit_sha=authority.state_commit_sha,
             original_state_root_digest=authority.state_root_digest,
-            current_state_commit_sha=observed_head,
-            current_state_root_digest=prior_root_digest,
+            parent_state_commit_sha=observed_head,
+            parent_state_root_digest=prior_root_digest,
+            transition_index=index + 1,
+            previous_locator_digest=resume["locator_digest"],
+            transition_phase=transition_phase,
+            semantic_stage=semantic_stage,
+            attempt_no=attempt_no,
+            semantic_status=semantic_status,
+            workflow_authority_digest=workflow_authority_digest,
             semantic_provider=authority.semantic_provider,
             stage_models=authority.stage_models,
             prompt_versions=authority.prompt_versions,
             schema_versions=authority.schema_versions,
             policy_versions=authority.policy_versions,
-            lineage_commit_shas=commits,
-            lineage_root_digests=roots,
             recorded_at=created_at,
         )
         record = getattr(operations_store, "record_acceptance_fact", None)
@@ -993,38 +1067,79 @@ class _LateStateDurabilityBarrier:
             "acceptance_campaign_resume_locator",
             locator,
         )
-        synchronized = self.sync_discovery(
+        self._pending_resume_locator = locator
+        return locator
+
+    def prepare_acceptance_transition(
+        self,
+        *,
+        operations_store: object,
+        observed_head: str,
+        prior_root_digest: str,
+        stage: str,
+        attempt_no: int,
+        status: str,
+        recorded_at: str,
+        workflow_authority_digest: str,
+    ) -> None:
+        """Bind a semantic attempt fact to the exact CAS child that carries it."""
+
+        self._record_acceptance_transition(
             operations_store=operations_store,
             observed_head=observed_head,
             prior_root_digest=prior_root_digest,
-            created_at=created_at,
-            pipeline_store=pipeline_store,
+            created_at=recorded_at,
+            transition_phase=(
+                "started" if status == "started" else "result_durable"
+            ),
+            semantic_stage=stage,
+            attempt_no=attempt_no,
+            semantic_status=status,
+            workflow_authority_digest=workflow_authority_digest,
+        )
+
+    def _advance_acceptance_transition(self, synchronized: object) -> None:
+        locator = self._pending_resume_locator
+        resume = self._acceptance_resume
+        if locator is None or resume is None:
+            return
+        commit_sha = getattr(
+            synchronized,
+            "commit_sha",
+            getattr(synchronized, "verified_state_head", None),
+        )
+        root_digest = getattr(
+            synchronized,
+            "root_digest",
+            getattr(synchronized, "state_root_digest", None),
+        )
+        status = getattr(synchronized, "status", "verified")
+        previous_head = getattr(
+            synchronized,
+            "previous_head",
+            locator.parent_state_commit_sha,
         )
         if (
-            getattr(synchronized, "status", None) != "verified"
-            or getattr(synchronized, "previous_head", None) != observed_head
-            or not _is_commit_sha(getattr(synchronized, "commit_sha", ""))
-            or not _is_digest(getattr(synchronized, "root_digest", ""))
+            status != "verified"
+            or previous_head != locator.parent_state_commit_sha
+            or not _is_commit_sha(commit_sha)
+            or not _is_digest(root_digest)
         ):
-            raise ValueError("acceptance resume locator was not durable")
-        advanced = self._acceptance_resume
-        if (
-            advanced is None
-            or advanced["lineage_commit_shas"][-1]
-            != synchronized.commit_sha
-        ):
-            self._acceptance_resume = {
-                **resume,
-                "lineage_commit_shas": (
-                    *commits,
-                    synchronized.commit_sha,
-                ),
-                "lineage_root_digests": (
-                    *roots,
-                    synchronized.root_digest,
-                ),
-            }
-        return synchronized
+            raise ValueError("acceptance resume transition was not durable")
+        self._acceptance_resume = {
+            **resume,
+            "lineage_commit_shas": (
+                *resume["lineage_commit_shas"],
+                commit_sha,
+            ),
+            "lineage_root_digests": (
+                *resume["lineage_root_digests"],
+                root_digest,
+            ),
+            "locator_digest": locator.locator_digest,
+            "transition_index": locator.transition_index,
+        }
+        self._pending_resume_locator = None
 
     def confirm(self, **arguments: object) -> object:
         from skillscout.adapters.state_branch import (
@@ -1049,7 +1164,9 @@ class _LateStateDurabilityBarrier:
                     DiscoveryBudgetPolicyV1().budget_policy_digest or ""
                 ),
             )
-            return barrier.confirm(**arguments)
+            synchronized = barrier.confirm(**arguments)
+            self._advance_acceptance_transition(synchronized)
+            return synchronized
         finally:
             client.close()
 
@@ -1061,6 +1178,11 @@ class _LateStateDurabilityBarrier:
         prior_root_digest: str,
         created_at: str,
         pipeline_store: object | None = None,
+        transition_phase: str = "scenario",
+        semantic_stage: str | None = None,
+        attempt_no: int | None = None,
+        semantic_status: str | None = None,
+        workflow_authority_digest: str | None = None,
     ) -> object:
         """Synchronize one non-semantic discovery checkpoint and reread it."""
 
@@ -1073,6 +1195,17 @@ class _LateStateDurabilityBarrier:
         )
         from skillscout.domain.discovery import DiscoveryBudgetPolicyV1
 
+        self._record_acceptance_transition(
+            operations_store=operations_store,
+            observed_head=observed_head,
+            prior_root_digest=prior_root_digest,
+            created_at=created_at,
+            transition_phase=transition_phase,
+            semantic_stage=semantic_stage,
+            attempt_no=attempt_no,
+            semantic_status=semantic_status,
+            workflow_authority_digest=workflow_authority_digest,
+        )
         pipeline = (
             pipeline_store
             if pipeline_store is not None
@@ -1129,29 +1262,7 @@ class _LateStateDurabilityBarrier:
                 )
             ):
                 raise ValueError("discovery state synchronization rejected")
-            resume = self._acceptance_resume
-            if resume is not None:
-                commits = resume["lineage_commit_shas"]
-                roots = resume["lineage_root_digests"]
-                if (
-                    type(commits) is not tuple
-                    or type(roots) is not tuple
-                    or commits[-1] != observed_head
-                    or roots[-1] != prior_root_digest
-                    or len(commits) > 255
-                ):
-                    raise ValueError("acceptance resume lineage drifted")
-                self._acceptance_resume = {
-                    **resume,
-                    "lineage_commit_shas": (
-                        *commits,
-                        synchronized.commit_sha,
-                    ),
-                    "lineage_root_digests": (
-                        *roots,
-                        synchronized.root_digest,
-                    ),
-                }
+            self._advance_acceptance_transition(synchronized)
             return synchronized
         finally:
             client.close()
@@ -1525,6 +1636,9 @@ def build_discovery_application(
                         prior_root_digest=state_root,
                         created_at=_discovery_timestamp(),
                         pipeline_store=pipeline_store,
+                        stage=stage,
+                        attempt_no=attempt_no,
+                        workflow_authority_digest=workflow_authority_digest,
                     )
                     state_head = anchored.commit_sha
                     state_root = anchored.root_digest
@@ -1547,6 +1661,10 @@ def build_discovery_application(
                     prior_root_digest=state_root,
                     created_at=_discovery_timestamp(),
                     pipeline_store=pipeline_store,
+                    transition_phase="request_reserved",
+                    semantic_stage=stage,
+                    attempt_no=attempt_no,
+                    workflow_authority_digest=workflow_authority_digest,
                 )
                 state_head = synchronized.commit_sha
                 state_root = synchronized.root_digest
@@ -2042,15 +2160,19 @@ def build_discovery_application(
                                         ),
                                     )
                                 )
-                                fatal_outcome = (
-                                    "state_integrity_conflict"
-                                    if failure.code
-                                    in {
-                                        ErrorCode.STATE_INTEGRITY_ERROR,
-                                        ErrorCode.STATE_OPERATION_FAILED,
-                                    }
-                                    else "permanent_failure"
-                                )
+                                if failure.code is ErrorCode.RETRY_EXHAUSTED:
+                                    fatal_outcome = "confirmed_retryable"
+                                    acceptance_system_outcome = "provider_exhausted"
+                                else:
+                                    fatal_outcome = (
+                                        "state_integrity_conflict"
+                                        if failure.code
+                                        in {
+                                            ErrorCode.STATE_INTEGRITY_ERROR,
+                                            ErrorCode.STATE_OPERATION_FAILED,
+                                        }
+                                        else "permanent_failure"
+                                    )
                                 state_head = phase3_guard.verified_state_head
                                 state_root = phase3_guard.state_root_digest
                                 break
@@ -2833,6 +2955,16 @@ def _acceptance_reason_code(outcome: str) -> str:
         raise ValueError("unsupported normalized acceptance outcome") from None
 
 
+def _phase3_safe_failure_outcome(error_code: object) -> tuple[str, str]:
+    """Normalize Phase 3 system failures without converting exhaustion to harness."""
+
+    from skillscout.application.ports import ErrorCode
+
+    if error_code is ErrorCode.RETRY_EXHAUSTED:
+        return "provider_exhausted", "provider_attempts_exhausted"
+    return "harness_failed", "pipeline_permanent_failure"
+
+
 class _FixedRepositoryAcceptanceRunner:
     """Run one locked identity through the existing production Phase 2/3 graph."""
 
@@ -2942,6 +3074,8 @@ class _FixedRepositoryAcceptanceRunner:
                 acceptance_run_id=acceptance_run_id,
                 lineage_commit_shas=resume_commits,
                 lineage_root_digests=resume_roots,
+                locator_digest=config.resume_locator_digest,
+                transition_index=config.resume_transition_index,
             )
         elif config.acceptance_run_id is not None:
             raise ValueError("acceptance resume barrier is unavailable")
@@ -3529,6 +3663,16 @@ def _fixed_acceptance_runner_factory(
         else:
             resume_commits = config.resume_lineage_commit_shas
             resume_roots = config.resume_lineage_root_digests
+        locator_reader = getattr(
+            barrier,
+            "acceptance_resume_locator",
+            None,
+        )
+        if callable(locator_reader):
+            resume_locator_digest, resume_transition_index = locator_reader()
+        else:
+            resume_locator_digest = config.resume_locator_digest
+            resume_transition_index = config.resume_transition_index
         return _FixedRepositoryAcceptanceRunner(
             config=replace(
                 config,
@@ -3536,6 +3680,8 @@ def _fixed_acceptance_runner_factory(
                 state_root_digest=state_root_digest,
                 resume_lineage_commit_shas=resume_commits,
                 resume_lineage_root_digests=resume_roots,
+                resume_locator_digest=resume_locator_digest,
+                resume_transition_index=resume_transition_index,
             ),
             discovery_config=discovery_config,
             barrier=barrier,

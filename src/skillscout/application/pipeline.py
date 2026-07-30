@@ -403,6 +403,22 @@ class SemanticDurabilityGuard:
                 status=status,
                 recorded_at=recorded_at,
             )
+            prepare_transition = getattr(
+                self._barrier,
+                "prepare_acceptance_transition",
+                None,
+            )
+            if callable(prepare_transition):
+                prepare_transition(
+                    operations_store=self._operations_store,
+                    observed_head=self._expected_prior_state_head,
+                    prior_root_digest=self._expected_prior_root_digest,
+                    stage=stage,
+                    attempt_no=attempt_no,
+                    status=status,
+                    recorded_at=record.recorded_at,
+                    workflow_authority_digest=self._workflow_authority_digest,
+                )
             pipeline = pipeline_store.export_owned_state()
             operations = self._operations_store.export_owned_state()
             publication = self._publication_store.export_owned_state()

@@ -1460,6 +1460,15 @@ def _validate_acceptance_references(
             != authority.state_commit_sha
             or fact.original_state_root_digest
             != authority.state_root_digest
+            or (
+                fact.transition_index == 1
+                and (
+                    fact.parent_state_commit_sha
+                    != authority.state_commit_sha
+                    or fact.parent_state_root_digest
+                    != authority.state_root_digest
+                )
+            )
             or fact.semantic_provider != authority.semantic_provider
             or fact.stage_models != authority.stage_models
             or fact.prompt_versions != authority.prompt_versions
