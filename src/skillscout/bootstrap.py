@@ -134,6 +134,10 @@ class AcceptanceRuntimeConfig:
     generator_model_id: str
     reviewer_model_id: str
     live_acceptance_authority_digest: str
+    acceptance_run_id: str | None = None
+    resume_locator_digest: str | None = None
+    resume_lineage_commit_shas: tuple[str, ...] = ()
+    resume_lineage_root_digests: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         from skillscout.domain.acceptance import LockedBenchmarkManifestV1
@@ -145,6 +149,40 @@ class AcceptanceRuntimeConfig:
             or not _is_commit_sha(self.state_commit_sha)
             or not _is_digest(self.state_root_digest)
             or not _is_digest(self.live_acceptance_authority_digest)
+            or (
+                self.acceptance_run_id is not None
+                and (
+                    not _closed_identity(self.acceptance_run_id)
+                    or len(self.resume_lineage_commit_shas)
+                    != len(self.resume_lineage_root_digests)
+                    or not self.resume_lineage_commit_shas
+                    or len(self.resume_lineage_commit_shas) > 256
+                    or self.resume_lineage_commit_shas[-1]
+                    != self.state_commit_sha
+                    or self.resume_lineage_root_digests[-1]
+                    != self.state_root_digest
+                    or any(
+                        not _is_commit_sha(item)
+                        for item in self.resume_lineage_commit_shas
+                    )
+                    or any(
+                        not _is_digest(item)
+                        for item in self.resume_lineage_root_digests
+                    )
+                    or (
+                        self.resume_locator_digest is not None
+                        and not _is_digest(self.resume_locator_digest)
+                    )
+                )
+            )
+            or (
+                self.acceptance_run_id is None
+                and (
+                    self.resume_locator_digest is not None
+                    or self.resume_lineage_commit_shas
+                    or self.resume_lineage_root_digests
+                )
+            )
             or self.semantic_provider not in {"openai", "deepseek"}
             or not all(
                 _closed_identity(value)
@@ -511,6 +549,8 @@ def load_acceptance_runtime_config(
     manifest_path: Path,
     state_commit_sha: str,
     state_root_digest: str,
+    acceptance_run_id: str | None = None,
+    resume_proof_path: Path | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> AcceptanceRuntimeConfig:
     """Re-admit locked facts and provider identity before credential lookup."""
@@ -541,6 +581,45 @@ def load_acceptance_runtime_config(
 
         source = os.environ if environ is None else environ
         provider = resolve_semantic_provider(source)
+        resume_locator_digest: str | None = None
+        resume_commits: tuple[str, ...] = ()
+        resume_roots: tuple[str, ...] = ()
+        if resume_proof_path is not None:
+            if acceptance_run_id is None:
+                raise ValueError
+            proof_bytes = _read_stable_private_file(
+                resume_proof_path,
+                max_bytes=65_536,
+            )
+            proof = json.loads(proof_bytes)
+            if not isinstance(proof, dict) or set(proof) != {
+                "acceptance_run_id",
+                "authority_digest",
+                "lineage_commit_shas",
+                "lineage_root_digests",
+                "locator_digest",
+                "state_commit_sha",
+                "state_root_digest",
+                "status",
+            }:
+                raise ValueError
+            if (
+                proof["status"] != "acceptance_resume_verified"
+                or proof["acceptance_run_id"] != acceptance_run_id
+                or proof["authority_digest"] != source["PHASE6_AUTHORITY_DIGEST"]
+                or proof["state_commit_sha"] != state_commit_sha
+                or proof["state_root_digest"] != state_root_digest
+                or type(proof["lineage_commit_shas"]) is not list
+                or type(proof["lineage_root_digests"]) is not list
+                or (
+                    proof["locator_digest"] is not None
+                    and type(proof["locator_digest"]) is not str
+                )
+            ):
+                raise ValueError
+            resume_locator_digest = proof["locator_digest"]
+            resume_commits = tuple(proof["lineage_commit_shas"])
+            resume_roots = tuple(proof["lineage_root_digests"])
         return AcceptanceRuntimeConfig(
             manifest_path=manifest_path,
             manifest=manifest,
@@ -553,6 +632,12 @@ def load_acceptance_runtime_config(
             live_acceptance_authority_digest=source[
                 "PHASE6_AUTHORITY_DIGEST"
             ],
+            acceptance_run_id=(
+                acceptance_run_id if resume_proof_path is not None else None
+            ),
+            resume_locator_digest=resume_locator_digest,
+            resume_lineage_commit_shas=resume_commits,
+            resume_lineage_root_digests=resume_roots,
         )
     except Exception:
         raise ValueError("acceptance runtime configuration rejected") from None
@@ -907,17 +992,23 @@ class _LateStateDurabilityBarrier:
             or not _is_digest(getattr(synchronized, "root_digest", ""))
         ):
             raise ValueError("acceptance resume locator was not durable")
-        self._acceptance_resume = {
-            **resume,
-            "lineage_commit_shas": (
-                *commits,
-                synchronized.commit_sha,
-            ),
-            "lineage_root_digests": (
-                *roots,
-                synchronized.root_digest,
-            ),
-        }
+        advanced = self._acceptance_resume
+        if (
+            advanced is None
+            or advanced["lineage_commit_shas"][-1]
+            != synchronized.commit_sha
+        ):
+            self._acceptance_resume = {
+                **resume,
+                "lineage_commit_shas": (
+                    *commits,
+                    synchronized.commit_sha,
+                ),
+                "lineage_root_digests": (
+                    *roots,
+                    synchronized.root_digest,
+                ),
+            }
         return synchronized
 
     def confirm(self, **arguments: object) -> object:
@@ -1023,6 +1114,29 @@ class _LateStateDurabilityBarrier:
                 )
             ):
                 raise ValueError("discovery state synchronization rejected")
+            resume = self._acceptance_resume
+            if resume is not None:
+                commits = resume["lineage_commit_shas"]
+                roots = resume["lineage_root_digests"]
+                if (
+                    type(commits) is not tuple
+                    or type(roots) is not tuple
+                    or commits[-1] != observed_head
+                    or roots[-1] != prior_root_digest
+                    or len(commits) > 255
+                ):
+                    raise ValueError("acceptance resume lineage drifted")
+                self._acceptance_resume = {
+                    **resume,
+                    "lineage_commit_shas": (
+                        *commits,
+                        synchronized.commit_sha,
+                    ),
+                    "lineage_root_digests": (
+                        *roots,
+                        synchronized.root_digest,
+                    ),
+                }
             return synchronized
         finally:
             client.close()
@@ -1384,6 +1498,15 @@ def build_discovery_application(
                 nonlocal state_head, state_root
                 if fixed_admission is None:
                     raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+                anchored = barrier.anchor_acceptance_resume(
+                    operations_store=operations,
+                    observed_head=state_head,
+                    prior_root_digest=state_root,
+                    created_at=_discovery_timestamp(),
+                    pipeline_store=pipeline_store,
+                )
+                state_head = anchored.commit_sha
+                state_root = anchored.root_digest
                 request = operations.reserve_acceptance_semantic_request(
                     acceptance_run_id=fixed_admission.acceptance_run_id,
                     fixed_candidate_admission_digest=(
@@ -2769,6 +2892,26 @@ class _FixedRepositoryAcceptanceRunner:
         self._operations.create_run(self._authority, _discovery_timestamp())
         self._state_head = config.state_commit_sha
         self._state_root = config.state_root_digest
+        if config.acceptance_run_id is not None:
+            if config.acceptance_run_id != acceptance_run_id:
+                raise ValueError("acceptance resume run mismatch")
+            resume_commits = config.resume_lineage_commit_shas
+            resume_roots = config.resume_lineage_root_digests
+        elif (
+            config.state_commit_sha == self._live_authority.state_commit_sha
+            and config.state_root_digest
+            == self._live_authority.state_root_digest
+        ):
+            resume_commits = (config.state_commit_sha,)
+            resume_roots = (config.state_root_digest,)
+        else:
+            raise ValueError("verified acceptance resume proof is required")
+        self._barrier.configure_acceptance_resume(
+            authority=self._live_authority,
+            acceptance_run_id=acceptance_run_id,
+            lineage_commit_shas=resume_commits,
+            lineage_root_digests=resume_roots,
+        )
 
     def _run_phase2_with_retries(
         self,
@@ -3503,6 +3646,7 @@ def build_live_acceptance_execution(
                 discovery_factory=runner_factory,
                 operations_store_factory=operations_factory,
                 state_sync=state_sync,
+                resume_anchor=barrier.anchor_acceptance_resume,
             ),
             manifest=config.manifest,
             acceptance_run_id=acceptance_run_id,

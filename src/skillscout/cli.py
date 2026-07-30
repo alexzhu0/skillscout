@@ -158,6 +158,7 @@ def build_parser() -> SafeArgumentParser:
     )
     run_acceptance.add_argument("--manifest", required=True, type=Path)
     run_acceptance.add_argument("--acceptance-run-id", required=True)
+    run_acceptance.add_argument("--resume-proof", type=Path)
     run_acceptance.add_argument("--state-commit-sha", required=True)
     run_acceptance.add_argument("--state-root-digest", required=True)
     verify_live = commands.add_parser("verify-live-authority")
@@ -853,6 +854,8 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             manifest_path=arguments.manifest,
             state_commit_sha=arguments.state_commit_sha,
             state_root_digest=arguments.state_root_digest,
+            acceptance_run_id=arguments.acceptance_run_id,
+            resume_proof_path=getattr(arguments, "resume_proof", None),
         )
         restored = _restore_acceptance_state(
             state_commit_sha=config.state_commit_sha,

@@ -590,6 +590,7 @@ class LockedCampaignDependencies:
     discovery_factory: Callable[[str, str], object]
     operations_store_factory: Callable[[], object]
     state_sync: Callable[..., object]
+    resume_anchor: Callable[..., object] | None = None
     candidate_factory: Callable[[], object] | None = None
     publication_factory: Callable[[], object] | None = None
 
@@ -1148,6 +1149,29 @@ def run_locked_benchmark(
             ):
                 raise AcceptanceApplicationError("evidence_missing")
             current_head, current_root = next_head, next_root
+            if dependencies.resume_anchor is not None:
+                anchored = dependencies.resume_anchor(
+                    operations_store=store,
+                    observed_head=current_head,
+                    prior_root_digest=current_root,
+                    created_at=recorded_at,
+                )
+                anchor_head = getattr(anchored, "commit_sha", None)
+                anchor_root = getattr(anchored, "root_digest", None)
+                if (
+                    getattr(anchored, "status", None) != "verified"
+                    or getattr(anchored, "previous_head", None)
+                    != current_head
+                    or type(anchor_head) is not str
+                    or re.fullmatch(r"[0-9a-f]{40}", anchor_head) is None
+                    or type(anchor_root) is not str
+                    or re.fullmatch(
+                        r"sha256:[0-9a-f]{64}", anchor_root
+                    )
+                    is None
+                ):
+                    raise AcceptanceApplicationError("evidence_missing")
+                current_head, current_root = anchor_head, anchor_root
             _close(store)
             store = None
             results.append(result)
