@@ -951,17 +951,25 @@ def build_discovery_application(
                 if getattr(bundle, "root", None) is None:
                     raise ValueError("discovery initial state rejected")
                 from skillscout.adapters.operations_state import (
+                    restore_acceptance_state_bundle,
                     restore_three_store_bundle,
                 )
                 from skillscout.adapters.state_branch import VerifiedStateBundle
 
                 if type(bundle) is VerifiedStateBundle:
-                    restore_three_store_bundle(
-                        bundle,
-                        pipeline_path=config.pipeline_state,
-                        operations_path=config.operations_state,
-                        publication_path=config.publication_state,
-                    )
+                    if frozen_owner_export is None:
+                        restore_three_store_bundle(
+                            bundle,
+                            pipeline_path=config.pipeline_state,
+                            operations_path=config.operations_state,
+                            publication_path=config.publication_state,
+                        )
+                    else:
+                        restore_acceptance_state_bundle(
+                            bundle,
+                            pipeline_path=config.pipeline_state,
+                            operations_path=config.operations_state,
+                        )
             return observation
         finally:
             client.close()
@@ -2931,6 +2939,60 @@ def read_exact_discovery_state(
             pipeline_path=pipeline_state,
             operations_path=operations_state,
             publication_path=publication_state,
+        )
+        return observation
+    finally:
+        client.close()
+
+
+def read_exact_acceptance_state(
+    *,
+    state_commit_sha: str,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    pipeline_state: Path,
+    operations_state: Path,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Read exact state while keeping publication as immutable verified bytes."""
+
+    if (
+        not _is_commit_sha(state_commit_sha)
+        or type(state_repository_id) is not int
+        or state_repository_id <= 0
+        or not _github_full_name(state_repository_full_name)
+        or tuple(os.fspath(path) for path in (pipeline_state, operations_state))
+        != _DISCOVERY_DATABASE_LOCATORS[:2]
+    ):
+        raise ValueError("protected acceptance state configuration rejected")
+    source = os.environ if environ is None else environ
+    from skillscout.adapters.operations_state import (
+        restore_acceptance_state_bundle,
+    )
+    from skillscout.adapters.state_branch import (
+        StateBranchClient,
+        StateBranchStore,
+    )
+
+    client = StateBranchClient(
+        token=_required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN"),
+        repository_id=state_repository_id,
+        repository_full_name=state_repository_full_name,
+    )
+    try:
+        observation = StateBranchStore(
+            _PinnedStateRemote(client, state_commit_sha)
+        ).restore()
+        if (
+            observation.status != "verified"
+            or observation.observed_head != state_commit_sha
+            or observation.bundle is None
+        ):
+            raise ValueError("protected acceptance state rejected")
+        restore_acceptance_state_bundle(
+            observation.bundle,
+            pipeline_path=pipeline_state,
+            operations_path=operations_state,
         )
         return observation
     finally:

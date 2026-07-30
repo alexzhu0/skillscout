@@ -27,6 +27,7 @@ from skillscout.bootstrap import (
     load_discovery_runtime_config,
     load_nomination_runtime_config,
     load_publication_authority_config,
+    read_exact_acceptance_state,
     read_exact_discovery_state,
     require_phase3_gate_b3,
     run_protected_discovery_publication,
@@ -751,13 +752,12 @@ def _restore_acceptance_state(
         state_root_digest=state_root_digest,
     )
     repository_id, repository_full_name = _protected_state_repository()
-    observation = read_exact_discovery_state(
+    observation = read_exact_acceptance_state(
         state_commit_sha=state_commit_sha,
         state_repository_id=repository_id,
         state_repository_full_name=repository_full_name,
         pipeline_state=_DISCOVERY_PIPELINE_STATE,
         operations_state=_DISCOVERY_OPERATIONS_STATE,
-        publication_state=_DISCOVERY_PUBLICATION_STATE,
     )
     restored_root = getattr(
         getattr(getattr(observation, "bundle", None), "root", None),
@@ -879,7 +879,7 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
     try:
         from skillscout.adapters.operations_state import (
             OperationsStateStore,
-            restore_three_store_bundle,
+            restore_acceptance_state_bundle,
         )
 
         bundle = load_verified_state_checkout(
@@ -889,11 +889,10 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
         with TemporaryDirectory(prefix="skillscout-authority-state-") as temporary:
             temporary_root = Path(temporary).resolve(strict=True)
             operations_path = temporary_root / "operations.sqlite3"
-            restore_three_store_bundle(
+            restore_acceptance_state_bundle(
                 bundle,
                 pipeline_path=temporary_root / "pipeline.sqlite3",
                 operations_path=operations_path,
-                publication_path=temporary_root / "publication.sqlite3",
             )
             with OperationsStateStore(operations_path) as store:
                 snapshot = store.acceptance_snapshot(arguments.acceptance_run_id)

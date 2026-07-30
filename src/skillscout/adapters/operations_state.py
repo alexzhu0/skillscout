@@ -3811,3 +3811,51 @@ def restore_three_store_bundle(
     if fresh != projection:
         raise OperationsIntegrityError("restored cross-store projection mismatch")
     return fresh
+
+
+def restore_acceptance_state_bundle(
+    bundle: VerifiedStateBundle,
+    *,
+    pipeline_path: Path,
+    operations_path: Path,
+) -> ThreeStoreProjectionV1:
+    """Restore only acceptance-owned mutable stores.
+
+    Publication remains an immutable, typed export.  Its schema, bytes, digest,
+    and cross-store projection are validated without constructing its owner.
+    """
+
+    pipeline, operations, publication, projection = _parse_bundle_exports(bundle)
+    prospective, expected_projection = _bundle_from_exports(
+        pipeline=pipeline,
+        operations=operations,
+        publication=publication,
+        prior_root_digest=bundle.root.prior_root_digest,
+        state_parent_commit_sha=bundle.root.state_parent_commit_sha,
+        query_set_digest=bundle.root.query_set_digest,
+        budget_policy_digest=bundle.root.budget_policy_digest,
+        created_at=bundle.root.created_at,
+    )
+    if (
+        prospective.root != bundle.root
+        or prospective.content_by_path() != bundle.content_by_path()
+        or expected_projection != projection
+    ):
+        raise OperationsIntegrityError("acceptance bundle projection equality failed")
+
+    SQLiteStateStore.rebuild_owned_state(pipeline_path, pipeline)
+    OperationsStateStore.rebuild_owned_state(operations_path, operations)
+    pipeline_store = SQLiteStateStore(pipeline_path, reconcile_orphans=False)
+    operations_store = OperationsStateStore(operations_path)
+    try:
+        fresh = _three_store_projection(
+            pipeline_store.export_owned_state(),
+            operations_store.export_owned_state(),
+            publication,
+        )
+    finally:
+        operations_store.close()
+        pipeline_store.close()
+    if fresh != projection:
+        raise OperationsIntegrityError("acceptance restored projection mismatch")
+    return fresh
