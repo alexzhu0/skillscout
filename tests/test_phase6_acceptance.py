@@ -710,6 +710,107 @@ def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() 
         )
 
 
+@pytest.mark.parametrize(
+    ("transition_phase", "semantic_status"),
+    (
+        ("anchored", None),
+        ("request_reserved", None),
+        ("started", "started"),
+        ("result_durable", "decided"),
+        ("result_durable", "confirmed_retryable"),
+        ("result_durable", "semantic_outcome_unknown"),
+    ),
+)
+def test_campaign_resume_locator_binds_explicit_semantic_transition_edge(
+    transition_phase: str,
+    semantic_status: str | None,
+) -> None:
+    """A child is authorized by a named protocol edge, never a commit-count suffix."""
+
+    from pydantic import ValidationError
+
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    values = {
+        "schema_version": "acceptance-campaign-resume-locator-v1",
+        "acceptance_run_id": "acceptance-transition",
+        "live_acceptance_authority_digest": "sha256:" + ("1" * 64),
+        "source_commit_sha": "2" * 40,
+        "manifest_digest": "sha256:" + ("3" * 64),
+        "state_repository_id": 123,
+        "state_repository_full_name": "example/state",
+        "original_state_commit_sha": "4" * 40,
+        "original_state_root_digest": "sha256:" + ("5" * 64),
+        "parent_state_commit_sha": "6" * 40,
+        "parent_state_root_digest": "sha256:" + ("7" * 64),
+        "transition_index": 3,
+        "previous_locator_digest": "sha256:" + ("8" * 64),
+        "transition_phase": transition_phase,
+        "semantic_stage": "generator",
+        "attempt_no": 2,
+        "semantic_status": semantic_status,
+        "workflow_authority_digest": "sha256:" + ("9" * 64),
+        "semantic_provider": "deepseek",
+        "stage_models": (
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        "prompt_versions": (
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        "schema_versions": (
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        "policy_versions": (
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        "recorded_at": "2026-07-30T12:00:00.000000Z",
+    }
+    locator = AcceptanceCampaignResumeLocatorV1(**values)
+
+    assert locator.transition_phase == transition_phase
+    assert locator.parent_state_commit_sha == "6" * 40
+    assert locator.transition_index == 3
+    with pytest.raises(ValidationError):
+        AcceptanceCampaignResumeLocatorV1(
+            **{
+                **values,
+                "transition_phase": "result_durable",
+                "semantic_status": None,
+            }
+        )
+    with pytest.raises(ValidationError):
+        AcceptanceCampaignResumeLocatorV1(
+            **{
+                **values,
+                "transition_index": 1,
+                "previous_locator_digest": values["previous_locator_digest"],
+            }
+        )
+
+
+def test_phase3_retry_exhaustion_is_a_provider_system_outcome() -> None:
+    """Generator/reviewer exhaustion must not be mislabeled as harness failure."""
+
+    import skillscout.bootstrap as bootstrap
+    from skillscout.application.ports import ErrorCode
+
+    assert bootstrap._phase3_safe_failure_outcome(ErrorCode.RETRY_EXHAUSTED) == (
+        "provider_exhausted",
+        "provider_attempts_exhausted",
+    )
+
+
 def test_acceptance_cli_exposes_only_exact_resume_lineage_inputs() -> None:
     """Workflow preflight resolves a descendant checkout without a mutable SHA var."""
 

@@ -718,6 +718,46 @@ def test_restore_commit_verifies_exact_immutable_commit_not_current_ref() -> Non
     assert remote.head != first.commit_sha
 
 
+def test_inspect_commit_root_reads_only_bounded_lineage_metadata() -> None:
+    """Lineage proof must not restore database or owned-object bodies per commit."""
+
+    module = _state_module()
+
+    class CountingRemote(_StateRemote):
+        def __init__(self) -> None:
+            super().__init__(module, "4" * 40)
+            self.blob_gets: list[str] = []
+
+        def get_blob(self, sha: str) -> bytes:
+            self.blob_gets.append(sha)
+            return super().get_blob(sha)
+
+    remote = CountingRemote()
+    store = module.StateBranchStore(remote)
+    bundle = _bundle(
+        module,
+        parent="4" * 40,
+        object_count=12,
+    )
+    synchronized = store.sync(bundle, observed_head="4" * 40)
+    remote.blob_gets.clear()
+
+    observation = store.inspect_commit_root(synchronized.commit_sha)
+
+    assert observation.commit.sha == synchronized.commit_sha
+    assert observation.root == bundle.root
+    assert observation.object_digests == tuple(
+        item.object_digest for item in bundle.root.objects
+    )
+    assert remote.blob_gets == [
+        module._git_blob_id(
+            canonical_json_bytes(
+                bundle.root.model_dump(mode="json", exclude_none=False)
+            )
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     "mutation",
     (None, "missing", "extra", "wrong_sha", "duplicate", "wrong_mode"),
