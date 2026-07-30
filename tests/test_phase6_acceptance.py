@@ -725,6 +725,344 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
     assert calls == ["replay"]
 
 
+def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run the real replay builder/projector/stores with only remote CAS faked."""
+
+    import skillscout.adapters.github as github_adapter
+    import skillscout.adapters.openai_extract as extract_adapter
+    import skillscout.adapters.openai_generate as generate_adapter
+    import skillscout.adapters.openai_review as review_adapter
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.adapters.publication_state as publication_state
+    import skillscout.adapters.state as pipeline_state
+    import skillscout.bootstrap as bootstrap
+    import skillscout.domain.acceptance as acceptance_domain
+    from skillscout.domain.canonical import sha256_digest
+
+    timestamp = "2026-07-30T12:00:00.000000Z"
+    nomination_entries = tuple(
+        sorted(
+            (
+                acceptance_domain.NominationEntryV1(
+                    schema_version="nomination-entry-v1",
+                    repository_full_name=f"example/repository-{index}",
+                    repository_id=100 + index,
+                    exact_commit_sha=f"{index:040x}",
+                    license_spdx="MIT",
+                    selection_source="search_derived",
+                    selection_evidence_digests=(
+                        "sha256:" + f"{index:064x}",
+                    ),
+                )
+                for index in range(1, 6)
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+    nomination = acceptance_domain.NominationSetV1(
+        schema_version="nomination-set-v1",
+        nomination_set_id="acceptance-production-replay",
+        query_set_digest="sha256:" + ("a" * 64),
+        search_run_authority_digest="sha256:" + ("b" * 64),
+        search_derived_entries=nomination_entries,
+        user_nominated_entries=(),
+        created_at=timestamp,
+    )
+    roles = ("positive", "positive_multi_workflow", "negative", "negative", "borderline")
+    benchmark_entries = tuple(
+        sorted(
+            (
+                acceptance_domain.BenchmarkEntryV1(
+                    schema_version="benchmark-entry-v1",
+                    repository_full_name=entry.repository_full_name,
+                    repository_id=entry.repository_id,
+                    exact_commit_sha=entry.exact_commit_sha,
+                    license_spdx=entry.license_spdx,
+                    selection_source=entry.selection_source,
+                    coverage_role=role,
+                    nomination_entry_digest=entry.entry_digest,
+                    selection_evidence_digests=entry.selection_evidence_digests,
+                )
+                for entry, role in zip(nomination_entries, roles, strict=True)
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+    manifest_values = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": nomination.nomination_set_digest,
+        "entries": benchmark_entries,
+        "prior_manifest_digest": None,
+    }
+    manifest_digest = sha256_digest(
+        {
+            **manifest_values,
+            "entries": tuple(
+                item.model_dump(mode="json", exclude_none=False)
+                for item in benchmark_entries
+            ),
+        }
+    )
+    manifest = acceptance_domain.LockedBenchmarkManifestV1(
+        **manifest_values,
+        manifest_digest=manifest_digest,
+        lock_attestation=acceptance_domain.BenchmarkLockAttestationV1(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=nomination.nomination_set_digest,
+            manifest_digest=manifest_digest,
+            reviewer_id="acceptance-reviewer",
+            locked_at=timestamp,
+        ),
+    )
+
+    def telemetry(
+        stage: str,
+        authority_digest: str,
+        request_suffix: str,
+    ) -> object:
+        return acceptance_domain.AcceptanceSemanticTelemetryV1(
+            schema_version="acceptance-semantic-telemetry-v1",
+            stage=stage,
+            workflow_spec_authority_digest=authority_digest,
+            attempt_no=1,
+            request_id=f"request-{request_suffix}-{stage}",
+            actual_model=(
+                "deepseek-v4-pro"
+                if stage == "reviewer"
+                else "deepseek-v4-flash"
+            ),
+            prompt_version=f"{stage}-prompt-v1",
+            output_schema_version=f"{stage}-schema-v1",
+            policy_version=f"{stage}-policy-v1",
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            latency_ms=20,
+        )
+
+    run_id = "acceptance-production-replay"
+    state_root = tmp_path / "state" / "databases"
+    state_root.mkdir(parents=True)
+    operations_path = state_root / "operations.sqlite3"
+    pipeline_path = state_root / "pipeline.sqlite3"
+    publication_path = state_root / "publication.sqlite3"
+    with operations_state.OperationsStateStore(operations_path) as operations:
+        operations.record_acceptance_fact(
+            run_id, "acceptance_nomination", nomination
+        )
+        operations.record_acceptance_fact(
+            run_id, "acceptance_benchmark_lock", manifest
+        )
+        for ordinal, entry in enumerate(manifest.entries, start=1):
+            eligible = ordinal == 1
+            stages = (
+                ("extractor", "generator", "reviewer")
+                if eligible
+                else ("extractor",)
+            )
+            stage_telemetry = tuple(
+                telemetry(stage, entry.entry_digest, str(ordinal))
+                for stage in stages
+            )
+            attempt_digests = tuple(
+                sorted(
+                    "sha256:" + f"{ordinal * 10 + index:064x}"
+                    for index in range(1, len(stages) + 1)
+                )
+            )
+            operations.record_acceptance_fact(
+                run_id,
+                "acceptance_scenario",
+                acceptance_domain.AcceptanceScenarioResultV1(
+                    schema_version="acceptance-scenario-result-v1",
+                    acceptance_run_id=run_id,
+                    scenario_id=f"locked-{ordinal}-{entry.repository_id}",
+                    repository_id=entry.repository_id,
+                    repository_full_name=entry.repository_full_name,
+                    exact_commit_sha=entry.exact_commit_sha,
+                    license_spdx=entry.license_spdx,
+                    benchmark_manifest_digest=manifest.manifest_digest,
+                    terminal_class=(
+                        "eligible" if eligible else "business_terminal"
+                    ),
+                    outcome=(
+                        "eligible_local_candidate" if eligible else "no_workflow"
+                    ),
+                    reason_code=(
+                        "eligible_candidate_completed"
+                        if eligible
+                        else "no_reusable_workflow"
+                    ),
+                    evidence_digests=(entry.entry_digest,),
+                    candidate_funnel=(
+                        (
+                            "fixed_identity",
+                            "deterministic_filter",
+                            "bounded_read",
+                            "extractor",
+                            "qualification",
+                            "generator",
+                            "validation",
+                            "reviewer",
+                        )
+                        if eligible
+                        else (
+                            "fixed_identity",
+                            "deterministic_filter",
+                            "bounded_read",
+                            "extractor",
+                        )
+                    ),
+                    reader_order="readme_docs_examples_manifests_source",
+                    reader_file_count=2,
+                    reader_source_file_count=0,
+                    reader_total_bytes=100,
+                    reader_estimated_tokens=25,
+                    semantic_request_count=len(stage_telemetry),
+                    semantic_attempt_digests=attempt_digests,
+                    semantic_telemetry=stage_telemetry,
+                    actual_models=tuple(
+                        item.actual_model for item in stage_telemetry
+                    ),
+                    prompt_versions=tuple(
+                        item.prompt_version for item in stage_telemetry
+                    ),
+                    schema_versions=tuple(
+                        item.output_schema_version for item in stage_telemetry
+                    ),
+                    policy_versions=tuple(
+                        item.policy_version for item in stage_telemetry
+                    ),
+                    workflow_fingerprint=(
+                        entry.entry_digest if eligible else None
+                    ),
+                    workflow_spec_authority_digest=(
+                        entry.entry_digest if eligible else None
+                    ),
+                    eligible_locator=(
+                        "state/objects/eligible.json" if eligible else None
+                    ),
+                    expected_coverage_role=entry.coverage_role,
+                    evaluator_matches_observed=True,
+                    publication_decision=(
+                        "eligible_for_later_publication"
+                        if eligible
+                        else "not_eligible"
+                    ),
+                    warnings=(),
+                    recorded_at=timestamp,
+                ),
+            )
+        pipeline = pipeline_state.SQLiteStateStore(pipeline_path)
+        publication = publication_state.PublicationStateStore(
+            publication_path
+        )
+        try:
+            bundle = operations_state.assemble_three_store_bundle(
+                pipeline_store=pipeline,
+                operations_store=operations,
+                publication_store=publication,
+                prior_root_digest="sha256:" + ("c" * 64),
+                state_parent_commit_sha="d" * 40,
+                query_set_digest="sha256:" + ("a" * 64),
+                budget_policy_digest="sha256:" + ("b" * 64),
+                created_at=timestamp,
+            )
+        finally:
+            publication.close()
+            pipeline.close()
+
+    query_target = tmp_path / "config" / "discovery-queries-v1.json"
+    query_target.parent.mkdir()
+    shutil.copy2(ROOT / "config/discovery-queries-v1.json", query_target)
+    monkeypatch.chdir(tmp_path)
+    operations_state.restore_acceptance_state_bundle(
+        bundle,
+        pipeline_path=Path("state/databases/pipeline.sqlite3"),
+        operations_path=Path("state/databases/operations.sqlite3"),
+    )
+    config = bootstrap.AcceptanceRuntimeConfig(
+        manifest_path=(
+            ROOT
+            / ".planning/phases/06-adversarial-mvp-acceptance"
+            / "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest=manifest,
+        state_commit_sha="d" * 40,
+        state_root_digest=bundle.root.root_digest,
+        semantic_provider="deepseek",
+        extractor_model_id="deepseek-v4-flash",
+        generator_model_id="deepseek-v4-flash",
+        reviewer_model_id="deepseek-v4-pro",
+    )
+    commits = iter(("e" * 40, "f" * 40))
+    roots = iter(
+        ("sha256:" + ("1" * 64), "sha256:" + ("2" * 64))
+    )
+
+    class LocalCAS:
+        def sync_discovery(self, *, observed_head: str, **_: object) -> object:
+            return SimpleNamespace(
+                status="verified",
+                previous_head=observed_head,
+                commit_sha=next(commits),
+                root_digest=next(roots),
+            )
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_LateStateDurabilityBarrier",
+        lambda *_args, **_kwargs: LocalCAS(),
+    )
+
+    def forbidden(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("replay constructed a live provider/GitHub/publication capability")
+
+    monkeypatch.setattr(github_adapter, "GitHubReadClient", forbidden)
+    monkeypatch.setattr(extract_adapter, "OpenAIExtractionClient", forbidden)
+    monkeypatch.setattr(generate_adapter, "OpenAIGenerationClient", forbidden)
+    monkeypatch.setattr(review_adapter, "OpenAIReviewClient", forbidden)
+    monkeypatch.setattr(publication_state, "PublicationStateStore", forbidden)
+    monkeypatch.setattr(operations_state, "PublicationStateStore", forbidden)
+
+    execution = bootstrap.build_live_acceptance_execution(
+        config=config,
+        restored=SimpleNamespace(
+            status="verified",
+            observed_head=config.state_commit_sha,
+            bundle=bundle,
+        ),
+        action="replay",
+        acceptance_run_id=run_id,
+        environ={
+            "SKILLSCOUT_STATE_REPOSITORY_ID": "123",
+            "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "example/state",
+        },
+    )
+    result = execution.run()
+    assert result["status"] == "replay_complete"
+    with operations_state.OperationsStateStore(operations_path) as operations:
+        snapshot = operations.acceptance_snapshot(run_id)
+        assert tuple(
+            item.kind
+            for item in snapshot.facts
+            if item.kind.startswith("acceptance_replay")
+        ) == ("acceptance_replay", "acceptance_replay_evidence")
+        evidence = next(
+            item.fact
+            for item in snapshot.facts
+            if item.kind == "acceptance_replay_evidence"
+        )
+        assert isinstance(evidence, acceptance_domain.ReplayEvidenceV1)
+        assert evidence.before_projection_digest == evidence.after_projection_digest
+        assert evidence.before_object_digests == evidence.after_object_digests
+
+
 def test_live_runner_persists_read_and_semantic_budget_before_remote_read() -> None:
     """Every fixed repository must consume its bounded slot before GitHub I/O."""
 
