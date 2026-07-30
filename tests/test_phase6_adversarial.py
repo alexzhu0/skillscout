@@ -132,6 +132,12 @@ def test_required_phase6_adversarial_contract_is_missing() -> None:
     _runner(skip_if_missing=False)
 
 
+def test_hosted_evidence_is_not_written_by_pytest_session_teardown() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert "PHASE6_OFFLINE_REPORT" not in source
+    assert "_write_bounded_campaign_report" not in source
+
+
 def test_all_seven_injection_fixture_classes_are_bound_to_scenarios() -> None:
     matrix = _matrix()
     injection_mutations = {

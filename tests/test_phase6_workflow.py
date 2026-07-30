@@ -478,6 +478,15 @@ def test_offline_adversarial_runs_complete_kernel_isolated_campaign_without_cred
     assert all(token not in job for token in forbidden)
 
 
+def test_offline_campaign_invokes_production_runner_instead_of_pytest_teardown() -> None:
+    job = _job(_source(required=False), "offline_adversarial")
+    assert "pytest -q tests/test_phase6_adversarial.py" not in job
+    assert (
+        ".venv/bin/python -I -m "
+        "skillscout.application.phase6_adversarial_runner"
+    ) in job
+
+
 def test_offline_adversarial_synthetic_scan_manifest_is_explicit_and_path_closed() -> None:
     job = _job(_source(required=False), "offline_adversarial")
     assert (
