@@ -1219,6 +1219,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_acceptance(arguments)
         elif arguments.command == "verify-live-authority":
             payload = _run_verify_live_authority(arguments)
+        elif arguments.command == "resolve-acceptance-resume":
+            payload = _run_resolve_acceptance_resume(arguments)
         elif arguments.command == "verify-acceptance-state":
             payload = _run_verify_acceptance_state(arguments)
         elif arguments.command == "record-acceptance-attestation":
