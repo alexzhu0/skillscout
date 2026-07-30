@@ -42,6 +42,7 @@ from skillscout.domain.acceptance import (
     GateB4BindingV1,
     HostedIsolationCapabilityV1,
     HumanSkillReviewAttestationV1,
+    LiveAcceptanceAuthorityV1,
     LockedBenchmarkManifestV1,
     NominationSetV1,
     OfflineAdversarialRunV1,
@@ -171,6 +172,7 @@ class DiscoveryRunSnapshot:
 _AcceptanceFactKind = Literal[
     "acceptance_nomination",
     "acceptance_benchmark_lock",
+    "acceptance_live_authority",
     "acceptance_scenario",
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
@@ -199,6 +201,7 @@ _FactKind = Literal[
     "root_checkpoint",
     "acceptance_nomination",
     "acceptance_benchmark_lock",
+    "acceptance_live_authority",
     "acceptance_scenario",
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
@@ -217,6 +220,7 @@ _FactKind = Literal[
 _AcceptanceFactModel: TypeAlias = (
     NominationSetV1
     | LockedBenchmarkManifestV1
+    | LiveAcceptanceAuthorityV1
     | AcceptanceScenarioResultV1
     | HostedIsolationCapabilityV1
     | OfflineAdversarialRunV1
@@ -235,6 +239,7 @@ _AcceptanceFactModel: TypeAlias = (
 _ACCEPTANCE_FACT_MODEL_VALUES: Final = {
     "acceptance_nomination": NominationSetV1,
     "acceptance_benchmark_lock": LockedBenchmarkManifestV1,
+    "acceptance_live_authority": LiveAcceptanceAuthorityV1,
     "acceptance_scenario": AcceptanceScenarioResultV1,
     "acceptance_hosted_isolation_capability": HostedIsolationCapabilityV1,
     "acceptance_offline_adversarial_run": OfflineAdversarialRunV1,
@@ -256,6 +261,7 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "acceptance_nomination": "nomination_set_digest",
         "acceptance_benchmark_lock": "manifest_digest",
+        "acceptance_live_authority": "authority_digest",
         "acceptance_scenario": "result_digest",
         "acceptance_hosted_isolation_capability": "capability_digest",
         "acceptance_offline_adversarial_run": "run_digest",
@@ -325,6 +331,7 @@ class OperationsStateProjectionV1(StrictFrozenModel):
     run_summary_digests: tuple[Digest, ...]
     acceptance_nomination_digests: tuple[Digest, ...]
     acceptance_benchmark_lock_digests: tuple[Digest, ...]
+    acceptance_live_authority_digests: tuple[Digest, ...]
     acceptance_scenario_digests: tuple[Digest, ...]
     acceptance_hosted_isolation_capability_digests: tuple[Digest, ...]
     acceptance_offline_adversarial_run_digests: tuple[Digest, ...]
@@ -976,6 +983,21 @@ def _validate_acceptance_references(
             kind="acceptance_nomination",
             digest=fact.nomination_set_digest,
         )
+    elif kind == "acceptance_live_authority":
+        assert isinstance(fact, LiveAcceptanceAuthorityV1)
+        manifest = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_benchmark_lock",
+            digest=fact.manifest_digest,
+        )
+        assert isinstance(manifest, LockedBenchmarkManifestV1)
+        if (
+            fact.nomination_set_digest != manifest.nomination_set_digest
+            or fact.lock_attestation_digest
+            != manifest.lock_attestation.attestation_digest
+        ):
+            raise OperationsIntegrityError("live authority manifest binding mismatch")
     elif kind == "acceptance_cleanup":
         assert isinstance(fact, ProbeCleanupAttestationV1)
         binding = _acceptance_fact_by_digest(
@@ -1025,6 +1047,7 @@ def _projection_from_facts(
         "run_summary_digests": [],
         "acceptance_nomination_digests": [],
         "acceptance_benchmark_lock_digests": [],
+        "acceptance_live_authority_digests": [],
         "acceptance_scenario_digests": [],
         "acceptance_hosted_isolation_capability_digests": [],
         "acceptance_offline_adversarial_run_digests": [],
@@ -1060,6 +1083,10 @@ def _projection_from_facts(
         "acceptance_benchmark_lock": (
             "acceptance_benchmark_lock_digests",
             "manifest_digest",
+        ),
+        "acceptance_live_authority": (
+            "acceptance_live_authority_digests",
+            "authority_digest",
         ),
         "acceptance_scenario": ("acceptance_scenario_digests", "result_digest"),
         "acceptance_hosted_isolation_capability": (
