@@ -672,6 +672,53 @@ def test_acceptance_cli_exposes_only_exact_resume_lineage_inputs() -> None:
     }
 
 
+def test_resolve_acceptance_resume_cli_dispatches_verified_locator(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import skillscout.cli as cli
+
+    expected = {
+        "state_commit_sha": "a" * 40,
+        "state_root_digest": "sha256:" + ("b" * 64),
+        "locator_digest": "sha256:" + ("c" * 64),
+        "status": "acceptance_resume_verified",
+    }
+    monkeypatch.setattr(
+        cli,
+        "_run_resolve_acceptance_resume",
+        lambda _arguments: expected,
+        raising=False,
+    )
+
+    assert (
+        cli.main(
+            [
+                "resolve-acceptance-resume",
+                "--authority-state-root",
+                str(tmp_path),
+                "--authority-state-root-digest",
+                "sha256:" + ("d" * 64),
+                "--campaign-state-root",
+                str(tmp_path),
+                "--acceptance-run-id",
+                "acceptance-resume",
+                "--authority-digest",
+                "sha256:" + ("e" * 64),
+                "--source-commit-sha",
+                "f" * 40,
+                "--state-repository-id",
+                "123",
+                "--state-repository-full-name",
+                "example/state",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == expected
+
+
 def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> None:
     """A locator anchor admits its verified commit or one verified crash suffix."""
 
