@@ -10,7 +10,6 @@ import json
 import os
 import stat
 import sys
-import time
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
@@ -975,11 +974,25 @@ def _acceptance_resume_locators_from_bundle(
 ) -> tuple[object, ...]:
     """Extract only strict operations-owned locator facts from one bundle."""
 
+    locators, _owned_facts = _acceptance_resume_projection_from_bundle(
+        bundle,
+        acceptance_run_id,
+    )
+    return locators
+
+
+def _acceptance_resume_projection_from_bundle(
+    bundle: object,
+    acceptance_run_id: str,
+) -> tuple[tuple[object, ...], tuple[object, ...]]:
+    """Project strict locators and transition-owned facts from one bundle."""
+
     from skillscout.adapters.operations_state import (
         OperationsStateStore,
         restore_acceptance_state_bundle,
     )
     from skillscout.application.acceptance import (
+        CampaignOwnedFactObservation,
         CampaignResumeLocatorObservation,
     )
     from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
@@ -1002,26 +1015,90 @@ def _acceptance_resume_locators_from_bundle(
         and type(record.fact) is AcceptanceCampaignResumeLocatorV1
     )
     object_digests: dict[str, str] = {}
+    owned_facts: list[CampaignOwnedFactObservation] = []
+    semantic_run_id = f"{acceptance_run_id}-semantic"
+    transition_kinds = {
+        "run",
+        "search_page",
+        "candidate",
+        "discovery_reservation",
+        "semantic_reservation",
+        "semantic_attempt",
+        "workflow_terminal",
+        "candidate_terminal",
+        "run_summary",
+        "acceptance_nomination",
+        "acceptance_budget_reservation",
+        "acceptance_fixed_candidate_admission",
+        "acceptance_semantic_request_reservation",
+        "acceptance_scenario",
+        "acceptance_replay",
+        "acceptance_replay_evidence",
+    }
     for fact in exported.facts:
-        if fact.kind != "acceptance_campaign_resume_locator":
-            continue
         payload = json.loads(fact.payload_json)
-        value = payload.get("value") if type(payload) is dict else None
-        if type(value) is not dict or type(value.get("locator_digest")) is not str:
+        if type(payload) is not dict:
             raise ValueError
-        object_digests[value["locator_digest"]] = fact.object_digest
+        value = payload.get("value")
+        columns = payload.get("columns")
+        if type(value) is not dict or type(columns) is not dict:
+            raise ValueError
+        if fact.kind == "acceptance_campaign_resume_locator":
+            if type(value.get("locator_digest")) is not str:
+                raise ValueError
+            object_digests[value["locator_digest"]] = fact.object_digest
+            continue
+        if fact.kind not in transition_kinds:
+            continue
+        owner_run_id = columns.get(
+            "acceptance_run_id",
+            columns.get("run_id"),
+        )
+        expected_run_id = (
+            acceptance_run_id
+            if fact.kind.startswith("acceptance_")
+            else semantic_run_id
+        )
+        if owner_run_id != expected_run_id:
+            continue
+        owned_facts.append(
+            CampaignOwnedFactObservation(
+                kind=fact.kind,
+                object_digest=fact.object_digest,
+                semantic_stage=(
+                    str(value["stage"])
+                    if fact.kind == "semantic_attempt"
+                    else None
+                ),
+                attempt_no=(
+                    int(value["attempt_no"])
+                    if fact.kind == "semantic_attempt"
+                    else None
+                ),
+                semantic_status=(
+                    str(value["status"])
+                    if fact.kind == "semantic_attempt"
+                    else None
+                ),
+            )
+        )
     if (
         len({item.fact.locator_digest for item in locators}) != len(locators)
         or set(object_digests)
         != {item.fact.locator_digest for item in locators}
     ):
         raise ValueError
-    return tuple(
-        CampaignResumeLocatorObservation(
-            locator=record.fact,
-            object_digest=object_digests[record.fact.locator_digest or ""],
-        )
-        for record in locators
+    return (
+        tuple(
+            CampaignResumeLocatorObservation(
+                locator=record.fact,
+                object_digest=object_digests[
+                    record.fact.locator_digest or ""
+                ],
+            )
+            for record in locators
+        ),
+        tuple(owned_facts),
     )
 
 
@@ -1032,6 +1109,7 @@ def _run_resolve_acceptance_resume(
 
     try:
         from skillscout.adapters.state_branch import (
+            ResolverReadBudget,
             StateBranchReadClient,
             StateBranchStore,
         )
@@ -1056,30 +1134,18 @@ def _run_resolve_acceptance_resume(
             repository_full_name=arguments.state_repository_full_name,
         )
         try:
-            started = time.monotonic()
             max_commits = 160
-            max_requests = 1_024
-            max_declared_bytes = 268_435_456
-            max_elapsed_seconds = 45.0
-            head = reader.get_state_ref().sha
+            read_budget = ResolverReadBudget()
+            head = reader.get_state_ref(read_budget=read_budget).sha
             store = StateBranchStore(reader)
             descending: list[CampaignStateLineageObservation] = []
+            restored_bundles: dict[str, object] = {}
             current = head
-            metadata_bytes = 0
             for _index in range(max_commits):
-                if time.monotonic() - started > max_elapsed_seconds:
-                    raise ValueError
-                inspected = store.inspect_commit_root(current)
-                metadata_bytes += len(
-                    canonical_json_bytes(
-                        inspected.root.model_dump(
-                            mode="json",
-                            exclude_none=False,
-                        )
-                    )
+                inspected = store.inspect_commit_root(
+                    current,
+                    read_budget=read_budget,
                 )
-                if metadata_bytes > max_declared_bytes:
-                    raise ValueError
                 descending.append(
                     CampaignStateLineageObservation(
                         commit_sha=current,
@@ -1103,29 +1169,27 @@ def _run_resolve_acceptance_resume(
                 current = inspected.commit.parents[0]
             else:
                 raise ValueError
-            head_inspection = descending[0]
-            selected_declared_bytes = descending[0].declared_content_bytes
-            expected_paths = len(head_inspection.object_digests) + 4
-            predicted_requests = (
-                1 + 3 * len(descending) + 3 + expected_paths
-            )
-            if (
-                predicted_requests > max_requests
-                or selected_declared_bytes > max_declared_bytes
-                or time.monotonic() - started > max_elapsed_seconds
-            ):
-                raise ValueError
-            head_bundle = store.restore_commit(head)
-            locators = _acceptance_resume_locators_from_bundle(
-                head_bundle,
-                arguments.acceptance_run_id,
-            )
-            descending[0] = CampaignStateLineageObservation(
-                **{
-                    **descending[0].__dict__,
-                    "resume_locators": locators,
-                }
-            )
+            for index, observation in enumerate(descending):
+                restored = store.restore_commit(
+                    observation.commit_sha,
+                    read_budget=read_budget,
+                )
+                locators, owned_facts = (
+                    _acceptance_resume_projection_from_bundle(
+                        restored,
+                        arguments.acceptance_run_id,
+                    )
+                )
+                restored_bundles[observation.commit_sha] = restored
+                descending[index] = CampaignStateLineageObservation(
+                    **{
+                        **observation.__dict__,
+                        "resume_locators": locators,
+                        "owned_facts": owned_facts,
+                    }
+                )
+            head_bundle = restored_bundles[head]
+            locators = descending[0].resume_locators
         finally:
             reader.close()
         campaign_checkout = arguments.campaign_state_root.resolve(strict=True)

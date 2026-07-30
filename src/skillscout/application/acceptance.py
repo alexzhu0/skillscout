@@ -223,7 +223,7 @@ def _verify_campaign_transition_fact_delta(
         child_facts[digest]
         for digest in sorted(set(child_facts) - set(parent_facts))
     )
-    exact_kind = {
+    required_kinds = {
         "nomination": "acceptance_nomination",
         "discovery_page": "search_page",
         "discovery_reservation": "discovery_reservation",
@@ -247,11 +247,27 @@ def _verify_campaign_transition_fact_delta(
                 for kind in kinds
             )
         )
+    elif locator.transition_phase == "discovery_page":
+        kinds = tuple(item.kind for item in added)
+        accepted = (
+            kinds.count("search_page") == 1
+            and all(kind in {"search_page", "candidate"} for kind in kinds)
+        )
+    elif locator.transition_phase == "budget_reserved":
+        kinds = tuple(item.kind for item in added)
+        accepted = (
+            kinds.count("acceptance_budget_reservation") == 1
+            and kinds.count("run") <= 1
+            and all(
+                kind in {"acceptance_budget_reservation", "run"}
+                for kind in kinds
+            )
+        )
     else:
         accepted = (
-            exact_kind is not None
+            required_kinds is not None
             and len(added) == 1
-            and added[0].kind == exact_kind
+            and added[0].kind == required_kinds
         )
     if not accepted:
         raise ValueError("campaign resume typed fact delta rejected")

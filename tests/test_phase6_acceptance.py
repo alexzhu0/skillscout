@@ -891,7 +891,10 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
 ) -> None:
     import skillscout.adapters.state_branch as state_branch
     import skillscout.cli as cli
-    from skillscout.application.acceptance import CampaignResumeLocatorObservation
+    from skillscout.application.acceptance import (
+        CampaignOwnedFactObservation,
+        CampaignResumeLocatorObservation,
+    )
     from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
 
     original_commit = "4" * 40
@@ -909,9 +912,14 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         parent_state_root_digest=original_root,
         transition_index=1,
         previous_locator_digest=None,
+        transition_phase="terminal",
         locator_digest="sha256:" + ("a" * 64),
     )
     locator_object_digest = "sha256:" + ("b" * 64)
+    terminal_fact = CampaignOwnedFactObservation(
+        kind="candidate_terminal",
+        object_digest="sha256:" + ("c" * 64),
+    )
     bundles = {
         original_commit: SimpleNamespace(
             root=SimpleNamespace(
@@ -937,7 +945,8 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         def close(self) -> None:
             events.append("closed")
 
-        def get_state_ref(self) -> object:
+        def get_state_ref(self, *, read_budget: object) -> object:
+            assert read_budget is not None
             return SimpleNamespace(sha=anchor_commit)
 
         def get_commit(self, sha: str) -> object:
@@ -950,7 +959,13 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         def __init__(self, _reader: object) -> None:
             pass
 
-        def inspect_commit_root(self, sha: str) -> object:
+        def inspect_commit_root(
+            self,
+            sha: str,
+            *,
+            read_budget: object,
+        ) -> object:
+            assert read_budget is not None
             parent = (
                 ("0" * 40,) if sha == original_commit else (original_commit,)
             )
@@ -969,7 +984,13 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
                 declared_content_bytes=1_024,
             )
 
-        def restore_commit(self, sha: str) -> object:
+        def restore_commit(
+            self,
+            sha: str,
+            *,
+            read_budget: object,
+        ) -> object:
+            assert read_budget is not None
             return bundles[sha]
 
     monkeypatch.setattr(
@@ -990,16 +1011,19 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
     monkeypatch.setattr(state_branch, "StateBranchStore", Store)
     monkeypatch.setattr(
         cli,
-        "_acceptance_resume_locators_from_bundle",
+        "_acceptance_resume_projection_from_bundle",
         lambda bundle, _run_id: (
             (
-                CampaignResumeLocatorObservation(
-                    locator=locator,
-                    object_digest=locator_object_digest,
+                (
+                    CampaignResumeLocatorObservation(
+                        locator=locator,
+                        object_digest=locator_object_digest,
+                    ),
                 ),
+                (terminal_fact,),
             )
             if bundle is bundles[anchor_commit]
-            else ()
+            else ((), ())
         ),
         raising=False,
     )
@@ -1065,14 +1089,21 @@ def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
         def close(self) -> None:
             pass
 
-        def get_state_ref(self) -> object:
+        def get_state_ref(self, *, read_budget: object) -> object:
+            assert read_budget is not None
             return SimpleNamespace(sha=commits[-1])
 
     class Store:
         def __init__(self, _reader: object) -> None:
             pass
 
-        def inspect_commit_root(self, sha: str) -> object:
+        def inspect_commit_root(
+            self,
+            sha: str,
+            *,
+            read_budget: object,
+        ) -> object:
+            assert read_budget is not None
             inspected.append(sha)
             index = commits.index(sha)
             parent = commits[index - 1] if index > 0 else "0" * 40
@@ -1097,7 +1128,13 @@ def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
                 declared_content_bytes=1_024,
             )
 
-        def restore_commit(self, sha: str) -> object:
+        def restore_commit(
+            self,
+            sha: str,
+            *,
+            read_budget: object,
+        ) -> object:
+            assert read_budget is not None
             restored.append(sha)
             raise AssertionError("overlong lineage restored a database bundle")
 
@@ -1710,6 +1747,106 @@ def test_acceptance_cas_has_no_generic_transition_default() -> None:
         bootstrap._LateStateDurabilityBarrier.sync_discovery
     ).parameters["transition_phase"]
     assert parameter.default is inspect.Parameter.empty
+
+
+def test_every_exported_transition_sequence_owns_its_exact_fact_delta() -> None:
+    """Every production CAS phase has an explicit typed owner projection."""
+
+    from skillscout.application.acceptance import (
+        CampaignOwnedFactObservation,
+        CampaignStateLineageObservation,
+        _verify_campaign_transition_fact_delta,
+    )
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    phases = (
+        ("nomination", ("acceptance_nomination",)),
+        ("discovery_page", ("search_page", "candidate")),
+        ("discovery_reservation", ("discovery_reservation",)),
+        ("discovery_summary", ("run_summary",)),
+        ("budget_reserved", ("run", "acceptance_budget_reservation")),
+        ("candidate_admitted", ("acceptance_fixed_candidate_admission",)),
+        ("semantic_candidate_reserved", ("semantic_reservation",)),
+        ("request_reserved", ("acceptance_semantic_request_reservation",)),
+        ("started", ("semantic_attempt",)),
+        ("result_durable", ("semantic_attempt",)),
+        ("terminal", ("workflow_terminal", "candidate_terminal")),
+        ("scenario", ("acceptance_scenario",)),
+        ("replay_intent", ("acceptance_replay",)),
+        ("replay_evidence", ("acceptance_replay_evidence",)),
+    )
+    parent_facts: tuple[CampaignOwnedFactObservation, ...] = ()
+    parent_commit = "0" * 40
+    parent_root = "sha256:" + ("0" * 64)
+    for transition_index, (phase, kinds) in enumerate(phases, start=1):
+        added = tuple(
+            CampaignOwnedFactObservation(
+                kind=kind,
+                object_digest="sha256:"
+                + f"{transition_index * 10 + ordinal:064x}",
+                semantic_stage=(
+                    "extractor" if kind == "semantic_attempt" else None
+                ),
+                attempt_no=(
+                    1 if kind == "semantic_attempt" else None
+                ),
+                semantic_status=(
+                    (
+                        "started"
+                        if phase == "started"
+                        else "confirmed_retryable"
+                    )
+                    if kind == "semantic_attempt"
+                    else None
+                ),
+            )
+            for ordinal, kind in enumerate(kinds, start=1)
+        )
+        child_commit = f"{transition_index:040x}"
+        child_root = "sha256:" + f"{transition_index:064x}"
+        locator = AcceptanceCampaignResumeLocatorV1.model_construct(
+            transition_phase=phase,
+            semantic_stage=(
+                "extractor" if phase in {"started", "result_durable"} else None
+            ),
+            attempt_no=(
+                1 if phase in {"started", "result_durable"} else None
+            ),
+            semantic_status=(
+                "started"
+                if phase == "started"
+                else (
+                    "confirmed_retryable"
+                    if phase == "result_durable"
+                    else None
+                )
+            ),
+        )
+        parent = CampaignStateLineageObservation(
+            commit_sha=parent_commit,
+            root_digest=parent_root,
+            parent_commit_sha=None,
+            prior_root_digest=None,
+            object_digests=(),
+            owned_facts=parent_facts,
+        )
+        child = CampaignStateLineageObservation(
+            commit_sha=child_commit,
+            root_digest=child_root,
+            parent_commit_sha=parent_commit,
+            prior_root_digest=parent_root,
+            object_digests=(),
+            owned_facts=(*parent_facts, *added),
+        )
+
+        _verify_campaign_transition_fact_delta(
+            locator=locator,
+            parent=parent,
+            child=child,
+        )
+        parent_facts = child.owned_facts
+        parent_commit = child_commit
+        parent_root = child_root
 
 
 @pytest.mark.parametrize(

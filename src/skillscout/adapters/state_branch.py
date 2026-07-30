@@ -13,7 +13,8 @@ from dataclasses import dataclass
 import hashlib
 import json
 import re
-from typing import Any, Iterable, Literal, Mapping
+import time
+from typing import Any, Callable, Iterable, Literal, Mapping
 
 import httpx
 from pydantic import ValidationError
@@ -60,6 +61,9 @@ _SECRET_CANARIES = (
     b"authorization: bearer ",
     b"STATE_BRANCH_REPOSITORY_BODY_CANARY",
 )
+_RESOLVER_MAX_REQUESTS = 1_024
+_RESOLVER_MAX_RESPONSE_BYTES = 268_435_456
+_RESOLVER_MAX_ELAPSED_SECONDS = 45.0
 
 
 class StateIntegrityFailure(Exception):
@@ -72,6 +76,56 @@ class StateBranchConflict(Exception):
 
 class StateRefNotFound(Exception):
     """The exact fixed state ref does not exist."""
+
+
+class ResolverReadBudget:
+    """One hard resolver-wide budget shared by every immutable Git read."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        max_requests: int = _RESOLVER_MAX_REQUESTS,
+        max_response_bytes: int = _RESOLVER_MAX_RESPONSE_BYTES,
+        max_elapsed_seconds: float = _RESOLVER_MAX_ELAPSED_SECONDS,
+    ) -> None:
+        if (
+            not callable(clock)
+            or type(max_requests) is not int
+            or not 1 <= max_requests <= _RESOLVER_MAX_REQUESTS
+            or type(max_response_bytes) is not int
+            or not 1 <= max_response_bytes <= _RESOLVER_MAX_RESPONSE_BYTES
+            or type(max_elapsed_seconds) not in {int, float}
+            or not 0 < float(max_elapsed_seconds) <= _RESOLVER_MAX_ELAPSED_SECONDS
+        ):
+            raise StateIntegrityFailure
+        self._clock = clock
+        self._max_requests = max_requests
+        self._max_response_bytes = max_response_bytes
+        self._deadline = clock() + float(max_elapsed_seconds)
+        self.request_count = 0
+        self.response_bytes = 0
+
+    def begin_request(self) -> float:
+        remaining = self._deadline - self._clock()
+        if remaining <= 0 or self.request_count >= self._max_requests:
+            raise StateIntegrityFailure
+        self.request_count += 1
+        return remaining
+
+    def charge_response_bytes(self, count: int) -> None:
+        if (
+            type(count) is not int
+            or count < 0
+            or self._clock() >= self._deadline
+            or self.response_bytes + count > self._max_response_bytes
+        ):
+            raise StateIntegrityFailure
+        self.response_bytes += count
+
+    @property
+    def remaining_response_bytes(self) -> int:
+        return self._max_response_bytes - self.response_bytes
 
 
 @dataclass(frozen=True)
@@ -219,18 +273,30 @@ class _StateBranchReadClientBase:
     def close(self) -> None:
         self._client.close()
 
-    def get_state_ref(self) -> StateRefObservation:
+    def get_state_ref(
+        self,
+        *,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> StateRefObservation:
         raw = self._json(
             "GET",
             f"/repos/{self._repository}/git/ref/heads/skillscout-state",
             allow_not_found=True,
+            read_budget=read_budget,
         )
         return self._ref(raw)
 
-    def get_commit(self, sha: str) -> StateCommitObservation:
+    def get_commit(
+        self,
+        sha: str,
+        *,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> StateCommitObservation:
         expected = _sha(sha)
         raw = self._json(
-            "GET", f"/repos/{self._repository}/git/commits/{expected}"
+            "GET",
+            f"/repos/{self._repository}/git/commits/{expected}",
+            read_budget=read_budget,
         )
         if (
             not isinstance(raw, dict)
@@ -251,11 +317,17 @@ class _StateBranchReadClientBase:
             message=message,
         )
 
-    def get_tree(self, sha: str) -> tuple[StateTreeEntry, ...]:
+    def get_tree(
+        self,
+        sha: str,
+        *,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> tuple[StateTreeEntry, ...]:
         expected = _sha(sha)
         raw = self._json(
             "GET",
             f"/repos/{self._repository}/git/trees/{expected}?recursive=1",
+            read_budget=read_budget,
         )
         if (
             not isinstance(raw, dict)
@@ -305,11 +377,17 @@ class _StateBranchReadClientBase:
             _safe_failure()
         return tuple(sorted(entries, key=lambda entry: entry.path))
 
-    def get_blob(self, sha: str) -> bytes:
+    def get_blob(
+        self,
+        sha: str,
+        *,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> bytes:
         raw = self._json(
             "GET",
             f"/repos/{self._repository}/git/blobs/{_sha(sha)}",
             cap=_MAX_DATABASE_BYTES + 1024,
+            read_budget=read_budget,
         )
         if (
             not isinstance(raw, dict)
@@ -356,10 +434,19 @@ class _StateBranchReadClientBase:
         cap: int = _MAX_RESPONSE_BYTES,
         allow_not_found: bool = False,
         conflict_on_write: bool = False,
+        read_budget: ResolverReadBudget | None = None,
     ) -> Any:
+        request_arguments: dict[str, object] = {}
+        if read_budget is not None:
+            request_arguments["timeout"] = read_budget.begin_request()
         try:
             response = self._client.send(
-                self._client.build_request(method, path, json=payload),
+                self._client.build_request(
+                    method,
+                    path,
+                    json=payload,
+                    **request_arguments,
+                ),
                 stream=True,
             )
         except httpx.TransportError:
@@ -393,6 +480,8 @@ class _StateBranchReadClientBase:
             consumed = 0
             try:
                 for piece in response.iter_bytes(65_536):
+                    if read_budget is not None:
+                        read_budget.charge_response_bytes(len(piece))
                     consumed += len(piece)
                     if consumed > cap:
                         _safe_failure()
@@ -519,10 +608,19 @@ class StateBranchClient(_StateBranchReadClientBase):
         cap: int = _MAX_RESPONSE_BYTES,
         allow_not_found: bool = False,
         conflict_on_write: bool = False,
+        read_budget: ResolverReadBudget | None = None,
     ) -> Any:
+        request_arguments: dict[str, object] = {}
+        if read_budget is not None:
+            request_arguments["timeout"] = read_budget.begin_request()
         try:
             response = self._client.send(
-                self._client.build_request(method, path, json=payload),
+                self._client.build_request(
+                    method,
+                    path,
+                    json=payload,
+                    **request_arguments,
+                ),
                 stream=True,
             )
         except httpx.TransportError:
@@ -556,6 +654,8 @@ class StateBranchClient(_StateBranchReadClientBase):
             consumed = 0
             try:
                 for piece in response.iter_bytes(65_536):
+                    if read_budget is not None:
+                        read_budget.charge_response_bytes(len(piece))
                     consumed += len(piece)
                     if consumed > cap:
                         _safe_failure()
@@ -576,28 +676,53 @@ class StateBranchStore:
     def __init__(self, remote: object) -> None:
         self._remote = remote
 
-    def restore(self) -> StateRestoreObservation:
+    def restore(
+        self,
+        *,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> StateRestoreObservation:
         try:
-            ref = self._remote.get_state_ref()
+            ref = (
+                self._remote.get_state_ref(read_budget=read_budget)
+                if read_budget is not None
+                else self._remote.get_state_ref()
+            )
         except StateRefNotFound:
             return StateRestoreObservation("absent", None, None)
         return StateRestoreObservation(
             "verified",
             ref.sha,
-            self.restore_commit(ref.sha),
+            self.restore_commit(ref.sha, read_budget=read_budget),
         )
 
-    def restore_commit(self, commit_sha: str) -> VerifiedStateBundle:
+    def restore_commit(
+        self,
+        commit_sha: str,
+        *,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> VerifiedStateBundle:
         expected_commit_sha = _sha(commit_sha)
-        commit = self._remote.get_commit(expected_commit_sha)
+        commit = self._read(
+            "get_commit",
+            expected_commit_sha,
+            read_budget=read_budget,
+        )
         if commit.sha != expected_commit_sha or len(commit.parents) > 1:
             raise StateIntegrityFailure
-        entries = self._remote.get_tree(commit.tree_sha)
+        entries = self._read(
+            "get_tree",
+            commit.tree_sha,
+            read_budget=read_budget,
+        )
         entry_map = _validate_tree_shape(entries)
         root_entry = entry_map.get("state/root.json")
         if root_entry is None:
             raise StateIntegrityFailure
-        root_bytes = self._remote.get_blob(root_entry.sha)
+        root_bytes = self._read(
+            "get_blob",
+            root_entry.sha,
+            read_budget=read_budget,
+        )
         if root_entry.size is not None and root_entry.size != len(root_bytes):
             raise StateIntegrityFailure
         root = _parse_root(root_bytes)
@@ -618,7 +743,11 @@ class StateBranchStore:
             item.locator: item.content_digest for item in root.databases
         }
         for path in sorted(expected_paths - {"state/root.json"}):
-            content = self._remote.get_blob(entry_map[path].sha)
+            content = self._read(
+                "get_blob",
+                entry_map[path].sha,
+                read_budget=read_budget,
+            )
             _validate_content(
                 path,
                 content,
@@ -633,19 +762,36 @@ class StateBranchStore:
         _validate_bundle(bundle, expected_parent=commit.parents[0] if commit.parents else None)
         return bundle
 
-    def inspect_commit_root(self, commit_sha: str) -> StateCommitRootObservation:
+    def inspect_commit_root(
+        self,
+        commit_sha: str,
+        *,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> StateCommitRootObservation:
         """Verify one immutable commit manifest without reading owned payload blobs."""
 
         expected_commit_sha = _sha(commit_sha)
-        commit = self._remote.get_commit(expected_commit_sha)
+        commit = self._read(
+            "get_commit",
+            expected_commit_sha,
+            read_budget=read_budget,
+        )
         if commit.sha != expected_commit_sha or len(commit.parents) > 1:
             raise StateIntegrityFailure
-        entries = self._remote.get_tree(commit.tree_sha)
+        entries = self._read(
+            "get_tree",
+            commit.tree_sha,
+            read_budget=read_budget,
+        )
         entry_map = _validate_tree_shape(entries)
         root_entry = entry_map.get("state/root.json")
         if root_entry is None:
             raise StateIntegrityFailure
-        root_bytes = self._remote.get_blob(root_entry.sha)
+        root_bytes = self._read(
+            "get_blob",
+            root_entry.sha,
+            read_budget=read_budget,
+        )
         if (
             root_entry.sha != _git_blob_id(root_bytes)
             or root_entry.size is not None
@@ -676,6 +822,17 @@ class StateBranchStore:
                 len(root_bytes) + sum(declared_sizes.values())
             ),
         )
+
+    def _read(
+        self,
+        method_name: str,
+        *arguments: object,
+        read_budget: ResolverReadBudget | None,
+    ) -> object:
+        method = getattr(self._remote, method_name)
+        if read_budget is None:
+            return method(*arguments)
+        return method(*arguments, read_budget=read_budget)
 
     @staticmethod
     def restore_from_fixture(
