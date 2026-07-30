@@ -357,3 +357,56 @@ def test_nomination_cli_emits_persisted_role_neutral_manifest(
     assert all(
         "coverage_role" not in entry for entry in payload["search_derived_entries"]
     )
+
+
+def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> None:
+    """Catches a preflight that opens credentials before all immutable identities."""
+
+    import skillscout.bootstrap as bootstrap
+
+    manifest_path = (
+        ROOT
+        / ".planning/phases/06-adversarial-mvp-acceptance"
+        / "06-BENCHMARK-MANIFEST.json"
+    )
+
+    class ForbiddenCredentials(dict[str, str]):
+        def __getitem__(self, key: str) -> str:
+            pytest.fail(f"credential read during non-secret preflight:{key}")
+
+        def get(self, key: str, default: Any = None) -> Any:
+            if key in {
+                "DEEPSEEK_API_KEY",
+                "SKILLSCOUT_SOURCE_GITHUB_TOKEN",
+                "SKILLSCOUT_STATE_GITHUB_TOKEN",
+                "OPENAI_API_KEY",
+            }:
+                pytest.fail(f"credential read during non-secret preflight:{key}")
+            return super().get(key, default)
+
+    authority = bootstrap.verify_live_acceptance_authority(
+        manifest_path=manifest_path,
+        source_commit_sha="c" * 40,
+        acceptance_workflow_sha256="sha256:" + ("d" * 64),
+        state_commit_sha="e" * 40,
+        state_root_digest="sha256:" + ("f" * 64),
+        environ=ForbiddenCredentials(
+            {
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            }
+        ),
+    )
+
+    assert authority.manifest.manifest_digest == (
+        "sha256:3d7f16e60c3336c5c73d174273a01740daa39ab1b506a437be753d94aa387185"
+    )
+    assert len(authority.manifest.entries) == 5
+    assert authority.provider == "deepseek"
+    assert authority.models == (
+        "deepseek-v4-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+    )
+    assert authority.max_candidates == 100
+    assert authority.max_semantic_candidates == 20

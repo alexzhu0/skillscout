@@ -427,3 +427,170 @@ def test_semantic_request_projection_excludes_all_evaluator_only_metadata() -> N
         "human_label",
     ):
         assert canary not in serialized
+
+
+def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> None:
+    """Catches widened, relabelled, or evaluator-aware benchmark execution."""
+
+    module = _application_module(skip_if_missing=False)
+    manifest = module.load_locked_benchmark_manifest(
+        ROOT
+        / ".planning/phases/06-adversarial-mvp-acceptance"
+        / "06-BENCHMARK-MANIFEST.json"
+    )
+    observed: list[object] = []
+    persisted: list[object] = []
+
+    class Runner:
+        def run(self, authority: object) -> object:
+            observed.append(authority)
+            return module.LiveScenarioObservation(
+                repository_id=authority.repository_id,
+                repository_full_name=authority.repository_full_name,
+                exact_commit_sha=authority.exact_commit_sha,
+                license_spdx=authority.license_spdx,
+                outcome="no_workflow",
+                reason_code="no_reusable_workflow",
+                evidence_digests=(authority.entry_digest,),
+                workflow_fingerprint=None,
+                workflow_spec_authority_digest=None,
+                eligible_locator=None,
+                semantic_request_count=1,
+            )
+
+        def close(self) -> None:
+            return None
+
+    class Store:
+        def acceptance_snapshot(self, acceptance_run_id: str) -> object:
+            return module.AcceptanceRunSnapshot(
+                acceptance_run_id=acceptance_run_id,
+                facts=(
+                    module.AcceptanceFactRecord(
+                        acceptance_run_id=acceptance_run_id,
+                        kind="acceptance_benchmark_lock",
+                        fact_digest=manifest.manifest_digest,
+                        fact=manifest,
+                    ),
+                ),
+            )
+
+        def record_acceptance_fact(
+            self, acceptance_run_id: str, kind: str, fact: object
+        ) -> object:
+            persisted.append(fact)
+            return module.AcceptanceFactRecord(
+                acceptance_run_id=acceptance_run_id,
+                kind=kind,
+                fact_digest=fact.result_digest,
+                fact=fact,
+            )
+
+        def close(self) -> None:
+            return None
+
+    sync_calls: list[tuple[str, str]] = []
+
+    def sync(*, observed_head: str, prior_root_digest: str, **_: object) -> object:
+        sync_calls.append((observed_head, prior_root_digest))
+        index = len(sync_calls)
+        return SimpleNamespace(
+            status="verified",
+            previous_head=observed_head,
+            commit_sha=f"{index:040x}",
+            root_digest="sha256:" + f"{index:064x}",
+        )
+
+    dependencies = module.LockedCampaignDependencies(
+        discovery_factory=Runner,
+        operations_store_factory=Store,
+        state_sync=sync,
+    )
+    result = module.run_locked_benchmark(
+        dependencies,
+        manifest=manifest,
+        acceptance_run_id="acceptance-live-five",
+        observed_head="a" * 40,
+        prior_root_digest="sha256:" + ("b" * 64),
+        recorded_at=TIMESTAMP,
+    )
+
+    assert len(observed) == len(persisted) == len(sync_calls) == 5
+    assert tuple(item.repository_id for item in observed) == tuple(
+        entry.repository_id for entry in manifest.entries
+    )
+    assert all(
+        not hasattr(item, "coverage_role")
+        and not hasattr(item, "expected_outcome")
+        for item in observed
+    )
+    assert all(item.terminal_class == "business_terminal" for item in persisted)
+    assert result.state_commit_sha == f"{5:040x}"
+    assert result.state_root_digest == "sha256:" + f"{5:064x}"
+
+
+def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> None:
+    """Catches replay opening a live runner or mutable state before completed lookup."""
+
+    module = _application_module(skip_if_missing=False)
+    manifest = module.load_locked_benchmark_manifest(
+        ROOT
+        / ".planning/phases/06-adversarial-mvp-acceptance"
+        / "06-BENCHMARK-MANIFEST.json"
+    )
+    events: list[str] = []
+
+    class Projector:
+        def project(self, **_: object) -> object:
+            events.append("project")
+            return module.CompletedBenchmarkProjection(
+                manifest_digest=manifest.manifest_digest,
+                scenario_result_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(1, 6)
+                ),
+                repository_id=manifest.entries[0].repository_id,
+                source_commit_sha=manifest.entries[0].exact_commit_sha,
+                workflow_fingerprint="sha256:" + ("a" * 64),
+                workflow_spec_authority_digest="sha256:" + ("b" * 64),
+                eligible_locators=("state/objects/eligible.json",),
+                semantic_attempt_count=5,
+            )
+
+    class Store:
+        def record_acceptance_fact(
+            self, acceptance_run_id: str, kind: str, fact: object
+        ) -> object:
+            events.append("record")
+            return module.AcceptanceFactRecord(
+                acceptance_run_id=acceptance_run_id,
+                kind=kind,
+                fact_digest=fact.replay_digest,
+                fact=fact,
+            )
+
+        def close(self) -> None:
+            return None
+
+    dependencies = module.ReplayUpdateDependencies(
+        completed_projector_factory=Projector,
+        operations_store_factory=Store,
+    )
+    replay = module.run_exact_replay(
+        dependencies,
+        manifest=manifest,
+        acceptance_run_id="acceptance-live-five",
+        state_commit_sha="c" * 40,
+        state_root_digest="sha256:" + ("d" * 64),
+        recorded_at=TIMESTAMP,
+    )
+
+    assert events == ["project", "record"]
+    assert replay.semantic_request_count == 0
+    assert replay.duplicate_workflow_spec_count == 0
+    assert replay.duplicate_skill_count == 0
+    assert replay.duplicate_fact_count == 0
+    assert replay.branch_effect_count == 0
+    assert replay.pull_request_effect_count == 0
+    assert replay.reviewer_effect_count == 0
+    assert replay.before_state_root_digest == replay.after_state_root_digest
+    assert replay.before_state_commit_sha == replay.after_state_commit_sha

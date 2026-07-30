@@ -911,6 +911,49 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert all("retention-days: 1" in block for block in upload_blocks)
 
 
+def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:
+    """Catches credential-bearing execution without an independent exact-byte gate."""
+
+    source = _source(required=False)
+    preflight = _job(source, "live_authority_preflight")
+    live = _job(source, "live_benchmark")
+
+    assert "contents: read" in preflight
+    assert "${{ secrets." not in preflight
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in preflight
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in preflight
+    assert (
+        "PHASE6_MANIFEST: "
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+        in preflight
+    )
+    assert "verify-live-authority" in preflight
+    assert re.search(r"^    needs: live_authority_preflight$", live, re.MULTILINE)
+    assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in live
+    assert "SKILLSCOUT_CATALOG" not in live
+    assert "actions/create-github-app-token" not in live
+
+
+def test_deepseek_only_exact_manifest_jobs_are_distinct_and_bounded() -> None:
+    """Catches one ambiguous command silently deciding benchmark versus replay."""
+
+    source = _source(required=False)
+    preflight = _job(source, "live_authority_preflight")
+    live = _job(source, "live_benchmark")
+
+    canonical = (
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    )
+    assert f"PHASE6_MANIFEST: {canonical}" in preflight
+    assert f"PHASE6_MANIFEST: {canonical}" in live
+    assert "--action benchmark" in live
+    assert "--action replay" in live
+    assert "SKILLSCOUT_LLM_PROVIDER: deepseek" in live
+    assert "OPENAI_API_KEY" not in live
+
+
 def test_nomination_installation_and_state_cas_are_source_bound() -> None:
     nomination = _job(_source(required=False), "nominate")
 
