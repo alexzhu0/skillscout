@@ -921,6 +921,184 @@ def _run_live_replay(
     return result
 
 
+def _load_verified_live_authority(arguments: argparse.Namespace) -> object:
+    """Load the immutable authority fact and reverify every bound identity."""
+
+    from skillscout.adapters.operations_state import (
+        OperationsStateStore,
+        restore_acceptance_state_bundle,
+    )
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    bundle = load_verified_state_checkout(
+        checkout_root=arguments.authority_state_root.resolve(strict=True),
+        expected_root_digest=arguments.authority_state_root_digest,
+    )
+    with TemporaryDirectory(prefix="skillscout-authority-state-") as temporary:
+        temporary_root = Path(temporary).resolve(strict=True)
+        operations_path = temporary_root / "operations.sqlite3"
+        restore_acceptance_state_bundle(
+            bundle,
+            pipeline_path=temporary_root / "pipeline.sqlite3",
+            operations_path=operations_path,
+        )
+        with OperationsStateStore(operations_path) as store:
+            snapshot = store.acceptance_snapshot(arguments.acceptance_run_id)
+    records = tuple(
+        record
+        for record in snapshot.facts
+        if record.kind == "acceptance_live_authority"
+        and record.fact_digest == arguments.authority_digest
+        and type(record.fact) is LiveAcceptanceAuthorityV1
+    )
+    if len(records) != 1:
+        raise ValueError
+    recorded = records[0].fact
+    return verify_live_acceptance_authority(
+        repository_root=Path.cwd().resolve(strict=True),
+        authority_bytes=canonical_json_bytes(recorded) + b"\n",
+        observed_source_commit_sha=arguments.source_commit_sha,
+        observed_state_commit_sha=recorded.state_commit_sha,
+        observed_state_root_digest=recorded.state_root_digest,
+        observed_state_repository_id=arguments.state_repository_id,
+        observed_state_repository_full_name=arguments.state_repository_full_name,
+    )
+
+
+def _acceptance_resume_locators_from_bundle(
+    bundle: object,
+    acceptance_run_id: str,
+) -> tuple[object, ...]:
+    """Extract only strict operations-owned locator facts from one bundle."""
+
+    from skillscout.adapters.operations_state import (
+        OperationsStateStore,
+        restore_acceptance_state_bundle,
+    )
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    with TemporaryDirectory(prefix="skillscout-resume-state-") as temporary:
+        temporary_root = Path(temporary).resolve(strict=True)
+        operations_path = temporary_root / "operations.sqlite3"
+        restore_acceptance_state_bundle(
+            bundle,
+            pipeline_path=temporary_root / "pipeline.sqlite3",
+            operations_path=operations_path,
+        )
+        with OperationsStateStore(operations_path) as store:
+            snapshot = store.acceptance_snapshot(acceptance_run_id)
+    locators = tuple(
+        record.fact
+        for record in snapshot.facts
+        if record.kind == "acceptance_campaign_resume_locator"
+        and type(record.fact) is AcceptanceCampaignResumeLocatorV1
+    )
+    if len({item.locator_digest for item in locators}) != len(locators):
+        raise ValueError
+    return locators
+
+
+def _run_resolve_acceptance_resume(
+    arguments: argparse.Namespace,
+) -> dict[str, object]:
+    """Resolve one exact campaign descendant from an immutable authority."""
+
+    try:
+        from skillscout.adapters.state_branch import (
+            StateBranchReadClient,
+            StateBranchStore,
+        )
+        from skillscout.application.acceptance import (
+            CampaignStateLineageObservation,
+            resolve_campaign_resume_lineage,
+        )
+
+        authority = _load_verified_live_authority(arguments)
+        if (
+            authority.authority_digest != arguments.authority_digest
+            or authority.source_commit_sha != arguments.source_commit_sha
+            or authority.state_repository_id != arguments.state_repository_id
+            or authority.state_repository_full_name
+            != arguments.state_repository_full_name
+        ):
+            raise ValueError
+        token = os.environ["SKILLSCOUT_STATE_GITHUB_TOKEN"]
+        reader = StateBranchReadClient(
+            token=token,
+            repository_id=arguments.state_repository_id,
+            repository_full_name=arguments.state_repository_full_name,
+        )
+        try:
+            head = reader.get_state_ref().sha
+            store = StateBranchStore(reader)
+            descending: list[CampaignStateLineageObservation] = []
+            current = head
+            head_bundle: object | None = None
+            for _index in range(256):
+                commit = reader.get_commit(current)
+                bundle = store.restore_commit(current)
+                if head_bundle is None:
+                    head_bundle = bundle
+                descending.append(
+                    CampaignStateLineageObservation(
+                        commit_sha=current,
+                        root_digest=bundle.root.root_digest,
+                        parent_commit_sha=(
+                            commit.parents[0] if commit.parents else None
+                        ),
+                        prior_root_digest=bundle.root.prior_root_digest,
+                        resume_locators=(
+                            _acceptance_resume_locators_from_bundle(
+                                bundle,
+                                arguments.acceptance_run_id,
+                            )
+                        ),
+                    )
+                )
+                if current == authority.state_commit_sha:
+                    if bundle.root.root_digest != authority.state_root_digest:
+                        raise ValueError
+                    break
+                if len(commit.parents) != 1:
+                    raise ValueError
+                current = commit.parents[0]
+            else:
+                raise ValueError
+        finally:
+            reader.close()
+        if head_bundle is None:
+            raise ValueError
+        campaign_checkout = arguments.campaign_state_root.resolve(strict=True)
+        if _checked_out_git_commit(campaign_checkout) != head:
+            raise ValueError
+        checkout_bundle = load_verified_state_checkout(
+            checkout_root=campaign_checkout,
+            expected_root_digest=head_bundle.root.root_digest,
+        )
+        if checkout_bundle != head_bundle:
+            raise ValueError
+        verified = resolve_campaign_resume_lineage(
+            authority_digest=authority.authority_digest,
+            acceptance_run_id=arguments.acceptance_run_id,
+            original_state_commit_sha=authority.state_commit_sha,
+            original_state_root_digest=authority.state_root_digest,
+            campaign_head_commit_sha=head,
+            observations=tuple(reversed(descending)),
+        )
+        return {
+            "authority_digest": authority.authority_digest,
+            "acceptance_run_id": arguments.acceptance_run_id,
+            "lineage_commit_shas": list(verified.lineage_commit_shas),
+            "lineage_root_digests": list(verified.lineage_root_digests),
+            "locator_digest": verified.locator_digest,
+            "state_commit_sha": verified.state_commit_sha,
+            "state_root_digest": verified.state_root_digest,
+            "status": "acceptance_resume_verified",
+        }
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, object]:
     """Return only sanitized immutable identities from credential-free preflight."""
 

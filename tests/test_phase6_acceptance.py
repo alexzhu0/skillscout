@@ -786,17 +786,17 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
 
     monkeypatch.setattr(
         cli,
-        "_run_verify_live_authority",
+        "_load_verified_live_authority",
         lambda _arguments: events.append("authority")
-        or {
-            "acceptance_run_id": "acceptance-resume",
-            "authority_digest": authority_digest,
-            "source_commit_sha": "2" * 40,
-            "state_commit_sha": original_commit,
-            "state_root_digest": original_root,
-            "state_repository_id": 123,
-            "state_repository_full_name": "example/state",
-        },
+        or SimpleNamespace(
+            authority_digest=authority_digest,
+            source_commit_sha="2" * 40,
+            state_commit_sha=original_commit,
+            state_root_digest=original_root,
+            state_repository_id=123,
+            state_repository_full_name="example/state",
+        ),
+        raising=False,
     )
     monkeypatch.setattr(state_branch, "StateBranchReadClient", Reader)
     monkeypatch.setattr(state_branch, "StateBranchStore", Store)
