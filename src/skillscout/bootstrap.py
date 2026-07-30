@@ -999,6 +999,7 @@ def build_discovery_application(
                 derive_candidate_subject_descriptors,
                 load_candidate_subject,
             )
+            from skillscout.application.acceptance import FixedAcceptanceCandidate
             from skillscout.application.discovery import (
                 DiscoveryCandidateExecution,
                 DiscoveryReaderTelemetry,
@@ -1049,7 +1050,10 @@ def build_discovery_application(
             prior_root = arguments.get("prior_root_digest")
             pinned_commit_sha = arguments.get("pinned_commit_sha")
             if (
-                type(candidate) is not DiscoveredCandidateV1
+                type(candidate) not in {
+                    DiscoveredCandidateV1,
+                    FixedAcceptanceCandidate,
+                }
                 or type(discovery_authority) is not DiscoveryRunAuthorityV1
                 or type(operations) is not OperationsStateStore
                 or not callable(phase3_builder)
@@ -1109,15 +1113,27 @@ def build_discovery_application(
                 ),
                 None,
             )
+            fixed_admission = (
+                candidate.admission
+                if type(candidate) is FixedAcceptanceCandidate
+                else None
+            )
             if semantic_reservation is not None and (
                 type(semantic_reservation) is not SemanticReservationV1
-                or restored_discovery_reservation is None
+                or (
+                    fixed_admission is None
+                    and restored_discovery_reservation is None
+                )
                 or semantic_reservation.discovery_run_authority_digest
                 != discovery_authority.authority_digest
                 or semantic_reservation.repository_id
                 != candidate.repository.repository_id
                 or semantic_reservation.discovery_reservation_digest
-                != restored_discovery_reservation.reservation_digest
+                != (
+                    fixed_admission.admission_digest
+                    if fixed_admission is not None
+                    else restored_discovery_reservation.reservation_digest
+                )
                 or semantic_reservation.phase2_run_authority_digest
                 != phase2_authority_digest
             ):
@@ -1130,12 +1146,22 @@ def build_discovery_application(
             ) -> SemanticReservationReceipt:
                 del run_id
                 nonlocal semantic_reservation, state_head, state_root
-                semantic_reservation = operations.reserve_semantic_candidate(
-                    discovery_authority.run_id,
-                    candidate.repository.repository_id,
-                    phase2_authority_digest,
-                    _discovery_timestamp(),
-                )
+                if fixed_admission is not None:
+                    semantic_reservation = (
+                        operations.reserve_acceptance_semantic_candidate(
+                            discovery_authority.run_id,
+                            fixed_admission,
+                            phase2_authority_digest,
+                            _discovery_timestamp(),
+                        )
+                    )
+                else:
+                    semantic_reservation = operations.reserve_semantic_candidate(
+                        discovery_authority.run_id,
+                        candidate.repository.repository_id,
+                        phase2_authority_digest,
+                        _discovery_timestamp(),
+                    )
                 synchronized = barrier.sync_discovery(
                     operations_store=operations,
                     observed_head=state_head,
@@ -2057,19 +2083,18 @@ class _FixedRepositoryAcceptanceRunner:
     def run(self, authority: object) -> object:
         from skillscout.adapters.github import GitHubReadClient
         from skillscout.application.acceptance import (
+            FixedAcceptanceCandidate,
             LiveRepositoryAuthority,
             LiveScenarioObservation,
         )
         from skillscout.domain.acceptance import (
             AcceptanceBudgetReservationV1,
+            AcceptanceFixedCandidateAdmissionV1,
             AcceptanceSemanticTelemetryV1,
             NominationSetV1,
         )
         from skillscout.domain.canonical import sha256_digest
-        from skillscout.domain.discovery import (
-            DiscoveredCandidateV1,
-            SearchRepositoryObservationV1,
-        )
+        from skillscout.domain.discovery import SearchRepositoryObservationV1
 
         if type(authority) is not LiveRepositoryAuthority:
             raise ValueError("locked repository authority rejected")
@@ -2193,36 +2218,27 @@ class _FixedRepositoryAcceptanceRunner:
             **repository_values,
             observation_digest=sha256_digest(repository_values),
         )
-        candidate_values = {
-            "schema_version": "discovered-candidate-v1",
-            "discovery_run_authority_digest": self._authority.authority_digest,
-            "repository": repository,
-            "source_page_digest": authority.selection_evidence_digests[0],
-            "query_ordinal": 1,
-            "page": 1,
-            "item_ordinal": self._ordinal,
-            "dedup_disposition": "first_seen",
-            "discovery_ordinal": self._ordinal,
-            "first_seen_query_ordinal": 1,
-            "first_seen_page": 1,
-            "first_seen_item_ordinal": self._ordinal,
-        }
-        candidate = DiscoveredCandidateV1(
-            **candidate_values,
-            candidate_digest=sha256_digest(
-                {
-                    **candidate_values,
-                    "repository": repository.model_dump(
-                        mode="json",
-                        exclude_none=False,
-                    ),
-                }
-            ),
+        admission = AcceptanceFixedCandidateAdmissionV1(
+            schema_version="acceptance-fixed-candidate-admission-v1",
+            acceptance_run_id=self._acceptance_run_id,
+            benchmark_manifest_digest=self._config.manifest.manifest_digest,
+            nomination_entry_digest=authority.nomination_entry_digest,
+            benchmark_entry_digest=authority.entry_digest,
+            repository_id=authority.repository_id,
+            repository_full_name=authority.repository_full_name,
+            exact_commit_sha=authority.exact_commit_sha,
+            license_spdx=authority.license_spdx,
+            ordinal=self._ordinal,
+            admitted_at=_discovery_timestamp(),
         )
-        reservation = self._operations.admit_locked_acceptance_candidate(
-            self._authority.run_id,
-            candidate,
-            _discovery_timestamp(),
+        self._operations.record_acceptance_fact(
+            self._acceptance_run_id,
+            "acceptance_fixed_candidate_admission",
+            admission,
+        )
+        candidate = FixedAcceptanceCandidate(
+            repository=repository,
+            admission=admission,
         )
         synchronized = self._barrier.sync_discovery(
             operations_store=self._operations,
@@ -2234,7 +2250,6 @@ class _FixedRepositoryAcceptanceRunner:
         self._state_root = synchronized.root_digest
         execution = self._phase2_factory(
             candidate=candidate,
-            discovery_reservation=reservation,
             discovery_authority=self._authority,
             operations_store=self._operations,
             durability_barrier=self._barrier,
@@ -2328,7 +2343,7 @@ class _FixedRepositoryAcceptanceRunner:
         evidence = {
             authority.entry_digest,
             budget_reservation.reservation_digest,
-            reservation.reservation_digest,
+            admission.admission_digest,
             execution.terminal.terminal_digest,
             *(attempt.attempt_digest for attempt in semantic_attempts),
             *(workflow.workflow_authority_digest for workflow in workflows),

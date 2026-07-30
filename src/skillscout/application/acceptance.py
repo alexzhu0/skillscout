@@ -20,6 +20,7 @@ from skillscout.adapters.operations_state import (
     AcceptanceRunSnapshot,
 )
 from skillscout.domain.acceptance import (
+    AcceptanceFixedCandidateAdmissionV1,
     AcceptanceScenarioResultV1,
     AcceptanceSemanticTelemetryV1,
     AcceptanceWarningV1,
@@ -519,6 +520,27 @@ class LiveRepositoryAuthority:
     nomination_entry_digest: str
     entry_digest: str
     selection_evidence_digests: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FixedAcceptanceCandidate:
+    """Acceptance-only fixed identity exposing no fictitious Search provenance."""
+
+    repository: SearchRepositoryObservationV1
+    admission: AcceptanceFixedCandidateAdmissionV1
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.repository) is not SearchRepositoryObservationV1
+            or type(self.admission) is not AcceptanceFixedCandidateAdmissionV1
+            or self.repository.repository_id != self.admission.repository_id
+            or self.repository.full_name != self.admission.repository_full_name
+        ):
+            raise ValueError("fixed acceptance candidate identity mismatch")
+
+    @property
+    def candidate_digest(self) -> str:
+        return self.admission.admission_digest or ""
 
 
 @dataclass(frozen=True)

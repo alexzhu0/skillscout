@@ -35,6 +35,7 @@ from skillscout.adapters.state_branch import (
 )
 from skillscout.domain.acceptance import (
     AcceptanceBudgetReservationV1,
+    AcceptanceFixedCandidateAdmissionV1,
     AcceptanceEvidenceRootV1,
     AcceptanceGateResultV1,
     AcceptanceScenarioResultV1,
@@ -175,6 +176,7 @@ _AcceptanceFactKind = Literal[
     "acceptance_benchmark_lock",
     "acceptance_live_authority",
     "acceptance_budget_reservation",
+    "acceptance_fixed_candidate_admission",
     "acceptance_scenario",
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
@@ -205,6 +207,7 @@ _FactKind = Literal[
     "acceptance_benchmark_lock",
     "acceptance_live_authority",
     "acceptance_budget_reservation",
+    "acceptance_fixed_candidate_admission",
     "acceptance_scenario",
     "acceptance_hosted_isolation_capability",
     "acceptance_offline_adversarial_run",
@@ -225,6 +228,7 @@ _AcceptanceFactModel: TypeAlias = (
     | LockedBenchmarkManifestV1
     | LiveAcceptanceAuthorityV1
     | AcceptanceBudgetReservationV1
+    | AcceptanceFixedCandidateAdmissionV1
     | AcceptanceScenarioResultV1
     | HostedIsolationCapabilityV1
     | OfflineAdversarialRunV1
@@ -245,6 +249,7 @@ _ACCEPTANCE_FACT_MODEL_VALUES: Final = {
     "acceptance_benchmark_lock": LockedBenchmarkManifestV1,
     "acceptance_live_authority": LiveAcceptanceAuthorityV1,
     "acceptance_budget_reservation": AcceptanceBudgetReservationV1,
+    "acceptance_fixed_candidate_admission": AcceptanceFixedCandidateAdmissionV1,
     "acceptance_scenario": AcceptanceScenarioResultV1,
     "acceptance_hosted_isolation_capability": HostedIsolationCapabilityV1,
     "acceptance_offline_adversarial_run": OfflineAdversarialRunV1,
@@ -268,6 +273,7 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
         "acceptance_benchmark_lock": "manifest_digest",
         "acceptance_live_authority": "authority_digest",
         "acceptance_budget_reservation": "reservation_digest",
+        "acceptance_fixed_candidate_admission": "admission_digest",
         "acceptance_scenario": "result_digest",
         "acceptance_hosted_isolation_capability": "capability_digest",
         "acceptance_offline_adversarial_run": "run_digest",
@@ -284,13 +290,20 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 _ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
+_PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind
+    for kind in _ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_fixed_candidate_admission"
+)
 _PRE_BUDGET_ACCEPTANCE_FACT_KINDS: Final = tuple(
-    kind for kind in _ACCEPTANCE_FACT_KINDS if kind != "acceptance_budget_reservation"
+    kind
+    for kind in _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_budget_reservation"
 )
 _LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
-    for kind in _ACCEPTANCE_FACT_KINDS
-    if kind not in {"acceptance_live_authority", "acceptance_budget_reservation"}
+    for kind in _PRE_BUDGET_ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_live_authority"
 )
 
 
@@ -349,6 +362,10 @@ class OperationsStateProjectionV1(StrictFrozenModel):
         exclude_if=lambda value: not value,
     )
     acceptance_budget_reservation_digests: tuple[Digest, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
+    acceptance_fixed_candidate_admission_digests: tuple[Digest, ...] = Field(
         default=(),
         exclude_if=lambda value: not value,
     )
@@ -603,6 +620,9 @@ def _expected_schema(
 
 
 _EXPECTED_SCHEMA: Final = _expected_schema()
+_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
+)
 _PRE_BUDGET_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_BUDGET_ACCEPTANCE_FACT_KINDS
 )
@@ -762,6 +782,7 @@ def _schema_fingerprint() -> str:
 _SCHEMA_FINGERPRINTS: Final = frozenset(
     {
         _fingerprint_for_schema(_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_BUDGET_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_LEGACY_EXPECTED_SCHEMA),
     }
@@ -1062,6 +1083,32 @@ def _validate_acceptance_references(
             raise OperationsIntegrityError(
                 "acceptance budget reservation binding mismatch"
             )
+    elif kind == "acceptance_fixed_candidate_admission":
+        assert isinstance(fact, AcceptanceFixedCandidateAdmissionV1)
+        manifest = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_benchmark_lock",
+            digest=fact.benchmark_manifest_digest,
+        )
+        assert isinstance(manifest, LockedBenchmarkManifestV1)
+        entries = tuple(
+            entry
+            for entry in manifest.entries
+            if entry.entry_digest == fact.benchmark_entry_digest
+        )
+        if (
+            len(entries) != 1
+            or entries[0].nomination_entry_digest
+            != fact.nomination_entry_digest
+            or entries[0].repository_id != fact.repository_id
+            or entries[0].repository_full_name != fact.repository_full_name
+            or entries[0].exact_commit_sha != fact.exact_commit_sha
+            or entries[0].license_spdx != fact.license_spdx
+        ):
+            raise OperationsIntegrityError(
+                "fixed acceptance admission binding mismatch"
+            )
     elif kind == "acceptance_cleanup":
         assert isinstance(fact, ProbeCleanupAttestationV1)
         binding = _acceptance_fact_by_digest(
@@ -1113,6 +1160,7 @@ def _projection_from_facts(
         "acceptance_benchmark_lock_digests": [],
         "acceptance_live_authority_digests": [],
         "acceptance_budget_reservation_digests": [],
+        "acceptance_fixed_candidate_admission_digests": [],
         "acceptance_scenario_digests": [],
         "acceptance_hosted_isolation_capability_digests": [],
         "acceptance_offline_adversarial_run_digests": [],
@@ -1156,6 +1204,10 @@ def _projection_from_facts(
         "acceptance_budget_reservation": (
             "acceptance_budget_reservation_digests",
             "reservation_digest",
+        ),
+        "acceptance_fixed_candidate_admission": (
+            "acceptance_fixed_candidate_admission_digests",
+            "admission_digest",
         ),
         "acceptance_scenario": ("acceptance_scenario_digests", "result_digest"),
         "acceptance_hosted_isolation_capability": (
@@ -1218,6 +1270,7 @@ def _projection_from_facts(
     for field in (
         "acceptance_live_authority_digests",
         "acceptance_budget_reservation_digests",
+        "acceptance_fixed_candidate_admission_digests",
     ):
         if not fields[field]:
             digest_values.pop(field)
@@ -1390,6 +1443,7 @@ class OperationsStateStore:
             }
             if actual not in (
                 _EXPECTED_SCHEMA,
+                _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                 _PRE_BUDGET_EXPECTED_SCHEMA,
                 _LEGACY_EXPECTED_SCHEMA,
             ):
@@ -1761,6 +1815,7 @@ class OperationsStateStore:
             if actual == _EXPECTED_SCHEMA:
                 return
             if actual not in (
+                _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                 _PRE_BUDGET_EXPECTED_SCHEMA,
                 _LEGACY_EXPECTED_SCHEMA,
             ):
@@ -1991,93 +2046,75 @@ class OperationsStateStore:
 
         return self._snapshot_transaction(mutate)
 
-    def admit_locked_acceptance_candidate(
+    def reserve_acceptance_semantic_candidate(
         self,
         run_id: str,
-        candidate: DiscoveredCandidateV1,
+        admission: AcceptanceFixedCandidateAdmissionV1,
+        phase2_run_authority_digest: str,
         reserved_at: str,
-    ) -> DiscoveryReservationV1:
-        """Persist a human-locked Search-derived candidate without a new Search page."""
+    ) -> SemanticReservationV1:
+        """Reserve a locked acceptance candidate without a Search-owned row."""
 
-        if type(candidate) is not DiscoveredCandidateV1:
-            raise TypeError("invalid locked acceptance candidate")
+        if type(admission) is not AcceptanceFixedCandidateAdmissionV1:
+            raise TypeError("invalid fixed acceptance admission")
 
-        def mutate(connection: sqlite3.Connection) -> DiscoveryReservationV1:
+        def mutate(connection: sqlite3.Connection) -> SemanticReservationV1:
             authority = self._run_authority_digest(connection, run_id)
             existing = connection.execute(
-                """SELECT reservation_json FROM operations_discovery_reservations
+                """SELECT reservation_json
+                   FROM operations_semantic_reservations
                    WHERE run_id = ? AND repository_id = ?""",
-                (run_id, candidate.repository.repository_id),
+                (run_id, admission.repository_id),
             ).fetchone()
             if existing is not None:
-                stored = DiscoveryReservationV1.model_validate_json(
-                    existing["reservation_json"],
-                    strict=True,
+                reservation = SemanticReservationV1.model_validate_json(
+                    existing["reservation_json"], strict=True
                 )
                 if (
-                    stored.candidate_digest != candidate.candidate_digest
-                    or stored.ordinal != candidate.discovery_ordinal
+                    reservation.discovery_reservation_digest
+                    != admission.admission_digest
+                    or reservation.phase2_run_authority_digest
+                    != phase2_run_authority_digest
                 ):
                     raise OperationsIntegrityError(
-                        "locked acceptance reservation conflict"
+                        "fixed acceptance semantic reservation conflict"
                     )
-                return stored
+                return reservation
             count = int(
                 connection.execute(
-                    """SELECT COUNT(*) FROM operations_discovery_reservations
+                    """SELECT COUNT(*) FROM operations_semantic_reservations
                        WHERE run_id = ?""",
                     (run_id,),
                 ).fetchone()[0]
             )
-            ordinal = count + 1
-            if (
-                count >= DISCOVERY_MAX_CANDIDATES
-                or candidate.discovery_run_authority_digest != authority
-                or candidate.dedup_disposition != "first_seen"
-                or candidate.discovery_ordinal != ordinal
-            ):
-                raise OperationsIntegrityError(
-                    "locked acceptance candidate is not contiguous"
-                )
-            connection.execute(
-                """INSERT INTO operations_candidates
-                   (candidate_digest, run_id, repository_id, source_page_digest,
-                    query_ordinal, page, item_ordinal, candidate_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    candidate.candidate_digest,
-                    run_id,
-                    candidate.repository.repository_id,
-                    candidate.source_page_digest,
-                    candidate.query_ordinal,
-                    candidate.page,
-                    candidate.item_ordinal,
-                    _json_text(candidate),
-                ),
-            )
+            if count >= DISCOVERY_MAX_SEMANTIC_CANDIDATES:
+                raise BudgetExhausted("semantic candidate budget exhausted")
             values = {
-                "schema_version": "discovery-reservation-v1",
+                "schema_version": "semantic-reservation-v1",
                 "discovery_run_authority_digest": authority,
-                "repository_id": candidate.repository.repository_id,
-                "ordinal": ordinal,
-                "candidate_digest": candidate.candidate_digest,
+                "repository_id": admission.repository_id,
+                "ordinal": count + 1,
+                "discovery_reservation_digest": admission.admission_digest,
+                "phase2_run_authority_digest": phase2_run_authority_digest,
                 "reserved_at": reserved_at,
             }
-            reservation = DiscoveryReservationV1(
+            reservation = SemanticReservationV1(
                 **values,
                 reservation_digest=sha256_digest(values),
             )
             connection.execute(
-                """INSERT INTO operations_discovery_reservations
+                """INSERT INTO operations_semantic_reservations
                    (reservation_digest, run_id, repository_id, ordinal,
-                    candidate_digest, reservation_json)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                    discovery_reservation_digest, phase2_run_authority_digest,
+                    reservation_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     reservation.reservation_digest,
                     run_id,
-                    reservation.repository_id,
+                    admission.repository_id,
                     reservation.ordinal,
-                    reservation.candidate_digest,
+                    reservation.discovery_reservation_digest,
+                    reservation.phase2_run_authority_digest,
                     _json_text(reservation),
                 ),
             )

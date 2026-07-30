@@ -384,6 +384,25 @@ class AcceptanceBudgetReservationV1(_SelfDigestedModel):
     reservation_digest: Digest | None = None
 
 
+class AcceptanceFixedCandidateAdmissionV1(_SelfDigestedModel):
+    """Exact locked repository identity admitted without a Search-page fiction."""
+
+    _digest_field = "admission_digest"
+
+    schema_version: Literal["acceptance-fixed-candidate-admission-v1"]
+    acceptance_run_id: _Identifier
+    benchmark_manifest_digest: Digest
+    nomination_entry_digest: Digest
+    benchmark_entry_digest: Digest
+    repository_id: _Positive
+    repository_full_name: _FullName
+    exact_commit_sha: _Sha
+    license_spdx: _Spdx
+    ordinal: Annotated[int, Field(ge=1, le=5)]
+    admitted_at: _Timestamp
+    admission_digest: Digest | None = None
+
+
 class AcceptanceTerminalClass(StrEnum):
     ELIGIBLE = "eligible"
     BUSINESS_TERMINAL = "business_terminal"

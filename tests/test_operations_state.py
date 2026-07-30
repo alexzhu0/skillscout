@@ -374,7 +374,8 @@ def test_fixed_acceptance_candidate_never_fabricates_search_page_or_candidate(
             TIMESTAMP,
         )
         snapshot = store.snapshot_run(authority.run_id)
-        connection = store._db
+        connection = store._connection
+        assert connection is not None
         candidate_count = connection.execute(
             "SELECT COUNT(*) FROM operations_candidates"
         ).fetchone()[0]
