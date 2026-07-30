@@ -577,8 +577,7 @@ jobs:
           direct_status=-1
           child_status=-1
           image_tag=""
-          trap 'campaign_exit_status=$?; overall_status="$campaign_exit_status"; diagnostic_write_status=0; case "$diagnostic_stage" in runtime-preflight|control|direct-probe|child-probe|campaign-report|synthetic-scan|complete) ;; *) diagnostic_write_status=1 ;; esac; if [[ "$diagnostic_write_status" -eq 0 ]]; then printf "$diagnostic_format" "$diagnostic_schema_version" "$PHASE6_SOURCE_COMMIT" "$diagnostic_workflow_sha256" "$PHASE6_RUN_ID" "$PHASE6_RUN_ATTEMPT" "$diagnostic_stage" "$overall_status" "$control_status" "$direct_status" "$child_status" >"$diagnostic_path" || diagnostic_write_status=$?; fi; if [[ -n "$image_tag" ]]; then docker image rm -f "$image_tag" >/dev/null 2>&1 || true; fi; rm -f "${campaign_root}/direct_probe.py" "${campaign_root}/child_probe.py" "${campaign_root}/empty-rootfs.tar" || true; if [[ "$campaign_exit_status" -ne 0 ]]; then exit "$campaign_exit_status"; fi; exit "$diagnostic_write_status"' EXIT
-          printf "$diagnostic_format" "$diagnostic_schema_version" "$PHASE6_SOURCE_COMMIT" "$diagnostic_workflow_sha256" "$PHASE6_RUN_ID" "$PHASE6_RUN_ATTEMPT" "$diagnostic_stage" "$overall_status" "$control_status" "$direct_status" "$child_status" >"$diagnostic_path"
+          trap 'campaign_exit_status=$?; overall_status="$campaign_exit_status"; diagnostic_write_status=0; case "$diagnostic_stage" in runtime-preflight|control|direct-probe|child-probe|campaign-report|synthetic-scan|complete) ;; *) diagnostic_write_status=1 ;; esac; if [[ "$campaign_exit_status" -ne 0 && "$diagnostic_stage" = "control" && "$control_status" -ne 0 && -s "$diagnostic_path" ]]; then :; elif [[ "$diagnostic_write_status" -eq 0 ]]; then printf "$diagnostic_format" "$diagnostic_schema_version" "$PHASE6_SOURCE_COMMIT" "$diagnostic_workflow_sha256" "$PHASE6_RUN_ID" "$PHASE6_RUN_ATTEMPT" "$diagnostic_stage" "$overall_status" "$control_status" "$direct_status" "$child_status" >"$diagnostic_path" || diagnostic_write_status=$?; fi; if [[ -n "$image_tag" ]]; then docker image rm -f "$image_tag" >/dev/null 2>&1 || true; fi; rm -f "${campaign_root}/direct_probe.py" "${campaign_root}/child_probe.py" "${campaign_root}/empty-rootfs.tar" || true; if [[ "$campaign_exit_status" -ne 0 ]]; then exit "$campaign_exit_status"; fi; exit "$diagnostic_write_status"' EXIT
           repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
           test "${repository_root}" = "${GITHUB_WORKSPACE}"
           test "${repository_root}" = "$(pwd -P)"
@@ -663,13 +662,15 @@ jobs:
             --env UV_PYTHON_DOWNLOADS=never \
             --volume "${repository_root}:${repository_root}:ro" \
             --volume "${campaign_root}:/probe:rw" \
-            --env PHASE6_OFFLINE_REPORT=/probe/campaign-report.json \
             --env PHASE6_SYNTHETIC_HEADER_CANARY \
             --env PHASE6_SYNTHETIC_PAYLOAD_CANARY \
             --workdir "${repository_root}" \
             "${image_tag}" \
-            .tools/uv-0.11.29/bin/uv run --locked --offline --no-sync \
-            pytest -q tests/test_phase6_adversarial.py -x \
+            .venv/bin/python -I -m skillscout.application.phase6_adversarial_runner \
+            --source-commit-sha "${PHASE6_SOURCE_COMMIT}" \
+            --workflow-sha256 "sha256:${PHASE6_WORKFLOW_SHA256}" \
+            --hosted-run-id "${PHASE6_RUN_ID}" \
+            --run-attempt "${PHASE6_RUN_ATTEMPT}" \
             >"${campaign_root}/control.log" 2>&1
           control_status=$?
 
@@ -786,8 +787,8 @@ jobs:
               raise SystemExit("synthetic canary reached an allowlisted surface")
 
           control_command = (
-              ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync "
-              "pytest -q tests/test_phase6_adversarial.py -x"
+              ".venv/bin/python -I -m "
+              "skillscout.application.phase6_adversarial_runner"
           )
           direct_command = (
               ".tools/uv-0.11.29/bin/uv run --locked --offline --no-sync "

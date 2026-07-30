@@ -16,6 +16,7 @@ CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 UPLOAD_ARTIFACT_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
+CAMPAIGN_RUNNER = ".venv/bin/python -I -m skillscout.application.phase6_adversarial_runner"
 MANAGED_PYTHON_INSTALL = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     ".tools/uv-0.11.29/bin/uv python install 3.13.14 "
@@ -179,6 +180,8 @@ def _assert_network_none_python_runtime_mounts(job: str) -> None:
     }
     for invocation in invocations:
         options, separator, _ = invocation.partition(f"{LOCAL_UV} run --locked --offline --no-sync")
+        if not separator:
+            options, separator, _ = invocation.partition(CAMPAIGN_RUNNER)
         assert separator
         volume_lines = {
             line.strip().removesuffix(" \\")
@@ -279,7 +282,8 @@ def _assert_offline_adversarial_workflow(source: str) -> None:
     assert f"astral-sh/setup-uv@{SETUP_UV_SHA}" in job
     assert job.count("docker run --network none") == 3
     _assert_network_none_python_runtime_mounts(job)
-    assert "tests/test_phase6_adversarial.py" in job
+    assert CAMPAIGN_RUNNER in job
+    assert "pytest -q tests/test_phase6_adversarial.py" not in job
     assert "python /probe/direct_probe.py" in job
     assert "python /probe/child_probe.py" in job
     assert 'PHASE6_PRIOR_FAILED_PROBE_RUN_ID="30430010273"' in job
@@ -375,6 +379,10 @@ def _assert_offline_failure_diagnostic(job: str) -> None:
         "synthetic-scan|complete) ;;"
     ) in campaign
     assert campaign.index("diagnostic_format=") < campaign.index("python_base_prefix_output=")
+    assert (
+        '"$diagnostic_stage" = "control" && "$control_status" -ne 0 && -s "$diagnostic_path"'
+    ) in campaign
+    assert campaign.count('printf "$diagnostic_format"') == 1
 
     diagnostic_upload = re.search(
         r"^      - name: Upload the bounded noncanonical campaign diagnostic\n"
@@ -481,10 +489,7 @@ def test_offline_adversarial_runs_complete_kernel_isolated_campaign_without_cred
 def test_offline_campaign_invokes_production_runner_instead_of_pytest_teardown() -> None:
     job = _job(_source(required=False), "offline_adversarial")
     assert "pytest -q tests/test_phase6_adversarial.py" not in job
-    assert (
-        ".venv/bin/python -I -m "
-        "skillscout.application.phase6_adversarial_runner"
-    ) in job
+    assert CAMPAIGN_RUNNER in job
 
 
 def test_offline_adversarial_synthetic_scan_manifest_is_explicit_and_path_closed() -> None:

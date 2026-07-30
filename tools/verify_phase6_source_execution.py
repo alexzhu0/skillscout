@@ -25,6 +25,7 @@ SETUP_UV = f"astral-sh/setup-uv@{SETUP_UV_SHA}"
 UPLOAD_ARTIFACT = f"actions/upload-artifact@{UPLOAD_ARTIFACT_SHA}"
 LOCAL_UV = ".tools/uv-0.11.29/bin/uv"
 LOCAL_LOCKED = f"{LOCAL_UV} run --locked"
+CAMPAIGN_RUNNER = ".venv/bin/python -I -m skillscout.application.phase6_adversarial_runner"
 MANAGED_PYTHON_VERSION = "3.13.14"
 MANAGED_PYTHON_ROOT = "${GITHUB_WORKSPACE}/.tools/python"
 MANAGED_PYTHON_INSTALL = (
@@ -145,7 +146,7 @@ FAILURE_DIAGNOSTIC = "phase6 source execution invalid"
 _KEY = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
 _ACTION = re.compile(r"^\s*uses:\s*[^@\s]+@([0-9a-f]{40})(?:\s+#.*)?$", re.MULTILINE)
 _SKILLSCOUT_ENTRY = re.compile(
-    r"(?:python\s+-m\s+skillscout(?:\.cli)?\b|"
+    r"(?:(?:python|\.venv/bin/python)(?:\s+-I)?\s+-m\s+skillscout(?:\.[a-z0-9_]+)*\b|"
     r"^\s*(?:from|import)\s+skillscout(?:\.|\s|$))",
     re.MULTILINE,
 )
@@ -341,7 +342,11 @@ def _recognized_entry(run: str) -> bool:
             if "python -m skillscout" in stripped or "python tools/" in stripped:
                 found = True
         if _SKILLSCOUT_ENTRY.search(line) or _TOOL_ENTRY.search(line):
-            if stripped.startswith(LOCAL_LOCKED + " ") or heredoc_active:
+            if (
+                stripped.startswith(LOCAL_LOCKED + " ")
+                or stripped.startswith(CAMPAIGN_RUNNER + " ")
+                or heredoc_active
+            ):
                 found = True
             else:
                 return False
@@ -395,6 +400,8 @@ def _closed_network_none_invocation_count(run: str) -> int:
     invocations = run.split(marker)[1:]
     for invocation in invocations:
         options, separator, _ = invocation.partition(LOCAL_LOCKED + " --offline --no-sync")
+        if not separator:
+            options, separator, _ = invocation.partition(CAMPAIGN_RUNNER)
         _require(bool(separator))
         volumes = {
             line.strip().removesuffix(" \\")
@@ -458,13 +465,14 @@ def _closed_offline_diagnostic_upload_count(jobs: tuple[_Job, ...]) -> int:
         'exit "$campaign_exit_status"',
         "diagnostic_write_status",
         'diagnostic_workflow_sha256="sha256:${PHASE6_WORKFLOW_SHA256}"',
+        ('"$diagnostic_stage" = "control" && "$control_status" -ne 0 && -s "$diagnostic_path"'),
         (
             'if [[ "$campaign_exit_status" -ne 0 ]]; then '
             'exit "$campaign_exit_status"; fi; exit "$diagnostic_write_status"'
         ),
     ):
         _require(required in campaign)
-    _require(campaign.count('printf "$diagnostic_format"') == 2)
+    _require(campaign.count('printf "$diagnostic_format"') == 1)
     _require(campaign.count("diagnostic_path") == 3)
     _require(campaign.count("diagnostic_stage=") == len(OFFLINE_DIAGNOSTIC_STAGES))
     _require(campaign.count("diagnostic_workflow_sha256=") == 2)
@@ -474,9 +482,8 @@ def _closed_offline_diagnostic_upload_count(jobs: tuple[_Job, ...]) -> int:
     _require(campaign.count("child_status=") == 2)
     _require("continue-on-error" not in campaign_step.source)
     _require(campaign.index("diagnostic_format=") < campaign.index("python_base_prefix_output="))
-    _require(
-        campaign.index('printf "$diagnostic_format"') < campaign.index("python_base_prefix_output=")
-    )
+    _require(CAMPAIGN_RUNNER in campaign)
+    _require("pytest -q tests/test_phase6_adversarial.py" not in campaign)
 
     diagnostic_uploads = tuple(
         step

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -40,7 +41,6 @@ SYSTEM_FAILURE_MUTATIONS = {
     "schema_invalid",
     "harness_broken",
 }
-_CAMPAIGN_RESULTS: dict[str, dict[str, object]] = {}
 
 
 def _application(*, skip_if_missing: bool) -> Any:
@@ -70,72 +70,37 @@ def _matrix() -> dict[str, dict[str, object]]:
     return value
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _write_bounded_campaign_report() -> Any:
-    yield
-    destination_value = os.environ.get("PHASE6_OFFLINE_REPORT")
-    if destination_value is None:
-        return
-    destination = Path(destination_value)
-    if destination != Path("/probe/campaign-report.json"):
-        pytest.fail("phase6-offline-report-path-outside-closed-manifest")
-    matrix = _matrix()
-    if set(_CAMPAIGN_RESULTS) != set(matrix):
-        pytest.fail("phase6-offline-campaign-incomplete")
-    credited = sorted(
-        (
-            result
-            for result in _CAMPAIGN_RESULTS.values()
-            if result["coverage_credited"] is True
-        ),
-        key=lambda result: str(result["scenario_id"]),
-    )
-    result_digests = sorted(
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        for result in credited
-    )
-    report = {
-        "schema_version": "phase6.offline-campaign-report.v1",
-        "scenario_matrix_digest": "sha256:"
-        + hashlib.sha256(MATRIX_PATH.read_bytes()).hexdigest(),
-        "required_scenario_ids": [
-            str(result["scenario_id"]) for result in credited
-        ],
-        "completed_scenario_ids": [
-            str(result["scenario_id"]) for result in credited
-        ],
-        "scenario_result_digests": result_digests,
-        "controlled_scenario_count": len(credited),
-        "untrusted_execution_count": sum(
-            int(result["untrusted_execution_count"]) for result in credited
-        ),
-        "unapproved_network_effect_count": sum(
-            int(result["unapproved_network_effect_count"]) for result in credited
-        ),
-        "unauthorized_effect_count": sum(
-            int(result["unauthorized_effect_count"]) for result in credited
-        ),
-        "synthetic_canary_hit_count": sum(
-            int(result["synthetic_canary_hit_count"]) for result in credited
-        ),
-    }
-    destination.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
 def test_required_phase6_adversarial_contract_is_missing() -> None:
     _runner(skip_if_missing=False)
 
 
-def test_hosted_evidence_is_not_written_by_pytest_session_teardown() -> None:
-    source = Path(__file__).read_text(encoding="utf-8")
-    assert "PHASE6_OFFLINE_REPORT" not in source
-    assert "_write_bounded_campaign_report" not in source
+def test_hosted_evidence_is_not_written_by_pytest_session_teardown(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "pytest-must-not-write-campaign-report.json"
+    environment = {
+        **os.environ,
+        "PHASE6_OFFLINE_REPORT": str(destination),
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_phase6_adversarial.py::"
+            "test_required_phase6_adversarial_contract_is_missing",
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not destination.exists()
 
 
 def test_all_seven_injection_fixture_classes_are_bound_to_scenarios() -> None:
@@ -146,9 +111,7 @@ def test_all_seven_injection_fixture_classes_are_bound_to_scenarios() -> None:
         if item["adversarial_role"] == "prompt_injection"
     }
     assert injection_mutations == set(INJECTION_FIXTURES)
-    assert {path.name for path in INJECTION_ROOT.glob("*.md")} == set(
-        INJECTION_FIXTURES.values()
-    )
+    assert {path.name for path in INJECTION_ROOT.glob("*.md")} == set(INJECTION_FIXTURES.values())
     for mutation, filename in INJECTION_FIXTURES.items():
         payload = (INJECTION_ROOT / filename).read_bytes()
         assert payload
@@ -266,9 +229,7 @@ def test_controlled_scenario_preserves_expected_terminal_and_has_zero_unauthoriz
     assert tuple(result["gate_ids"])
     assert tuple(result["sanitized_evidence_ids"])
     assert str(result["fixture_digest"]).startswith("sha256:")
-    assert result["coverage_credited"] is (
-        scenario["expected_terminal_class"] != "system_failure"
-    )
+    assert result["coverage_credited"] is (scenario["expected_terminal_class"] != "system_failure")
     assert result["untrusted_execution_count"] == 0
     assert result["unapproved_network_effect_count"] == 0
     assert result["unauthorized_effect_count"] == 0
@@ -278,7 +239,6 @@ def test_controlled_scenario_preserves_expected_terminal_and_has_zero_unauthoriz
         assert header_canary not in serialized
     assert payload_canary not in serialized
     assert "synthetic controlled fixture" not in serialized
-    _CAMPAIGN_RESULTS[scenario_name] = result
 
 
 def test_evaluator_only_labels_cannot_drive_the_observed_terminal() -> None:
@@ -306,9 +266,7 @@ def test_system_failures_block_instead_of_satisfying_scenario_coverage(
     mutation: str,
 ) -> None:
     scenario_name, scenario = next(
-        (name, item)
-        for name, item in _matrix().items()
-        if item["payload"]["mutation"] == mutation
+        (name, item) for name, item in _matrix().items() if item["payload"]["mutation"] == mutation
     )
     result = _runner()(
         scenario_name=scenario_name,
@@ -351,9 +309,7 @@ def test_python_socket_sentinel_is_not_kernel_isolation_authority(
 ) -> None:
     assert outbound_socket_sentinel == []
     source = (ROOT / "tests/conftest.py").read_text(encoding="utf-8")
-    gap_verifier = (ROOT / "tools/verify_phase1_gap_evidence.py").read_text(
-        encoding="utf-8"
-    )
+    gap_verifier = (ROOT / "tools/verify_phase1_gap_evidence.py").read_text(encoding="utf-8")
     assert "outbound_socket_sentinel" in source
     assert '"os_syscall_network_denial": {"addressed_in": "Phase 6"}' in gap_verifier
     assert "HostedIsolationCapabilityV1" not in source

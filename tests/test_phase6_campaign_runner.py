@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 from typing import Any
 
 
+ROOT = Path(__file__).resolve().parents[1]
 SOURCE_COMMIT_SHA = "a" * 40
 WORKFLOW_SHA256 = "sha256:" + "b" * 64
 HOSTED_RUN_ID = 123456789
@@ -14,9 +16,7 @@ RUN_ATTEMPT = 1
 
 
 def _runner() -> Any:
-    return importlib.import_module(
-        "skillscout.application.phase6_adversarial_runner"
-    )
+    return importlib.import_module("skillscout.application.phase6_adversarial_runner")
 
 
 def _bindings(module: Any) -> Any:
@@ -27,6 +27,22 @@ def _bindings(module: Any) -> Any:
         run_attempt=RUN_ATTEMPT,
         synthetic_header_canary="phase6-synthetic-header-canary",
         synthetic_payload_canary="phase6-synthetic-payload-canary",
+    )
+
+
+def test_runner_registry_is_exactly_bound_to_the_committed_scenario_matrix() -> None:
+    module = _runner()
+    matrix = json.loads((ROOT / "tests/fixtures/acceptance/scenario_matrix.json").read_bytes())
+    assert tuple(item.name for item in module.SCENARIO_REGISTRY) == tuple(matrix)
+    assert tuple(item.scenario_id for item in module.SCENARIO_REGISTRY) == tuple(
+        scenario["scenario_id"] for scenario in matrix.values()
+    )
+    assert tuple((item.fixture_id, item.mutation) for item in module.SCENARIO_REGISTRY) == tuple(
+        (
+            scenario["payload"]["fixture_id"],
+            scenario["payload"]["mutation"],
+        )
+        for scenario in matrix.values()
     )
 
 
@@ -152,4 +168,3 @@ def test_runner_main_produces_bound_canonical_success_report() -> None:
         )
         + "\n"
     ).encode("ascii")
-
