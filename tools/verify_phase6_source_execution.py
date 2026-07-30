@@ -375,6 +375,15 @@ def _checkout_is_closed(step: _Step) -> bool:
     )
 
 
+def _authority_checkout_is_closed(step: _Step) -> bool:
+    return (
+        CHECKOUT in step.source
+        and "ref: ${{ env.PHASE6_AUTHORITY_STATE_COMMIT_SHA }}" in step.source
+        and "path: .phase6-authority-state" in step.source
+        and "persist-credentials: false" in step.source
+    )
+
+
 def _setup_is_closed(step: _Step) -> bool:
     return (
         SETUP_UV in step.source
@@ -620,12 +629,28 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     item for item in materialization_indexes if item < index
                 )
                 _require(bool(earlier_checkout and earlier_setup and earlier_materialization))
-                checkout_step = job.steps[earlier_checkout[-1]]
+                source_checkouts = tuple(
+                    item
+                    for item in earlier_checkout
+                    if _checkout_is_closed(job.steps[item])
+                )
+                _require(bool(source_checkouts))
+                checkout_step = job.steps[source_checkouts[-1]]
                 setup_step = job.steps[earlier_setup[-1]]
                 _require(_checkout_is_closed(checkout_step))
+                _require(
+                    all(
+                        _checkout_is_closed(job.steps[item])
+                        or _authority_checkout_is_closed(job.steps[item])
+                        for item in earlier_checkout
+                    )
+                )
                 _require(_setup_is_closed(setup_step))
                 _require(
-                    earlier_checkout[-1] < earlier_setup[-1] < earlier_materialization[-1] < index
+                    source_checkouts[-1]
+                    < earlier_setup[-1]
+                    < earlier_materialization[-1]
+                    < index
                 )
                 findings.append(
                     AuthoritativeStep(
@@ -637,7 +662,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     )
                 )
     _require(bool(findings))
-    _require(managed_python_job_count == 16)
+    _require(managed_python_job_count == 17)
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     _require(control_user_mapping_count == EXPECTED_CONTROL_USER_MAPPINGS)
     _require(diagnostic_upload_count == 1)

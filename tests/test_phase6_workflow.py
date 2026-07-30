@@ -359,6 +359,7 @@ def _assert_isolation_workflow(source: str) -> None:
         "offline_adversarial",
         "live_authority_preflight",
         "live_benchmark",
+        "live_replay",
         "changed_source",
         "fresh_gate_b4",
         "value_publication",
@@ -918,6 +919,7 @@ def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:
     source = _source(required=False)
     preflight = _job(source, "live_authority_preflight")
     live = _job(source, "live_benchmark")
+    replay = _job(source, "live_replay")
 
     assert "contents: read" in preflight
     assert "${{ secrets." not in preflight
@@ -930,6 +932,9 @@ def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:
         in preflight
     )
     assert "verify-live-authority" in preflight
+    assert "--authority-state-root" in preflight
+    assert "--authority-operations-state" not in preflight
+    assert "git -C .phase6-authority-state rev-parse HEAD" in preflight
     assert re.search(r"^    needs: live_authority_preflight$", live, re.MULTILINE)
     assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in live
     assert "SKILLSCOUT_CATALOG" not in live
@@ -942,6 +947,7 @@ def test_deepseek_only_exact_manifest_jobs_are_distinct_and_bounded() -> None:
     source = _source(required=False)
     preflight = _job(source, "live_authority_preflight")
     live = _job(source, "live_benchmark")
+    replay = _job(source, "live_replay")
 
     canonical = (
         ".planning/phases/06-adversarial-mvp-acceptance/"
@@ -949,10 +955,12 @@ def test_deepseek_only_exact_manifest_jobs_are_distinct_and_bounded() -> None:
     )
     assert f"PHASE6_MANIFEST: {canonical}" in preflight
     assert f"PHASE6_MANIFEST: {canonical}" in live
+    assert f"PHASE6_MANIFEST: {canonical}" in replay
     assert "--action benchmark" in live
-    assert "--action replay" in live
+    assert "--action replay" in replay
     assert "SKILLSCOUT_LLM_PROVIDER: deepseek" in live
     assert "OPENAI_API_KEY" not in live
+    assert "DEEPSEEK" not in replay
 
 
 def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:

@@ -10,11 +10,11 @@ import json
 import os
 import stat
 import sys
+from tempfile import TemporaryDirectory
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
 from skillscout.bootstrap import (
-    ACCEPTANCE_CATALOG_FULL_NAME,
     build_discovery_application,
     build_nomination_application,
     build_publication_application,
@@ -22,6 +22,7 @@ from skillscout.bootstrap import (
     discovery_run_authority,
     load_acceptance_attestation,
     load_acceptance_runtime_config,
+    load_verified_state_checkout,
     load_discovery_runtime_config,
     load_nomination_runtime_config,
     load_publication_authority_config,
@@ -158,11 +159,11 @@ def build_parser() -> SafeArgumentParser:
     run_acceptance.add_argument("--state-commit-sha", required=True)
     run_acceptance.add_argument("--state-root-digest", required=True)
     verify_live = commands.add_parser("verify-live-authority")
-    verify_live.add_argument("--manifest", required=True, type=Path)
+    verify_live.add_argument("--authority-state-root", required=True, type=Path)
+    verify_live.add_argument("--authority-state-root-digest", required=True)
+    verify_live.add_argument("--acceptance-run-id", required=True)
+    verify_live.add_argument("--authority-digest", required=True)
     verify_live.add_argument("--source-commit-sha", required=True)
-    verify_live.add_argument("--acceptance-workflow-sha256", required=True)
-    verify_live.add_argument("--state-commit-sha", required=True)
-    verify_live.add_argument("--state-root-digest", required=True)
     record_attestation = commands.add_parser("record-acceptance-attestation")
     record_attestation.add_argument("--attestation", required=True, type=Path)
     record_attestation.add_argument(
@@ -818,20 +819,45 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
     """Return only sanitized immutable identities from credential-free preflight."""
 
     try:
+        from skillscout.adapters.operations_state import (
+            OperationsStateStore,
+            restore_three_store_bundle,
+        )
+
+        bundle = load_verified_state_checkout(
+            checkout_root=arguments.authority_state_root.resolve(strict=True),
+            expected_root_digest=arguments.authority_state_root_digest,
+        )
+        with TemporaryDirectory(prefix="skillscout-authority-state-") as temporary:
+            temporary_root = Path(temporary).resolve(strict=True)
+            operations_path = temporary_root / "operations.sqlite3"
+            restore_three_store_bundle(
+                bundle,
+                pipeline_path=temporary_root / "pipeline.sqlite3",
+                operations_path=operations_path,
+                publication_path=temporary_root / "publication.sqlite3",
+            )
+            with OperationsStateStore(operations_path) as store:
+                snapshot = store.acceptance_snapshot(arguments.acceptance_run_id)
+        records = tuple(
+            record
+            for record in snapshot.facts
+            if record.kind == "acceptance_live_authority"
+            and record.fact_digest == arguments.authority_digest
+        )
+        if len(records) != 1:
+            raise ValueError
         authority = verify_live_acceptance_authority(
-            manifest_path=arguments.manifest,
-            source_commit_sha=arguments.source_commit_sha,
-            acceptance_workflow_sha256=arguments.acceptance_workflow_sha256,
-            state_commit_sha=arguments.state_commit_sha,
-            state_root_digest=arguments.state_root_digest,
+            repository_root=Path.cwd().resolve(strict=True),
+            authority_bytes=canonical_json_bytes(records[0].fact) + b"\n",
+            observed_source_commit_sha=arguments.source_commit_sha,
         )
         return {
             "acceptance_workflow_sha256": authority.acceptance_workflow_sha256,
-            "manifest_digest": getattr(authority.manifest, "manifest_digest"),
-            "max_candidates": authority.max_candidates,
-            "max_semantic_candidates": authority.max_semantic_candidates,
-            "models": authority.models,
-            "provider": authority.provider,
+            "authority_digest": authority.authority_digest,
+            "manifest_digest": authority.manifest_digest,
+            "models": authority.stage_models,
+            "provider": authority.semantic_provider,
             "source_commit_sha": authority.source_commit_sha,
             "state_commit_sha": authority.state_commit_sha,
             "state_root_digest": authority.state_root_digest,

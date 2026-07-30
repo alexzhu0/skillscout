@@ -270,6 +270,77 @@ def verify_live_acceptance_authority(
         raise ValueError("live acceptance authority rejected") from None
 
 
+def load_verified_state_checkout(
+    *,
+    checkout_root: Path,
+    expected_root_digest: str,
+) -> object:
+    """Load and validate every file in one exact checked-out state bundle."""
+
+    try:
+        root = _trusted_repository_root(checkout_root)
+        if not _is_digest(expected_root_digest):
+            raise ValueError
+        from skillscout.adapters.state_branch import (
+            StateOwnedFile,
+            VerifiedStateBundle,
+            _validate_bundle,
+        )
+        from skillscout.domain.discovery import DiscoveryStateRootV1
+
+        root_relative = Path("state/root.json")
+        root_bytes = _read_exact_repository_file(
+            root,
+            root / root_relative,
+            root_relative,
+            _ACCEPTANCE_MANIFEST_BYTES,
+        )
+        state_root = DiscoveryStateRootV1.model_validate_json(root_bytes, strict=True)
+        if state_root.root_digest != expected_root_digest:
+            raise ValueError
+        expected_paths = {
+            "state/root.json",
+            *(item.locator for item in state_root.objects),
+            *(item.locator for item in state_root.databases),
+        }
+        state_directory = root / "state"
+        observed_paths = {
+            path.relative_to(root).as_posix()
+            for path in state_directory.rglob("*")
+            if path.is_file()
+        }
+        if observed_paths != expected_paths:
+            raise ValueError
+        files = []
+        for relative_text in sorted(expected_paths):
+            relative = Path(relative_text)
+            path = root / relative
+            maximum = (
+                1_073_741_824
+                if relative_text.startswith("state/databases/")
+                else _ACCEPTANCE_MANIFEST_BYTES
+            )
+            files.append(
+                StateOwnedFile(
+                    relative_text,
+                    _read_exact_repository_file(
+                        root,
+                        path,
+                        relative,
+                        maximum,
+                    ),
+                )
+            )
+        bundle = VerifiedStateBundle(state_root, tuple(files))
+        _validate_bundle(
+            bundle,
+            expected_parent=state_root.state_parent_commit_sha,
+        )
+        return bundle
+    except Exception:
+        raise ValueError("checked-out acceptance state rejected") from None
+
+
 def _trusted_repository_root(repository_root: Path) -> Path:
     if (
         not isinstance(repository_root, Path)
