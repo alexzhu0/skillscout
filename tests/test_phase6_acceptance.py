@@ -626,6 +626,25 @@ def test_live_execution_builder_has_no_publication_state_or_configuration() -> N
         assert forbidden not in source
 
 
+def test_acceptance_restore_never_opens_mutable_publication_owner() -> None:
+    """Benchmark, replay, and their preflight only validate immutable owner bytes."""
+
+    import skillscout.bootstrap as bootstrap
+    import skillscout.cli as cli
+
+    assert hasattr(bootstrap, "read_exact_acceptance_state")
+    for target in (
+        cli._restore_acceptance_state,
+        cli._run_verify_live_authority,
+        bootstrap.read_exact_acceptance_state,
+    ):
+        source = inspect.getsource(target)
+        assert "restore_three_store_bundle" not in source
+        assert "PublicationStateStore" not in source
+    discovery_source = inspect.getsource(bootstrap.build_discovery_application)
+    assert "restore_acceptance_state_bundle" in discovery_source
+
+
 def test_live_replay_builder_dispatches_state_only_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
