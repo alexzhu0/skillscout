@@ -1047,6 +1047,22 @@ def test_benchmark_repeats_authority_and_complete_state_gate_before_secrets() ->
     assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in execution
 
 
+def test_replay_reconstructs_live_authority_before_state_write_token() -> None:
+    """Replay re-verifies the approved authority and complete post-benchmark state."""
+
+    replay = _job(_source(required=False), "live_replay")
+    prefix, separator, execution = replay.partition(
+        "      - name: Execute the approved zero-effect replay"
+    )
+    assert separator and execution
+    assert "Check out the exact independently approved authority state" in prefix
+    assert "Check out the exact complete campaign state" in prefix
+    assert "verify-live-authority" in prefix
+    assert "verify-acceptance-state" in prefix
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in prefix
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in execution
+
+
 def test_nomination_installation_and_state_cas_are_source_bound() -> None:
     nomination = _job(_source(required=False), "nominate")
 
