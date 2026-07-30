@@ -778,7 +778,7 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
     assert calls == ["replay"]
 
 
-def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
+def test_production_replay_rejects_synthetic_scenarios_without_phase3_objects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -872,6 +872,70 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
             locked_at=timestamp,
         ),
     )
+    authority = acceptance_domain.LiveAcceptanceAuthorityV1(
+        schema_version="live-acceptance-authority-v1",
+        authority_version=1,
+        source_commit_sha="c" * 40,
+        acceptance_workflow_sha256="sha256:" + ("d" * 64),
+        manifest_path=(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest_digest=manifest.manifest_digest,
+        nomination_set_digest=manifest.nomination_set_digest,
+        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
+        state_commit_sha="d" * 40,
+        state_root_digest="sha256:" + ("c" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        query_set_digest=nomination.query_set_digest,
+        budget_policy_digest=(
+            __import__(
+                "skillscout.domain.discovery",
+                fromlist=["DiscoveryBudgetPolicyV1"],
+            )
+            .DiscoveryBudgetPolicyV1()
+            .budget_policy_digest
+        ),
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        reviewer_id="acceptance-reviewer",
+        approved_at=timestamp,
+    )
 
     def telemetry(
         stage: str,
@@ -880,7 +944,7 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
     ) -> object:
         return acceptance_domain.AcceptanceSemanticTelemetryV1(
             schema_version="acceptance-semantic-telemetry-v1",
-            live_acceptance_authority_digest=manifest.manifest_digest,
+            live_acceptance_authority_digest=authority.authority_digest,
             stage=stage,
             workflow_spec_authority_digest=authority_digest,
             attempt_no=1,
@@ -923,6 +987,9 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
         )
         operations.record_acceptance_fact(
             run_id, "acceptance_benchmark_lock", manifest
+        )
+        operations.record_acceptance_fact(
+            run_id, "acceptance_live_authority", authority
         )
         request_ordinal = 0
         for ordinal, entry in enumerate(manifest.entries, start=1):
@@ -1017,7 +1084,7 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
                     exact_commit_sha=entry.exact_commit_sha,
                     license_spdx=entry.license_spdx,
                     benchmark_manifest_digest=manifest.manifest_digest,
-                    live_acceptance_authority_digest=manifest.manifest_digest,
+                    live_acceptance_authority_digest=authority.authority_digest,
                     terminal_class=(
                         "eligible" if eligible else "business_terminal"
                     ),
@@ -1130,7 +1197,7 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
         extractor_model_id="deepseek-v4-flash",
         generator_model_id="deepseek-v4-flash",
         reviewer_model_id="deepseek-v4-pro",
-        live_acceptance_authority_digest=manifest.manifest_digest,
+        live_acceptance_authority_digest=authority.authority_digest,
     )
     commits = iter(("e" * 40, "f" * 40))
     roots = iter(
@@ -1176,23 +1243,8 @@ def test_production_replay_uses_restored_bundle_and_zero_live_capabilities(
             "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "example/state",
         },
     )
-    result = execution.run()
-    assert result["status"] == "replay_complete"
-    with operations_state.OperationsStateStore(operations_path) as operations:
-        snapshot = operations.acceptance_snapshot(run_id)
-        assert tuple(
-            item.kind
-            for item in snapshot.facts
-            if item.kind.startswith("acceptance_replay")
-        ) == ("acceptance_replay", "acceptance_replay_evidence")
-        evidence = next(
-            item.fact
-            for item in snapshot.facts
-            if item.kind == "acceptance_replay_evidence"
-        )
-        assert isinstance(evidence, acceptance_domain.ReplayEvidenceV1)
-        assert evidence.before_projection_digest == evidence.after_projection_digest
-        assert evidence.before_object_digests == evidence.after_object_digests
+    with pytest.raises(ValueError, match="typed Phase 3"):
+        execution.run()
 
 
 def test_live_runner_persists_read_and_semantic_budget_before_remote_read() -> None:
