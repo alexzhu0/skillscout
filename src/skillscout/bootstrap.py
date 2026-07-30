@@ -1564,35 +1564,36 @@ def build_discovery_application(
                 )
             )
             phase2_state = SQLiteStateStore(config.pipeline_state)
+            def deny_recovery_capability() -> object:
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
+            github_factory = (
+                deny_recovery_capability
+                if recovery_only
+                else lambda: GitHubReadClient(
+                    token=_required_credential(
+                        source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
+                    )
+                )
+            )
             github = _LazyDiscoveryCapability(
-                (
-                    lambda: (_ for _ in ()).throw(
-                        SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                    )
-                    if recovery_only
-                    else lambda: GitHubReadClient(
-                        token=_required_credential(
-                            source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
-                        )
-                    )
-                ),
+                github_factory,
                 EffectScope.REMOTE_READ,
             )
+            extractor_factory = (
+                deny_recovery_capability
+                if recovery_only
+                else lambda: (
+                    OpenAIExtractionClient()
+                    if provider.provider is SemanticProvider.OPENAI
+                    else OpenAIExtractionClient(
+                        model=provider.extract_model,
+                        provider_settings=provider,
+                    )
+                )
+            )
             extractor = _LazyDiscoveryCapability(
-                (
-                    lambda: (_ for _ in ()).throw(
-                        SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                    )
-                    if recovery_only
-                    else lambda: (
-                        OpenAIExtractionClient()
-                        if provider.provider is SemanticProvider.OPENAI
-                        else OpenAIExtractionClient(
-                            model=provider.extract_model,
-                            provider_settings=provider,
-                        )
-                    )
-                ),
+                extractor_factory,
                 EffectScope.REMOTE_READ,
             )
             phase2_guard = SemanticDurabilityGuard(
