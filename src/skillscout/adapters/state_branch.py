@@ -168,10 +168,10 @@ def _contains_canary(value: bytes) -> bool:
     return any(canary.lower() in lowered for canary in _SECRET_CANARIES)
 
 
-class StateBranchClient:
-    """GitHub Git-data capability bound to one repository and fixed state ref."""
+class _StateBranchReadClientBase:
+    """Shared bounded GitHub Git-data reads for the fixed state ref."""
 
-    effect_scope = EffectScope.REMOTE_WRITE
+    effect_scope = EffectScope.REMOTE_READ
 
     def __init__(
         self,
@@ -322,6 +322,89 @@ class StateBranchClient:
         ):
             _safe_failure()
         return content
+
+    def _ref(
+        self, raw: object, expected_sha: str | None = None
+    ) -> StateRefObservation:
+        if (
+            not isinstance(raw, dict)
+            or raw.get("ref") != STATE_REF
+            or not isinstance(raw.get("object"), dict)
+        ):
+            _safe_failure()
+        sha = _sha(raw["object"].get("sha"))
+        if expected_sha is not None and sha != expected_sha:
+            raise StateBranchConflict
+        return StateRefObservation(STATE_REF, sha)
+
+    def _json(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None = None,
+        *,
+        cap: int = _MAX_RESPONSE_BYTES,
+        allow_not_found: bool = False,
+        conflict_on_write: bool = False,
+    ) -> Any:
+        try:
+            response = self._client.send(
+                self._client.build_request(method, path, json=payload),
+                stream=True,
+            )
+        except httpx.TransportError:
+            _safe_failure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+        except httpx.HTTPError:
+            _safe_failure()
+        try:
+            request_id = response.headers.get("x-github-request-id")
+            if (
+                type(request_id) is not str
+                or not request_id
+                or len(request_id) > _MAX_REQUEST_ID_CHARS
+                or _GITHUB_REQUEST_ID.fullmatch(request_id) is None
+            ):
+                _safe_failure()
+            if response.status_code in {301, 302, 303, 307, 308}:
+                _safe_failure()
+            if conflict_on_write and response.status_code in {409, 422}:
+                raise StateBranchConflict
+            if response.status_code == 404 and allow_not_found:
+                raise StateRefNotFound
+            if response.status_code == 429 or response.status_code >= 500:
+                _safe_failure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+            if (
+                not 200 <= response.status_code < 300
+                or "application/json"
+                not in response.headers.get("content-type", "")
+            ):
+                _safe_failure()
+            pieces: list[bytes] = []
+            consumed = 0
+            try:
+                for piece in response.iter_bytes(65_536):
+                    consumed += len(piece)
+                    if consumed > cap:
+                        _safe_failure()
+                    pieces.append(piece)
+            except httpx.TransportError:
+                _safe_failure(ErrorCode.STAGE_TRANSIENT_FAILURE)
+            try:
+                return json.loads(b"".join(pieces))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                _safe_failure()
+        finally:
+            response.close()
+
+
+class StateBranchReadClient(_StateBranchReadClientBase):
+    """Read-only capability used to prove a resume lineage."""
+
+
+class StateBranchClient(_StateBranchReadClientBase):
+    """GitHub Git-data write capability bound to the fixed state ref."""
+
+    effect_scope = EffectScope.REMOTE_WRITE
 
     def create_blob(self, content: bytes) -> str:
         if (
