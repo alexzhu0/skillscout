@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 after run 30508458266 control returned 1 because the fresh venv omitted SkillScout; strict-TDD correction complete locally, no remote retry authorized
-last_updated: "2026-07-30T03:00:04Z"
+stopped_at: Blocked 06-06 Task 3 after authorized run 30510875649 failed at campaign-report with control/direct/child statuses 1/97/97; bounded diagnostic verified, no canonical facts, no retry authorized
+last_updated: "2026-07-30T03:21:45Z"
 last_activity: 2026-07-30
 progress:
   total_phases: 6
@@ -123,6 +123,9 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - Run `30508458266` is a blocking failure fact: the kernel-isolated control returned 1 because the freshly recreated venv did not contain the current SkillScout project, while the direct and child network-denial probes both returned 97. The ordinary baseline, synthetic-canary environment, and read-only-repository checks each passed 36 tests; removing the project installation record reproduced the first-test failure, and restoring it produced 1 passed.
 - The confirmed root cause was all 15 authoritative initializers running `uv sync --locked --no-install-project` after deleting `.venv`. Strict-TDD commits are RED `5aa3aa28eed11adefe3ccaa0bb294bdb22e6426e` and GREEN `e425de3acf9ccb6c8ebeabd3a4bb90ea80403070`; the correction installs only the current locked project and changes no lock, dependency, mount, network, probe, scenario, credential, publication, retention, or diagnostic authority.
 - Every prior Phase 6 workflow digest, exact-source authorization, dispatch approval, and Gate B4 binding is stale after the fresh-project workflow-byte change. A new human authorization must bind the final local HEAD and exact Phase 6 workflow SHA-256 `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`; it grants no retry, artifact-read, canonical-state, Gate B4, or publication authority unless the checkpoint explicitly says so. No remote, push, dispatch, artifact-read, raw-log, canonical-state, or publication action occurred during this correction.
+- The fresh authorization was consumed by exactly one hosted run after fail-closed preflight: exact-SHA ref dispatch returned HTTP 422 and created no run; a fresh `origin/main == b1425f7f72407f08463578db387e84d79d72e2df` proof authorized the `main` fallback, which created run `30510875649` attempt 1 at that exact source and Phase 6 workflow SHA-256 `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`.
+- Run `30510875649` failed at the closed `campaign-report` stage with overall/control/direct/child statuses `1/1/97/97`. Its artifact inventory contained exactly the one-day diagnostic `8747046558`; the strict 378-byte JSON SHA-256 was `112b9c040433f10524b08a62d6e11764146b6e08f64e17a1fa3ed316641142ff` and the ZIP SHA-256 was `26faa56b695126a6d65cea55209787911973570b072f2e39251ba976b1306755`.
+- This failure grants no hosted-isolation or campaign credit. No raw logs or other artifacts were opened, no canonical `acceptance_hosted_isolation_capability` or `acceptance_offline_adversarial_run` fact was written, and no retry is authorized. Plan 06-06 remains blocked and no `06-06-SUMMARY.md` exists.
 
 ### Quick Tasks Completed
 
@@ -133,8 +136,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-30
-**Last session:** 2026-07-30T03:00:04Z
-**Stopped at:** Blocked 06-06 Task 3 after run 30508458266 control returned 1 because the fresh venv omitted SkillScout; strict-TDD correction complete locally, no remote retry authorized
+**Last session:** 2026-07-30T03:21:45Z
+**Stopped at:** Blocked 06-06 Task 3 after authorized run 30510875649 failed at campaign-report with control/direct/child statuses 1/97/97; bounded diagnostic verified, no canonical facts, no retry authorized
 **Resume file:** None
 
 ### Next

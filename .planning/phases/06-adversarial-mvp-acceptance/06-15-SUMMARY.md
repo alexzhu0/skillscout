@@ -282,6 +282,9 @@ The sixth post-merge correction followed hosted run `30508458266` under strict T
 - Hosted run `30447435387` deterministically failed during runtime preflight before any container launched because the hosted toolcache path assumption was not satisfied. No artifact was accessed, no canonical fact was written, and no retry, push, or dispatch was authorized or performed.
 - Hosted run `30508458266` reached the kernel-isolated campaign but the control returned 1 because the fresh venv could not import `skillscout.application.acceptance`; direct and child probes both retained the required denial status 97. The ordinary baseline was 36 passed, the synthetic-canary environment was 36 passed, and the read-only-repository case was 36 passed. Removing the project installation record reproduced the first-test failure consistently; restoring the record produced 1 passed.
 - The confirmed root cause was the static contract requiring `uv sync --locked --no-install-project` after deleting `.venv`. This correction used only local locked tests and the user-supplied bounded failure facts; it did not read artifacts or raw logs, push, dispatch, write canonical state, execute candidate source, or access any remote system.
+- After explicit fresh authorization, remote `main` and local `main`/`HEAD` were revalidated at `b1425f7f72407f08463578db387e84d79d72e2df`, with Phase 6 workflow SHA-256 `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`. GitHub rejected the exact-SHA dispatch ref with HTTP 422 and created no run; after a fresh remote-main equality check, the authorized `main` fallback created exactly run `30510875649` attempt 1.
+- Run `30510875649` failed in `offline_adversarial`. Its only artifact was the one-day bounded diagnostic `8747046558`, named `phase6-offline-adversarial-diagnostic-30510875649-1`, with metadata size 416 bytes, ZIP SHA-256 `26faa56b695126a6d65cea55209787911973570b072f2e39251ba976b1306755`, and exact JSON SHA-256 `112b9c040433f10524b08a62d6e11764146b6e08f64e17a1fa3ed316641142ff` over 378 bytes. The strict diagnostic was bound to the exact source/workflow/run/attempt, stopped at `campaign-report`, and recorded overall/control/direct/child statuses `1/1/97/97`.
+- The failed run grants no campaign or hosted-isolation credit. No raw logs or other artifacts were opened, no retry occurred, and neither `acceptance_hosted_isolation_capability` nor `acceptance_offline_adversarial_run` was written to canonical state.
 - The current workflow SHA-256 values are `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4` (discover), `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19` (publish), `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc` (canary), and `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5` (Phase 6 acceptance). All earlier workflow digests, workflow approvals, exact-source authorizations, dispatch approvals, and Gate B4 bindings are stale.
 
 ## Authentication Gates
@@ -299,7 +302,7 @@ None - no new dependency or external service configuration is required by this p
 ## Next Phase Readiness
 
 - Plan 06-06 Task 3 remains incomplete. Do not create `06-06-SUMMARY.md` or grant campaign credit from any failed run.
-- Any retry requires a new human authorization bound to the exact final local HEAD and Phase 6 workflow SHA-256 `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`; it cannot inherit any prior dispatch approval and grants no Gate B4, publication, artifact-read, or canonical-state authority.
+- Any retry requires a new human authorization bound to the then-exact local/remote HEAD and Phase 6 workflow SHA-256; it cannot inherit the authorization consumed by run `30510875649` and grants no Gate B4, publication, artifact-read, or canonical-state authority.
 - Plans 06-07 through 06-14 remain blocked from treating the workflow as hosted evidence until an authorized exact run succeeds and its bounded facts rebuild canonically.
 - Fresh Gate B4 and value publication remain unauthorized until later checkpoints bind the corrected exact workflow bytes and fixed catalog identity.
 
@@ -337,7 +340,10 @@ None - no new dependency or external service configuration is required by this p
 - Full locked pytest classified 2,169 passed, 14 skipped, and only the unchanged planned `tests/test_phase6_acceptance.py::test_required_phase6_repository_verifier_is_missing` RED failure.
 - Full Ruff lint, changed-file Ruff format, and `git diff --check` passed. Neither `pyproject.toml` nor `uv.lock` changed.
 - The exact current workflow SHA-256 values were recomputed from disk as discover `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4`, publish `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19`, canary `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc`, and Phase 6 acceptance `1e938070e70aabcf84a5d6d8fce5c674b36d19d7d6fe8771adffdd0f0ecd6fe5`.
-- No `06-06-SUMMARY.md` was created, and no remote, credential, artifact, canonical-state, push, dispatch, Gate B4, or publication action occurred.
+- The fresh local/remote preflight matched `b1425f7f72407f08463578db387e84d79d72e2df`; the four frozen workflow SHA-256 values matched the approved bindings; 109 acceptance-domain/operations tests, 8 exact offline/canonical selector tests, the independent source verifier, and the fixed registry verifier passed before dispatch.
+- Exact-SHA ref dispatch was rejected with HTTP 422 and created no run; the authorized `main` fallback created only run `30510875649` attempt 1.
+- Artifact metadata contained exactly one one-day failure diagnostic. Its strict source/workflow/run/attempt/schema/status/digest checks passed; no raw logs or other artifact were read.
+- No `06-06-SUMMARY.md` was created, no canonical acceptance fact was written, and no retry, credential inspection, Gate B4, catalog/default-branch/PR/publication mutation, cleanup, merge, approval, ready transition, or post-evidence push occurred.
 
 ---
 *Phase: 06-adversarial-mvp-acceptance*
