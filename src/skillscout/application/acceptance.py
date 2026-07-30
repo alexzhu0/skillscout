@@ -817,7 +817,6 @@ def run_locked_benchmark(
                     authority.license_spdx,
                 )
                 or observation.semantic_request_count != len(observation.semantic_attempt_digests)
-                or observation.semantic_request_count != len(observation.actual_models)
                 or observation.live_acceptance_authority_digest
                 != live_authority.authority_digest
             ):

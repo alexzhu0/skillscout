@@ -699,7 +699,8 @@ def _run_attempt_boundary_benchmark(
     reason_code: str,
     attempt_count: int,
     telemetry_attempt: int | None,
-) -> tuple[Any, list[Any]]:
+    expected_error: str | None = None,
+) -> tuple[Any | None, list[Any]]:
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
         ROOT
@@ -819,14 +820,19 @@ def _run_attempt_boundary_benchmark(
         operations_store_factory=Store,
         state_sync=sync,
     )
-    result = module.run_locked_benchmark(
-        dependencies,
-        manifest=manifest,
-        acceptance_run_id="acceptance-attempt-boundary",
-        observed_head="a" * 40,
-        prior_root_digest="sha256:" + ("b" * 64),
-        recorded_at=TIMESTAMP,
-    )
+    try:
+        result = module.run_locked_benchmark(
+            dependencies,
+            manifest=manifest,
+            acceptance_run_id="acceptance-attempt-boundary",
+            observed_head="a" * 40,
+            prior_root_digest="sha256:" + ("b" * 64),
+            recorded_at=TIMESTAMP,
+        )
+    except module.AcceptanceApplicationError as error:
+        if str(error) != expected_error:
+            raise
+        result = None
     return result, persisted
 
 
@@ -853,16 +859,14 @@ def test_locked_benchmark_counts_transient_then_success_without_fake_telemetry()
 def test_locked_benchmark_persists_true_exhaustion_without_fake_telemetry() -> None:
     """Three response-less durable attempts exhaust exactly once."""
 
-    with pytest.raises(
-        _application_module(skip_if_missing=False).AcceptanceApplicationError,
-        match="provider_exhausted",
-    ):
-        _result, persisted = _run_attempt_boundary_benchmark(
-            outcome="provider_exhausted",
-            reason_code="provider_attempts_exhausted",
-            attempt_count=3,
-            telemetry_attempt=None,
-        )
+    result, persisted = _run_attempt_boundary_benchmark(
+        outcome="provider_exhausted",
+        reason_code="provider_attempts_exhausted",
+        attempt_count=3,
+        telemetry_attempt=None,
+        expected_error="provider_exhausted",
+    )
+    assert result is None
     assert len(persisted) == 1
     assert persisted[0].semantic_request_count == 3
     assert len(persisted[0].semantic_attempt_digests) == 3
