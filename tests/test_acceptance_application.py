@@ -13,8 +13,13 @@ import pytest
 
 from skillscout.adapters.github import LicenseResponse, RateLimitFacts, RepoMetadata
 from skillscout.domain.canonical import sha256_digest
-from skillscout.domain.acceptance import NominationEntryV1, NominationSetV1
+from skillscout.domain.acceptance import (
+    LiveAcceptanceAuthorityV1,
+    NominationEntryV1,
+    NominationSetV1,
+)
 from skillscout.domain.discovery import (
+    DiscoveryBudgetPolicyV1,
     DiscoveryQuerySetV1,
     SearchPageObservationV1,
     SearchRateLimitFactsV1,
@@ -438,6 +443,63 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
         / ".planning/phases/06-adversarial-mvp-acceptance"
         / "06-BENCHMARK-MANIFEST.json"
     )
+    live_authority = LiveAcceptanceAuthorityV1(
+        schema_version="live-acceptance-authority-v1",
+        authority_version=1,
+        source_commit_sha="c" * 40,
+        acceptance_workflow_sha256="sha256:" + ("d" * 64),
+        manifest_path=(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest_digest=manifest.manifest_digest,
+        nomination_set_digest=manifest.nomination_set_digest,
+        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
+        state_commit_sha="e" * 40,
+        state_root_digest="sha256:" + ("f" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        query_set_digest="sha256:" + ("1" * 64),
+        budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        reviewer_id="acceptance-reviewer",
+        approved_at=TIMESTAMP,
+    )
     observed: list[object] = []
     persisted: list[object] = []
 
@@ -452,7 +514,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                 outcome="no_workflow",
                 reason_code="no_reusable_workflow",
                 evidence_digests=(authority.entry_digest,),
-                live_acceptance_authority_digest=authority.entry_digest,
+                live_acceptance_authority_digest=live_authority.authority_digest,
                 workflow_fingerprint=None,
                 workflow_spec_authority_digest=None,
                 eligible_locator=None,
@@ -462,7 +524,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                         module.AcceptanceSemanticTelemetryV1(
                             schema_version="acceptance-semantic-telemetry-v1",
                             live_acceptance_authority_digest=(
-                                authority.entry_digest
+                                live_authority.authority_digest
                             ),
                             stage="extractor",
                             workflow_spec_authority_digest=authority.entry_digest,
@@ -494,6 +556,12 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                         kind="acceptance_benchmark_lock",
                         fact_digest=manifest.manifest_digest,
                         fact=manifest,
+                    ),
+                    module.AcceptanceFactRecord(
+                        acceptance_run_id=acceptance_run_id,
+                        kind="acceptance_live_authority",
+                        fact_digest=live_authority.authority_digest,
+                        fact=live_authority,
                     ),
                 ),
             )

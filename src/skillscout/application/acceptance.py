@@ -27,6 +27,7 @@ from skillscout.domain.acceptance import (
     ChangedSourceDraftUpdateCompletionV1,
     ChangedSourceEvidenceV1,
     HumanSkillReviewAttestationV1,
+    LiveAcceptanceAuthorityV1,
     LockedBenchmarkManifestV1,
     NominationEntryV1,
     NominationSetV1,
@@ -772,6 +773,16 @@ def run_locked_benchmark(
         )
         if len(locks) != 1 or locks[0] != manifest or len(manifest.entries) != 5:
             raise AcceptanceApplicationError("evidence_missing")
+        live_authorities = tuple(
+            record.fact
+            for record in snapshot.facts
+            if record.kind == "acceptance_live_authority"
+            and isinstance(record.fact, LiveAcceptanceAuthorityV1)
+            and record.fact.manifest_digest == manifest.manifest_digest
+        )
+        if len(live_authorities) != 1:
+            raise AcceptanceApplicationError("evidence_missing")
+        live_authority = live_authorities[0]
 
         runner = dependencies.discovery_factory()
         run = getattr(runner, "run", None)
@@ -807,6 +818,8 @@ def run_locked_benchmark(
                 )
                 or observation.semantic_request_count != len(observation.semantic_attempt_digests)
                 or observation.semantic_request_count != len(observation.actual_models)
+                or observation.live_acceptance_authority_digest
+                != live_authority.authority_digest
             ):
                 raise AcceptanceApplicationError("evidence_missing")
             semantic_requests += observation.semantic_request_count

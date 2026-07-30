@@ -998,7 +998,148 @@ def _validate_acceptance_references(
     kind: str,
     fact: _AcceptanceFactModel,
 ) -> None:
-    if kind == "acceptance_offline_adversarial_run":
+    if kind == "acceptance_scenario":
+        assert isinstance(fact, AcceptanceScenarioResultV1)
+        try:
+            authority = _acceptance_fact_by_digest(
+                connection,
+                acceptance_run_id=acceptance_run_id,
+                kind="acceptance_live_authority",
+                digest=fact.live_acceptance_authority_digest,
+            )
+        except OperationsIntegrityError:
+            raise OperationsIntegrityError(
+                "scenario live authority is missing"
+            ) from None
+        assert isinstance(authority, LiveAcceptanceAuthorityV1)
+        if authority.manifest_digest != fact.benchmark_manifest_digest:
+            raise OperationsIntegrityError(
+                "scenario live authority manifest binding mismatch"
+            )
+        manifest = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_benchmark_lock",
+            digest=fact.benchmark_manifest_digest,
+        )
+        assert isinstance(manifest, LockedBenchmarkManifestV1)
+        entries = tuple(
+            entry
+            for entry in manifest.entries
+            if entry.repository_id == fact.repository_id
+        )
+        if len(entries) != 1:
+            raise OperationsIntegrityError(
+                "scenario benchmark entry is missing"
+            )
+        entry = entries[0]
+        if (
+            entry.repository_full_name,
+            entry.exact_commit_sha,
+            entry.license_spdx,
+        ) != (
+            fact.repository_full_name,
+            fact.exact_commit_sha,
+            fact.license_spdx,
+        ):
+            raise OperationsIntegrityError(
+                "scenario benchmark repository binding mismatch"
+            )
+        reference_rows = connection.execute(
+            """SELECT * FROM operations_acceptance_facts
+               WHERE acceptance_run_id = ?
+                 AND fact_kind IN (
+                   'acceptance_budget_reservation',
+                   'acceptance_fixed_candidate_admission',
+                   'acceptance_semantic_request_reservation'
+                 )""",
+            (acceptance_run_id,),
+        ).fetchall()
+        references = tuple(_acceptance_row_fact(row) for row in reference_rows)
+        budgets = tuple(
+            item
+            for item in references
+            if isinstance(item, AcceptanceBudgetReservationV1)
+            and item.repository_id == fact.repository_id
+        )
+        admissions = tuple(
+            item
+            for item in references
+            if isinstance(item, AcceptanceFixedCandidateAdmissionV1)
+            and item.repository_id == fact.repository_id
+        )
+        if len(budgets) != 1 or len(admissions) != 1:
+            raise OperationsIntegrityError(
+                "scenario budget or admission reference is missing"
+            )
+        budget = budgets[0]
+        admission = admissions[0]
+        expected_identity = (
+            fact.benchmark_manifest_digest,
+            entry.nomination_entry_digest,
+            entry.entry_digest,
+            fact.repository_id,
+            fact.repository_full_name,
+        )
+        if (
+            (
+                budget.benchmark_manifest_digest,
+                budget.nomination_entry_digest,
+                budget.benchmark_entry_digest,
+                budget.repository_id,
+                budget.repository_full_name,
+            )
+            != expected_identity
+            or (
+                admission.benchmark_manifest_digest,
+                admission.nomination_entry_digest,
+                admission.benchmark_entry_digest,
+                admission.repository_id,
+                admission.repository_full_name,
+            )
+            != expected_identity
+            or admission.exact_commit_sha != fact.exact_commit_sha
+            or admission.license_spdx != fact.license_spdx
+            or budget.ordinal != admission.ordinal
+        ):
+            raise OperationsIntegrityError(
+                "scenario budget or admission binding mismatch"
+            )
+        requests = tuple(
+            item
+            for item in references
+            if isinstance(item, AcceptanceSemanticRequestReservationV1)
+            and item.repository_id == fact.repository_id
+        )
+        request_keys = {
+            (
+                item.stage,
+                item.workflow_spec_authority_digest,
+                item.attempt_no,
+            )
+            for item in requests
+        }
+        telemetry_keys = {
+            (
+                item.stage,
+                item.workflow_spec_authority_digest,
+                item.attempt_no,
+            )
+            for item in fact.semantic_telemetry
+        }
+        if (
+            len(requests) != fact.semantic_request_count
+            or any(
+                item.fixed_candidate_admission_digest
+                != admission.admission_digest
+                for item in requests
+            )
+            or not telemetry_keys.issubset(request_keys)
+        ):
+            raise OperationsIntegrityError(
+                "scenario semantic request binding mismatch"
+            )
+    elif kind == "acceptance_offline_adversarial_run":
         assert isinstance(fact, OfflineAdversarialRunV1)
         hosted = _acceptance_fact_by_digest(
             connection,

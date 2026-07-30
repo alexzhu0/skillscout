@@ -2069,13 +2069,17 @@ class _CompletedBenchmarkStateProjector:
             state_root_digest,
         ) not in self._verified_state_locators:
             raise ValueError("completed benchmark state locator rejected")
+        import json
+
         from skillscout.adapters.operations_state import OperationsStateStore
         from skillscout.adapters.state import SQLiteStateStore
         from skillscout.application.acceptance import CompletedBenchmarkProjection
+        from skillscout.application.discovery import eligible_candidate_locator
         from skillscout.domain.acceptance import (
             AcceptanceScenarioResultV1,
             LockedBenchmarkManifestV1,
         )
+        from skillscout.domain.review import CandidateTerminalSummaryV1
 
         if type(manifest) is not LockedBenchmarkManifestV1:
             raise ValueError("completed benchmark manifest rejected")
@@ -2110,8 +2114,93 @@ class _CompletedBenchmarkStateProjector:
         pipeline = SQLiteStateStore(self._pipeline_path)
         try:
             pipeline_export = pipeline.export_owned_state()
+            completed_chains = []
+            terminal_objects = []
+            for owned_fact in pipeline_export.facts:
+                raw = json.loads(owned_fact.payload_json)
+                if owned_fact.kind == "phase3_runs":
+                    if raw.get("status") != "completed":
+                        continue
+                    run_id = raw.get("run_id")
+                    if type(run_id) is not str:
+                        raise ValueError(
+                            "completed benchmark typed Phase 3 run rejected"
+                        )
+                    chain = pipeline.verify_candidate_run_chain(run_id)
+                    if (
+                        raw.get("authority_digest")
+                        != chain.identity.candidate_execution_authority_digest
+                    ):
+                        raise ValueError(
+                            "completed benchmark typed Phase 3 authority rejected"
+                        )
+                    completed_chains.append(chain)
+                elif owned_fact.kind == "phase3_artifact":
+                    try:
+                        content = base64.b64decode(
+                            raw["content_base64"],
+                            validate=True,
+                        )
+                        terminal = (
+                            CandidateTerminalSummaryV1.model_validate_json(
+                                content,
+                                strict=True,
+                            )
+                        )
+                    except Exception:
+                        continue
+                    terminal_objects.append((owned_fact, terminal))
         finally:
             pipeline.close()
+        if not completed_chains or not terminal_objects:
+            raise ValueError(
+                "completed benchmark typed Phase 3 objects are missing"
+            )
+        chain_authorities = {
+            chain.identity.candidate_execution_authority_digest
+            for chain in completed_chains
+        }
+        if any(
+            terminal.candidate_execution_authority.authority_digest
+            not in chain_authorities
+            for _owned_fact, terminal in terminal_objects
+        ):
+            raise ValueError(
+                "completed benchmark typed Phase 3 terminal is unbound"
+            )
+        typed_workflow_authorities = {
+            terminal.workflow_spec_authority.authority_digest
+            for _owned_fact, terminal in terminal_objects
+        }
+        scenario_workflow_authorities = {
+            scenario.workflow_spec_authority_digest
+            for scenario in scenarios
+            if scenario.workflow_spec_authority_digest is not None
+        }
+        if not scenario_workflow_authorities.issubset(
+            typed_workflow_authorities
+        ):
+            raise ValueError(
+                "completed benchmark typed Phase 3 workflow is missing"
+            )
+        matching_eligible_objects = tuple(
+            (owned_fact, terminal)
+            for owned_fact, terminal in terminal_objects
+            if terminal.eligible
+            and terminal.workflow_spec_authority.authority_digest
+            == selected.workflow_spec_authority_digest
+            and eligible_candidate_locator(
+                authority_digest=owned_fact.object_digest,
+                workflow_identity_digest=(
+                    terminal.workflow_spec_authority.authority_digest
+                ),
+            ).locator
+            == selected.eligible_locator
+        )
+        if len(matching_eligible_objects) != 1:
+            raise ValueError(
+                "completed benchmark typed Phase 3 eligible object is missing"
+            )
         semantic_attempt_digests = tuple(
             sorted(
                 {
@@ -2122,13 +2211,7 @@ class _CompletedBenchmarkStateProjector:
             )
         )
         workflow_authority_digests = tuple(
-            sorted(
-                {
-                    scenario.workflow_spec_authority_digest
-                    for scenario in scenarios
-                    if scenario.workflow_spec_authority_digest is not None
-                }
-            )
+            sorted(typed_workflow_authorities)
         )
         candidate_fact_digests = tuple(
             sorted(fact.object_digest for fact in pipeline_export.facts)
@@ -2151,11 +2234,29 @@ class _CompletedBenchmarkStateProjector:
         )
         skill_identity_digests = tuple(
             sorted(
-                fact.object_digest
-                for fact in pipeline_export.facts
-                if fact.kind == "phase3_artifact"
+                {
+                    digest
+                    for _owned_fact, terminal in terminal_objects
+                    for digest in (
+                        (
+                            terminal.generated_artifact_identity.artifact_digest
+                            if terminal.generated_artifact_identity is not None
+                            else None
+                        ),
+                        (
+                            terminal.package_identity.package_digest
+                            if terminal.package_identity is not None
+                            else None
+                        ),
+                    )
+                    if digest is not None
+                }
             )
         )
+        if not skill_identity_digests:
+            raise ValueError(
+                "completed benchmark typed Phase 3 skill identity is missing"
+            )
         return CompletedBenchmarkProjection(
             manifest_digest=manifest.manifest_digest,
             scenario_result_digests=tuple(
