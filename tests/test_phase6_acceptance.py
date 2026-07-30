@@ -672,6 +672,149 @@ def test_acceptance_cli_exposes_only_exact_resume_lineage_inputs() -> None:
     }
 
 
+def test_resume_lineage_accepts_locator_anchor_and_bounded_crash_successor() -> None:
+    """A locator anchor may safely admit its parent or one verified crash suffix."""
+
+    from dataclasses import replace
+
+    from skillscout.application.acceptance import (
+        CampaignStateLineageObservation,
+        resolve_campaign_resume_lineage,
+    )
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    original_commit = "4" * 40
+    current_commit = "6" * 40
+    anchor_commit = "8" * 40
+    crash_commit = "a" * 40
+    original_root = "sha256:" + ("5" * 64)
+    current_root = "sha256:" + ("7" * 64)
+    anchor_root = "sha256:" + ("9" * 64)
+    crash_root = "sha256:" + ("b" * 64)
+    locator = AcceptanceCampaignResumeLocatorV1(
+        schema_version="acceptance-campaign-resume-locator-v1",
+        acceptance_run_id="acceptance-resume",
+        live_acceptance_authority_digest="sha256:" + ("1" * 64),
+        source_commit_sha="2" * 40,
+        manifest_digest="sha256:" + ("3" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        original_state_commit_sha=original_commit,
+        original_state_root_digest=original_root,
+        current_state_commit_sha=current_commit,
+        current_state_root_digest=current_root,
+        semantic_provider="deepseek",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        lineage_commit_shas=(original_commit, current_commit),
+        lineage_root_digests=(original_root, current_root),
+        recorded_at="2026-07-30T12:00:00.000000Z",
+    )
+    observations = (
+        CampaignStateLineageObservation(
+            commit_sha=original_commit,
+            root_digest=original_root,
+            parent_commit_sha=None,
+            prior_root_digest=None,
+            resume_locators=(),
+        ),
+        CampaignStateLineageObservation(
+            commit_sha=current_commit,
+            root_digest=current_root,
+            parent_commit_sha=original_commit,
+            prior_root_digest=original_root,
+            resume_locators=(),
+        ),
+        CampaignStateLineageObservation(
+            commit_sha=anchor_commit,
+            root_digest=anchor_root,
+            parent_commit_sha=current_commit,
+            prior_root_digest=current_root,
+            resume_locators=(locator,),
+        ),
+    )
+
+    anchored = resolve_campaign_resume_lineage(
+        authority_digest=locator.live_acceptance_authority_digest,
+        acceptance_run_id=locator.acceptance_run_id,
+        original_state_commit_sha=original_commit,
+        original_state_root_digest=original_root,
+        campaign_head_commit_sha=anchor_commit,
+        observations=observations,
+    )
+    crashed = resolve_campaign_resume_lineage(
+        authority_digest=locator.live_acceptance_authority_digest,
+        acceptance_run_id=locator.acceptance_run_id,
+        original_state_commit_sha=original_commit,
+        original_state_root_digest=original_root,
+        campaign_head_commit_sha=crash_commit,
+        observations=(
+            *observations,
+            CampaignStateLineageObservation(
+                commit_sha=crash_commit,
+                root_digest=crash_root,
+                parent_commit_sha=anchor_commit,
+                prior_root_digest=anchor_root,
+                resume_locators=(locator,),
+            ),
+        ),
+    )
+
+    assert (anchored.state_commit_sha, anchored.state_root_digest) == (
+        current_commit,
+        current_root,
+    )
+    assert (crashed.state_commit_sha, crashed.state_root_digest) == (
+        crash_commit,
+        crash_root,
+    )
+    with pytest.raises(ValueError):
+        resolve_campaign_resume_lineage(
+            authority_digest="sha256:" + ("c" * 64),
+            acceptance_run_id=locator.acceptance_run_id,
+            original_state_commit_sha=original_commit,
+            original_state_root_digest=original_root,
+            campaign_head_commit_sha=anchor_commit,
+            observations=observations,
+        )
+    with pytest.raises(ValueError):
+        resolve_campaign_resume_lineage(
+            authority_digest=locator.live_acceptance_authority_digest,
+            acceptance_run_id=locator.acceptance_run_id,
+            original_state_commit_sha=original_commit,
+            original_state_root_digest=original_root,
+            campaign_head_commit_sha=anchor_commit,
+            observations=(
+                *observations[:-1],
+                replace(
+                    observations[-1],
+                    parent_commit_sha="d" * 40,
+                ),
+            ),
+        )
+
+
 @pytest.mark.parametrize(
     ("action", "expected_handler"),
     (("benchmark", "benchmark"), ("replay", "replay")),
