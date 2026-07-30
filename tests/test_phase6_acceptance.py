@@ -1179,6 +1179,86 @@ def test_live_runner_persists_read_and_semantic_budget_before_remote_read() -> N
     assert reservation < remote_read
 
 
+def test_fixed_runner_exhausts_only_after_three_same_authority_retries() -> None:
+    """Confirmed retries consume the exact policy budget without a fourth call."""
+
+    import skillscout.bootstrap as bootstrap
+
+    calls: list[dict[str, object]] = []
+    retryable = SimpleNamespace(
+        terminal=SimpleNamespace(outcome="confirmed_retryable"),
+        state_commit_sha="b" * 40,
+        state_root_digest="sha256:" + ("c" * 64),
+    )
+    runner = object.__new__(bootstrap._FixedRepositoryAcceptanceRunner)
+    runner._state_head = "a" * 40
+    runner._state_root = "sha256:" + ("b" * 64)
+    runner._authority = object()
+    runner._operations = object()
+    runner._barrier = object()
+    runner._phase3_factory = object()
+
+    def factory(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return retryable
+
+    runner._phase2_factory = factory
+    result = runner._run_phase2_with_retries(
+        candidate=object(),
+        pinned_commit_sha="d" * 40,
+    )
+
+    assert result is retryable
+    assert len(calls) == 3
+    assert all(call["candidate"] is calls[0]["candidate"] for call in calls)
+    assert tuple(call["observed_head"] for call in calls) == (
+        "a" * 40,
+        "b" * 40,
+        "b" * 40,
+    )
+
+
+@pytest.mark.parametrize(
+    "terminal_outcome",
+    ("semantic_outcome_unknown", "completed_reuse"),
+)
+def test_fixed_runner_never_replays_unknown_or_completed_phase2(
+    terminal_outcome: str,
+) -> None:
+    """Unknown transport and completed lookup are both terminal for the caller."""
+
+    import skillscout.bootstrap as bootstrap
+
+    calls = 0
+    terminal = SimpleNamespace(
+        terminal=SimpleNamespace(outcome=terminal_outcome),
+        state_commit_sha="b" * 40,
+        state_root_digest="sha256:" + ("c" * 64),
+    )
+    runner = object.__new__(bootstrap._FixedRepositoryAcceptanceRunner)
+    runner._state_head = "a" * 40
+    runner._state_root = "sha256:" + ("b" * 64)
+    runner._authority = object()
+    runner._operations = object()
+    runner._barrier = object()
+    runner._phase3_factory = object()
+
+    def factory(**_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return terminal
+
+    runner._phase2_factory = factory
+    assert (
+        runner._run_phase2_with_retries(
+            candidate=object(),
+            pinned_commit_sha="d" * 40,
+        )
+        is terminal
+    )
+    assert calls == 1
+
+
 def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1510,6 +1590,7 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
     original_generate = generate_adapter.OpenAIGenerationClient
     original_review = review_adapter.OpenAIReviewClient
     semantic_recordings: list[RecordedTransport] = []
+    extractor_constructions = 0
 
     def semantic_client(
         original: object,
@@ -1534,16 +1615,35 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
             http_client=httpx.Client(transport=recording.transport()),
         )
 
-    monkeypatch.setattr(
-        extract_adapter,
-        "OpenAIExtractionClient",
-        lambda **kwargs: semantic_client(
+    def extractor_client(**kwargs: object) -> object:
+        nonlocal extractor_constructions
+        extractor_constructions += 1
+        if extractor_constructions == 1:
+            recording = RecordedTransport(
+                {
+                    ("POST", "/chat/completions"): recorded_openai_fixture(
+                        "openai_429"
+                    )
+                }
+            )
+            semantic_recordings.append(recording)
+            return original_extract(
+                **kwargs,
+                api_key="bounded-test-key",
+                http_client=httpx.Client(transport=recording.transport()),
+            )
+        return semantic_client(
             original_extract,
             extractor_payload,
             "deepseek-v4-flash",
-            "chatcmpl-extractor-1",
+            "chatcmpl-extractor-2",
             **kwargs,
-        ),
+        )
+
+    monkeypatch.setattr(
+        extract_adapter,
+        "OpenAIExtractionClient",
+        extractor_client,
     )
     monkeypatch.setattr(
         generate_adapter,
@@ -1680,6 +1780,7 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
 
     assert observation.outcome == "eligible_local_candidate"
     assert observation.live_acceptance_authority_digest == authority.authority_digest
+    assert extractor_constructions == 2
     with operations_state.OperationsStateStore(operations_path) as operations:
         snapshot = operations.snapshot_run(f"{run_id}-semantic")
     assert {item.stage for item in snapshot.semantic_attempts} == {
@@ -1691,6 +1792,14 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
         "eligible_local_candidate",
         "qualification_rejected",
     }
+    assert tuple(
+        (item.stage, item.attempt_no, item.status)
+        for item in snapshot.semantic_attempts
+        if item.stage == "extractor"
+    ) == (
+        ("extractor", 1, "confirmed_retryable"),
+        ("extractor", 2, "decided"),
+    )
 
 
 @pytest.mark.parametrize(
