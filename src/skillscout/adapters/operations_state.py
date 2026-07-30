@@ -278,7 +278,9 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 _ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
-_ACCEPTANCE_FACT_KIND_SQL: Final = ", ".join(f"'{kind}'" for kind in _ACCEPTANCE_FACT_KINDS)
+_LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind for kind in _ACCEPTANCE_FACT_KINDS if kind != "acceptance_live_authority"
+)
 
 
 @dataclass(frozen=True)
@@ -331,7 +333,10 @@ class OperationsStateProjectionV1(StrictFrozenModel):
     run_summary_digests: tuple[Digest, ...]
     acceptance_nomination_digests: tuple[Digest, ...]
     acceptance_benchmark_lock_digests: tuple[Digest, ...]
-    acceptance_live_authority_digests: tuple[Digest, ...]
+    acceptance_live_authority_digests: tuple[Digest, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
     acceptance_scenario_digests: tuple[Digest, ...]
     acceptance_hosted_isolation_capability_digests: tuple[Digest, ...]
     acceptance_offline_adversarial_run_digests: tuple[Digest, ...]
@@ -350,7 +355,13 @@ class OperationsStateProjectionV1(StrictFrozenModel):
     @model_validator(mode="after")
     def validate_projection_digest(self) -> OperationsStateProjectionV1:
         values = self.model_dump(mode="json", exclude={"projection_digest"})
-        if self.projection_digest != sha256_digest(values):
+        legacy_values = dict(values)
+        if not self.acceptance_live_authority_digests:
+            legacy_values.pop("acceptance_live_authority_digests", None)
+        if self.projection_digest not in {
+            sha256_digest(values),
+            sha256_digest(legacy_values),
+        }:
             raise ValueError("operations projection digest mismatch")
         for name, value in values.items():
             if name.endswith("_digests") and (
@@ -385,7 +396,7 @@ class OperationsOwnedStateV1(StrictFrozenModel):
 
     @model_validator(mode="after")
     def validate_owned_authority(self) -> OperationsOwnedStateV1:
-        if self.schema_fingerprint != _schema_fingerprint():
+        if self.schema_fingerprint not in _SCHEMA_FINGERPRINTS:
             raise ValueError("operations schema fingerprint mismatch")
         if tuple(fact.sequence for fact in self.facts) != tuple(range(len(self.facts))):
             raise ValueError("operations facts are not canonically ordered")
@@ -424,7 +435,10 @@ class ThreeStoreProjectionV1(StrictFrozenModel):
         return self
 
 
-def _schema_statements() -> tuple[str, ...]:
+def _schema_statements(
+    acceptance_fact_kinds: tuple[str, ...] = _ACCEPTANCE_FACT_KINDS,
+) -> tuple[str, ...]:
+    acceptance_fact_kind_sql = ", ".join(f"'{kind}'" for kind in acceptance_fact_kinds)
     return (
         """CREATE TABLE operations_runs (
             run_id TEXT PRIMARY KEY,
@@ -550,7 +564,7 @@ def _schema_statements() -> tuple[str, ...]:
             acceptance_run_id TEXT NOT NULL
                 CHECK (length(acceptance_run_id) BETWEEN 1 AND 256),
             fact_kind TEXT NOT NULL CHECK (
-                fact_kind IN ({_ACCEPTANCE_FACT_KIND_SQL})
+                fact_kind IN ({acceptance_fact_kind_sql})
             ),
             schema_version TEXT NOT NULL
                 CHECK (length(schema_version) BETWEEN 1 AND 128),
@@ -566,10 +580,12 @@ def _normalize_sql(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
-def _expected_schema() -> dict[str, str]:
+def _expected_schema(
+    acceptance_fact_kinds: tuple[str, ...] = _ACCEPTANCE_FACT_KINDS,
+) -> dict[str, str]:
     pattern = re.compile(r"^CREATE TABLE ([^\s(]+)", re.I)
     expected: dict[str, str] = {}
-    for statement in _schema_statements():
+    for statement in _schema_statements(acceptance_fact_kinds):
         matched = pattern.match(statement)
         if matched is None:
             raise RuntimeError("invalid trusted operations schema")
@@ -578,6 +594,7 @@ def _expected_schema() -> dict[str, str]:
 
 
 _EXPECTED_SCHEMA: Final = _expected_schema()
+_LEGACY_EXPECTED_SCHEMA: Final = _expected_schema(_LEGACY_ACCEPTANCE_FACT_KINDS)
 _FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str, ...]], ...]] = (
     (
         "run",
@@ -722,8 +739,20 @@ _FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str,
 )
 
 
+def _fingerprint_for_schema(schema: Mapping[str, str]) -> str:
+    return sha256_digest(tuple((name, schema[name]) for name in sorted(schema)))
+
+
 def _schema_fingerprint() -> str:
-    return sha256_digest(tuple((name, _EXPECTED_SCHEMA[name]) for name in sorted(_EXPECTED_SCHEMA)))
+    return _fingerprint_for_schema(_EXPECTED_SCHEMA)
+
+
+_SCHEMA_FINGERPRINTS: Final = frozenset(
+    {
+        _fingerprint_for_schema(_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_LEGACY_EXPECTED_SCHEMA),
+    }
+)
 
 
 def _json_text(value: object) -> str:
@@ -1145,9 +1174,12 @@ def _projection_from_facts(
         "schema_version": "operations-state-projection-v1",
         **{name: tuple(sorted(digests)) for name, digests in fields.items()},
     }
+    digest_values = dict(values)
+    if not fields["acceptance_live_authority_digests"]:
+        digest_values.pop("acceptance_live_authority_digests")
     return OperationsStateProjectionV1(
         **values,
-        projection_digest=sha256_digest(values),
+        projection_digest=sha256_digest(digest_values),
     )
 
 
@@ -1312,7 +1344,7 @@ class OperationsStateStore:
                        ORDER BY name"""
                 ).fetchall()
             }
-            if actual != _EXPECTED_SCHEMA:
+            if actual not in (_EXPECTED_SCHEMA, _LEGACY_EXPECTED_SCHEMA):
                 raise OperationsIntegrityError("operations schema fingerprint mismatch")
             integrity = tuple(
                 str(row[0]) for row in connection.execute("PRAGMA integrity_check").fetchall()
@@ -2777,7 +2809,15 @@ class OperationsStateStore:
         database_bytes = cls._serialize(connection)
         facts = cls._facts_from_connection(connection)
         projection = _projection_from_facts(facts)
-        fingerprint = _schema_fingerprint()
+        actual_schema = {
+            str(row["name"]): _normalize_sql(str(row["sql"]))
+            for row in connection.execute(
+                """SELECT name, sql FROM sqlite_master
+                   WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                   ORDER BY name"""
+            ).fetchall()
+        }
+        fingerprint = _fingerprint_for_schema(actual_schema)
         return OperationsOwnedStateV1(
             schema_version="operations-owned-state-v1",
             owner="operations",
