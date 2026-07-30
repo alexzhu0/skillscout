@@ -1691,3 +1691,21 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
         "eligible_local_candidate",
         "qualification_rejected",
     }
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    (
+        ("schema_exhausted", "provider_schema_exhausted"),
+        ("provider_exhausted", "provider_attempts_exhausted"),
+        ("evidence_missing", "state_integrity_conflict"),
+        ("harness_failed", "pipeline_permanent_failure"),
+    ),
+)
+def test_acceptance_system_reason_is_derived_from_normalized_outcome(
+    outcome: str,
+    reason: str,
+) -> None:
+    import skillscout.bootstrap as bootstrap
+
+    assert bootstrap._acceptance_reason_code(outcome) == reason
