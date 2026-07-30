@@ -672,13 +672,6 @@ class PhaseThreeRunner:
         }
         checkpoint_payloads: Mapping[str, bytes] = {}
         if len(chain.results) >= 2:
-            if len(chain.results) == 2 and self.semantic_durability is not None:
-                self._confirm_semantic(
-                    chain,
-                    stage=PhaseThreeStageV1.GENERATOR,
-                    attempt_no=chain.results[1].attempt_no,
-                    status="decided",
-                )
             checkpoint_payloads = self.state.read_candidate_checkpoint_payloads(
                 chain.identity.run_id
             )
@@ -785,15 +778,9 @@ class PhaseThreeRunner:
                 > self.profile.max_generator_input_bytes
             ):
                 raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-            generator = self.dependencies.generator_factory()
-            self._require_configured_semantic_client(
-                generator,
-                model=self.profile.configured_generator_model_id,
-                max_output_tokens=self.profile.max_generator_output_tokens,
-            )
             generation, evidence, package, chain = self._retry_generate(
                 chain,
-                generator,
+                self.dependencies.generator_factory,
                 request,
                 report=report,
                 lineage=lineage,
@@ -898,13 +885,6 @@ class PhaseThreeRunner:
             "review_completed_eligible": "eligible_local_candidate",
         }
         if len(chain.results) == 4:
-            if self.semantic_durability is not None:
-                self._confirm_semantic(
-                    chain,
-                    stage=PhaseThreeStageV1.REVIEWER,
-                    attempt_no=chain.results[3].attempt_no,
-                    status="decided",
-                )
             review_payload = checkpoint_payloads.get("checkpoint_reviewer_payload")
             expected_payload_keys = {
                 "checkpoint_qualifier_payload",
@@ -981,7 +961,6 @@ class PhaseThreeRunner:
             }
             if len(chain.results) == 3 and set(checkpoint_payloads) != expected_payload_keys:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-            reviewer = self.dependencies.reviewer_factory()
             reviewer_input_bytes = review_input_size_bytes(
                 workflow_spec=self.authority.workflow_spec_authority.workflow_spec,
                 package=package,
@@ -989,18 +968,16 @@ class PhaseThreeRunner:
             )
             if reviewer_input_bytes > self.profile.max_reviewer_input_bytes:
                 raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-            self._require_configured_semantic_client(
-                reviewer,
-                model=self.profile.configured_reviewer_model_id,
-                max_output_tokens=self.profile.max_reviewer_output_tokens,
-            )
             (
                 review_result,
                 disposition,
                 attestation,
                 chain,
             ) = self._retry_review(
-                chain, reviewer, package, validation
+                chain,
+                self.dependencies.reviewer_factory,
+                package,
+                validation,
             )
         outcome = outcome_by_disposition[disposition.status]
         artifacts["review_attestation"] = review_attestation_bytes(attestation)
@@ -1060,29 +1037,11 @@ class PhaseThreeRunner:
             if prior_attempt.status not in {"failed", "abandoned"}:
                 continue
             if (
-                prior_attempt is durable_attempts[-1]
-                and self.semantic_durability is not None
-                and prior_attempt.outcome_code == "stage_transient_failure"
-            ):
-                self._confirm_semantic(
-                    chain,
-                    stage=stage,
-                    attempt_no=prior_attempt.attempt_no,
-                    status="confirmed_retryable",
-                )
-            if (
                 self.semantic_durability is not None
                 and prior_attempt is durable_attempts[-1]
                 and prior_attempt.status == "abandoned"
                 and prior_attempt.outcome_code == "attempt_interrupted"
             ):
-                if self.semantic_durability is not None:
-                    self._confirm_semantic(
-                        chain,
-                        stage=stage,
-                        attempt_no=prior_attempt.attempt_no,
-                        status="semantic_outcome_unknown",
-                    )
                 raise SemanticProviderFailure(
                     disposition=(
                         SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
@@ -1106,7 +1065,7 @@ class PhaseThreeRunner:
     def _retry_generate(
         self,
         chain: VerifiedCandidateRunChain,
-        generator: object,
+        generator_factory: Callable[[], object],
         request: GenerationRequestV1,
         *,
         report: QualificationReportV1,
@@ -1121,6 +1080,12 @@ class PhaseThreeRunner:
             chain,
             stage=PhaseThreeStageV1.GENERATOR,
             max_attempts=self.profile.max_generator_attempts,
+        )
+        generator = generator_factory()
+        self._require_configured_semantic_client(
+            generator,
+            model=self.profile.configured_generator_model_id,
+            max_output_tokens=self.profile.max_generator_output_tokens,
         )
         next_attempt = len(durable_attempts) + 1
         for attempt in range(
@@ -1295,7 +1260,7 @@ class PhaseThreeRunner:
     def _retry_review(
         self,
         chain: VerifiedCandidateRunChain,
-        reviewer: object,
+        reviewer_factory: Callable[[], object],
         package: object,
         validation: object,
     ) -> tuple[object, object, ReviewAttestationV1, VerifiedCandidateRunChain]:
@@ -1305,6 +1270,12 @@ class PhaseThreeRunner:
             chain,
             stage=PhaseThreeStageV1.REVIEWER,
             max_attempts=self.profile.max_reviewer_attempts,
+        )
+        reviewer = reviewer_factory()
+        self._require_configured_semantic_client(
+            reviewer,
+            model=self.profile.configured_reviewer_model_id,
+            max_output_tokens=self.profile.max_reviewer_output_tokens,
         )
         failed_attempts = [
             ReviewerFailedAttemptV1(
