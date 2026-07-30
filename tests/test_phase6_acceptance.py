@@ -717,7 +717,6 @@ def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() 
 @pytest.mark.parametrize(
     ("transition_phase", "semantic_status"),
     (
-        ("anchored", None),
         ("request_reserved", None),
         ("started", "started"),
         ("result_durable", "decided"),
@@ -1239,19 +1238,21 @@ def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
         lineage_root_digests=(original_root,),
     )
 
-    first = barrier.anchor_acceptance_resume(
+    first = barrier.sync_discovery(
         operations_store=Operations(),
         observed_head=original_commit,
         prior_root_digest=original_root,
         created_at="2026-07-30T12:00:00.000000Z",
         pipeline_store=object(),
+        transition_phase="terminal",
     )
-    second = barrier.anchor_acceptance_resume(
+    second = barrier.sync_discovery(
         operations_store=Operations(),
         observed_head=anchor_commit,
         prior_root_digest=anchor_root,
         created_at="2026-07-30T12:01:00.000000Z",
         pipeline_store=object(),
+        transition_phase="scenario",
     )
 
     assert first.commit_sha == anchor_commit
@@ -1278,7 +1279,7 @@ def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
             anchor_root,
             2,
             recorded[0].locator_digest,
-            "terminal",
+            "scenario",
         ),
     ]
 
@@ -1289,6 +1290,7 @@ def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> No
     from dataclasses import replace
 
     from skillscout.application.acceptance import (
+        CampaignOwnedFactObservation,
         CampaignResumeLocatorObservation,
         CampaignStateLineageObservation,
         resolve_campaign_resume_lineage,
@@ -1344,11 +1346,11 @@ def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> No
         parent_state_root_digest=original_root,
         transition_index=1,
         previous_locator_digest=None,
-        transition_phase="scenario",
-        semantic_stage=None,
-        attempt_no=None,
-        semantic_status=None,
-        workflow_authority_digest=None,
+        transition_phase="started",
+        semantic_stage="extractor",
+        attempt_no=3,
+        semantic_status="started",
+        workflow_authority_digest="sha256:" + ("c" * 64),
         recorded_at="2026-07-30T12:00:00.000000Z",
     )
     second = AcceptanceCampaignResumeLocatorV1(
@@ -1357,11 +1359,11 @@ def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> No
         parent_state_root_digest=current_root,
         transition_index=2,
         previous_locator_digest=first.locator_digest,
-        transition_phase="terminal",
-        semantic_stage=None,
-        attempt_no=None,
-        semantic_status=None,
-        workflow_authority_digest=None,
+        transition_phase="result_durable",
+        semantic_stage="extractor",
+        attempt_no=3,
+        semantic_status="confirmed_retryable",
+        workflow_authority_digest="sha256:" + ("c" * 64),
         recorded_at="2026-07-30T12:01:00.000000Z",
     )
     third = AcceptanceCampaignResumeLocatorV1(
@@ -1370,16 +1372,34 @@ def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> No
         parent_state_root_digest=anchor_root,
         transition_index=3,
         previous_locator_digest=second.locator_digest,
-        transition_phase="result_durable",
-        semantic_stage="extractor",
-        attempt_no=3,
-        semantic_status="confirmed_retryable",
-        workflow_authority_digest="sha256:" + ("c" * 64),
+        transition_phase="terminal",
+        semantic_stage=None,
+        attempt_no=None,
+        semantic_status=None,
+        workflow_authority_digest=None,
         recorded_at="2026-07-30T12:02:00.000000Z",
     )
     first_object = "sha256:" + ("d" * 64)
     second_object = "sha256:" + ("e" * 64)
     third_object = "sha256:" + ("f" * 64)
+    started_fact = CampaignOwnedFactObservation(
+        kind="semantic_attempt",
+        object_digest="sha256:" + ("1" * 64),
+        semantic_stage="extractor",
+        attempt_no=3,
+        semantic_status="started",
+    )
+    result_fact = CampaignOwnedFactObservation(
+        kind="semantic_attempt",
+        object_digest="sha256:" + ("2" * 64),
+        semantic_stage="extractor",
+        attempt_no=3,
+        semantic_status="confirmed_retryable",
+    )
+    terminal_fact = CampaignOwnedFactObservation(
+        kind="candidate_terminal",
+        object_digest="sha256:" + ("3" * 64),
+    )
     final_graph = (
         CampaignResumeLocatorObservation(first, first_object),
         CampaignResumeLocatorObservation(second, second_object),
@@ -1392,22 +1412,30 @@ def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> No
             prior_root_digest="sha256:" + ("0" * 64),
             object_digests=(),
             resume_locators=(),
+            owned_facts=(),
         ),
         CampaignStateLineageObservation(
             commit_sha=current_commit,
             root_digest=current_root,
             parent_commit_sha=original_commit,
             prior_root_digest=original_root,
-            object_digests=(first_object,),
+            object_digests=(first_object, started_fact.object_digest),
             resume_locators=(),
+            owned_facts=(started_fact,),
         ),
         CampaignStateLineageObservation(
             commit_sha=anchor_commit,
             root_digest=anchor_root,
             parent_commit_sha=current_commit,
             prior_root_digest=current_root,
-            object_digests=(first_object, second_object),
+            object_digests=(
+                first_object,
+                second_object,
+                started_fact.object_digest,
+                result_fact.object_digest,
+            ),
             resume_locators=final_graph,
+            owned_facts=(started_fact, result_fact),
         ),
     )
 
@@ -1431,8 +1459,14 @@ def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> No
             root_digest=crash_root,
             parent_commit_sha=anchor_commit,
             prior_root_digest=anchor_root,
-            object_digests=(first_object, second_object),
+            object_digests=(
+                first_object,
+                second_object,
+                started_fact.object_digest,
+                result_fact.object_digest,
+            ),
             resume_locators=final_graph,
+            owned_facts=(started_fact, result_fact),
         ),
     )
     with pytest.raises(ValueError, match="transition graph is incomplete"):
@@ -1448,11 +1482,19 @@ def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> No
         *observations,
         replace(
             unlocated_crash[-1],
-            object_digests=(first_object, second_object, third_object),
+            object_digests=(
+                first_object,
+                second_object,
+                third_object,
+                started_fact.object_digest,
+                result_fact.object_digest,
+                terminal_fact.object_digest,
+            ),
             resume_locators=(
                 *final_graph,
                 CampaignResumeLocatorObservation(third, third_object),
             ),
+            owned_facts=(started_fact, result_fact, terminal_fact),
         ),
     )
     crashed = resolve_campaign_resume_lineage(

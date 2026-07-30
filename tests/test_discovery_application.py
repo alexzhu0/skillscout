@@ -682,6 +682,7 @@ def test_late_discovery_barrier_accepts_strict_sync_receipt_without_second_resto
             "observed_head": "a" * 40,
             "prior_root_digest": config.initial_state_root_digest,
             "created_at": "2026-07-28T03:40:00.000000Z",
+            "transition_phase": "discovery_summary",
         }
         if mutation == "valid":
             synchronized = barrier.sync_discovery(**arguments)
@@ -1874,7 +1875,9 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
             prior_root_digest,
             created_at,
             pipeline_store=None,
+            transition_phase,
         ):
+            assert transition_phase in {"terminal", "discovery_summary"}
             snapshot = operations_store.snapshot_run(authority.run_id)
             if not snapshot.candidate_terminals:
                 raise AssertionError(

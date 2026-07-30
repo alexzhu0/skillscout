@@ -969,32 +969,6 @@ class _LateStateDurabilityBarrier:
             raise ValueError("acceptance resume locator is invalid")
         return digest, index
 
-    def anchor_acceptance_resume(
-        self,
-        *,
-        operations_store: object,
-        observed_head: str,
-        prior_root_digest: str,
-        created_at: str,
-        pipeline_store: object | None = None,
-        stage: str | None = None,
-        attempt_no: int | None = None,
-        workflow_authority_digest: str | None = None,
-    ) -> object:
-        """Persist either a semantic request anchor or a terminal campaign edge."""
-
-        return self.sync_discovery(
-            operations_store=operations_store,
-            observed_head=observed_head,
-            prior_root_digest=prior_root_digest,
-            created_at=created_at,
-            pipeline_store=pipeline_store,
-            transition_phase="anchored" if stage is not None else "terminal",
-            semantic_stage=stage,
-            attempt_no=attempt_no,
-            workflow_authority_digest=workflow_authority_digest,
-        )
-
     def _record_acceptance_transition(
         self,
         *,
@@ -1178,7 +1152,7 @@ class _LateStateDurabilityBarrier:
         prior_root_digest: str,
         created_at: str,
         pipeline_store: object | None = None,
-        transition_phase: str = "scenario",
+        transition_phase: str,
         semantic_stage: str | None = None,
         attempt_no: int | None = None,
         semantic_status: str | None = None,
@@ -1273,7 +1247,10 @@ class _LateStateDurabilityBarrier:
     def sync_nomination(self, **arguments: object) -> object:
         """Reuse the exact three-store CAS for a Search-only nomination."""
 
-        return self.sync_discovery(**arguments)  # type: ignore[arg-type]
+        return self.sync_discovery(  # type: ignore[arg-type]
+            **arguments,
+            transition_phase="nomination",
+        )
 
 
 class _LazyDiscoveryCapability:
@@ -1602,6 +1579,7 @@ def build_discovery_application(
                     prior_root_digest=state_root,
                     created_at=_discovery_timestamp(),
                     pipeline_store=pipeline_store,
+                    transition_phase="semantic_candidate_reserved",
                 )
                 state_head = synchronized.commit_sha
                 state_root = synchronized.root_digest
@@ -1624,24 +1602,6 @@ def build_discovery_application(
                 nonlocal state_head, state_root
                 if fixed_admission is None:
                     raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-                anchor_resume = getattr(
-                    barrier,
-                    "anchor_acceptance_resume",
-                    None,
-                )
-                if callable(anchor_resume):
-                    anchored = anchor_resume(
-                        operations_store=operations,
-                        observed_head=state_head,
-                        prior_root_digest=state_root,
-                        created_at=_discovery_timestamp(),
-                        pipeline_store=pipeline_store,
-                        stage=stage,
-                        attempt_no=attempt_no,
-                        workflow_authority_digest=workflow_authority_digest,
-                    )
-                    state_head = anchored.commit_sha
-                    state_root = anchored.root_digest
                 request = operations.reserve_acceptance_semantic_request(
                     acceptance_run_id=fixed_admission.acceptance_run_id,
                     fixed_candidate_admission_digest=(
@@ -3268,6 +3228,7 @@ class _FixedRepositoryAcceptanceRunner:
                 observed_head=self._state_head,
                 prior_root_digest=self._state_root,
                 created_at=_discovery_timestamp(),
+                transition_phase="budget_reserved",
             )
             self._state_head = synchronized.commit_sha
             self._state_root = synchronized.root_digest
@@ -3361,6 +3322,7 @@ class _FixedRepositoryAcceptanceRunner:
                 observed_head=self._state_head,
                 prior_root_digest=self._state_root,
                 created_at=_discovery_timestamp(),
+                transition_phase="candidate_admitted",
             )
             self._state_head = synchronized.commit_sha
             self._state_root = synchronized.root_digest
@@ -3402,6 +3364,15 @@ class _FixedRepositoryAcceptanceRunner:
             self._authority.run_id,
             execution.terminal,
         )
+        synchronized = self._barrier.sync_discovery(
+            operations_store=self._operations,
+            observed_head=self._state_head,
+            prior_root_digest=self._state_root,
+            created_at=_discovery_timestamp(),
+            transition_phase="terminal",
+        )
+        self._state_head = synchronized.commit_sha
+        self._state_root = synchronized.root_digest
         operations_snapshot = self._operations.snapshot_run(
             self._authority.run_id
         )
@@ -3845,7 +3816,6 @@ def build_live_acceptance_execution(
                 discovery_factory=runner_factory,
                 operations_store_factory=operations_factory,
                 state_sync=state_sync,
-                resume_anchor=barrier.anchor_acceptance_resume,
             ),
             manifest=config.manifest,
             acceptance_run_id=acceptance_run_id,

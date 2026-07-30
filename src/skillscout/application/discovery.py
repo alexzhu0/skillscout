@@ -592,6 +592,7 @@ class DiscoveryApplication:
                         operations=operations,
                         observed_head=observed_head,
                         root_digest=root_digest,
+                        transition_phase="discovery_page",
                     )
                     observed_head = synchronized.commit_sha
                     root_digest = synchronized.root_digest
@@ -651,6 +652,7 @@ class DiscoveryApplication:
                     operations=operations,
                     observed_head=observed_head,
                     root_digest=root_digest,
+                    transition_phase="discovery_reservation",
                 )
                 observed_head = synchronized.commit_sha
                 root_digest = synchronized.root_digest
@@ -699,6 +701,7 @@ class DiscoveryApplication:
                 operations=operations,
                 observed_head=observed_head,
                 root_digest=root_digest,
+                transition_phase="terminal",
             )
             observed_head = synchronized.commit_sha
             root_digest = synchronized.root_digest
@@ -772,6 +775,7 @@ class DiscoveryApplication:
             operations=operations,
             observed_head=observed_head,
             root_digest=root_digest,
+            transition_phase="discovery_summary",
         )
         return DiscoveryApplicationResult(
             run_id=authority.run_id,
@@ -786,6 +790,7 @@ class DiscoveryApplication:
         operations: object,
         observed_head: str,
         root_digest: str,
+        transition_phase: str,
     ) -> object:
         synchronize = getattr(
             self._dependencies.durability_barrier,
@@ -799,6 +804,7 @@ class DiscoveryApplication:
             observed_head=observed_head,
             prior_root_digest=root_digest,
             created_at=_timestamp(),
+            transition_phase=transition_phase,
         )
 
 

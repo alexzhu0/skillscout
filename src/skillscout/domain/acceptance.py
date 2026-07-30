@@ -380,12 +380,20 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
     transition_index: Annotated[int, Field(ge=1, le=160)]
     previous_locator_digest: Digest | None
     transition_phase: Literal[
-        "anchored",
+        "nomination",
+        "discovery_page",
+        "discovery_reservation",
+        "discovery_summary",
+        "budget_reserved",
+        "candidate_admitted",
+        "semantic_candidate_reserved",
         "request_reserved",
         "started",
         "result_durable",
         "terminal",
         "scenario",
+        "replay_intent",
+        "replay_evidence",
     ]
     semantic_stage: Literal["extractor", "generator", "reviewer"] | None
     attempt_no: Annotated[int, Field(ge=1, le=3)] | None
@@ -438,7 +446,6 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
     @model_validator(mode="after")
     def validate_transition(self) -> Self:
         semantic = self.transition_phase in {
-            "anchored",
             "request_reserved",
             "started",
             "result_durable",
@@ -452,7 +459,7 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
                 and self.workflow_authority_digest is not None
             )
             or (
-                self.transition_phase in {"anchored", "request_reserved"}
+                self.transition_phase == "request_reserved"
                 and self.semantic_status is not None
             )
             or (
@@ -469,7 +476,21 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
                 }
             )
             or (
-                self.transition_phase in {"terminal", "scenario"}
+                self.transition_phase
+                not in {
+                    "request_reserved",
+                    "started",
+                    "result_durable",
+                }
+                and (
+                    self.semantic_stage is not None
+                    or self.attempt_no is not None
+                    or self.workflow_authority_digest is not None
+                )
+            )
+            or (
+                self.transition_phase
+                not in {"started", "result_durable"}
                 and self.semantic_status is not None
             )
             or self.policy_versions != tuple(sorted(self.policy_versions))

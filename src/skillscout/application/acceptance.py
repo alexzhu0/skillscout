@@ -68,6 +68,17 @@ class CampaignResumeLocatorObservation:
 
 
 @dataclass(frozen=True)
+class CampaignOwnedFactObservation:
+    """One typed operations-owned fact present in an immutable state child."""
+
+    kind: str
+    object_digest: str
+    semantic_stage: str | None = None
+    attempt_no: int | None = None
+    semantic_status: str | None = None
+
+
+@dataclass(frozen=True)
 class CampaignStateLineageObservation:
     """One bounded commit/tree/root proof in authority-to-head order."""
 
@@ -78,6 +89,7 @@ class CampaignStateLineageObservation:
     object_digests: tuple[str, ...]
     declared_content_bytes: int = 0
     resume_locators: tuple[CampaignResumeLocatorObservation, ...] = ()
+    owned_facts: tuple[CampaignOwnedFactObservation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,6 +185,11 @@ def resolve_campaign_resume_lineage(
             )
         ):
             raise ValueError("campaign resume transition edge rejected")
+        _verify_campaign_transition_fact_delta(
+            locator=locator,
+            parent=parent,
+            child=child,
+        )
         previous_locator_digest = locator.locator_digest
     locator = ordered[-1].locator
     selected_index = len(observations) - 1
@@ -183,6 +200,69 @@ def resolve_campaign_resume_lineage(
         lineage_commit_shas=commits[: selected_index + 1],
         lineage_root_digests=roots[: selected_index + 1],
     )
+
+
+def _verify_campaign_transition_fact_delta(
+    *,
+    locator: AcceptanceCampaignResumeLocatorV1,
+    parent: CampaignStateLineageObservation,
+    child: CampaignStateLineageObservation,
+) -> None:
+    """Require the named child to be the first durable owner of its exact facts."""
+
+    parent_facts = {item.object_digest: item for item in parent.owned_facts}
+    child_facts = {item.object_digest: item for item in child.owned_facts}
+    if (
+        len(parent_facts) != len(parent.owned_facts)
+        or len(child_facts) != len(child.owned_facts)
+        or not set(parent_facts).issubset(child_facts)
+        or any(child_facts[digest] != fact for digest, fact in parent_facts.items())
+    ):
+        raise ValueError("campaign resume typed fact delta rejected")
+    added = tuple(
+        child_facts[digest]
+        for digest in sorted(set(child_facts) - set(parent_facts))
+    )
+    exact_kind = {
+        "nomination": "acceptance_nomination",
+        "discovery_page": "search_page",
+        "discovery_reservation": "discovery_reservation",
+        "discovery_summary": "run_summary",
+        "budget_reserved": "acceptance_budget_reservation",
+        "candidate_admitted": "acceptance_fixed_candidate_admission",
+        "semantic_candidate_reserved": "semantic_reservation",
+        "request_reserved": "acceptance_semantic_request_reservation",
+        "started": "semantic_attempt",
+        "result_durable": "semantic_attempt",
+        "scenario": "acceptance_scenario",
+        "replay_intent": "acceptance_replay",
+        "replay_evidence": "acceptance_replay_evidence",
+    }.get(locator.transition_phase)
+    if locator.transition_phase == "terminal":
+        kinds = tuple(item.kind for item in added)
+        accepted = (
+            kinds.count("candidate_terminal") == 1
+            and all(
+                kind in {"candidate_terminal", "workflow_terminal"}
+                for kind in kinds
+            )
+        )
+    else:
+        accepted = (
+            exact_kind is not None
+            and len(added) == 1
+            and added[0].kind == exact_kind
+        )
+    if not accepted:
+        raise ValueError("campaign resume typed fact delta rejected")
+    if locator.transition_phase in {"started", "result_durable"}:
+        fact = added[0]
+        if (
+            fact.semantic_stage != locator.semantic_stage
+            or fact.attempt_no != locator.attempt_no
+            or fact.semantic_status != locator.semantic_status
+        ):
+            raise ValueError("campaign resume typed fact delta rejected")
 
 
 _ELIGIBLE_TERMINALS: Final = frozenset({"eligible", "eligible_local_candidate"})
@@ -596,7 +676,6 @@ class LockedCampaignDependencies:
     discovery_factory: Callable[[str, str], object]
     operations_store_factory: Callable[[], object]
     state_sync: Callable[..., object]
-    resume_anchor: Callable[..., object] | None = None
     candidate_factory: Callable[[], object] | None = None
     publication_factory: Callable[[], object] | None = None
 
@@ -1142,6 +1221,7 @@ def run_locked_benchmark(
                 observed_head=current_head,
                 prior_root_digest=current_root,
                 created_at=recorded_at,
+                transition_phase="scenario",
             )
             next_head = getattr(synchronized, "commit_sha", None)
             next_root = getattr(synchronized, "root_digest", None)
@@ -1155,29 +1235,6 @@ def run_locked_benchmark(
             ):
                 raise AcceptanceApplicationError("evidence_missing")
             current_head, current_root = next_head, next_root
-            if dependencies.resume_anchor is not None:
-                anchored = dependencies.resume_anchor(
-                    operations_store=store,
-                    observed_head=current_head,
-                    prior_root_digest=current_root,
-                    created_at=recorded_at,
-                )
-                anchor_head = getattr(anchored, "commit_sha", None)
-                anchor_root = getattr(anchored, "root_digest", None)
-                if (
-                    getattr(anchored, "status", None) != "verified"
-                    or getattr(anchored, "previous_head", None)
-                    != current_head
-                    or type(anchor_head) is not str
-                    or re.fullmatch(r"[0-9a-f]{40}", anchor_head) is None
-                    or type(anchor_root) is not str
-                    or re.fullmatch(
-                        r"sha256:[0-9a-f]{64}", anchor_root
-                    )
-                    is None
-                ):
-                    raise AcceptanceApplicationError("evidence_missing")
-                current_head, current_root = anchor_head, anchor_root
             _close(store)
             store = None
             results.append(result)
@@ -1255,6 +1312,7 @@ def run_exact_replay(
             observed_head=state_commit_sha,
             prior_root_digest=state_root_digest,
             created_at=recorded_at,
+            transition_phase="replay_intent",
         )
         next_head = getattr(synchronized, "commit_sha", None)
         next_root = getattr(synchronized, "root_digest", None)
@@ -1330,6 +1388,7 @@ def run_exact_replay(
             observed_head=next_head,
             prior_root_digest=next_root,
             created_at=recorded_at,
+            transition_phase="replay_evidence",
         )
         final_head = getattr(evidence_sync, "commit_sha", None)
         final_root = getattr(evidence_sync, "root_digest", None)
