@@ -669,8 +669,15 @@ def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> No
             return None
 
     class Store:
-        def record_acceptance_fact(self, *_: object) -> object:
-            return object()
+        def record_acceptance_fact(
+            self, acceptance_run_id: str, kind: str, fact: object
+        ) -> object:
+            return module.AcceptanceFactRecord(
+                acceptance_run_id=acceptance_run_id,
+                kind=kind,
+                fact_digest=fact.replay_digest,
+                fact=fact,
+            )
 
         def close(self) -> None:
             return None

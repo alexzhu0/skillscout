@@ -468,10 +468,11 @@ class LockedCampaignDependencies:
 
 @dataclass(frozen=True)
 class ReplayUpdateDependencies:
-    """Completed-first replay/update composition with a late Draft publisher."""
+    """Completed-first replay composition with exact state persistence."""
 
     completed_projector_factory: Callable[[], object]
     operations_store_factory: Callable[[], object]
+    state_sync: Callable[..., object]
     publication_factory: Callable[[], object] | None = None
 
 
@@ -568,6 +569,34 @@ class CompletedBenchmarkProjection:
     workflow_spec_authority_digest: str
     eligible_locators: tuple[str, ...]
     semantic_attempt_count: int
+    semantic_attempt_digests: tuple[str, ...]
+    workflow_spec_authority_digests: tuple[str, ...]
+    skill_identity_digests: tuple[str, ...]
+    candidate_fact_digests: tuple[str, ...]
+    semantic_request_count: int
+
+    def __post_init__(self) -> None:
+        digest_sets = (
+            self.scenario_result_digests,
+            self.semantic_attempt_digests,
+            self.workflow_spec_authority_digests,
+            self.skill_identity_digests,
+            self.candidate_fact_digests,
+        )
+        if (
+            len(self.scenario_result_digests) != 5
+            or any(
+                values != tuple(sorted(values))
+                or len(values) != len(set(values))
+                or any(re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None for item in values)
+                for values in digest_sets
+            )
+            or self.eligible_locators != tuple(sorted(self.eligible_locators))
+            or len(self.eligible_locators) != len(set(self.eligible_locators))
+            or self.semantic_attempt_count != len(self.semantic_attempt_digests)
+            or self.semantic_request_count != self.semantic_attempt_count
+        ):
+            raise ValueError("completed benchmark projection is not exact")
 
 
 def load_locked_benchmark_manifest(path: Path) -> LockedBenchmarkManifestV1:
@@ -768,7 +797,7 @@ def run_exact_replay(
     state_root_digest: str,
     recorded_at: str,
 ) -> ReplayEvidenceV1:
-    """Project completed evidence first, then persist a zero-effect replay fact."""
+    """Persist one replay fact, then measure the same campaign projection again."""
 
     if type(dependencies) is not ReplayUpdateDependencies:
         raise TypeError("invalid replay dependencies")
@@ -817,12 +846,51 @@ def run_exact_replay(
         reviewer_effect_count=0,
         recorded_at=recorded_at,
     )
-    _record_fact(
-        dependencies.operations_store_factory,
-        acceptance_run_id,
-        "acceptance_replay",
-        replay,
-    )
+    store = dependencies.operations_store_factory()
+    try:
+        _record_on_open_store(
+            store,
+            acceptance_run_id,
+            "acceptance_replay",
+            replay,
+        )
+        synchronized = dependencies.state_sync(
+            operations_store=store,
+            observed_head=state_commit_sha,
+            prior_root_digest=state_root_digest,
+            created_at=recorded_at,
+        )
+        next_head = getattr(synchronized, "commit_sha", None)
+        next_root = getattr(synchronized, "root_digest", None)
+        if (
+            getattr(synchronized, "status", None) != "verified"
+            or getattr(synchronized, "previous_head", None) != state_commit_sha
+            or type(next_head) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", next_head) is None
+            or type(next_root) is not str
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", next_root) is None
+        ):
+            raise AcceptanceApplicationError("evidence_missing")
+    finally:
+        _close(store)
+
+    after_projector = dependencies.completed_projector_factory()
+    try:
+        after_project = getattr(after_projector, "project", None)
+        if not callable(after_project):
+            raise AcceptanceApplicationError("evidence_missing")
+        after_projection = after_project(
+            manifest=manifest,
+            state_commit_sha=next_head,
+            state_root_digest=next_root,
+        )
+    finally:
+        _close(after_projector)
+    if (
+        type(after_projection) is not CompletedBenchmarkProjection
+        or after_projection != projection
+    ):
+        raise AcceptanceApplicationError("duplicate_effect")
     return replay
 
 
