@@ -264,7 +264,9 @@ def _run(
         chain = store.verify_run_chain(summary.run_id)
         outcomes = [str(envelope.payload["outcome"]) for envelope in chain.results]
         attempts = store.connection.execute(
-            """SELECT stage, attempt_no, status, retryable FROM stage_attempts
+            """SELECT stage, attempt_no, status, retryable, prompt_version,
+                      policy_version, model_id
+               FROM stage_attempts
                ORDER BY stage_index"""
         ).fetchall()
     finally:
@@ -328,6 +330,7 @@ def test_extracted_two_workflows_payload_is_contract_valid() -> None:
     telemetry = outcome.telemetry
     assert telemetry is not None
     assert telemetry.prompt_version == EXTRACT_PROMPT_VERSION
+    assert telemetry.policy_version == "extract-policy-v1"
     assert telemetry.model_id == ACTUAL_MODEL
     assert telemetry.request_id == "resp_ext_0001"
     assert telemetry.token_usage == TokenUsage(
@@ -646,12 +649,17 @@ def test_reader_empty_skips_the_extractor_without_an_openai_request(tmp_path: Pa
 
 
 def test_canary_disciplines_hold_on_the_extracted_happy_path(tmp_path: Path) -> None:
-    summary, outcomes, _attempts, _github_rec, openai_rec = _run(
+    summary, outcomes, attempts, _github_rec, openai_rec = _run(
         tmp_path, _github_routes(), recorded_openai_fixture("parsed_2_workflows")
     )
 
     assert summary.status is RunStatus.COMPLETED
     assert outcomes == ["accepted", "accepted", "accepted", "extracted"]
+    extractor_attempt = attempts[-1]
+    assert extractor_attempt["stage"] == "extractor"
+    assert extractor_attempt["prompt_version"] == EXTRACT_PROMPT_VERSION
+    assert extractor_attempt["policy_version"] == "extract-policy-v1"
+    assert extractor_attempt["model_id"] == ACTUAL_MODEL
     durable = _durable_bytes(tmp_path)
     assert FULL_TEXT_CANARY.encode() not in durable
 
