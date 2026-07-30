@@ -573,6 +573,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
     events: list[str] = []
 
     projections = 0
+    persisted: list[tuple[str, object]] = []
 
     class Projector:
         def project(self, **_: object) -> object:
@@ -600,6 +601,12 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
                 candidate_fact_digests=tuple(
                     "sha256:" + f"{index:064x}" for index in range(21, 26)
                 ),
+                acceptance_business_fact_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(31, 36)
+                ),
+                operations_fact_digests=tuple(
+                    "sha256:" + f"{index:064x}" for index in range(41, 46)
+                ),
                 semantic_request_count=5,
             )
 
@@ -611,6 +618,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
             self, acceptance_run_id: str, kind: str, fact: object
         ) -> object:
             events.append("record")
+            persisted.append((kind, fact))
             return module.AcceptanceFactRecord(
                 acceptance_run_id=acceptance_run_id,
                 kind=kind,
@@ -621,13 +629,17 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
         def close(self) -> None:
             return None
 
-    def sync(**_: object) -> object:
+    sync_count = 0
+
+    def sync(*, observed_head: str, **_: object) -> object:
+        nonlocal sync_count
+        sync_count += 1
         events.append("sync")
         return SimpleNamespace(
             status="verified",
-            previous_head="c" * 40,
-            commit_sha="e" * 40,
-            root_digest="sha256:" + ("f" * 64),
+            previous_head=observed_head,
+            commit_sha=("e" if sync_count == 1 else "1") * 40,
+            root_digest="sha256:" + (("f" if sync_count == 1 else "2") * 64),
         )
 
     dependencies = module.ReplayUpdateDependencies(
@@ -644,8 +656,21 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
         recorded_at=TIMESTAMP,
     )
 
-    assert events == ["project", "record", "sync", "project"]
-    assert projections == 2
+    assert events == [
+        "project",
+        "record",
+        "sync",
+        "project",
+        "record",
+        "sync",
+        "project",
+    ]
+    assert projections == 3
+    assert tuple(kind for kind, _ in persisted) == (
+        "acceptance_replay",
+        "acceptance_replay_evidence",
+    )
+    assert persisted[1][1] == replay
     assert replay.semantic_request_count == 0
     assert replay.duplicate_workflow_spec_count == 0
     assert replay.duplicate_skill_count == 0
@@ -658,7 +683,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
     assert replay.before_projection_digest == replay.after_projection_digest
     assert replay.before_object_digests == replay.after_object_digests
     assert replay.replay_fact_digest.startswith("sha256:")
-    assert events == ["project", "record", "sync", "project"]
+    assert replay.allowed_delta_fact_digests == (replay.replay_fact_digest,)
 
 
 def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> None:
