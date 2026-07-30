@@ -836,6 +836,40 @@ def test_live_authority_contract_binds_human_approval_and_every_effect_identity(
         contract(**{**values, "max_semantic_requests": 21})
 
 
+def test_semantic_telemetry_is_bound_to_live_authority_and_exact_stage_matrix() -> None:
+    module = _acceptance_module(skip_if_missing=False)
+    telemetry = module.AcceptanceSemanticTelemetryV1(
+        schema_version="acceptance-semantic-telemetry-v1",
+        live_acceptance_authority_digest=DIGEST_A,
+        stage="extractor",
+        workflow_spec_authority_digest=DIGEST_B,
+        attempt_no=1,
+        request_id="request-extractor-1",
+        actual_model="deepseek-v4-flash",
+        prompt_version="extract-prompt-v1",
+        output_schema_version="workflow-spec-v1",
+        policy_version="extract-policy-v1",
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        latency_ms=20,
+    )
+
+    assert telemetry.live_acceptance_authority_digest == DIGEST_A
+    assert "live_acceptance_authority_digest" in (
+        module.AcceptanceScenarioResultV1.model_fields
+    )
+    with pytest.raises(ValueError):
+        telemetry.model_copy(
+            update={"prompt_version": "extract-prompt-drift-v2"},
+        ).model_validate(
+            {
+                **telemetry.model_dump(mode="json"),
+                "prompt_version": "extract-prompt-drift-v2",
+            }
+        )
+
+
 def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
     module = _acceptance_module(skip_if_missing=False)
     telemetry_type = module.AcceptanceSemanticTelemetryV1
