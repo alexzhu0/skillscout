@@ -29,6 +29,8 @@ from skillscout.domain.discovery import (
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.acceptance import (
     HostedIsolationCapabilityV1,
+    NominationEntryV1,
+    NominationSetV1,
     OfflineAdversarialRunV1,
     PublicationReplayCompletionV1,
     ReplayEvidenceV1,
@@ -280,6 +282,35 @@ def _offline_run(
     )
 
 
+def _nomination_set() -> NominationSetV1:
+    entries = tuple(
+        sorted(
+            (
+                NominationEntryV1(
+                    schema_version="nomination-entry-v1",
+                    repository_full_name=f"fixture/repository-{index}",
+                    repository_id=index,
+                    exact_commit_sha=f"{index:040x}",
+                    license_spdx="MIT",
+                    selection_source="search_derived",
+                    selection_evidence_digests=(DIGEST_A, DIGEST_B),
+                )
+                for index in range(1, 6)
+            ),
+            key=lambda entry: entry.entry_digest,
+        )
+    )
+    return NominationSetV1(
+        schema_version="nomination-set-v1",
+        nomination_set_id="nomination-operations",
+        query_set_digest=DIGEST_A,
+        search_run_authority_digest=DIGEST_B,
+        search_derived_entries=entries,
+        user_nominated_entries=(),
+        created_at=TIMESTAMP,
+    )
+
+
 def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     module = _operations_module()
     assert tuple(module.ACCEPTANCE_FACT_MODELS) == (
@@ -378,6 +409,34 @@ def test_acceptance_capability_reference_and_owned_rebuild_are_exact(
     module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
     with module.OperationsStateStore(rebuilt) as store:
         fresh = store.export_owned_state()
+    assert fresh.facts == exported.facts
+    assert fresh.projection == exported.projection
+    assert (
+        fresh.database_bytes == exported.database_bytes
+        and fresh.database_digest == exported.database_digest
+    )
+
+
+def test_nomination_entries_round_trip_through_owned_state(tmp_path: Path) -> None:
+    module = _operations_module()
+    nomination = _nomination_set()
+    source = tmp_path / "nomination-source.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        recorded = store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        assert recorded.fact_digest == nomination.nomination_set_digest
+        exported = store.export_owned_state()
+
+    rebuilt = tmp_path / "nomination-rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        snapshot = store.acceptance_snapshot(nomination.nomination_set_id)
+        fresh = store.export_owned_state()
+
+    assert snapshot.facts[0].fact == nomination
     assert fresh.facts == exported.facts
     assert fresh.projection == exported.projection
     assert (

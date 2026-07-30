@@ -30,6 +30,7 @@ TIMESTAMP_A = "2026-07-29T00:00:00.000000Z"
 TIMESTAMP_B = "2026-07-29T00:30:00.000000Z"
 
 REQUIRED_DOMAIN_CONTRACTS = (
+    "NominationEntryV1",
     "NominationSetV1",
     "BenchmarkEntryV1",
     "BenchmarkLockAttestationV1",
@@ -50,6 +51,15 @@ REQUIRED_DOMAIN_CONTRACTS = (
 )
 
 EXACT_FIELDS = {
+    "NominationEntryV1": (
+        "repository_full_name",
+        "repository_id",
+        "exact_commit_sha",
+        "license_spdx",
+        "selection_source",
+        "selection_evidence_digests",
+        "entry_digest",
+    ),
     "BenchmarkEntryV1": (
         "repository_full_name",
         "repository_id",
@@ -57,7 +67,7 @@ EXACT_FIELDS = {
         "license_spdx",
         "selection_source",
         "coverage_role",
-        "search_nomination_digest",
+        "nomination_entry_digest",
         "selection_evidence_digests",
         "entry_digest",
     ),
@@ -585,6 +595,7 @@ def test_reviewer_calibration_is_redacted_self_digested_and_advice_only() -> Non
 
 
 def test_benchmark_contracts_freeze_fixed_identity_distribution_and_human_lock() -> None:
+    nomination_entry = _symbol("NominationEntryV1")
     entry = _symbol("BenchmarkEntryV1")
     nomination = _symbol("NominationSetV1")
     lock = _symbol("BenchmarkLockAttestationV1")
@@ -596,10 +607,25 @@ def test_benchmark_contracts_freeze_fixed_identity_distribution_and_human_lock()
         "license_spdx",
         "selection_source",
         "coverage_role",
-        "search_nomination_digest",
+        "nomination_entry_digest",
         "selection_evidence_digests",
         "entry_digest",
     } <= set(entry.model_fields)
+    assert "coverage_role" not in nomination_entry.model_fields
+    with pytest.raises(ValidationError):
+        nomination_entry.model_validate(
+            {
+                "schema_version": "nomination-entry-v1",
+                "repository_full_name": "octo-org/workflow-kit",
+                "repository_id": 910001,
+                "exact_commit_sha": SHA_A,
+                "license_spdx": "MIT",
+                "selection_source": "search_derived",
+                "selection_evidence_digests": [DIGEST_A],
+                "coverage_role": "positive",
+            },
+            strict=True,
+        )
     assert {
         "default_branch",
         "branch",

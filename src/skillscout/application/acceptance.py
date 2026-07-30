@@ -24,11 +24,20 @@ from skillscout.domain.acceptance import (
     ChangedSourceEvidenceV1,
     HumanSkillReviewAttestationV1,
     LockedBenchmarkManifestV1,
+    NominationEntryV1,
     NominationSetV1,
     ProbeCleanupAttestationV1,
     PublicationReplayCompletionV1,
     ReplayEvidenceV1,
 )
+from skillscout.domain.canonical import sha256_digest
+from skillscout.domain.discovery import (
+    DISCOVERY_MAX_CANDIDATES,
+    DiscoveryQuerySetV1,
+    SearchPageObservationV1,
+    SearchRepositoryObservationV1,
+)
+from skillscout.domain.filtering import ALLOWED_LICENSE_SPDX
 
 AcceptanceTerminal = Literal["business_terminal", "eligible", "system_failure"]
 
@@ -340,6 +349,109 @@ class NominationDependencies:
 
     search_factory: Callable[[], object]
     operations_store_factory: Callable[[], object]
+    state_restore: Callable[[], object]
+    durability_barrier: object
+
+
+@dataclass(frozen=True)
+class NominationApplicationResult:
+    """One persisted nomination and its independently verified state CAS."""
+
+    nomination: NominationSetV1
+    state_commit_sha: str
+    state_root_digest: str
+
+
+class NominationApplication:
+    """Search-only nomination orchestration with no semantic capability."""
+
+    def __init__(
+        self,
+        dependencies: NominationDependencies,
+        *,
+        query_set: DiscoveryQuerySetV1,
+        initial_state_root_digest: str,
+    ) -> None:
+        if (
+            type(dependencies) is not NominationDependencies
+            or type(query_set) is not DiscoveryQuerySetV1
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", initial_state_root_digest) is None
+        ):
+            raise TypeError("invalid nomination application")
+        self._dependencies = dependencies
+        self._query_set = query_set
+        self._initial_state_root_digest = initial_state_root_digest
+
+    def run(
+        self,
+        *,
+        search_run_authority_digest: str,
+        nomination_set_id: str,
+        created_at: str,
+    ) -> NominationApplicationResult:
+        restored = self._dependencies.state_restore()
+        observed_head = getattr(restored, "observed_head", None)
+        prior_root = getattr(
+            getattr(getattr(restored, "bundle", None), "root", None),
+            "root_digest",
+            None,
+        )
+        if (
+            getattr(restored, "status", None) != "verified"
+            or type(observed_head) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", observed_head) is None
+            or prior_root != self._initial_state_root_digest
+        ):
+            raise AcceptanceApplicationError("evidence_missing")
+        search = self._dependencies.search_factory()
+        store = None
+        try:
+            nomination = nominate_search_candidates(
+                search=search,
+                query_set=self._query_set,
+                search_run_authority_digest=search_run_authority_digest,
+                nomination_set_id=nomination_set_id,
+                created_at=created_at,
+            )
+            store = self._dependencies.operations_store_factory()
+            _record_on_open_store(
+                store,
+                nomination.nomination_set_id,
+                "acceptance_nomination",
+                nomination,
+            )
+            sync = getattr(
+                self._dependencies.durability_barrier,
+                "sync_nomination",
+                None,
+            )
+            if not callable(sync):
+                raise AcceptanceApplicationError("evidence_missing")
+            synchronized = sync(
+                operations_store=store,
+                observed_head=observed_head,
+                prior_root_digest=prior_root,
+                created_at=created_at,
+            )
+            state_commit_sha = getattr(synchronized, "commit_sha", None)
+            state_root_digest = getattr(synchronized, "root_digest", None)
+            if (
+                getattr(synchronized, "status", None) != "verified"
+                or getattr(synchronized, "previous_head", None) != observed_head
+                or type(state_commit_sha) is not str
+                or re.fullmatch(r"[0-9a-f]{40}", state_commit_sha) is None
+                or type(state_root_digest) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", state_root_digest) is None
+            ):
+                raise AcceptanceApplicationError("evidence_missing")
+            return NominationApplicationResult(
+                nomination=nomination,
+                state_commit_sha=state_commit_sha,
+                state_root_digest=state_root_digest,
+            )
+        finally:
+            _close(store)
+            _close(search)
 
 
 @dataclass(frozen=True)
@@ -588,15 +700,182 @@ def re_admit_locked_manifest(
     if len(nominations) != 1 or type(nominations[0]) is not NominationSetV1:
         raise AcceptanceApplicationError("evidence_missing")
     nomination = nominations[0]
-    nominated_by_digest = {
+    nominated_by_digest: dict[str | None, NominationEntryV1] = {
         entry.entry_digest: entry
         for entry in (nomination.search_derived_entries + nomination.user_nominated_entries)
     }
-    if len(manifest.entries) != 5 or any(
-        nominated_by_digest.get(entry.entry_digest) != entry for entry in manifest.entries
+    if len(manifest.entries) != 5:
+        raise AcceptanceApplicationError("evidence_missing")
+    for entry in manifest.entries:
+        nominated = nominated_by_digest.get(entry.nomination_entry_digest)
+        if nominated is None or (
+            entry.repository_full_name,
+            entry.repository_id,
+            entry.exact_commit_sha,
+            entry.license_spdx,
+            entry.selection_source,
+            entry.selection_evidence_digests,
+        ) != (
+            nominated.repository_full_name,
+            nominated.repository_id,
+            nominated.exact_commit_sha,
+            nominated.license_spdx,
+            nominated.selection_source,
+            nominated.selection_evidence_digests,
+        ):
+            raise AcceptanceApplicationError("evidence_missing")
+    return nomination
+
+
+def nominate_search_candidates(
+    *,
+    search: object,
+    query_set: DiscoveryQuerySetV1,
+    search_run_authority_digest: str,
+    nomination_set_id: str,
+    created_at: str,
+) -> NominationSetV1:
+    """Acquire, filter, and pin at most 100 public Search candidates."""
+
+    required = (
+        "search_repositories",
+        "get_repo_metadata",
+        "resolve_commit",
+        "get_license",
+    )
+    if type(query_set) is not DiscoveryQuerySetV1 or not all(
+        callable(getattr(search, name, None)) for name in required
     ):
         raise AcceptanceApplicationError("evidence_missing")
-    return nomination
+    seen: set[int] = set()
+    entries: list[NominationEntryV1] = []
+    active_pages = {ordinal: 1 for ordinal in range(1, len(query_set.queries) + 1)}
+    while active_pages and len(seen) < DISCOVERY_MAX_CANDIDATES:
+        for query_ordinal in tuple(sorted(active_pages)):
+            page_number = active_pages[query_ordinal]
+            page, repositories = search.search_repositories(
+                query_set=query_set,
+                discovery_run_authority_digest=search_run_authority_digest,
+                query_ordinal=query_ordinal,
+                page=page_number,
+            )
+            if (
+                type(page) is not SearchPageObservationV1
+                or type(repositories) is not tuple
+            ):
+                raise AcceptanceApplicationError("evidence_missing")
+            for repository in repositories:
+                if (
+                    type(repository) is not SearchRepositoryObservationV1
+                    or repository.repository_id in seen
+                ):
+                    continue
+                seen.add(repository.repository_id)
+                if len(seen) > DISCOVERY_MAX_CANDIDATES:
+                    break
+                if (
+                    repository.private
+                    or repository.visibility != "public"
+                    or repository.fork
+                    or repository.archived
+                    or repository.disabled
+                    or repository.default_branch is None
+                ):
+                    continue
+                metadata = search.get_repo_metadata(repository.owner, repository.name)
+                if (
+                    getattr(metadata, "id", None) != repository.repository_id
+                    or getattr(metadata, "owner", None) != repository.owner
+                    or getattr(metadata, "name", None) != repository.name
+                    or getattr(metadata, "private", None)
+                    or getattr(metadata, "visibility", None) != "public"
+                    or getattr(metadata, "fork", None)
+                    or getattr(metadata, "archived", None)
+                    or getattr(metadata, "disabled", None)
+                    or getattr(metadata, "default_branch", None)
+                    != repository.default_branch
+                    or getattr(metadata, "license_spdx", None)
+                    not in ALLOWED_LICENSE_SPDX
+                ):
+                    continue
+                commit_sha = search.resolve_commit(
+                    repository.owner,
+                    repository.name,
+                    repository.default_branch,
+                )
+                license_facts = search.get_license(
+                    repository.owner,
+                    repository.name,
+                    commit_sha,
+                )
+                if (
+                    type(commit_sha) is not str
+                    or re.fullmatch(r"[0-9a-f]{40}", commit_sha) is None
+                    or getattr(license_facts, "status", None) != "confirmed"
+                    or getattr(license_facts, "spdx_id", None) != metadata.license_spdx
+                    or getattr(license_facts, "license_blob_sha", None) is None
+                ):
+                    continue
+                evidence = tuple(
+                    sorted(
+                        {
+                            page.observation_digest,
+                            repository.observation_digest,
+                            sha256_digest(
+                                metadata.model_dump(mode="json", exclude_none=False)
+                            ),
+                            sha256_digest(
+                                {
+                                    "repository_id": repository.repository_id,
+                                    "default_branch": repository.default_branch,
+                                    "exact_commit_sha": commit_sha,
+                                }
+                            ),
+                            sha256_digest(
+                                {
+                                    "repository_id": repository.repository_id,
+                                    "exact_commit_sha": commit_sha,
+                                    "status": license_facts.status,
+                                    "spdx_id": license_facts.spdx_id,
+                                    "license_blob_sha": (
+                                        license_facts.license_blob_sha
+                                    ),
+                                }
+                            ),
+                        }
+                    )
+                )
+                entries.append(
+                    NominationEntryV1(
+                        schema_version="nomination-entry-v1",
+                        repository_full_name=repository.full_name,
+                        repository_id=repository.repository_id,
+                        exact_commit_sha=commit_sha,
+                        license_spdx=metadata.license_spdx,
+                        selection_source="search_derived",
+                        selection_evidence_digests=evidence,
+                    )
+                )
+            active_pages.pop(query_ordinal, None)
+            if page.next_page is not None and len(seen) < DISCOVERY_MAX_CANDIDATES:
+                active_pages[query_ordinal] = page.next_page
+    if len(entries) < 5:
+        raise AcceptanceApplicationError("evidence_missing")
+    return NominationSetV1.model_validate(
+        {
+            "schema_version": "nomination-set-v1",
+            "nomination_set_id": nomination_set_id,
+            "query_set_digest": query_set.query_set_digest,
+            "search_run_authority_digest": search_run_authority_digest,
+            "search_derived_entries": tuple(
+                entry.model_dump(mode="python", exclude_none=False)
+                for entry in sorted(entries, key=lambda entry: entry.entry_digest or "")
+            ),
+            "user_nominated_entries": (),
+            "created_at": created_at,
+        },
+        strict=True,
+    )
 
 
 def record_nomination(

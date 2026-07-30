@@ -498,7 +498,7 @@ class _LateStateDurabilityBarrier:
 
     def __init__(
         self,
-        config: DiscoveryRuntimeConfig,
+        config: DiscoveryRuntimeConfig | NominationRuntimeConfig,
         source: Mapping[str, str],
     ) -> None:
         self._config = config
@@ -555,10 +555,22 @@ class _LateStateDurabilityBarrier:
         pipeline = (
             pipeline_store
             if pipeline_store is not None
-            else SQLiteStateStore(self._config.pipeline_state)
+            else SQLiteStateStore(
+                getattr(
+                    self._config,
+                    "pipeline_state",
+                    Path(_DISCOVERY_DATABASE_LOCATORS[0]),
+                )
+            )
         )
         owns_pipeline = pipeline_store is None
-        publication = PublicationStateStore(self._config.publication_state)
+        publication = PublicationStateStore(
+            getattr(
+                self._config,
+                "publication_state",
+                Path(_DISCOVERY_DATABASE_LOCATORS[2]),
+            )
+        )
         client = StateBranchClient(
             token=_required_credential(
                 self._source, "SKILLSCOUT_STATE_GITHUB_TOKEN"
@@ -604,6 +616,11 @@ class _LateStateDurabilityBarrier:
             publication.close()
             if owns_pipeline:
                 pipeline.close()
+
+    def sync_nomination(self, **arguments: object) -> object:
+        """Reuse the exact three-store CAS for a Search-only nomination."""
+
+        return self.sync_discovery(**arguments)  # type: ignore[arg-type]
 
 
 class _LazyDiscoveryCapability:
@@ -1373,6 +1390,77 @@ def build_discovery_application(
             query_set=config.query_set,  # type: ignore[arg-type]
             initial_state_root_digest=config.initial_state_root_digest,
         )
+    )
+
+
+def build_nomination_application(
+    config: NominationRuntimeConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Build the Search-only nomination graph with exact state CAS."""
+
+    if type(config) is not NominationRuntimeConfig:
+        raise ValueError("nomination runtime configuration rejected")
+    source = os.environ if environ is None else environ
+    pipeline_path = Path(_DISCOVERY_DATABASE_LOCATORS[0])
+    publication_path = Path(_DISCOVERY_DATABASE_LOCATORS[2])
+
+    def search_factory() -> object:
+        from skillscout.adapters.github import GitHubReadClient
+
+        return GitHubReadClient(
+            token=_required_credential(source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN")
+        )
+
+    def state_restore() -> object:
+        from skillscout.adapters.operations_state import (
+            restore_three_store_bundle,
+        )
+        from skillscout.adapters.state_branch import (
+            StateBranchClient,
+            StateBranchStore,
+        )
+
+        client = StateBranchClient(
+            token=_required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN"),
+            repository_id=config.state_repository_id,
+            repository_full_name=config.state_repository_full_name,
+        )
+        try:
+            observation = StateBranchStore(client).restore()
+            bundle = getattr(observation, "bundle", None)
+            if bundle is None or getattr(bundle, "root", None) is None:
+                raise ValueError("nomination initial state rejected")
+            restore_three_store_bundle(
+                bundle,
+                pipeline_path=pipeline_path,
+                operations_path=config.operations_state,
+                publication_path=publication_path,
+            )
+            return observation
+        finally:
+            client.close()
+
+    def operations_store_factory() -> object:
+        from skillscout.adapters.operations_state import OperationsStateStore
+
+        return OperationsStateStore(config.operations_state)
+
+    from skillscout.application.acceptance import (
+        NominationApplication,
+        NominationDependencies,
+    )
+
+    return NominationApplication(
+        NominationDependencies(
+            search_factory=search_factory,
+            operations_store_factory=operations_store_factory,
+            state_restore=state_restore,
+            durability_barrier=_LateStateDurabilityBarrier(config, source),
+        ),
+        query_set=config.query_set,  # type: ignore[arg-type]
+        initial_state_root_digest=config.initial_state_root_digest,
     )
 
 

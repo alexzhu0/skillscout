@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 import os
 import stat
@@ -15,6 +16,7 @@ from typing import Mapping, NoReturn, Sequence
 from skillscout.bootstrap import (
     ACCEPTANCE_CATALOG_FULL_NAME,
     build_discovery_application,
+    build_nomination_application,
     build_publication_application,
     derive_discovery_publication_admissions,
     discovery_run_authority,
@@ -669,7 +671,7 @@ def _run_discover(arguments: argparse.Namespace) -> dict[str, object]:
 
 
 def _run_nominate_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
-    """Construct the bounded Search authority without semantic or publication clients."""
+    """Run and persist the bounded role-neutral Search nomination."""
 
     config = load_nomination_runtime_config(
         state_repository_id=arguments.state_repository_id,
@@ -687,15 +689,30 @@ def _run_nominate_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
             "initial_state_root_digest": config.initial_state_root_digest,
         }
     )
+    nomination_run_id = f"nomination-{authority_digest.removeprefix('sha256:')[:32]}"
+    result = build_nomination_application(config).run(
+        search_run_authority_digest=authority_digest,
+        nomination_set_id=nomination_run_id,
+        created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+    )
+    nomination = result.nomination
     return {
-        "nomination_run_id": (
-            "nomination-"
-            f"{authority_digest.removeprefix('sha256:')[:32]}"
-        ),
-        "query_set_digest": config.query_set_digest,
+        "nomination_run_id": nomination.nomination_set_id,
+        "nomination_set_digest": nomination.nomination_set_digest,
+        "query_set_digest": nomination.query_set_digest,
         "search_run_authority_digest": authority_digest,
-        "state_root_digest": config.initial_state_root_digest,
-        "status": "search_authority_validated",
+        "state_commit_sha": result.state_commit_sha,
+        "state_root_digest": result.state_root_digest,
+        "candidate_count": len(nomination.search_derived_entries),
+        "search_derived_entries": [
+            entry.model_dump(mode="json", exclude_none=False)
+            for entry in nomination.search_derived_entries
+        ],
+        "user_nominated_entries": [
+            entry.model_dump(mode="json", exclude_none=False)
+            for entry in nomination.user_nominated_entries
+        ],
+        "status": "nomination_persisted",
     }
 
 

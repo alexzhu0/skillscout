@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -285,3 +286,74 @@ def test_acceptance_cli_unknown_flag_uses_existing_fixed_parser_diagnostic(
         '"summary":"Command-line arguments were rejected."}}\n'
     )
     assert "SECRET_DO_NOT_ECHO" not in captured.err
+
+
+def test_nomination_cli_emits_persisted_role_neutral_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import skillscout.cli as cli
+    from skillscout.domain.acceptance import NominationEntryV1, NominationSetV1
+    from skillscout.domain.canonical import sha256_digest
+
+    entries = tuple(
+        NominationEntryV1(
+            schema_version="nomination-entry-v1",
+            repository_full_name=f"octo-org/workflow-{index}",
+            repository_id=910000 + index,
+            exact_commit_sha=f"{index:040x}",
+            license_spdx="MIT",
+            selection_source="search_derived",
+            selection_evidence_digests=(sha256_digest({"index": index}),),
+        )
+        for index in range(1, 6)
+    )
+    nomination = NominationSetV1.model_validate(
+        {
+            "schema_version": "nomination-set-v1",
+            "nomination_set_id": "nomination-cli",
+            "query_set_digest": "sha256:" + ("a" * 64),
+            "search_run_authority_digest": "sha256:" + ("b" * 64),
+            "search_derived_entries": tuple(
+                entry.model_dump(mode="python", exclude_none=False)
+                for entry in sorted(entries, key=lambda entry: entry.entry_digest or "")
+            ),
+            "user_nominated_entries": (),
+            "created_at": "2026-07-30T00:00:00.000000Z",
+        },
+        strict=True,
+    )
+    config = SimpleNamespace(
+        state_repository_id=1310897029,
+        state_repository_full_name="alexzhu0/skillscout",
+        query_set_digest=nomination.query_set_digest,
+        initial_state_root_digest="sha256:" + ("c" * 64),
+    )
+    monkeypatch.setattr(cli, "load_nomination_runtime_config", lambda **_kwargs: config)
+    monkeypatch.setattr(
+        cli,
+        "build_nomination_application",
+        lambda _config: SimpleNamespace(
+            run=lambda **_kwargs: SimpleNamespace(
+                nomination=nomination,
+                state_commit_sha="d" * 40,
+                state_root_digest="sha256:" + ("e" * 64),
+            )
+        ),
+        raising=False,
+    )
+
+    payload = cli._run_nominate_benchmark(
+        SimpleNamespace(
+            state_repository_id="1310897029",
+            state_repository_full_name="alexzhu0/skillscout",
+            initial_state_root_digest=config.initial_state_root_digest,
+        )
+    )
+
+    assert payload["status"] == "nomination_persisted"
+    assert payload["state_commit_sha"] == "d" * 40
+    assert payload["nomination_set_digest"] == nomination.nomination_set_digest
+    assert len(payload["search_derived_entries"]) == 5
+    assert all(
+        "coverage_role" not in entry for entry in payload["search_derived_entries"]
+    )

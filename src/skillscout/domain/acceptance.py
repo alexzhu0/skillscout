@@ -47,6 +47,16 @@ def _self_digest(model: StrictFrozenModel, field: str) -> str:
     )
 
 
+def _canonical_input(value: object) -> object:
+    if isinstance(value, StrictFrozenModel):
+        return value.model_dump(mode="json", exclude_none=False)
+    if isinstance(value, dict):
+        return {key: _canonical_input(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_input(item) for item in value]
+    return value
+
+
 class _SelfDigestedModel(StrictFrozenModel):
     """Bind an omitted self-digest and reject every stale supplied digest."""
 
@@ -58,7 +68,7 @@ class _SelfDigestedModel(StrictFrozenModel):
         if isinstance(value, dict) and value.get(cls._digest_field) is None:
             payload = dict(value)
             payload.pop(cls._digest_field, None)
-            payload[cls._digest_field] = sha256_digest(payload)
+            payload[cls._digest_field] = sha256_digest(_canonical_input(payload))
             return payload
         return value
 
@@ -83,7 +93,36 @@ class BenchmarkCoverageRole(StrEnum):
     BORDERLINE = "borderline"
 
 
+class NominationEntryV1(_SelfDigestedModel):
+    """Role-neutral, immutable repository identity admitted by nomination."""
+
+    _digest_field = "entry_digest"
+
+    schema_version: Literal["nomination-entry-v1"]
+    repository_full_name: _FullName
+    repository_id: _Positive
+    exact_commit_sha: _Sha
+    license_spdx: _Spdx
+    selection_source: Literal["search_derived", "user_nominated"]
+    selection_evidence_digests: Annotated[
+        tuple[Digest, ...], Field(min_length=1, max_length=32)
+    ]
+    entry_digest: Digest | None = None
+
+    @model_validator(mode="after")
+    def validate_selection_evidence(self) -> Self:
+        if self.selection_evidence_digests != tuple(
+            sorted(self.selection_evidence_digests)
+        ) or len(set(self.selection_evidence_digests)) != len(
+            self.selection_evidence_digests
+        ):
+            raise ValueError("nomination selection evidence must be sorted and unique")
+        return self
+
+
 class BenchmarkEntryV1(_SelfDigestedModel):
+    """Human-assigned coverage role bound to one exact nomination entry."""
+
     _digest_field = "entry_digest"
 
     schema_version: Literal["benchmark-entry-v1"]
@@ -95,7 +134,7 @@ class BenchmarkEntryV1(_SelfDigestedModel):
     coverage_role: Literal[
         "positive", "positive_multi_workflow", "negative", "borderline"
     ]
-    search_nomination_digest: Digest
+    nomination_entry_digest: Digest
     selection_evidence_digests: Annotated[
         tuple[Digest, ...], Field(min_length=1, max_length=32)
     ]
@@ -121,10 +160,10 @@ class NominationSetV1(_SelfDigestedModel):
     query_set_digest: Digest
     search_run_authority_digest: Digest
     search_derived_entries: Annotated[
-        tuple[BenchmarkEntryV1, ...], Field(min_length=5, max_length=100)
+        tuple[NominationEntryV1, ...], Field(min_length=5, max_length=100)
     ]
     user_nominated_entries: Annotated[
-        tuple[BenchmarkEntryV1, ...], Field(max_length=100)
+        tuple[NominationEntryV1, ...], Field(max_length=100)
     ]
     created_at: _Timestamp
     nomination_set_digest: Digest | None = None
