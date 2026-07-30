@@ -1469,6 +1469,80 @@ def test_fixed_runner_does_not_issue_fourth_request_after_durable_exhaustion() -
 
 
 @pytest.mark.parametrize(
+    ("attempt_status", "has_preexisting_terminal"),
+    (
+        ("decided", False),
+        ("confirmed_retryable", False),
+        ("semantic_outcome_unknown", False),
+        ("confirmed_retryable", True),
+    ),
+)
+def test_fixed_runner_reconstructs_three_attempt_crash_without_provider_replay(
+    attempt_status: str,
+    has_preexisting_terminal: bool,
+) -> None:
+    """A durable third result must be projected, never granted a fourth request."""
+
+    import skillscout.bootstrap as bootstrap
+
+    phase2_authority = "sha256:" + ("a" * 64)
+    preexisting = SimpleNamespace(
+        repository_id=101,
+        outcome="confirmed_retryable",
+    )
+    recovered = SimpleNamespace(
+        terminal=SimpleNamespace(outcome=attempt_status),
+        state_commit_sha="c" * 40,
+        state_root_digest="sha256:" + ("d" * 64),
+    )
+    runner = object.__new__(bootstrap._FixedRepositoryAcceptanceRunner)
+    runner._state_head = "b" * 40
+    runner._state_root = "sha256:" + ("c" * 64)
+    runner._authority = SimpleNamespace(run_id="acceptance-crash-recovery-semantic")
+    runner._operations = SimpleNamespace(
+        snapshot_run=lambda _run_id: SimpleNamespace(
+            semantic_attempts=tuple(
+                SimpleNamespace(
+                    repository_id=101,
+                    workflow_authority_digest=phase2_authority,
+                    stage="extractor",
+                    attempt_no=attempt_no,
+                    status=attempt_status if attempt_no == 3 else "confirmed_retryable",
+                )
+                for attempt_no in range(1, 4)
+            ),
+            semantic_reservations=(
+                SimpleNamespace(
+                    repository_id=101,
+                    phase2_run_authority_digest=phase2_authority,
+                ),
+            ),
+            candidate_terminals=(preexisting,) if has_preexisting_terminal else (),
+        )
+    )
+    runner._barrier = object()
+    runner._phase3_factory = object()
+    calls: list[dict[str, object]] = []
+
+    def recover_factory(**kwargs: object) -> object:
+        calls.append(kwargs)
+        if kwargs.get("recovery_only") is not True:
+            raise AssertionError("third-attempt recovery was allowed provider authority")
+        return recovered
+
+    runner._phase2_factory = recover_factory
+    result = runner._run_phase2_with_retries(
+        candidate=SimpleNamespace(
+            repository=SimpleNamespace(repository_id=101)
+        ),
+        pinned_commit_sha="e" * 40,
+    )
+
+    assert result is recovered
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
     "terminal_outcome",
     ("semantic_outcome_unknown", "completed_reuse"),
 )
