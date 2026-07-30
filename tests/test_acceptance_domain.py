@@ -763,3 +763,71 @@ def test_terminal_taxonomy_and_release_verdict_are_closed_non_waivable_gates() -
         "waive_provenance",
         "waive_license",
     }.isdisjoint(verdict.model_fields)
+
+
+def test_live_authority_contract_binds_human_approval_and_every_effect_identity() -> None:
+    """A consuming workflow cannot certify caller-supplied identities."""
+
+    contract = getattr(_acceptance_module(skip_if_missing=False), "LiveAcceptanceAuthorityV1", None)
+    assert contract is not None
+    values = {
+        "schema_version": "live-acceptance-authority-v1",
+        "authority_version": 1,
+        "source_commit_sha": SHA_A,
+        "acceptance_workflow_sha256": DIGEST_A,
+        "manifest_path": (
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        "manifest_digest": DIGEST_B,
+        "nomination_set_digest": DIGEST_C,
+        "lock_attestation_digest": "sha256:" + ("d" * 64),
+        "state_commit_sha": SHA_B,
+        "state_root_digest": "sha256:" + ("e" * 64),
+        "query_set_digest": "sha256:" + ("f" * 64),
+        "budget_policy_digest": "sha256:" + ("1" * 64),
+        "semantic_provider": "deepseek",
+        "provider_base_url": "https://api.deepseek.com",
+        "stage_models": (
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        "prompt_versions": (
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        "schema_versions": (
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        "policy_versions": (
+            "discovery-budget-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        "max_candidates": 100,
+        "max_semantic_candidates": 20,
+        "max_semantic_requests": 20,
+        "max_files_per_repository": 25,
+        "max_source_files_per_repository": 5,
+        "max_file_bytes": 131_072,
+        "max_total_bytes_per_repository": 524_288,
+        "max_tokens_per_repository": 40_000,
+        "benchmark_scenario_write_count": 5,
+        "replay_semantic_effect_count": 0,
+        "replay_publication_effect_count": 0,
+        "reviewer_id": "alexzhu0",
+        "approved_at": TIMESTAMP_A,
+    }
+    authority = contract(**values)
+
+    assert authority.authority_digest is not None
+    with pytest.raises(ValueError):
+        contract(**{**values, "semantic_provider": "openai"})
+    with pytest.raises(ValueError):
+        contract(**{**values, "max_semantic_requests": 21})
