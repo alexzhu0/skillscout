@@ -33,7 +33,9 @@ from skillscout.application.pipeline import (
     RetryPolicy,
     SemanticDurabilityGuard,
     SemanticReservationReceipt,
+    build_phase_two_runtime,
 )
+from skillscout.application.processors import PhaseTwoProcessor
 from skillscout.application.ports import (
     ERROR_SUMMARIES,
     DurabilityReceipt,
@@ -2154,6 +2156,33 @@ def _repository_subject() -> RepositorySubject:
         subject_id="repo:example/semantic",
         repository="https://github.com/example/semantic",
     )
+
+
+def test_phase_two_runtime_does_not_reuse_import_poisoned_adapter_types(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prior patched import cannot alter later production type admission."""
+
+    import skillscout.application.pipeline as pipeline_module
+
+    class LazyRemote:
+        effect_scope = pipeline_module.EffectScope.REMOTE_READ
+
+    monkeypatch.setattr(pipeline_module, "SQLiteStateStore", object)
+    monkeypatch.setattr(pipeline_module, "GitHubReadClient", object)
+    monkeypatch.setattr(pipeline_module, "OpenAIExtractionClient", object)
+    store = SQLiteStateStore(tmp_path / "import-order.sqlite3")
+    try:
+        runtime = build_phase_two_runtime(
+            store,
+            PhaseTwoProcessor(LazyRemote(), LazyRemote()),  # type: ignore[arg-type]
+            _allow_lazy_dependencies=True,
+        )
+    finally:
+        store.close()
+
+    assert runtime.policy.allowed_scopes == pipeline_module.PHASE_TWO_MAX_SCOPES
 
 
 def test_extractor_reservation_is_remotely_durable_before_provider_request(
