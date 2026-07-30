@@ -28,6 +28,7 @@ from skillscout.domain.discovery import (
 )
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.acceptance import (
+    AcceptanceFixedCandidateAdmissionV1,
     HostedIsolationCapabilityV1,
     NominationEntryV1,
     NominationSetV1,
@@ -325,6 +326,7 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
         "acceptance_benchmark_lock",
         "acceptance_live_authority",
         "acceptance_budget_reservation",
+        "acceptance_fixed_candidate_admission",
         "acceptance_scenario",
         "acceptance_hosted_isolation_capability",
         "acceptance_offline_adversarial_run",
@@ -341,6 +343,50 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     )
     with pytest.raises(TypeError):
         module.ACCEPTANCE_FACT_MODELS["acceptance_replay"] = object
+
+
+def test_fixed_acceptance_candidate_never_fabricates_search_page_or_candidate(
+    tmp_path: Path,
+) -> None:
+    """The acceptance-only graph has no operational Search-page foreign key."""
+
+    module = _operations_module()
+    authority = _authority()
+    admission = AcceptanceFixedCandidateAdmissionV1(
+        schema_version="acceptance-fixed-candidate-admission-v1",
+        acceptance_run_id="acceptance-fixed",
+        benchmark_manifest_digest=DIGEST_A,
+        nomination_entry_digest=DIGEST_B,
+        benchmark_entry_digest=DIGEST_C,
+        repository_id=101,
+        repository_full_name="example/workflow",
+        exact_commit_sha="a" * 40,
+        license_spdx="MIT",
+        ordinal=1,
+        admitted_at=TIMESTAMP,
+    )
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        store.create_run(authority, TIMESTAMP)
+        semantic = store.reserve_acceptance_semantic_candidate(
+            authority.run_id,
+            admission,
+            DIGEST_A,
+            TIMESTAMP,
+        )
+        snapshot = store.snapshot_run(authority.run_id)
+        connection = store._db
+        candidate_count = connection.execute(
+            "SELECT COUNT(*) FROM operations_candidates"
+        ).fetchone()[0]
+        page_count = connection.execute(
+            "SELECT COUNT(*) FROM operations_search_pages"
+        ).fetchone()[0]
+
+    assert semantic.discovery_reservation_digest == admission.admission_digest
+    assert snapshot.candidates == ()
+    assert snapshot.discovery_reservations == ()
+    assert candidate_count == 0
+    assert page_count == 0
 
 
 def test_pre_budget_state_requires_explicit_acceptance_schema_upgrade(
