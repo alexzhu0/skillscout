@@ -411,6 +411,7 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
         "acceptance_nomination",
         "acceptance_benchmark_lock",
         "acceptance_live_authority",
+        "acceptance_campaign_resume_locator",
         "acceptance_budget_reservation",
         "acceptance_fixed_candidate_admission",
         "acceptance_semantic_request_reservation",
