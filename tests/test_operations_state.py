@@ -432,7 +432,9 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
         module.ACCEPTANCE_FACT_MODELS["acceptance_replay"] = object
 
 
-def test_acceptance_scenario_identity_rejects_mutated_same_scenario() -> None:
+def test_acceptance_scenario_identity_rejects_mutated_same_scenario(
+    tmp_path: Path,
+) -> None:
     module = _operations_module()
     shared = {
         "schema_version": "acceptance-scenario-result-v1",
@@ -487,6 +489,16 @@ def test_acceptance_scenario_identity_rejects_mutated_same_scenario() -> None:
         "acceptance_scenario",
         mutated,
     )
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        with pytest.raises(
+            module.OperationsIntegrityError,
+            match="live authority",
+        ):
+            store.record_acceptance_fact(
+                shared["acceptance_run_id"],
+                "acceptance_scenario",
+                original,
+            )
 
 
 def test_fixed_acceptance_candidate_never_fabricates_search_page_or_candidate(
