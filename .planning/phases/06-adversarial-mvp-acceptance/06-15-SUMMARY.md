@@ -320,6 +320,9 @@ The seventh post-checkpoint correction followed the user-approved deterministic-
 - The failed run grants no campaign or hosted-isolation credit. No raw logs or other artifacts were opened, no retry occurred, and neither `acceptance_hosted_isolation_capability` nor `acceptance_offline_adversarial_run` was written to canonical state.
 - The bounded run `30510875649` diagnostic is now explicitly classified as ambiguous: its old pytest-owned control status does not identify whether scenario evaluation/assertion or final report writing failed. No root cause is fabricated from that artifact.
 - Code review found that the first deterministic runner never loaded the seven committed injection fixtures and could report static policy zeros. Strict-TDD commits `17fa07e` and `2625c27` close that local production gap without changing any workflow byte, dependency, lock, network, credential, publication, artifact, or canonical-state boundary.
+- After a new explicit authorization, clean local `main`/`HEAD`, `origin/main`, and fresh remote `main` all matched `aacd2f2efb5db8e32728fba002f2d2f23dbed2d4`; the four workflow digests and exact seven-fixture corpus aggregate matched the approved bindings. GitHub rejected the exact-SHA dispatch ref with HTTP 422 and created no run, then the freshly authorized `main` fallback created exactly run `30517690161` attempt 1.
+- Run `30517690161` failed in `offline_adversarial` at the closed `synthetic-scan` stage with overall/control/direct/child statuses `1/0/97/97`. Its artifact inventory contained exactly the one-day bounded diagnostic `8749511557`, named `phase6-offline-adversarial-diagnostic-30517690161-1`, with metadata size 416 bytes, expiry `2026-07-31T05:49:11Z`, ZIP SHA-256 `dc70b3523520f7aa6ed17bfd551266357a4c10e02eda21bb915b90dec1711792`, and strict 377-byte JSON SHA-256 `cffaf349b538c8dfcd4a8dfbf2125d6a38c1e6666050e7102a8ffc1b66f54370`.
+- The sole artifact validated as the path-free workflow-owned `phase6.offline-diagnostic.v1`, not runner diagnostic v2 or success evidence. The control and both direct/child denial probes reached their required statuses, but synthetic-scan and completed-campaign credit remain absent. No raw logs or other artifact were opened, no retry occurred, and neither canonical acceptance fact was written.
 - The current workflow SHA-256 values are `71c174175b03355f432348bda9fca47ee72bee20a939d87720b7c32d4fe370e4` (discover), `0bb486d9f06cc93d97a953bc1f40b6b2f206c9fdccdc914a90af1c9388faac19` (publish), `ad06ccec08cf1df76a395b14574957e69aebe3ce78b2892c22c23912ed672ccc` (canary), and `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef` (Phase 6 acceptance). All earlier workflow digests, workflow approvals, exact-source authorizations, dispatch approvals, and Gate B4 bindings are stale.
 
 ## Authentication Gates
@@ -337,7 +340,7 @@ None - no new dependency or external service configuration is required by this p
 ## Next Phase Readiness
 
 - Plan 06-06 Task 3 remains incomplete. Do not create `06-06-SUMMARY.md` or grant campaign credit from any failed run.
-- Any retry requires a new human authorization bound to the then-exact local/remote HEAD and Phase 6 workflow SHA-256 `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef`; it cannot inherit the authorization consumed by run `30510875649` and grants no Gate B4, publication, artifact-read, or canonical-state authority.
+- Any retry requires a new human authorization bound to the then-exact local/remote HEAD and Phase 6 workflow SHA-256; it cannot inherit the authorization consumed by run `30517690161` and grants no Gate B4, publication, artifact-read, or canonical-state authority.
 - Plans 06-07 through 06-14 remain blocked from treating the workflow as hosted evidence until an authorized exact run succeeds and its bounded facts rebuild canonically.
 - Fresh Gate B4 and value publication remain unauthorized until later checkpoints bind the corrected exact workflow bytes and fixed catalog identity.
 
@@ -392,6 +395,10 @@ None - no new dependency or external service configuration is required by this p
 - Exact-SHA ref dispatch was rejected with HTTP 422 and created no run; the authorized `main` fallback created only run `30510875649` attempt 1.
 - Artifact metadata contained exactly one one-day failure diagnostic. Its strict source/workflow/run/attempt/schema/status/digest checks passed; no raw logs or other artifact were read.
 - No `06-06-SUMMARY.md` was created, no canonical acceptance fact was written, and no retry, credential inspection, Gate B4, catalog/default-branch/PR/publication mutation, cleanup, merge, approval, ready transition, or post-evidence push occurred.
+- The fresh preflight matched exact local/remote source `aacd2f2efb5db8e32728fba002f2d2f23dbed2d4`, all four approved workflow digests, and corpus aggregate `sha256:809fdb625fc9340ff6c4effa2dd5252311ea485bb4ec2c164aafb0835545d032`; 11 targeted admission tests and the independent source verifier passed.
+- Exact-SHA ref dispatch returned HTTP 422 and created no run; after fresh remote equality, the one authorized `main` fallback created only run `30517690161` attempt 1.
+- Run `30517690161` terminated failure at `synthetic-scan` with statuses `1/0/97/97`. Artifact metadata contained exactly diagnostic `8749511557` with one-day retention; its strict v1 source/workflow/run/attempt/status and JSON/ZIP digest checks passed.
+- No success evidence was accessed, no canonical acceptance fact was written, no `06-06-SUMMARY.md` was created, and no retry, raw-log access, second-artifact access, credential inspection, Gate B4, catalog/default-branch/PR/publication mutation, cleanup, merge, approval, ready transition, or follow-up push occurred.
 
 ---
 *Phase: 06-adversarial-mvp-acceptance*

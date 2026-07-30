@@ -5,8 +5,8 @@ milestone_name: milestone
 current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
-stopped_at: Blocked 06-06 Task 3 after local corpus-binding correction; no hosted success, no canonical facts, no retry authorized
-last_updated: "2026-07-30T04:18:34Z"
+stopped_at: Blocked 06-06 Task 3 after run 30517690161 failed at synthetic-scan; no canonical facts or retry authorized
+last_updated: "2026-07-30T05:55:00Z"
 last_activity: 2026-07-30
 progress:
   total_phases: 6
@@ -131,6 +131,9 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 - The correction changes only `.github/workflows/phase6-acceptance.yml`; the other three workflow digests remain unchanged. Every prior Phase 6 workflow authorization, dispatch approval, and Gate B4 binding is stale. No push, dispatch, remote read, artifact read, canonical write, credential access, or publication action occurred.
 - Blocking code review then proved the deterministic runner synthesized fixture bytes from canaries and registry names and returned static policy zeros without loading the seven committed injection fixtures. Strict-TDD RED `17fa07e` and GREEN `2625c27` embed and independently bind the exact 1,945-byte corpus, fail closed on omission/replacement/identity-swap/acquisition-bypass mutations, and pass actual inert bytes through ordered in-memory filter/read/extract/qualification/generate/validate/review/publication-barrier seams.
 - Local evidence is limited to corpus digest `sha256:809fdb625fc9340ff6c4effa2dd5252311ea485bb4ec2c164aafb0835545d032`, 264 focused passes with 12 skips and the future verifier node deselected, and full locked pytest `2181 passed, 14 skipped, 1` planned RED failure. This grants no hosted-isolation/campaign credit, retry, dispatch, artifact read, canonical fact, Gate B4, credential, or publication authority. No workflow, `pyproject.toml`, or `uv.lock` byte changed.
+- The fresh user authorization bound exact source/local/remote `main` `aacd2f2efb5db8e32728fba002f2d2f23dbed2d4`, Phase 6 workflow SHA-256 `9c62787e9a061ef061957b4c57b2635145d1c35df7063acc49ad668d2ff352ef`, unchanged discover/publish/canary digests, and corpus aggregate `sha256:809fdb625fc9340ff6c4effa2dd5252311ea485bb4ec2c164aafb0835545d032`. The exact-SHA dispatch returned HTTP 422 and created no run; fresh remote equality then authorized the one `main` fallback, which created run `30517690161` attempt 1 at that exact source.
+- Run `30517690161` failed at the closed `synthetic-scan` stage with overall/control/direct/child statuses `1/0/97/97`. Its inventory contained exactly the one-day diagnostic artifact `8749511557`, named `phase6-offline-adversarial-diagnostic-30517690161-1`, with metadata size 416 bytes and expiry `2026-07-31T05:49:11Z`; the strict 377-byte JSON SHA-256 is `cffaf349b538c8dfcd4a8dfbf2125d6a38c1e6666050e7102a8ffc1b66f54370` and ZIP SHA-256 is `dc70b3523520f7aa6ed17bfd551266357a4c10e02eda21bb915b90dec1711792`.
+- The sole artifact was the workflow-owned bounded schema `phase6.offline-diagnostic.v1`, not runner diagnostic v2 or success evidence. It proves the control and both denial probes reached their required statuses but grants no synthetic-scan, hosted-isolation, or completed-campaign credit. No raw logs or other artifact were opened, no canonical acceptance fact was written, no retry is authorized, and no `06-06-SUMMARY.md` exists.
 
 ### Quick Tasks Completed
 
@@ -141,8 +144,8 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 ## Session Continuity
 
 **Last activity:** 2026-07-30
-**Last session:** 2026-07-30T04:18:34Z
-**Stopped at:** Blocked 06-06 Task 3 after local corpus-binding correction; no hosted success, no canonical facts, no retry authorized
+**Last session:** 2026-07-30T05:55:00Z
+**Stopped at:** Blocked 06-06 Task 3 after run 30517690161 failed at synthetic-scan; no canonical facts or retry authorized
 **Resume file:** None
 
 ### Next
