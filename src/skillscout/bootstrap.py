@@ -797,6 +797,128 @@ class _LateStateDurabilityBarrier:
         self._config = config
         self._source = source
         self._frozen_publication_export = frozen_publication_export
+        self._acceptance_resume: dict[str, object] | None = None
+
+    def configure_acceptance_resume(
+        self,
+        *,
+        authority: object,
+        acceptance_run_id: str,
+        lineage_commit_shas: tuple[str, ...],
+        lineage_root_digests: tuple[str, ...],
+    ) -> None:
+        """Bind locator creation to one immutable authority and verified lineage."""
+
+        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+        if (
+            type(authority) is not LiveAcceptanceAuthorityV1
+            or authority.authority_digest is None
+            or type(acceptance_run_id) is not str
+            or not acceptance_run_id
+            or len(lineage_commit_shas) != len(lineage_root_digests)
+            or not lineage_commit_shas
+            or len(lineage_commit_shas) > 255
+            or lineage_commit_shas[0] != authority.state_commit_sha
+            or lineage_root_digests[0] != authority.state_root_digest
+            or any(not _is_commit_sha(item) for item in lineage_commit_shas)
+            or any(not _is_digest(item) for item in lineage_root_digests)
+        ):
+            raise ValueError("acceptance resume authority rejected")
+        self._acceptance_resume = {
+            "authority": authority,
+            "acceptance_run_id": acceptance_run_id,
+            "lineage_commit_shas": lineage_commit_shas,
+            "lineage_root_digests": lineage_root_digests,
+        }
+
+    def anchor_acceptance_resume(
+        self,
+        *,
+        operations_store: object,
+        observed_head: str,
+        prior_root_digest: str,
+        created_at: str,
+        pipeline_store: object | None = None,
+    ) -> object:
+        """Record the current parent locator, then make it durable by exact CAS."""
+
+        from skillscout.domain.acceptance import (
+            AcceptanceCampaignResumeLocatorV1,
+            LiveAcceptanceAuthorityV1,
+        )
+
+        resume = self._acceptance_resume
+        if resume is None:
+            raise ValueError("acceptance resume lineage is not configured")
+        authority = resume["authority"]
+        if type(authority) is not LiveAcceptanceAuthorityV1:
+            raise ValueError("acceptance resume authority rejected")
+        commits = resume["lineage_commit_shas"]
+        roots = resume["lineage_root_digests"]
+        if (
+            type(commits) is not tuple
+            or type(roots) is not tuple
+            or commits[-1] != observed_head
+            or roots[-1] != prior_root_digest
+            or len(commits) > 255
+        ):
+            raise ValueError("acceptance resume lineage drifted")
+        locator = AcceptanceCampaignResumeLocatorV1(
+            schema_version="acceptance-campaign-resume-locator-v1",
+            acceptance_run_id=str(resume["acceptance_run_id"]),
+            live_acceptance_authority_digest=authority.authority_digest or "",
+            source_commit_sha=authority.source_commit_sha,
+            manifest_digest=authority.manifest_digest,
+            state_repository_id=authority.state_repository_id,
+            state_repository_full_name=authority.state_repository_full_name,
+            original_state_commit_sha=authority.state_commit_sha,
+            original_state_root_digest=authority.state_root_digest,
+            current_state_commit_sha=observed_head,
+            current_state_root_digest=prior_root_digest,
+            semantic_provider=authority.semantic_provider,
+            stage_models=authority.stage_models,
+            prompt_versions=authority.prompt_versions,
+            schema_versions=authority.schema_versions,
+            policy_versions=authority.policy_versions,
+            lineage_commit_shas=commits,
+            lineage_root_digests=roots,
+            recorded_at=created_at,
+        )
+        record = getattr(operations_store, "record_acceptance_fact", None)
+        if not callable(record):
+            raise ValueError("acceptance operations state rejected")
+        record(
+            str(resume["acceptance_run_id"]),
+            "acceptance_campaign_resume_locator",
+            locator,
+        )
+        synchronized = self.sync_discovery(
+            operations_store=operations_store,
+            observed_head=observed_head,
+            prior_root_digest=prior_root_digest,
+            created_at=created_at,
+            pipeline_store=pipeline_store,
+        )
+        if (
+            getattr(synchronized, "status", None) != "verified"
+            or getattr(synchronized, "previous_head", None) != observed_head
+            or not _is_commit_sha(getattr(synchronized, "commit_sha", ""))
+            or not _is_digest(getattr(synchronized, "root_digest", ""))
+        ):
+            raise ValueError("acceptance resume locator was not durable")
+        self._acceptance_resume = {
+            **resume,
+            "lineage_commit_shas": (
+                *commits,
+                synchronized.commit_sha,
+            ),
+            "lineage_root_digests": (
+                *roots,
+                synchronized.root_digest,
+            ),
+        }
+        return synchronized
 
     def confirm(self, **arguments: object) -> object:
         from skillscout.adapters.state_branch import (
