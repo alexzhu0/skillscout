@@ -759,7 +759,7 @@ def _restore_acceptance_state(
 
 
 def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
-    """Re-admit the locked manifest, provider, catalog, and immutable state."""
+    """Dispatch one closed acceptance action after immutable state readmission."""
 
     try:
         config = load_acceptance_runtime_config(
@@ -767,27 +767,51 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             state_commit_sha=arguments.state_commit_sha,
             state_root_digest=arguments.state_root_digest,
         )
-        publication = load_publication_authority_config()
-        if publication.catalog_full_name != ACCEPTANCE_CATALOG_FULL_NAME:
-            raise ValueError
-        _restore_acceptance_state(
+        restored = _restore_acceptance_state(
             state_commit_sha=config.state_commit_sha,
             state_root_digest=config.state_root_digest,
         )
-        manifest = config.manifest
-        return {
-            "catalog_full_name": config.catalog_full_name,
-            "manifest_digest": getattr(manifest, "manifest_digest"),
-            "manifest_version": getattr(manifest, "manifest_version"),
-            "provider": config.semantic_provider,
-            "state_commit_sha": config.state_commit_sha,
-            "state_root_digest": config.state_root_digest,
-            "status": "locked_authority_verified",
-        }
+        if arguments.action == "benchmark":
+            return _run_live_benchmark(config=config, restored=restored)
+        if arguments.action == "replay":
+            return _run_live_replay(config=config, restored=restored)
+        raise ValueError
     except SafeFailure:
         raise
     except Exception:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _run_live_benchmark(*, config: object, restored: object) -> dict[str, object]:
+    """Execute the benchmark through the protected production composition."""
+
+    from skillscout.bootstrap import build_live_acceptance_execution
+
+    runtime = build_live_acceptance_execution(
+        config=config,
+        restored=restored,
+        action="benchmark",
+    )
+    result = runtime.run()
+    if type(result) is not dict or result.get("status") != "benchmark_complete":
+        raise ValueError("invalid benchmark execution result")
+    return result
+
+
+def _run_live_replay(*, config: object, restored: object) -> dict[str, object]:
+    """Execute replay through a composition with no semantic/publication factory."""
+
+    from skillscout.bootstrap import build_live_acceptance_execution
+
+    runtime = build_live_acceptance_execution(
+        config=config,
+        restored=restored,
+        action="replay",
+    )
+    result = runtime.run()
+    if type(result) is not dict or result.get("status") != "replay_complete":
+        raise ValueError("invalid replay execution result")
+    return result
 
 
 def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, object]:
