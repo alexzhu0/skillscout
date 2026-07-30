@@ -13,6 +13,7 @@ import pytest
 
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.discovery import DiscoveryStateRootV1
+from skillscout.domain.enums import EffectScope
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "state_branch"
@@ -25,6 +26,35 @@ SECRET_CANARIES = (
 
 def _state_module():
     return importlib.import_module("skillscout.adapters.state_branch")
+
+
+def test_state_branch_read_client_exposes_no_remote_write_capability() -> None:
+    module = _state_module()
+    client = module.StateBranchReadClient(
+        token="test-token",
+        repository_id=101,
+        repository_full_name="source-org/source",
+        transport=httpx.MockTransport(
+            lambda _request: pytest.fail("construction must not make a request")
+        ),
+    )
+    try:
+        assert client.effect_scope is EffectScope.REMOTE_READ
+        assert {
+            name
+            for name, _value in inspect.getmembers(
+                client, predicate=callable
+            )
+            if not name.startswith("_")
+        } == {
+            "close",
+            "get_blob",
+            "get_commit",
+            "get_state_ref",
+            "get_tree",
+        }
+    finally:
+        client.close()
 
 
 def test_valid_state_fixture_parses_strict_root_and_exact_paths() -> None:
