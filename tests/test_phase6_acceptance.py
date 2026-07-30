@@ -1177,3 +1177,517 @@ def test_live_runner_persists_read_and_semantic_budget_before_remote_read() -> N
     reservation = source.index('"acceptance_budget_reservation"')
     remote_read = source.index("github = GitHubReadClient(")
     assert reservation < remote_read
+
+
+def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the real fixed runner, Phase 2/3, SQLite, and local validator."""
+
+    import httpx
+
+    from recorded_transport import (
+        RecordedResponse,
+        RecordedTransport,
+        make_tree_fixture,
+        recorded_fixture,
+        recorded_openai_fixture,
+        recorded_openai_generator_fixture,
+    )
+    import skillscout.adapters.github as github_adapter
+    import skillscout.adapters.openai_extract as extract_adapter
+    import skillscout.adapters.openai_generate as generate_adapter
+    import skillscout.adapters.openai_review as review_adapter
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.adapters.publication_state as publication_state
+    import skillscout.adapters.state as pipeline_state
+    import skillscout.application.acceptance as acceptance_application
+    import skillscout.bootstrap as bootstrap
+    import skillscout.domain.acceptance as acceptance_domain
+    from skillscout.domain.canonical import sha256_digest
+    from skillscout.domain.discovery import DiscoveryQuerySetV1
+    from skillscout.application.ports import DurabilityReceipt
+
+    timestamp = "2026-07-30T12:00:00.000000Z"
+    pinned = "0123456789abcdef0123456789abcdef01234567"
+    nomination_entries = tuple(
+        sorted(
+            (
+                acceptance_domain.NominationEntryV1(
+                    schema_version="nomination-entry-v1",
+                    repository_full_name=(
+                        "example/approved-repo"
+                        if index == 1
+                        else f"example/repository-{index}"
+                    ),
+                    repository_id=840001 if index == 1 else 840000 + index,
+                    exact_commit_sha=pinned if index == 1 else f"{index:040x}",
+                    license_spdx="MIT",
+                    selection_source="search_derived",
+                    selection_evidence_digests=(
+                        "sha256:" + f"{index:064x}",
+                    ),
+                )
+                for index in range(1, 6)
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+    nomination = acceptance_domain.NominationSetV1(
+        schema_version="nomination-set-v1",
+        nomination_set_id="acceptance-production-fixed-runner",
+        query_set_digest="sha256:" + ("a" * 64),
+        search_run_authority_digest="sha256:" + ("b" * 64),
+        search_derived_entries=nomination_entries,
+        user_nominated_entries=(),
+        created_at=timestamp,
+    )
+    roles = (
+        "positive",
+        "positive_multi_workflow",
+        "negative",
+        "negative",
+        "borderline",
+    )
+    benchmark_entries = tuple(
+        sorted(
+            (
+                acceptance_domain.BenchmarkEntryV1(
+                    schema_version="benchmark-entry-v1",
+                    repository_full_name=entry.repository_full_name,
+                    repository_id=entry.repository_id,
+                    exact_commit_sha=entry.exact_commit_sha,
+                    license_spdx=entry.license_spdx,
+                    selection_source=entry.selection_source,
+                    coverage_role=role,
+                    nomination_entry_digest=entry.entry_digest,
+                    selection_evidence_digests=entry.selection_evidence_digests,
+                )
+                for entry, role in zip(
+                    nomination_entries,
+                    roles,
+                    strict=True,
+                )
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+    manifest_values = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": nomination.nomination_set_digest,
+        "entries": benchmark_entries,
+        "prior_manifest_digest": None,
+    }
+    manifest_digest = sha256_digest(
+        {
+            **manifest_values,
+            "entries": tuple(
+                item.model_dump(mode="json", exclude_none=False)
+                for item in benchmark_entries
+            ),
+        }
+    )
+    manifest = acceptance_domain.LockedBenchmarkManifestV1(
+        **manifest_values,
+        manifest_digest=manifest_digest,
+        lock_attestation=acceptance_domain.BenchmarkLockAttestationV1(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=nomination.nomination_set_digest,
+            manifest_digest=manifest_digest,
+            reviewer_id="acceptance-reviewer",
+            locked_at=timestamp,
+        ),
+    )
+    query_path = tmp_path / "config" / "discovery-queries-v1.json"
+    query_path.parent.mkdir(parents=True)
+    shutil.copy2(ROOT / "config/discovery-queries-v1.json", query_path)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        query_path.read_bytes(),
+        strict=True,
+    )
+    state_dir = tmp_path / "state" / "databases"
+    state_dir.mkdir(parents=True)
+    pipeline_path = state_dir / "pipeline.sqlite3"
+    operations_path = state_dir / "operations.sqlite3"
+    publication_path = state_dir / "publication.sqlite3"
+    pipeline = pipeline_state.SQLiteStateStore(pipeline_path)
+    publication = publication_state.PublicationStateStore(publication_path)
+    try:
+        frozen_publication = publication.export_owned_state()
+    finally:
+        publication.close()
+        pipeline.close()
+
+    authority = acceptance_domain.LiveAcceptanceAuthorityV1(
+        schema_version="live-acceptance-authority-v1",
+        authority_version=1,
+        source_commit_sha="c" * 40,
+        acceptance_workflow_sha256="sha256:" + ("d" * 64),
+        manifest_path=(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest_digest=manifest.manifest_digest,
+        nomination_set_digest=manifest.nomination_set_digest,
+        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
+        state_commit_sha="e" * 40,
+        state_root_digest="sha256:" + ("f" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        query_set_digest=query_set.query_set_digest,
+        budget_policy_digest=(
+            __import__(
+                "skillscout.domain.discovery",
+                fromlist=["DiscoveryBudgetPolicyV1"],
+            )
+            .DiscoveryBudgetPolicyV1()
+            .budget_policy_digest
+        ),
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        reviewer_id="acceptance-reviewer",
+        approved_at=timestamp,
+    )
+    run_id = "acceptance-production-fixed-runner"
+    with operations_state.OperationsStateStore(operations_path) as operations:
+        operations.record_acceptance_fact(
+            run_id, "acceptance_nomination", nomination
+        )
+        operations.record_acceptance_fact(
+            run_id, "acceptance_benchmark_lock", manifest
+        )
+        operations.record_acceptance_fact(
+            run_id, "acceptance_live_authority", authority
+        )
+
+    readme_sha = "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"
+    guide_sha = "bb02bb02bb02bb02bb02bb02bb02bb02bb02bb02"
+    github_routes = {
+        ("GET", "/repos/example/approved-repo"): recorded_fixture("repo_mit"),
+        (
+            "GET",
+            f"/repos/example/approved-repo/commits/{pinned}",
+        ): recorded_fixture("commits_pin"),
+        (
+            "GET",
+            f"/repos/example/approved-repo/license?ref={pinned}",
+        ): recorded_fixture("license_mit"),
+        (
+            "GET",
+            f"/repos/example/approved-repo/git/trees/{pinned}?recursive=1",
+        ): make_tree_fixture(
+            [
+                {
+                    "path": "LICENSE",
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": "bb12bb12bb12bb12bb12bb12bb12bb12bb12bb12",
+                    "size": 1100,
+                },
+                {
+                    "path": "README.md",
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": readme_sha,
+                    "size": 228,
+                },
+                {
+                    "path": "docs/guide.md",
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": guide_sha,
+                    "size": 800,
+                },
+            ]
+        ),
+        (
+            "GET",
+            f"/repos/example/approved-repo/git/blobs/{readme_sha}",
+        ): recorded_fixture("blob_readme"),
+        (
+            "GET",
+            f"/repos/example/approved-repo/git/blobs/{guide_sha}",
+        ): recorded_fixture("blob_doc"),
+    }
+    github_recording = RecordedTransport(github_routes)
+    original_github = github_adapter.GitHubReadClient
+    monkeypatch.setattr(
+        github_adapter,
+        "GitHubReadClient",
+        lambda **kwargs: original_github(
+            **kwargs,
+            transport=github_recording.transport(),
+            sleeper=lambda _delay: None,
+        ),
+    )
+
+    def deepseek_response(
+        content: str,
+        *,
+        model: str,
+        request_id: str,
+    ) -> RecordedResponse:
+        return RecordedResponse(
+            status=200,
+            headers={"content-type": "application/json"},
+            body=json.dumps(
+                {
+                    "id": request_id,
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": content,
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 40,
+                        "completion_tokens": 20,
+                        "total_tokens": 60,
+                    },
+                }
+            ).encode(),
+        )
+
+    extractor_payload = json.loads(
+        recorded_openai_fixture("parsed_2_workflows").body
+    )["output"][0]["content"][0]["text"]
+    generator_payload = json.loads(
+        recorded_openai_generator_fixture("parsed_success").body
+    )["output"][0]["content"][0]["text"]
+    reviewer_cases = json.loads(
+        (
+            ROOT / "tests/fixtures/openai/reviewer/cases.json"
+        ).read_bytes()
+    )
+    reviewer_payload = reviewer_cases["parsed_yes"]["body"]["output"][0][
+        "content"
+    ][0]["text"]
+    original_extract = extract_adapter.OpenAIExtractionClient
+    original_generate = generate_adapter.OpenAIGenerationClient
+    original_review = review_adapter.OpenAIReviewClient
+    semantic_recordings: list[RecordedTransport] = []
+
+    def semantic_client(
+        original: object,
+        payload: str,
+        response_model: str,
+        request_id: str,
+        **kwargs: object,
+    ) -> object:
+        recording = RecordedTransport(
+            {
+                ("POST", "/chat/completions"): deepseek_response(
+                    payload,
+                    model=response_model,
+                    request_id=request_id,
+                )
+            }
+        )
+        semantic_recordings.append(recording)
+        return original(  # type: ignore[operator]
+            **kwargs,
+            api_key="bounded-test-key",
+            http_client=httpx.Client(transport=recording.transport()),
+        )
+
+    monkeypatch.setattr(
+        extract_adapter,
+        "OpenAIExtractionClient",
+        lambda **kwargs: semantic_client(
+            original_extract,
+            extractor_payload,
+            "deepseek-v4-flash",
+            "chatcmpl-extractor-1",
+            **kwargs,
+        ),
+    )
+    monkeypatch.setattr(
+        generate_adapter,
+        "OpenAIGenerationClient",
+        lambda **kwargs: semantic_client(
+            original_generate,
+            generator_payload,
+            "deepseek-v4-flash",
+            "chatcmpl-generator-1",
+            **kwargs,
+        ),
+    )
+    monkeypatch.setattr(
+        review_adapter,
+        "OpenAIReviewClient",
+        lambda **kwargs: semantic_client(
+            original_review,
+            reviewer_payload,
+            "deepseek-v4-pro",
+            "chatcmpl-reviewer-1",
+            **kwargs,
+        ),
+    )
+
+    config = bootstrap.AcceptanceRuntimeConfig(
+        manifest_path=(
+            ROOT
+            / ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest=manifest,
+        state_commit_sha=authority.state_commit_sha,
+        state_root_digest=authority.state_root_digest,
+        semantic_provider="deepseek",
+        extractor_model_id="deepseek-v4-flash",
+        generator_model_id="deepseek-v4-flash",
+        reviewer_model_id="deepseek-v4-pro",
+        live_acceptance_authority_digest=authority.authority_digest,
+    )
+    discovery_config = bootstrap.DiscoveryRuntimeConfig(
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        state_ref="refs/heads/skillscout-state",
+        query_set_path=query_path,
+        query_set=query_set,
+        query_set_digest=query_set.query_set_digest,
+        pipeline_state=Path("state/databases/pipeline.sqlite3"),
+        operations_state=Path("state/databases/operations.sqlite3"),
+        publication_state=Path("state/databases/publication.sqlite3"),
+        semantic_provider="deepseek",
+        extractor_model_id="deepseek-v4-flash",
+        generator_model_id="deepseek-v4-flash",
+        reviewer_model_id="deepseek-v4-pro",
+        initial_state_root_digest=authority.state_root_digest,
+    )
+
+    class LocalCAS:
+        def __init__(self) -> None:
+            self.ordinal = 0
+
+        def sync_discovery(
+            self,
+            *,
+            observed_head: str,
+            **_kwargs: object,
+        ) -> object:
+            self.ordinal += 1
+            return SimpleNamespace(
+                status="verified",
+                previous_head=observed_head,
+                commit_sha=f"{self.ordinal:040x}",
+                root_digest="sha256:" + f"{self.ordinal:064x}",
+            )
+
+        def confirm(self, *, transition: object, **_kwargs: object) -> object:
+            self.ordinal += 1
+            return DurabilityReceipt.from_remote_verification(
+                transition=transition,
+                verified_state_head=f"{self.ordinal:040x}",
+                state_root_digest="sha256:" + f"{self.ordinal:064x}",
+                pipeline_database_digest=sha256_digest(
+                    {"pipeline": self.ordinal}
+                ),
+                operations_database_digest=sha256_digest(
+                    {"operations": self.ordinal}
+                ),
+                publication_database_digest=sha256_digest(
+                    {"publication": self.ordinal}
+                ),
+                pipeline_projection_digest=sha256_digest(
+                    {"pipeline_projection": self.ordinal}
+                ),
+                operations_projection_digest=sha256_digest(
+                    {"operations_projection": self.ordinal}
+                ),
+                publication_projection_digest=sha256_digest(
+                    {"publication_projection": self.ordinal}
+                ),
+            )
+
+    monkeypatch.chdir(tmp_path)
+    cas = LocalCAS()
+    runner = bootstrap._FixedRepositoryAcceptanceRunner(
+        config=config,
+        discovery_config=discovery_config,
+        barrier=cas,
+        source={
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "bounded-test-token",
+        },
+        frozen_owner_export=frozen_publication,
+        acceptance_run_id=run_id,
+    )
+    entry = next(
+        item
+        for item in manifest.entries
+        if item.repository_full_name == "example/approved-repo"
+    )
+    try:
+        observation = runner.run(
+            acceptance_application.LiveRepositoryAuthority(
+                repository_full_name=entry.repository_full_name,
+                repository_id=entry.repository_id,
+                exact_commit_sha=entry.exact_commit_sha,
+                license_spdx=entry.license_spdx,
+                nomination_entry_digest=entry.nomination_entry_digest,
+                entry_digest=entry.entry_digest,
+                selection_evidence_digests=entry.selection_evidence_digests,
+            )
+        )
+    finally:
+        runner.close()
+
+    assert observation.outcome == "eligible_local_candidate"
+    assert observation.live_acceptance_authority_digest == authority.authority_digest
+    with operations_state.OperationsStateStore(operations_path) as operations:
+        snapshot = operations.snapshot_run(f"{run_id}-semantic")
+    assert tuple(item.stage for item in snapshot.semantic_attempts) == (
+        "extractor",
+        "generator",
+        "reviewer",
+    )
+    assert tuple(item.outcome for item in snapshot.workflow_terminals) == (
+        "eligible_local_candidate",
+        "eligible_local_candidate",
+    )
