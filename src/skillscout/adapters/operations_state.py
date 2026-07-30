@@ -51,7 +51,7 @@ from skillscout.domain.acceptance import (
     OfflineAdversarialRunV1,
     ProbeCleanupAttestationV1,
     PublicationReplayCompletionV1,
-    ReplayEvidenceV1,
+    ReplayIntentV1,
     ReviewerCalibrationV1,
 )
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
@@ -236,7 +236,7 @@ _AcceptanceFactModel: TypeAlias = (
     | AcceptanceScenarioResultV1
     | HostedIsolationCapabilityV1
     | OfflineAdversarialRunV1
-    | ReplayEvidenceV1
+    | ReplayIntentV1
     | ChangedSourceEvidenceV1
     | PublicationReplayCompletionV1
     | ChangedSourceDraftUpdateCompletionV1
@@ -260,7 +260,7 @@ _ACCEPTANCE_FACT_MODEL_VALUES: Final = {
     "acceptance_scenario": AcceptanceScenarioResultV1,
     "acceptance_hosted_isolation_capability": HostedIsolationCapabilityV1,
     "acceptance_offline_adversarial_run": OfflineAdversarialRunV1,
-    "acceptance_replay": ReplayEvidenceV1,
+    "acceptance_replay": ReplayIntentV1,
     "acceptance_changed_source": ChangedSourceEvidenceV1,
     "acceptance_publication_replay_completion": PublicationReplayCompletionV1,
     "acceptance_changed_source_draft_update_completion": (ChangedSourceDraftUpdateCompletionV1),
@@ -1009,7 +1009,7 @@ def _validate_acceptance_references(
             kind="acceptance_replay",
             digest=fact.replay_intent_digest,
         )
-        assert isinstance(replay, ReplayEvidenceV1)
+        assert isinstance(replay, ReplayIntentV1)
         if (
             fact.repository_id,
             fact.source_commit_sha,

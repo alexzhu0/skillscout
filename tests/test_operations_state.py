@@ -37,7 +37,7 @@ from skillscout.domain.acceptance import (
     NominationSetV1,
     OfflineAdversarialRunV1,
     PublicationReplayCompletionV1,
-    ReplayEvidenceV1,
+    ReplayIntentV1,
 )
 
 
@@ -174,9 +174,9 @@ def _operations_module():
     return importlib.import_module("skillscout.adapters.operations_state")
 
 
-def _acceptance_replay() -> ReplayEvidenceV1:
-    return ReplayEvidenceV1(
-        schema_version="replay-evidence-v1",
+def _acceptance_replay() -> ReplayIntentV1:
+    return ReplayIntentV1(
+        schema_version="replay-intent-v1",
         acceptance_run_id="acceptance-operations",
         repository_id=101,
         source_commit_sha="a" * 40,
@@ -186,23 +186,16 @@ def _acceptance_replay() -> ReplayEvidenceV1:
         benchmark_manifest_digest=DIGEST_C,
         before_state_commit_sha="c" * 40,
         before_state_root_digest="sha256:" + ("d" * 64),
-        after_state_commit_sha="c" * 40,
-        after_state_root_digest="sha256:" + ("d" * 64),
-        scenario_result_digests=tuple("sha256:" + f"{index:064x}" for index in range(1, 6)),
-        eligible_locators=("state/objects/eligible.json",),
-        semantic_attempt_count_before=3,
-        semantic_attempt_count_after=3,
+        before_projection_digest=DIGEST_A,
+        before_object_digests=(DIGEST_B,),
         semantic_request_count=0,
-        duplicate_workflow_spec_count=0,
-        duplicate_skill_count=0,
-        duplicate_fact_count=0,
         remote_effect_count=0,
         recorded_at=TIMESTAMP,
     )
 
 
 def _acceptance_replay_completion(
-    replay: ReplayEvidenceV1,
+    replay: ReplayIntentV1,
     *,
     recorded_at: str = "2026-07-27T12:01:00.000000Z",
 ) -> PublicationReplayCompletionV1:

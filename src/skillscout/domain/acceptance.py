@@ -738,6 +738,40 @@ class OfflineAdversarialRunV1(_SelfDigestedModel):
         return self
 
 
+class ReplayIntentV1(_SelfDigestedModel):
+    """The sole durable replay delta, recorded before the state transition."""
+
+    _digest_field = "replay_digest"
+
+    schema_version: Literal["replay-intent-v1"]
+    acceptance_run_id: _Identifier
+    repository_id: _Positive
+    source_commit_sha: _Sha
+    workflow_fingerprint: Digest
+    workflow_spec_authority_digest: Digest
+    replay_policy_version: Literal["acceptance-replay-policy-v1"]
+    benchmark_manifest_digest: Digest
+    before_state_commit_sha: _Sha
+    before_state_root_digest: Digest
+    before_projection_digest: Digest
+    before_object_digests: Annotated[
+        tuple[Digest, ...], Field(min_length=1, max_length=512)
+    ]
+    semantic_request_count: Literal[0]
+    remote_effect_count: Literal[0]
+    recorded_at: _Timestamp
+    replay_digest: Digest | None = None
+
+    @model_validator(mode="after")
+    def validate_replay_intent(self) -> Self:
+        if (
+            self.before_object_digests != tuple(sorted(self.before_object_digests))
+            or len(set(self.before_object_digests)) != len(self.before_object_digests)
+        ):
+            raise ValueError("replay intent object set is not exact")
+        return self
+
+
 class ReplayEvidenceV1(_SelfDigestedModel):
     _digest_field = "replay_digest"
 
@@ -748,11 +782,20 @@ class ReplayEvidenceV1(_SelfDigestedModel):
     workflow_fingerprint: Digest
     workflow_spec_authority_digest: Digest
     replay_policy_version: Literal["acceptance-replay-policy-v1"]
+    replay_fact_digest: Digest
     benchmark_manifest_digest: Digest
     before_state_commit_sha: _Sha
     before_state_root_digest: Digest
     after_state_commit_sha: _Sha
     after_state_root_digest: Digest
+    before_projection_digest: Digest
+    after_projection_digest: Digest
+    before_object_digests: Annotated[
+        tuple[Digest, ...], Field(min_length=1, max_length=512)
+    ]
+    after_object_digests: Annotated[
+        tuple[Digest, ...], Field(min_length=1, max_length=512)
+    ]
     scenario_result_digests: Annotated[
         tuple[Digest, ...], Field(min_length=5, max_length=5)
     ]
@@ -770,8 +813,14 @@ class ReplayEvidenceV1(_SelfDigestedModel):
     @model_validator(mode="after")
     def validate_exact_replay(self) -> Self:
         if (
-            self.before_state_commit_sha != self.after_state_commit_sha
-            or self.before_state_root_digest != self.after_state_root_digest
+            self.before_state_commit_sha == self.after_state_commit_sha
+            or self.before_state_root_digest == self.after_state_root_digest
+            or self.before_projection_digest != self.after_projection_digest
+            or self.before_object_digests != self.after_object_digests
+            or self.before_object_digests
+            != tuple(sorted(self.before_object_digests))
+            or len(set(self.before_object_digests))
+            != len(self.before_object_digests)
             or self.semantic_attempt_count_before
             != self.semantic_attempt_count_after
             or self.scenario_result_digests

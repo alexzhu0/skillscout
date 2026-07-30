@@ -8,7 +8,7 @@ answers or a broader live capability into an offline transition.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -33,6 +33,7 @@ from skillscout.domain.acceptance import (
     ProbeCleanupAttestationV1,
     PublicationReplayCompletionV1,
     ReplayEvidenceV1,
+    ReplayIntentV1,
 )
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.discovery import (
@@ -625,6 +626,28 @@ class CompletedBenchmarkProjection:
         ):
             raise ValueError("completed benchmark projection is not exact")
 
+    @property
+    def object_digests(self) -> tuple[str, ...]:
+        """All content-addressed benchmark objects, excluding replay facts."""
+
+        return tuple(
+            sorted(
+                {
+                    *self.scenario_result_digests,
+                    *self.semantic_attempt_digests,
+                    *self.workflow_spec_authority_digests,
+                    *self.skill_identity_digests,
+                    *self.candidate_fact_digests,
+                }
+            )
+        )
+
+    @property
+    def projection_digest(self) -> str:
+        """Canonical digest of the complete read-only benchmark projection."""
+
+        return sha256_digest(asdict(self))
+
 
 def load_locked_benchmark_manifest(path: Path) -> LockedBenchmarkManifestV1:
     """Strictly load the sole canonical checked-in manifest path."""
@@ -874,8 +897,8 @@ def run_exact_replay(
         or len(set(projection.scenario_result_digests)) != 5
     ):
         raise AcceptanceApplicationError("evidence_missing")
-    replay = ReplayEvidenceV1(
-        schema_version="replay-evidence-v1",
+    replay_intent = ReplayIntentV1(
+        schema_version="replay-intent-v1",
         acceptance_run_id=acceptance_run_id,
         repository_id=projection.repository_id,
         source_commit_sha=projection.source_commit_sha,
@@ -885,16 +908,9 @@ def run_exact_replay(
         benchmark_manifest_digest=manifest.manifest_digest,
         before_state_commit_sha=state_commit_sha,
         before_state_root_digest=state_root_digest,
-        after_state_commit_sha=state_commit_sha,
-        after_state_root_digest=state_root_digest,
-        scenario_result_digests=tuple(sorted(projection.scenario_result_digests)),
-        eligible_locators=tuple(sorted(projection.eligible_locators)),
-        semantic_attempt_count_before=projection.semantic_attempt_count,
-        semantic_attempt_count_after=projection.semantic_attempt_count,
+        before_projection_digest=projection.projection_digest,
+        before_object_digests=projection.object_digests,
         semantic_request_count=0,
-        duplicate_workflow_spec_count=0,
-        duplicate_skill_count=0,
-        duplicate_fact_count=0,
         remote_effect_count=0,
         recorded_at=recorded_at,
     )
@@ -904,7 +920,7 @@ def run_exact_replay(
             store,
             acceptance_run_id,
             "acceptance_replay",
-            replay,
+            replay_intent,
         )
         synchronized = dependencies.state_sync(
             operations_store=store,
@@ -943,7 +959,35 @@ def run_exact_replay(
         or after_projection != projection
     ):
         raise AcceptanceApplicationError("duplicate_effect")
-    return replay
+    return ReplayEvidenceV1(
+        schema_version="replay-evidence-v1",
+        acceptance_run_id=acceptance_run_id,
+        repository_id=projection.repository_id,
+        source_commit_sha=projection.source_commit_sha,
+        workflow_fingerprint=projection.workflow_fingerprint,
+        workflow_spec_authority_digest=projection.workflow_spec_authority_digest,
+        replay_policy_version="acceptance-replay-policy-v1",
+        replay_fact_digest=replay_intent.replay_digest,
+        benchmark_manifest_digest=manifest.manifest_digest,
+        before_state_commit_sha=state_commit_sha,
+        before_state_root_digest=state_root_digest,
+        after_state_commit_sha=next_head,
+        after_state_root_digest=next_root,
+        before_projection_digest=projection.projection_digest,
+        after_projection_digest=after_projection.projection_digest,
+        before_object_digests=projection.object_digests,
+        after_object_digests=after_projection.object_digests,
+        scenario_result_digests=tuple(sorted(projection.scenario_result_digests)),
+        eligible_locators=tuple(sorted(projection.eligible_locators)),
+        semantic_attempt_count_before=projection.semantic_attempt_count,
+        semantic_attempt_count_after=after_projection.semantic_attempt_count,
+        semantic_request_count=0,
+        duplicate_workflow_spec_count=0,
+        duplicate_skill_count=0,
+        duplicate_fact_count=0,
+        remote_effect_count=0,
+        recorded_at=recorded_at,
+    )
 
 
 def classify_acceptance_terminal(outcome: str) -> AcceptanceTerminal:
