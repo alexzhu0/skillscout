@@ -476,6 +476,94 @@ def test_fixed_acceptance_candidate_never_fabricates_search_page_or_candidate(
     assert page_count == 0
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        "qualification_rejected",
+        "validation_rejected",
+        "review_rejected",
+        "eligible_local_candidate",
+    ),
+)
+def test_acceptance_workflow_terminal_uses_fixed_admission_not_search_fk(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    module = _operations_module()
+    authority = _authority()
+    nomination = _nomination_set()
+    manifest = _locked_manifest(nomination)
+    entry = manifest.entries[0]
+    admission = AcceptanceFixedCandidateAdmissionV1(
+        schema_version="acceptance-fixed-candidate-admission-v1",
+        acceptance_run_id="acceptance-fixed-terminal",
+        benchmark_manifest_digest=manifest.manifest_digest,
+        nomination_entry_digest=entry.nomination_entry_digest,
+        benchmark_entry_digest=entry.entry_digest,
+        repository_id=entry.repository_id,
+        repository_full_name=entry.repository_full_name,
+        exact_commit_sha=entry.exact_commit_sha,
+        license_spdx=entry.license_spdx,
+        ordinal=1,
+        admitted_at=TIMESTAMP,
+    )
+    eligible = outcome == "eligible_local_candidate"
+    locator = (
+        "state/objects/sha256/aa/" + ("a" * 64) + ".json"
+        if eligible
+        else None
+    )
+    with module.OperationsStateStore(tmp_path / f"{outcome}.sqlite3") as store:
+        store.create_run(authority, TIMESTAMP)
+        store.record_acceptance_fact(
+            admission.acceptance_run_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            admission.acceptance_run_id,
+            "acceptance_benchmark_lock",
+            manifest,
+        )
+        store.record_acceptance_fact(
+            admission.acceptance_run_id,
+            "acceptance_fixed_candidate_admission",
+            admission,
+        )
+        semantic = store.reserve_acceptance_semantic_candidate(
+            authority.run_id,
+            admission,
+            DIGEST_A,
+            TIMESTAMP,
+        )
+        with pytest.raises(module.OperationsIntegrityError):
+            store.record_workflow_terminal(
+                run_id=authority.run_id,
+                repository_id=entry.repository_id,
+                workflow_authority_digest=DIGEST_A,
+                outcome=outcome,
+                eligible_locator=locator,
+                eligible_object_digest=DIGEST_A if eligible else None,
+                recorded_at=TIMESTAMP,
+            )
+        terminal = store.record_acceptance_workflow_terminal(
+            acceptance_run_id=admission.acceptance_run_id,
+            fixed_candidate_admission_digest=admission.admission_digest,
+            semantic_reservation_digest=semantic.reservation_digest,
+            run_id=authority.run_id,
+            repository_id=entry.repository_id,
+            workflow_authority_digest=DIGEST_A,
+            outcome=outcome,
+            eligible_locator=locator,
+            eligible_object_digest=DIGEST_A if eligible else None,
+            recorded_at=TIMESTAMP,
+        )
+        snapshot = store.snapshot_run(authority.run_id)
+
+    assert snapshot.discovery_reservations == ()
+    assert snapshot.workflow_terminals == (terminal,)
+
+
 def test_acceptance_semantic_request_budget_blocks_twenty_first_before_attempt(
     tmp_path: Path,
 ) -> None:
