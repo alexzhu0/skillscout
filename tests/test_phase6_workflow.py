@@ -911,6 +911,22 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert all("retention-days: 1" in block for block in upload_blocks)
 
 
+def test_nomination_installation_and_state_cas_are_source_bound() -> None:
+    nomination = _job(_source(required=False), "nominate")
+
+    assert "UV_LINK_MODE: copy" in nomination
+    assert (
+        "SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST: "
+        "sha256:b4167cffc31969854260d4acd58b804f4823a4d25d078ef3b5dc88445b75c2e5"
+        in nomination
+    )
+    assert (
+        "SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST: "
+        "${{ vars.SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST }}"
+        not in nomination
+    )
+
+
 @pytest.mark.parametrize(
     ("needle", "replacement"),
     (
