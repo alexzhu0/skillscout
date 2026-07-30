@@ -1337,7 +1337,8 @@ def build_discovery_application(
                     ref=pinned_commit_sha,
                 )
                 with tempfile.TemporaryDirectory(
-                    prefix="skillscout-discovery-phase2-"
+                    prefix="skillscout-discovery-phase2-",
+                    dir=Path(tempfile.gettempdir()).resolve(strict=True),
                 ) as phase2_output:
                     phase2_summary = runtime.runner.run(
                         subject, Path(phase2_output)
@@ -1555,7 +1556,8 @@ def build_discovery_application(
                 fatal_outcome: str | None = None
                 for descriptor in descriptors:
                     with tempfile.TemporaryDirectory(
-                        prefix="skillscout-discovery-phase3-"
+                        prefix="skillscout-discovery-phase3-",
+                        dir=Path(tempfile.gettempdir()).resolve(strict=True),
                     ) as directory:
                         descriptor_path = Path(directory) / "candidate.json"
                         descriptor_path.write_bytes(canonical_json_bytes(descriptor))
@@ -1757,14 +1759,11 @@ def build_discovery_application(
                                 config.pipeline_state
                             )
                         )
-                        try:
-                            completed_projection = (
-                                completed_projector.find_completed_candidate(
-                                    workflow_authority
-                                )
+                        completed_projection = (
+                            completed_projector.find_completed_candidate(
+                                workflow_authority
                             )
-                        finally:
-                            completed_projector.close()
+                        )
                         if completed_projection is None:
                             raise SafeFailure(
                                 ErrorCode.STATE_INTEGRITY_ERROR
@@ -3266,12 +3265,9 @@ def derive_discovery_publication_admissions(
         projector = DescriptorAnchoredCompletedCandidateProjector(
             phase3_state
         )
-        try:
-            completed = projector.find_completed_candidate(
-                terminal.candidate_execution_authority
-            )
-        finally:
-            projector.close()
+        completed = projector.find_completed_candidate(
+            terminal.candidate_execution_authority
+        )
         if (
             completed is None
             or completed.terminal_summary != terminal
@@ -3477,10 +3473,7 @@ def _publication_projection(
         )
         authority = _execution_authority(source=resolved, profile=profile)
         projector = DescriptorAnchoredCompletedCandidateProjector(phase3_state)
-        try:
-            completed = projector.find_completed_candidate(authority)
-        finally:
-            projector.close()
+        completed = projector.find_completed_candidate(authority)
         if completed is None:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
         return resolved, completed

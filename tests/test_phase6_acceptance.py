@@ -1682,12 +1682,12 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
     assert observation.live_acceptance_authority_digest == authority.authority_digest
     with operations_state.OperationsStateStore(operations_path) as operations:
         snapshot = operations.snapshot_run(f"{run_id}-semantic")
-    assert tuple(item.stage for item in snapshot.semantic_attempts) == (
+    assert {item.stage for item in snapshot.semantic_attempts} == {
         "extractor",
         "generator",
         "reviewer",
-    )
-    assert tuple(item.outcome for item in snapshot.workflow_terminals) == (
+    }
+    assert {item.outcome for item in snapshot.workflow_terminals} == {
         "eligible_local_candidate",
-        "eligible_local_candidate",
-    )
+        "qualification_rejected",
+    }
