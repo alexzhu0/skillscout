@@ -410,3 +410,57 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
     )
     assert authority.max_candidates == 100
     assert authority.max_semantic_candidates == 20
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_handler"),
+    (("benchmark", "benchmark"), ("replay", "replay")),
+)
+def test_run_acceptance_dispatches_exact_action_without_publication_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    expected_handler: str,
+) -> None:
+    """The protected commands must execute, not merely revalidate authority."""
+
+    import skillscout.cli as cli
+
+    config = SimpleNamespace(
+        manifest=object(),
+        manifest_path=Path("06-BENCHMARK-MANIFEST.json"),
+        state_commit_sha="a" * 40,
+        state_root_digest="sha256:" + ("b" * 64),
+    )
+    restored = object()
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "load_acceptance_runtime_config", lambda **_: config)
+    monkeypatch.setattr(cli, "_restore_acceptance_state", lambda **_: restored)
+    monkeypatch.setattr(
+        cli,
+        "load_publication_authority_config",
+        lambda: pytest.fail("benchmark/replay cannot load publication authority"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_live_benchmark",
+        lambda **_: calls.append("benchmark") or {"status": "benchmark_complete"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_live_replay",
+        lambda **_: calls.append("replay") or {"status": "replay_complete"},
+        raising=False,
+    )
+
+    result = cli._run_acceptance(
+        SimpleNamespace(
+            action=action,
+            manifest=config.manifest_path,
+            state_commit_sha=config.state_commit_sha,
+            state_root_digest=config.state_root_digest,
+        )
+    )
+
+    assert calls == [expected_handler]
+    assert result["status"] == f"{expected_handler}_complete"
