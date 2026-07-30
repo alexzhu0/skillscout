@@ -12,7 +12,7 @@ import os
 import stat
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Mapping, NoReturn
@@ -2264,7 +2264,35 @@ class _CompletedBenchmarkStateProjector:
             completed_chains = []
             terminal_objects = []
             for owned_fact in pipeline_export.facts:
-                raw = json.loads(owned_fact.payload_json)
+                if owned_fact.kind not in {
+                    "phase3_runs",
+                    "phase3_artifact",
+                }:
+                    continue
+                envelope = json.loads(owned_fact.payload_json)
+                if owned_fact.kind == "phase3_runs":
+                    try:
+                        columns = envelope["columns"]
+                        values = envelope["values"]
+                        if (
+                            envelope["schema_version"]
+                            != "pipeline-rebuild-row-v1"
+                            or type(columns) is not list
+                            or type(values) is not list
+                            or len(columns) != len(values)
+                            or any(
+                                type(column) is not str
+                                for column in columns
+                            )
+                        ):
+                            raise ValueError
+                        raw = dict(zip(columns, values, strict=True))
+                    except Exception:
+                        raise ValueError(
+                            "completed benchmark pipeline fact rejected"
+                        ) from None
+                else:
+                    raw = envelope
                 if owned_fact.kind == "phase3_runs":
                     if raw.get("status") != "completed":
                         continue
@@ -3156,12 +3184,16 @@ def _fixed_acceptance_runner_factory(
     source: Mapping[str, str],
     frozen_owner_export: object,
     acceptance_run_id: str,
-) -> Callable[[], object]:
+) -> Callable[[str, str], object]:
     del restored
 
-    def factory() -> object:
+    def factory(state_commit_sha: str, state_root_digest: str) -> object:
         return _FixedRepositoryAcceptanceRunner(
-            config=config,
+            config=replace(
+                config,
+                state_commit_sha=state_commit_sha,
+                state_root_digest=state_root_digest,
+            ),
             discovery_config=discovery_config,
             barrier=barrier,
             source=source,

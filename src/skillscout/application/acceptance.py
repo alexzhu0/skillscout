@@ -464,7 +464,7 @@ class NominationApplication:
 class LockedCampaignDependencies:
     """Late production capabilities admitted only after manifest revalidation."""
 
-    discovery_factory: Callable[[], object]
+    discovery_factory: Callable[[str, str], object]
     operations_store_factory: Callable[[], object]
     state_sync: Callable[..., object]
     candidate_factory: Callable[[], object] | None = None
@@ -827,11 +827,8 @@ def run_locked_benchmark(
         )
         if semantic_requests > 20:
             raise AcceptanceApplicationError("unauthorized_effect")
-
-        runner = dependencies.discovery_factory()
-        run = getattr(runner, "run", None)
-        if not callable(run):
-            raise AcceptanceApplicationError("evidence_missing")
+        _close(store)
+        store = None
         for ordinal, entry in enumerate(manifest.entries, start=1):
             existing = existing_scenarios.get(entry.entry_digest)
             if existing is not None:
@@ -841,6 +838,10 @@ def run_locked_benchmark(
                 if existing.terminal_class == "system_failure":
                     raise AcceptanceApplicationError(existing.outcome)
                 continue
+            runner = dependencies.discovery_factory(current_head, current_root)
+            run = getattr(runner, "run", None)
+            if not callable(run):
+                raise AcceptanceApplicationError("evidence_missing")
             authority = LiveRepositoryAuthority(
                 repository_full_name=entry.repository_full_name,
                 repository_id=entry.repository_id,
@@ -854,6 +855,9 @@ def run_locked_benchmark(
                 observation = run(authority)
             except Exception:
                 raise AcceptanceApplicationError("harness_failed") from None
+            finally:
+                _close(runner)
+                runner = None
             if (
                 type(observation) is not LiveScenarioObservation
                 or (
@@ -996,6 +1000,7 @@ def run_locked_benchmark(
                 ),
                 recorded_at=recorded_at,
             )
+            store = dependencies.operations_store_factory()
             _record_on_open_store(
                 store,
                 acceptance_run_id,
@@ -1020,6 +1025,8 @@ def run_locked_benchmark(
             ):
                 raise AcceptanceApplicationError("evidence_missing")
             current_head, current_root = next_head, next_root
+            _close(store)
+            store = None
             results.append(result)
             if terminal_class == "system_failure":
                 raise AcceptanceApplicationError(observation.outcome)

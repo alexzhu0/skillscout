@@ -617,7 +617,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
         )
 
     dependencies = module.LockedCampaignDependencies(
-        discovery_factory=Runner,
+        discovery_factory=lambda _head, _root: Runner(),
         operations_store_factory=Store,
         state_sync=sync,
     )
@@ -869,7 +869,7 @@ def _run_attempt_boundary_benchmark(
         )
 
     dependencies = module.LockedCampaignDependencies(
-        discovery_factory=Runner,
+        discovery_factory=lambda _head, _root: Runner(),
         operations_store_factory=Store,
         state_sync=sync,
     )

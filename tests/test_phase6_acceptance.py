@@ -1517,11 +1517,13 @@ def test_fixed_runner_never_replays_unknown_or_completed_phase2(
     assert calls == 1
 
 
-def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
+def test_production_five_repo_benchmark_restores_and_replays_without_live_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exercise the real fixed runner, Phase 2/3, SQLite, and local validator."""
+    """Run five real local Phase 2/3 chains, restore the bundle, then replay."""
+
+    from dataclasses import replace
 
     import httpx
 
@@ -1737,20 +1739,60 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
 
     readme_sha = "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"
     guide_sha = "bb02bb02bb02bb02bb02bb02bb02bb02bb02bb02"
-    github_routes = {
-        ("GET", "/repos/example/approved-repo"): recorded_fixture("repo_mit"),
-        (
-            "GET",
-            f"/repos/example/approved-repo/commits/{pinned}",
-        ): recorded_fixture("commits_pin"),
-        (
-            "GET",
-            f"/repos/example/approved-repo/license?ref={pinned}",
-        ): recorded_fixture("license_mit"),
-        (
-            "GET",
-            f"/repos/example/approved-repo/git/trees/{pinned}?recursive=1",
-        ): make_tree_fixture(
+    def response_with_json(
+        response: RecordedResponse,
+        values: dict[str, object],
+    ) -> RecordedResponse:
+        return RecordedResponse(
+            status=response.status,
+            headers=response.headers,
+            body=json.dumps(values).encode(),
+        )
+
+    github_routes: dict[tuple[str, str], RecordedResponse] = {}
+    for benchmark_entry in manifest.entries:
+        owner, repository_name = (
+            benchmark_entry.repository_full_name.split("/")
+        )
+        metadata = json.loads(recorded_fixture("repo_mit").body)
+        metadata.update(
+            {
+                "id": benchmark_entry.repository_id,
+                "name": repository_name,
+                "full_name": benchmark_entry.repository_full_name,
+            }
+        )
+        commit = json.loads(recorded_fixture("commits_pin").body)
+        commit["sha"] = benchmark_entry.exact_commit_sha
+        license_payload = json.loads(recorded_fixture("license_mit").body)
+        license_payload["url"] = (
+            f"https://api.github.com/repos/{owner}/{repository_name}/"
+            f"contents/LICENSE?ref={benchmark_entry.exact_commit_sha}"
+        )
+        github_routes[
+            ("GET", f"/repos/{owner}/{repository_name}")
+        ] = response_with_json(recorded_fixture("repo_mit"), metadata)
+        github_routes[
+            (
+                "GET",
+                f"/repos/{owner}/{repository_name}/commits/"
+                f"{benchmark_entry.exact_commit_sha}",
+            )
+        ] = response_with_json(recorded_fixture("commits_pin"), commit)
+        github_routes[
+            (
+                "GET",
+                f"/repos/{owner}/{repository_name}/license?"
+                f"ref={benchmark_entry.exact_commit_sha}",
+            )
+        ] = response_with_json(recorded_fixture("license_mit"), license_payload)
+        github_routes[
+            (
+                "GET",
+                f"/repos/{owner}/{repository_name}/git/trees/"
+                f"{benchmark_entry.exact_commit_sha}?recursive=1",
+            )
+        ] = make_tree_fixture(
             [
                 {
                     "path": "LICENSE",
@@ -1774,16 +1816,19 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
                     "size": 800,
                 },
             ]
-        ),
-        (
-            "GET",
-            f"/repos/example/approved-repo/git/blobs/{readme_sha}",
-        ): recorded_fixture("blob_readme"),
-        (
-            "GET",
-            f"/repos/example/approved-repo/git/blobs/{guide_sha}",
-        ): recorded_fixture("blob_doc"),
-    }
+        )
+        github_routes[
+            (
+                "GET",
+                f"/repos/{owner}/{repository_name}/git/blobs/{readme_sha}",
+            )
+        ] = recorded_fixture("blob_readme")
+        github_routes[
+            (
+                "GET",
+                f"/repos/{owner}/{repository_name}/git/blobs/{guide_sha}",
+            )
+        ] = recorded_fixture("blob_doc")
     github_recording = RecordedTransport(github_routes)
     original_github = github_adapter.GitHubReadClient
     monkeypatch.setattr(
@@ -2004,41 +2049,56 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
 
     monkeypatch.chdir(tmp_path)
     cas = LocalCAS()
-    runner = bootstrap._FixedRepositoryAcceptanceRunner(
-        config=config,
-        discovery_config=discovery_config,
-        barrier=cas,
-        source={
-            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
-            "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
-            "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "bounded-test-token",
-        },
-        frozen_owner_export=frozen_publication,
+    def discovery_factory(
+        state_commit_sha: str,
+        state_root_digest: str,
+    ) -> object:
+        return bootstrap._FixedRepositoryAcceptanceRunner(
+            config=replace(
+                config,
+                state_commit_sha=state_commit_sha,
+                state_root_digest=state_root_digest,
+            ),
+            discovery_config=discovery_config,
+            barrier=cas,
+            source={
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "bounded-test-token",
+            },
+            frozen_owner_export=frozen_publication,
+            acceptance_run_id=run_id,
+        )
+
+    benchmark = acceptance_application.run_locked_benchmark(
+        acceptance_application.LockedCampaignDependencies(
+            discovery_factory=discovery_factory,
+            operations_store_factory=lambda: (
+                operations_state.OperationsStateStore(operations_path)
+            ),
+            state_sync=cas.sync_discovery,
+        ),
+        manifest=manifest,
         acceptance_run_id=run_id,
+        observed_head=authority.state_commit_sha,
+        prior_root_digest=authority.state_root_digest,
+        recorded_at=timestamp,
     )
     entry = next(
         item
         for item in manifest.entries
         if item.repository_full_name == "example/approved-repo"
     )
-    try:
-        observation = runner.run(
-            acceptance_application.LiveRepositoryAuthority(
-                repository_full_name=entry.repository_full_name,
-                repository_id=entry.repository_id,
-                exact_commit_sha=entry.exact_commit_sha,
-                license_spdx=entry.license_spdx,
-                nomination_entry_digest=entry.nomination_entry_digest,
-                entry_digest=entry.entry_digest,
-                selection_evidence_digests=entry.selection_evidence_digests,
-            )
-        )
-    finally:
-        runner.close()
+    observation = next(
+        item
+        for item in benchmark.scenario_results
+        if item.repository_id == entry.repository_id
+    )
 
     assert observation.outcome == "eligible_local_candidate"
     assert observation.live_acceptance_authority_digest == authority.authority_digest
-    assert extractor_constructions == 2
+    assert len(benchmark.scenario_results) == 5
+    assert extractor_constructions == 6
     with operations_state.OperationsStateStore(operations_path) as operations:
         snapshot = operations.snapshot_run(f"{run_id}-semantic")
         acceptance_snapshot = operations.acceptance_snapshot(run_id)
@@ -2051,23 +2111,44 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
         "eligible_local_candidate",
         "qualification_rejected",
     }
-    assert tuple(
-        (item.stage, item.attempt_no, item.status)
+    extractor_attempts = tuple(
+        item
         for item in snapshot.semantic_attempts
         if item.stage == "extractor"
-    ) == (
-        ("extractor", 1, "confirmed_retryable"),
-        ("extractor", 2, "decided"),
     )
+    assert sum(
+        item.status == "confirmed_retryable"
+        for item in extractor_attempts
+    ) == 1
+    assert sum(item.status == "decided" for item in extractor_attempts) == 5
+    assert {
+        item.repository_id for item in extractor_attempts
+    } == {item.repository_id for item in manifest.entries}
     linked_digests = {
         authority.authority_digest,
         manifest.manifest_digest,
         entry.nomination_entry_digest,
         entry.entry_digest,
-        *(item.reservation_digest for item in snapshot.semantic_reservations),
-        *(item.attempt_digest for item in snapshot.semantic_attempts),
-        *(item.terminal_digest for item in snapshot.workflow_terminals),
-        *(item.terminal_digest for item in snapshot.candidate_terminals),
+        *(
+            item.reservation_digest
+            for item in snapshot.semantic_reservations
+            if item.repository_id == entry.repository_id
+        ),
+        *(
+            item.attempt_digest
+            for item in snapshot.semantic_attempts
+            if item.repository_id == entry.repository_id
+        ),
+        *(
+            item.terminal_digest
+            for item in snapshot.workflow_terminals
+            if item.repository_id == entry.repository_id
+        ),
+        *(
+            item.terminal_digest
+            for item in snapshot.candidate_terminals
+            if item.repository_id == entry.repository_id
+        ),
         *(
             record.fact_digest
             for record in acceptance_snapshot.facts
@@ -2081,6 +2162,119 @@ def test_production_fixed_runner_reaches_eligible_with_only_outer_effects_faked(
         ),
     }
     assert linked_digests.issubset(observation.evidence_digests)
+
+    pipeline = pipeline_state.SQLiteStateStore(pipeline_path)
+    operations = operations_state.OperationsStateStore(operations_path)
+    publication = publication_state.PublicationStateStore(publication_path)
+    try:
+        bundle = operations_state.assemble_three_store_bundle(
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=benchmark.state_root_digest,
+            state_parent_commit_sha=benchmark.state_commit_sha,
+            query_set_digest=query_set.query_set_digest,
+            budget_policy_digest=authority.budget_policy_digest,
+            created_at=timestamp,
+        )
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+    restored_dir = tmp_path / "restored" / "state" / "databases"
+    restored_dir.mkdir(parents=True)
+    restored_pipeline_path = restored_dir / "pipeline.sqlite3"
+    restored_operations_path = restored_dir / "operations.sqlite3"
+    operations_state.restore_acceptance_state_bundle(
+        bundle,
+        pipeline_path=restored_pipeline_path,
+        operations_path=restored_operations_path,
+    )
+
+    def forbidden_live_capability(
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
+        pytest.fail("replay constructed a live or publication capability")
+
+    monkeypatch.setattr(github_adapter, "GitHubReadClient", forbidden_live_capability)
+    monkeypatch.setattr(
+        extract_adapter,
+        "OpenAIExtractionClient",
+        forbidden_live_capability,
+    )
+    monkeypatch.setattr(
+        generate_adapter,
+        "OpenAIGenerationClient",
+        forbidden_live_capability,
+    )
+    monkeypatch.setattr(
+        review_adapter,
+        "OpenAIReviewClient",
+        forbidden_live_capability,
+    )
+    monkeypatch.setattr(
+        publication_state,
+        "PublicationStateStore",
+        forbidden_live_capability,
+    )
+    monkeypatch.setattr(
+        operations_state,
+        "PublicationStateStore",
+        forbidden_live_capability,
+    )
+
+    replay_initial_head = "a" * 40
+    replay_initial_root = bundle.root.root_digest
+    verified_state_locators = {
+        (replay_initial_head, replay_initial_root),
+    }
+    replay_sync_ordinal = 0
+
+    def replay_sync(*, observed_head: str, **_kwargs: object) -> object:
+        nonlocal replay_sync_ordinal
+        replay_sync_ordinal += 1
+        commit_sha = f"{900 + replay_sync_ordinal:040x}"
+        root_digest = "sha256:" + f"{900 + replay_sync_ordinal:064x}"
+        verified_state_locators.add((commit_sha, root_digest))
+        return SimpleNamespace(
+            status="verified",
+            previous_head=observed_head,
+            commit_sha=commit_sha,
+            root_digest=root_digest,
+        )
+
+    def projector_factory() -> object:
+        return bootstrap._CompletedBenchmarkStateProjector(
+            operations_path=restored_operations_path,
+            pipeline_path=restored_pipeline_path,
+            acceptance_run_id=run_id,
+            expected_live_authority_digest=authority.authority_digest,
+            verified_state_locators=verified_state_locators,
+        )
+
+    replay = acceptance_application.run_exact_replay(
+        acceptance_application.ReplayUpdateDependencies(
+            completed_projector_factory=projector_factory,
+            operations_store_factory=lambda: (
+                operations_state.OperationsStateStore(
+                    restored_operations_path
+                )
+            ),
+            state_sync=replay_sync,
+        ),
+        manifest=manifest,
+        acceptance_run_id=run_id,
+        state_commit_sha=replay_initial_head,
+        state_root_digest=replay_initial_root,
+        recorded_at="2026-07-30T12:00:01.000000Z",
+    )
+
+    assert replay.semantic_request_count == 0
+    assert replay.remote_effect_count == 0
+    assert replay.duplicate_workflow_spec_count == 0
+    assert replay.duplicate_skill_count == 0
+    assert replay.duplicate_fact_count == 0
 
 
 @pytest.mark.parametrize(
