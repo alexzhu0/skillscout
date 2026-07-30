@@ -193,6 +193,7 @@ def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
         },
         "run-acceptance": {
             "--manifest",
+            "--acceptance-run-id",
             "--state-commit-sha",
             "--state-root-digest",
         },
@@ -573,4 +574,24 @@ def test_run_acceptance_dispatches_exact_action_without_publication_authority(
     )
 
     assert calls == [expected_handler]
+
+
+def test_live_execution_builder_has_no_publication_state_or_configuration() -> None:
+    """The benchmark/replay composition cannot construct publication authority."""
+
+    import dataclasses
+    import skillscout.bootstrap as bootstrap
+
+    fields = {
+        field.name for field in dataclasses.fields(bootstrap.AcceptanceRuntimeConfig)
+    }
+    assert "catalog_full_name" not in fields
+    source = inspect.getsource(bootstrap.build_live_acceptance_execution)
+    for forbidden in (
+        "PublicationStateStore",
+        "publication_factory",
+        "load_publication_authority_config",
+        "SKILLSCOUT_CATALOG",
+    ):
+        assert forbidden not in source
     assert result["status"] == f"{expected_handler}_complete"
