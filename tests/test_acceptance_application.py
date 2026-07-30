@@ -633,6 +633,243 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
     assert result.state_root_digest == "sha256:" + f"{5:064x}"
 
 
+def _live_authority_for_manifest(manifest: Any) -> LiveAcceptanceAuthorityV1:
+    return LiveAcceptanceAuthorityV1(
+        schema_version="live-acceptance-authority-v1",
+        authority_version=1,
+        source_commit_sha="c" * 40,
+        acceptance_workflow_sha256="sha256:" + ("d" * 64),
+        manifest_path=(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest_digest=manifest.manifest_digest,
+        nomination_set_digest=manifest.nomination_set_digest,
+        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
+        state_commit_sha="e" * 40,
+        state_root_digest="sha256:" + ("f" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        query_set_digest="sha256:" + ("1" * 64),
+        budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        reviewer_id="acceptance-reviewer",
+        approved_at=TIMESTAMP,
+    )
+
+
+def _run_attempt_boundary_benchmark(
+    *,
+    outcome: str,
+    reason_code: str,
+    attempt_count: int,
+    telemetry_attempt: int | None,
+) -> tuple[Any, list[Any]]:
+    module = _application_module(skip_if_missing=False)
+    manifest = module.load_locked_benchmark_manifest(
+        ROOT
+        / ".planning/phases/06-adversarial-mvp-acceptance"
+        / "06-BENCHMARK-MANIFEST.json"
+    )
+    live_authority = _live_authority_for_manifest(manifest)
+    persisted: list[Any] = []
+
+    class Runner:
+        def run(self, authority: Any) -> Any:
+            attempts = tuple(
+                sha256_digest(
+                    {
+                        "repository_id": authority.repository_id,
+                        "attempt_no": attempt_no,
+                    }
+                )
+                for attempt_no in range(1, attempt_count + 1)
+            )
+            telemetry = (
+                (
+                    module.AcceptanceSemanticTelemetryV1(
+                        schema_version="acceptance-semantic-telemetry-v1",
+                        live_acceptance_authority_digest=(
+                            live_authority.authority_digest
+                        ),
+                        stage="extractor",
+                        workflow_spec_authority_digest=authority.entry_digest,
+                        attempt_no=telemetry_attempt,
+                        request_id=f"request-{authority.repository_id}",
+                        actual_model="deepseek-v4-flash",
+                        prompt_version="extract-prompt-v1",
+                        output_schema_version="workflow-spec-v1",
+                        policy_version="extract-policy-v1",
+                        prompt_tokens=10,
+                        completion_tokens=5,
+                        total_tokens=15,
+                        latency_ms=20,
+                    ),
+                )
+                if telemetry_attempt is not None
+                else ()
+            )
+            return module.LiveScenarioObservation(
+                repository_id=authority.repository_id,
+                repository_full_name=authority.repository_full_name,
+                exact_commit_sha=authority.exact_commit_sha,
+                license_spdx=authority.license_spdx,
+                outcome=outcome,
+                reason_code=reason_code,
+                evidence_digests=(
+                    authority.entry_digest,
+                    *attempts,
+                ),
+                live_acceptance_authority_digest=live_authority.authority_digest,
+                workflow_fingerprint=None,
+                workflow_spec_authority_digest=None,
+                eligible_locator=None,
+                semantic_request_count=attempt_count,
+                semantic_attempt_digests=tuple(sorted(attempts)),
+                semantic_telemetry=telemetry,
+                actual_models=tuple(item.actual_model for item in telemetry),
+            )
+
+        def close(self) -> None:
+            return None
+
+    class Store:
+        def acceptance_snapshot(self, acceptance_run_id: str) -> Any:
+            return module.AcceptanceRunSnapshot(
+                acceptance_run_id=acceptance_run_id,
+                facts=(
+                    module.AcceptanceFactRecord(
+                        acceptance_run_id=acceptance_run_id,
+                        kind="acceptance_benchmark_lock",
+                        fact_digest=manifest.manifest_digest,
+                        fact=manifest,
+                    ),
+                    module.AcceptanceFactRecord(
+                        acceptance_run_id=acceptance_run_id,
+                        kind="acceptance_live_authority",
+                        fact_digest=live_authority.authority_digest,
+                        fact=live_authority,
+                    ),
+                ),
+            )
+
+        def record_acceptance_fact(
+            self, acceptance_run_id: str, kind: str, fact: Any
+        ) -> Any:
+            persisted.append(fact)
+            return module.AcceptanceFactRecord(
+                acceptance_run_id=acceptance_run_id,
+                kind=kind,
+                fact_digest=fact.result_digest,
+                fact=fact,
+            )
+
+        def close(self) -> None:
+            return None
+
+    sync_count = 0
+
+    def sync(*, observed_head: str, **_: Any) -> Any:
+        nonlocal sync_count
+        sync_count += 1
+        return SimpleNamespace(
+            status="verified",
+            previous_head=observed_head,
+            commit_sha=f"{sync_count:040x}",
+            root_digest="sha256:" + f"{sync_count:064x}",
+        )
+
+    dependencies = module.LockedCampaignDependencies(
+        discovery_factory=Runner,
+        operations_store_factory=Store,
+        state_sync=sync,
+    )
+    result = module.run_locked_benchmark(
+        dependencies,
+        manifest=manifest,
+        acceptance_run_id="acceptance-attempt-boundary",
+        observed_head="a" * 40,
+        prior_root_digest="sha256:" + ("b" * 64),
+        recorded_at=TIMESTAMP,
+    )
+    return result, persisted
+
+
+def test_locked_benchmark_counts_transient_then_success_without_fake_telemetry() -> None:
+    """A response-less first request remains an attempt, not invented telemetry."""
+
+    result, persisted = _run_attempt_boundary_benchmark(
+        outcome="no_workflow",
+        reason_code="no_reusable_workflow",
+        attempt_count=2,
+        telemetry_attempt=2,
+    )
+
+    assert len(result.scenario_results) == len(persisted) == 5
+    assert all(item.semantic_request_count == 2 for item in persisted)
+    assert all(len(item.semantic_attempt_digests) == 2 for item in persisted)
+    assert all(
+        tuple(item.attempt_no for item in scenario.semantic_telemetry) == (2,)
+        for scenario in persisted
+    )
+    assert all(item.actual_models == ("deepseek-v4-flash",) for item in persisted)
+
+
+def test_locked_benchmark_persists_true_exhaustion_without_fake_telemetry() -> None:
+    """Three response-less durable attempts exhaust exactly once."""
+
+    with pytest.raises(
+        _application_module(skip_if_missing=False).AcceptanceApplicationError,
+        match="provider_exhausted",
+    ):
+        _result, persisted = _run_attempt_boundary_benchmark(
+            outcome="provider_exhausted",
+            reason_code="provider_attempts_exhausted",
+            attempt_count=3,
+            telemetry_attempt=None,
+        )
+    assert len(persisted) == 1
+    assert persisted[0].semantic_request_count == 3
+    assert len(persisted[0].semantic_attempt_digests) == 3
+    assert persisted[0].semantic_telemetry == ()
+    assert persisted[0].actual_models == ()
+
+
 def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> None:
     """Catches replay claiming zero effects without a measured post-write reread."""
 
