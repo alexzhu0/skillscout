@@ -49,6 +49,12 @@ _VERIFIED_REJECTION_VECTORS: Final = frozenset(
             (PipelineStage.READER, "skipped", "filter_rejected"),
             (PipelineStage.EXTRACTOR, "skipped", "filter_rejected"),
         ),
+        (
+            (PipelineStage.SCOUT, "accepted", None),
+            (PipelineStage.FILTER, "accepted", None),
+            (PipelineStage.READER, "accepted", None),
+            (PipelineStage.EXTRACTOR, "no_workflow", None),
+        ),
     }
 )
 _COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")

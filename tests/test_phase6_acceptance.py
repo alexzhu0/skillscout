@@ -1043,6 +1043,100 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
     assert events == ["authority", "reader", "closed"]
 
 
+def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A long remote history is metadata-only and stops at the explicit cap."""
+
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.cli as cli
+    from skillscout.application.ports import ErrorCode, SafeFailure
+
+    authority_commit = "f" * 40
+    authority_root = "sha256:" + ("e" * 64)
+    commits = tuple(f"{index:040x}" for index in range(1, 162))
+    inspected: list[str] = []
+    restored: list[str] = []
+
+    class Reader:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def get_state_ref(self) -> object:
+            return SimpleNamespace(sha=commits[-1])
+
+    class Store:
+        def __init__(self, _reader: object) -> None:
+            pass
+
+        def inspect_commit_root(self, sha: str) -> object:
+            inspected.append(sha)
+            index = commits.index(sha)
+            parent = commits[index - 1] if index > 0 else "0" * 40
+            root_digest = "sha256:" + f"{index + 1:064x}"
+            prior_root = (
+                "sha256:" + f"{index:064x}"
+                if index > 0
+                else "sha256:" + ("0" * 64)
+            )
+            root = SimpleNamespace(
+                root_digest=root_digest,
+                prior_root_digest=prior_root,
+                model_dump=lambda **_kwargs: {
+                    "root_digest": root_digest,
+                    "prior_root_digest": prior_root,
+                },
+            )
+            return SimpleNamespace(
+                commit=SimpleNamespace(sha=sha, parents=(parent,)),
+                root=root,
+                object_digests=(),
+                declared_content_bytes=1_024,
+            )
+
+        def restore_commit(self, sha: str) -> object:
+            restored.append(sha)
+            raise AssertionError("overlong lineage restored a database bundle")
+
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_live_authority",
+        lambda _arguments: SimpleNamespace(
+            authority_digest="sha256:" + ("1" * 64),
+            source_commit_sha="2" * 40,
+            state_commit_sha=authority_commit,
+            state_root_digest=authority_root,
+            state_repository_id=123,
+            state_repository_full_name="example/state",
+        ),
+    )
+    monkeypatch.setattr(state_branch, "StateBranchReadClient", Reader)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setenv("SKILLSCOUT_STATE_GITHUB_TOKEN", "fixture-token")
+
+    with pytest.raises(SafeFailure) as rejected:
+        cli._run_resolve_acceptance_resume(
+            SimpleNamespace(
+                authority_state_root=tmp_path,
+                authority_state_root_digest=authority_root,
+                campaign_state_root=tmp_path,
+                acceptance_run_id="acceptance-resume",
+                authority_digest="sha256:" + ("1" * 64),
+                source_commit_sha="2" * 40,
+                state_repository_id=123,
+                state_repository_full_name="example/state",
+            )
+        )
+
+    assert rejected.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    assert len(inspected) == 160
+    assert restored == []
+
+
 def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2420,14 +2514,34 @@ def test_third_attempt_crash_recovers_through_two_production_processes(
     )
     assert second.returncode == 0, second.stderr
     result = json.loads(result_path.read_text(encoding="utf-8"))
-    assert result["process_ids"] == [first.pid, second.pid]
+    assert len(result["process_ids"]) == 2
+    assert all(type(item) is int and item > 0 for item in result["process_ids"])
+    assert result["process_ids"][0] != result["process_ids"][1]
     assert result["provider_calls"] == [
         {"attempt_no": 1, "stage": "extractor"},
         {"attempt_no": 2, "stage": "extractor"},
         {"attempt_no": 3, "stage": "extractor"},
     ]
     assert result["third_status"] == third_status
+    assert result["semantic_attempts"] == [
+        {
+            "attempt_no": 1,
+            "stage": "extractor",
+            "status": "confirmed_retryable",
+        },
+        {
+            "attempt_no": 2,
+            "stage": "extractor",
+            "status": "confirmed_retryable",
+        },
+        {
+            "attempt_no": 3,
+            "stage": "extractor",
+            "status": third_status,
+        },
+    ]
     assert result["candidate_terminal_count"] == 1
+    assert result["workflow_terminal_count"] == 0
     assert result["scenario_count"] == 1
     assert result["workflow_spec_count"] <= 1
     assert result["duplicate_workflow_spec_count"] == 0

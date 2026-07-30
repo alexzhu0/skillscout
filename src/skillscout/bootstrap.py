@@ -2145,13 +2145,21 @@ def build_discovery_application(
                                 state_root = phase3_guard.state_root_digest
                                 break
                             except SafeFailure as failure:
-                                workflow_outcomes.append("permanent_failure")
+                                system_outcome, _reason_code = (
+                                    _phase3_safe_failure_outcome(failure.code)
+                                )
+                                workflow_outcome = (
+                                    "confirmed_retryable"
+                                    if system_outcome == "provider_exhausted"
+                                    else "permanent_failure"
+                                )
+                                workflow_outcomes.append(workflow_outcome)
                                 workflow_executions.append(
                                     DiscoveryWorkflowExecution(
                                         workflow_authority_digest=(
                                             workflow_authority.authority_digest
                                         ),
-                                        outcome="permanent_failure",
+                                        outcome=workflow_outcome,
                                         workflow_fingerprint=(
                                             workflow_authority.selected_workflow_fingerprint
                                         ),
@@ -2160,9 +2168,9 @@ def build_discovery_application(
                                         ),
                                     )
                                 )
-                                if failure.code is ErrorCode.RETRY_EXHAUSTED:
+                                if system_outcome == "provider_exhausted":
                                     fatal_outcome = "confirmed_retryable"
-                                    acceptance_system_outcome = "provider_exhausted"
+                                    acceptance_system_outcome = system_outcome
                                 else:
                                     fatal_outcome = (
                                         "state_integrity_conflict"
