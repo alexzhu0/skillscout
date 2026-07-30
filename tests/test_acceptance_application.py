@@ -544,6 +544,19 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
         for item in observed
     )
     assert all(item.terminal_class == "business_terminal" for item in persisted)
+    assert all(
+        item.candidate_funnel
+        == (
+            "fixed_identity",
+            "deterministic_filter",
+            "bounded_read",
+            "extractor",
+        )
+        for item in persisted
+    )
+    assert all(item.prompt_versions == ("extract-prompt-v1",) for item in persisted)
+    assert all(item.schema_versions == ("workflow-spec-v1",) for item in persisted)
+    assert all(item.policy_versions == ("extract-policy-v1",) for item in persisted)
     assert result.state_commit_sha == f"{5:040x}"
     assert result.state_root_digest == "sha256:" + f"{5:064x}"
 
