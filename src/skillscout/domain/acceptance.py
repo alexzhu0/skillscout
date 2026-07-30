@@ -639,6 +639,40 @@ class AcceptanceScenarioResultV1(_SelfDigestedModel):
             )
         ):
             raise ValueError("scenario telemetry or publication decision is incoherent")
+        observed_stages = frozenset(
+            item.stage for item in self.semantic_telemetry
+        )
+        required_stages = {
+            "filter_rejected": frozenset(),
+            "no_workflow": frozenset({"extractor"}),
+            "qualification_rejected": frozenset({"extractor"}),
+            "validation_rejected": frozenset({"extractor", "generator"}),
+            "review_rejected": frozenset(
+                {"extractor", "generator", "reviewer"}
+            ),
+            "eligible_local_candidate": frozenset(
+                {"extractor", "generator", "reviewer"}
+            ),
+        }.get(self.outcome)
+        valid_system_prefixes = {
+            frozenset(),
+            frozenset({"extractor"}),
+            frozenset({"extractor", "generator"}),
+            frozenset({"extractor", "generator", "reviewer"}),
+        }
+        if (
+            (
+                required_stages is not None
+                and observed_stages != required_stages
+            )
+            or (
+                required_stages is None
+                and observed_stages not in valid_system_prefixes
+            )
+            or bool(self.semantic_telemetry)
+            != bool(self.semantic_request_count)
+        ):
+            raise ValueError("scenario semantic stages do not match terminal")
         funnel_by_outcome = {
             "filter_rejected": ("fixed_identity", "deterministic_filter"),
             "no_workflow": (
