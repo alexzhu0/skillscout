@@ -376,12 +376,34 @@ def _checkout_is_closed(step: _Step) -> bool:
 
 
 def _authority_checkout_is_closed(step: _Step) -> bool:
-    return (
+    legacy_authority = (
         CHECKOUT in step.source
         and "ref: ${{ env.PHASE6_AUTHORITY_STATE_COMMIT_SHA }}" in step.source
         and "path: .phase6-authority-state" in step.source
         and "persist-credentials: false" in step.source
     )
+    verified_handoff = (
+        CHECKOUT in step.source
+        and (
+            (
+                "ref: ${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}"
+                in step.source
+                and "path: .phase6-authority-state" in step.source
+            )
+            or (
+                "ref: ${{ needs.live_authority_preflight.outputs.state_commit_sha }}"
+                in step.source
+                and "path: .phase6-campaign-state" in step.source
+            )
+        )
+        and (
+            "repository: ${{ needs.live_authority_preflight.outputs.state_repository_full_name }}"
+            in step.source
+        )
+        and "persist-credentials: false" in step.source
+        and "token: ''" in step.source
+    )
+    return legacy_authority or verified_handoff
 
 
 def _setup_is_closed(step: _Step) -> bool:

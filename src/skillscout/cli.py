@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 import json
 import os
 import stat
-import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -774,13 +773,7 @@ def _run_verify_acceptance_state(arguments: argparse.Namespace) -> dict[str, obj
 
     try:
         checkout = arguments.checkout_root.resolve(strict=True)
-        completed = subprocess.run(
-            ["git", "-C", os.fspath(checkout), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if completed.stdout.strip() != arguments.state_commit_sha:
+        if _checked_out_git_commit(checkout) != arguments.state_commit_sha:
             raise ValueError
         bundle = load_verified_state_checkout(
             checkout_root=checkout,
@@ -795,6 +788,34 @@ def _run_verify_acceptance_state(arguments: argparse.Namespace) -> dict[str, obj
         }
     except Exception:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _checked_out_git_commit(checkout: Path) -> str:
+    """Resolve a detached or directly referenced checkout without subprocess."""
+
+    git_directory = checkout / ".git"
+    if git_directory.is_symlink() or not git_directory.is_dir():
+        raise ValueError
+    head = (git_directory / "HEAD").read_text(encoding="ascii").strip()
+    if len(head) == 40 and all(character in "0123456789abcdef" for character in head):
+        return head
+    prefix = "ref: "
+    if not head.startswith(prefix):
+        raise ValueError
+    reference = head.removeprefix(prefix)
+    if (
+        not reference.startswith("refs/")
+        or ".." in reference.split("/")
+        or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-" for character in reference)
+    ):
+        raise ValueError
+    reference_path = git_directory.joinpath(*reference.split("/"))
+    if reference_path.is_symlink() or not reference_path.is_file():
+        raise ValueError
+    commit = reference_path.read_text(encoding="ascii").strip()
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise ValueError
+    return commit
 
 
 def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
