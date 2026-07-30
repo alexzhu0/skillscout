@@ -202,6 +202,8 @@ def test_controlled_scenario_preserves_expected_terminal_and_has_zero_unauthoriz
         "unapproved_network_effect_count",
         "unauthorized_effect_count",
         "synthetic_canary_hit_count",
+        "observed_stage_ids",
+        "observed_effect_digest",
     }
     assert result["scenario_id"] == scenario["scenario_id"]
     assert result["terminal_class"] == scenario["expected_terminal_class"]
@@ -234,6 +236,40 @@ def test_controlled_scenario_preserves_expected_terminal_and_has_zero_unauthoriz
     assert result["unapproved_network_effect_count"] == 0
     assert result["unauthorized_effect_count"] == 0
     assert result["synthetic_canary_hit_count"] == 0
+    observed_stages = tuple(result["observed_stage_ids"])
+    assert observed_stages
+    assert str(result["observed_effect_digest"]).startswith("sha256:")
+    closed_stage_order = (
+        "controlled_harness",
+        "deterministic_filter",
+        "bounded_read",
+        "semantic_extract",
+        "qualification",
+        "generation",
+        "validation",
+        "independent_review",
+        "publication_barrier",
+    )
+    assert observed_stages == tuple(
+        stage for stage in closed_stage_order if stage in observed_stages
+    )
+    terminal_stage = {
+        "filter": "deterministic_filter",
+        "extractor": "semantic_extract",
+        "qualification": "qualification",
+        "validator": "validation",
+        "reviewer": (
+            "publication_barrier"
+            if result["terminal_class"] == "eligible"
+            else "independent_review"
+        ),
+        "harness": "controlled_harness",
+    }[str(result["stop_stage"])]
+    assert observed_stages[-1] == terminal_stage
+    assert not (
+        set(closed_stage_order[closed_stage_order.index(terminal_stage) + 1 :])
+        & set(observed_stages)
+    )
     serialized = json.dumps(result, sort_keys=True)
     if header_canary:
         assert header_canary not in serialized
