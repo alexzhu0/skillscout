@@ -925,7 +925,13 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
         "exact_commit_sha": SHA_A,
         "license_spdx": "MIT",
         "benchmark_manifest_digest": DIGEST_B,
+        "benchmark_entry_digest": DIGEST_A,
         "live_acceptance_authority_digest": DIGEST_C,
+        "discovery_run_id": "acceptance-live-five-semantic",
+        "discovery_run_authority_digest": DIGEST_A,
+        "budget_reservation_digest": DIGEST_A,
+        "fixed_candidate_admission_digest": DIGEST_B,
+        "semantic_candidate_reservation_digest": DIGEST_C,
         "terminal_class": "eligible",
         "outcome": "eligible_local_candidate",
         "reason_code": "eligible_candidate_completed",
@@ -946,6 +952,11 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
         "reader_total_bytes": 100,
         "reader_estimated_tokens": 25,
         "semantic_request_count": 3,
+        "semantic_request_reservation_digests": (
+            DIGEST_A,
+            DIGEST_B,
+            DIGEST_C,
+        ),
         "semantic_attempt_digests": (DIGEST_A, DIGEST_B, DIGEST_C),
         "semantic_telemetry": complete,
         "actual_models": tuple(item.actual_model for item in complete),
@@ -954,7 +965,14 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
         "policy_versions": tuple(item.policy_version for item in complete),
         "workflow_fingerprint": DIGEST_A,
         "workflow_spec_authority_digest": DIGEST_A,
+        "workflow_spec_authority_digests": (DIGEST_A,),
+        "candidate_terminal_digest": DIGEST_A,
+        "workflow_terminal_digests": (DIGEST_A,),
+        "phase3_terminal_summary_digests": (DIGEST_B,),
+        "skill_artifact_digests": (DIGEST_C,),
+        "package_digests": (DIGEST_A,),
         "eligible_locator": "state/objects/eligible.json",
+        "eligible_object_digest": DIGEST_B,
         "expected_coverage_role": "positive",
         "evaluator_matches_observed": True,
         "publication_decision": "eligible_for_later_publication",
@@ -962,6 +980,15 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
         "recorded_at": TIMESTAMP_A,
     }
     assert scenario_type(**base).terminal_class == "eligible"
+    for field, forged in (
+        ("workflow_spec_authority_digests", (DIGEST_B,)),
+        ("phase3_terminal_summary_digests", ()),
+        ("skill_artifact_digests", ()),
+        ("package_digests", ()),
+        ("eligible_object_digest", None),
+    ):
+        with pytest.raises(ValueError):
+            scenario_type(**{**base, field: forged})
     for missing_stage in ("generator", "reviewer"):
         reduced = tuple(item for item in complete if item.stage != missing_stage)
         with pytest.raises(ValueError):
@@ -969,6 +996,9 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
                 **{
                     **base,
                     "semantic_request_count": len(reduced),
+                    "semantic_request_reservation_digests": tuple(
+                        (DIGEST_A, DIGEST_B, DIGEST_C)[: len(reduced)]
+                    ),
                     "semantic_attempt_digests": tuple(
                         (DIGEST_A, DIGEST_B, DIGEST_C)[: len(reduced)]
                     ),
@@ -986,6 +1016,7 @@ def test_eligible_scenario_requires_all_three_durable_semantic_stages() -> None:
             **{
                 **base,
                 "semantic_request_count": 0,
+                "semantic_request_reservation_digests": (),
                 "semantic_attempt_digests": (),
                 "semantic_telemetry": (),
                 "actual_models": (),
