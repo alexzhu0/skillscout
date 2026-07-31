@@ -50,6 +50,11 @@ Deliver a repeatable, evidence-backed MVP acceptance campaign over at least five
 - **D-26:** Keep the concise Phase 6 acceptance and 44-requirement release report on the main project branch. Store durable, redacted, content-addressed structured evidence on the canonical state branch. Raw diagnostic output may exist only as a bounded-retention Actions artifact and is never canonical state.
 - **D-27:** The final report must identify benchmark manifest/version, fixed SHAs, funnel counts, reader budgets, token/latency telemetry, per-stage outcomes, expected-vs-observed labels, idempotency/update results, canary bindings, human review result, warnings, known limitations, and a deterministic release recommendation.
 
+### Fresh campaign recovery addendum
+- A stale Phase 6 authority must never be revived. A replacement campaign begins with a read-verified current canonical state head/root, then uses a source/workflow binding that contains that exact root; mutable environment input must not select the nomination parent.
+- Add a narrowly scoped state-only path for a fresh Search-derived nomination and its subsequent benchmark lock. It may persist only the strict nomination and `acceptance_benchmark_lock` facts, and may not invoke a semantic provider, execute candidate code, access catalog/PR authority, or create live authority.
+- The five repository choices remain an accountable human decision. Automation may prepare and display a proposed manifest, but it must not fabricate a human attestation or silently reuse the historical five-entry lock. A later exact live-authority approval is separate and remains required before DeepSeek benchmark/replay use.
+
 ### the agent's Discretion
 - Research and planning may choose the exact five repository names and SHAs, provided they satisfy the locked benchmark distribution and are human-locked before release evidence is collected.
 - Research and planning may choose the internal acceptance-report schema decomposition, file names, command surface, and test organization while preserving structured outputs, deterministic verdict rules, redaction, rebuildability, and the persistence boundary above.
