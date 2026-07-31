@@ -88,7 +88,7 @@ The exact output also includes a generated `run_id`, reuse count, and publicatio
 
 OpenAI is the default provider. Extraction, generation, and review use the OpenAI Responses API with the configured `gpt-5.6-terra` model.
 
-SkillScout also has an explicit DeepSeek provider path. Selecting `deepseek` fixes all three semantic stages to `deepseek-v4-flash` and uses the official DeepSeek Chat Completions endpoint with thinking disabled, no tools, one JSON response, and strict local schema validation. Provider selection and credentials are documented in [Configuration](docs/CONFIGURATION.md).
+SkillScout also has an explicit DeepSeek provider path. Selecting `deepseek` fixes extraction and generation to `deepseek-v4-flash`, and independent review to `deepseek-v4-pro`. It uses the official DeepSeek Chat Completions endpoint with thinking disabled, no tools, one JSON response, and strict local schema validation. Provider selection and credentials are documented in [Configuration](docs/CONFIGURATION.md).
 
 ## CLI usage
 

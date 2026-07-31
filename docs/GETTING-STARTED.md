@@ -78,7 +78,7 @@ Never clone a candidate repository for SkillScout, install its dependencies, imp
 
 This step is not offline: it reads a public GitHub repository and makes a billed semantic-provider request. Use only a subject JSON file that you created or reviewed yourself. The `extract-repo` command reads repository content as data; it does not execute source-repository code.
 
-The default provider is OpenAI. `SKILLSCOUT_LLM_PROVIDER=deepseek` selects the closed DeepSeek profile, which fixes extraction, generation, and review to `deepseek-v4-flash`. DeepSeek also requires `DEEPSEEK_BASE_URL` to normalize exactly to `https://api.deepseek.com`; other endpoints fail closed.
+The default provider is OpenAI. `SKILLSCOUT_LLM_PROVIDER=deepseek` selects the closed DeepSeek profile: extraction and generation use `deepseek-v4-flash`, while independent review uses `deepseek-v4-pro`. DeepSeek also requires `DEEPSEEK_BASE_URL` to normalize exactly to `https://api.deepseek.com`; other endpoints fail closed.
 
 Inject the selected provider credential through your approved secret mechanism before running the command:
 

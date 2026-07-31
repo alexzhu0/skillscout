@@ -25,9 +25,9 @@ The `skillscout build-candidate` command consumes verified extraction evidence a
 
 Within each generated Skill package, the preview writes the required `SKILL.md` instruction document and supporting reference/provenance files. It does not generate executable `scripts/` content from an external repository.
 
-### DeepSeek V4 Flash provider
+### DeepSeek V4 provider profile
 
-OpenAI remains the default semantic provider. The explicit `deepseek` provider path fixes extraction, generation, and review to `deepseek-v4-flash` at the official configured endpoint. Requests disable thinking, do not expose tools, request one JSON object, use zero SDK retries, and cross the provider boundary only after strict local Pydantic validation.
+OpenAI remains the default semantic provider. The explicit `deepseek` provider path fixes extraction and generation to `deepseek-v4-flash`, while independent review uses `deepseek-v4-pro`, at the official configured endpoint. Requests disable thinking, do not expose tools, request one JSON object, use zero SDK retries, and cross the provider boundary only after strict local Pydantic validation.
 
 The DeepSeek path is covered by recorded-transport and boundary tests. This preview does not claim live-provider availability, latency, output quality, or service-level guarantees.
 

@@ -754,19 +754,15 @@ def record_live_acceptance_authority(
             for item in operations.acceptance_snapshot(acceptance_run_id).facts
             if item.kind == "acceptance_live_authority"
         )
-    if len(existing) == 1 and existing[0].fact_digest == authority.authority_digest:
-        return {
-            "acceptance_run_id": acceptance_run_id,
-            "authority_digest": authority.authority_digest,
-            "authority_state_commit_sha": state_commit_sha,
-            "authority_state_root_digest": state_root_digest,
-            "source_commit_sha": authority.source_commit_sha,
-            "state_commit_sha": authority.state_commit_sha,
-            "state_root_digest": authority.state_root_digest,
-            "state_repository_id": authority.state_repository_id,
-            "state_repository_full_name": authority.state_repository_full_name,
-            "status": "live_authority_persisted",
-        }
+        # A parent-state fact cannot prove its own durable successor receipt.
+        # Treat any such fact as a conflict instead of retrying, migrating, or
+        # returning a stale parent identity as a successful record.
+        if existing:
+            raise ValueError("live acceptance authority already exists in parent state")
+        # The public campaign state predates the authority fact kind.  Upgrade
+        # only on this state-only path, after exact restoration and immediately
+        # before its first authority-fact mutation.
+        operations.upgrade_acceptance_schema()
     record = record_live_authority(
         LiveAuthorityDependencies(
             operations_store_factory=lambda: OperationsStateStore(
@@ -2950,7 +2946,10 @@ class _FixedRepositoryAcceptanceRunner:
         frozen_owner_export: object,
         acceptance_run_id: str,
     ) -> None:
-        from skillscout.adapters.operations_state import OperationsStateStore
+        from skillscout.adapters.operations_state import (
+            OperationsStateStore,
+            _schema_fingerprint,
+        )
         from skillscout.domain.canonical import sha256_digest
         from skillscout.domain.discovery import DiscoveryBudgetPolicyV1, DiscoveryRunAuthorityV1
 
@@ -2958,8 +2957,14 @@ class _FixedRepositoryAcceptanceRunner:
         self._discovery_config = discovery_config
         self._barrier = barrier
         self._source = source
-        self._operations = OperationsStateStore(discovery_config.operations_state)
-        self._operations.upgrade_acceptance_schema()
+        operations = OperationsStateStore(discovery_config.operations_state)
+        try:
+            if operations.export_owned_state().schema_fingerprint != _schema_fingerprint():
+                raise ValueError("acceptance operations schema is not current")
+        except Exception:
+            operations.close()
+            raise
+        self._operations = operations
         self._acceptance_run_id = acceptance_run_id
         authority_records = tuple(
             record.fact

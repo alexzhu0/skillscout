@@ -2252,53 +2252,73 @@ class OperationsStateStore:
         elif _decoded_json(existing["authority_json"]) != expected:
             raise OperationsIntegrityError("test run authority mismatch")
 
-    def upgrade_acceptance_schema(self) -> None:
-        """Explicitly widen only the acceptance fact-kind constraint."""
+    def upgrade_acceptance_schema(self) -> bool:
+        """Widen only accepted legacy acceptance schemas when necessary.
 
-        def mutate(connection: sqlite3.Connection) -> None:
+        Returns ``True`` only when a legacy database was durably migrated.  A
+        current schema is a true no-op: it neither rebuilds a snapshot nor
+        rewrites the local database file.
+        """
+
+        with self._thread_lock:
+            if self._connection is None or self._poisoned:
+                raise OperationsStateError("operations state is unavailable")
             actual = {
                 str(row["name"]): _normalize_sql(str(row["sql"]))
-                for row in connection.execute(
+                for row in self._connection.execute(
                     """SELECT name, sql FROM sqlite_master
                        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
                        ORDER BY name"""
                 ).fetchall()
             }
             if actual == _EXPECTED_SCHEMA:
-                return
-            if actual not in (
-                _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
-                _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
-                _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
-                _PRE_BUDGET_EXPECTED_SCHEMA,
-                _LEGACY_EXPECTED_SCHEMA,
-            ):
-                raise OperationsIntegrityError(
-                    "operations schema cannot be upgraded"
-                )
-            connection.execute(
-                """ALTER TABLE operations_acceptance_facts
-                   RENAME TO operations_acceptance_facts_previous"""
-            )
-            statement = next(
-                item
-                for item in _schema_statements()
-                if item.lstrip().startswith(
-                    "CREATE TABLE operations_acceptance_facts"
-                )
-            )
-            connection.execute(statement)
-            connection.execute(
-                """INSERT INTO operations_acceptance_facts
-                   (fact_digest, acceptance_run_id, fact_kind, schema_version,
-                    recorded_identity, fact_json)
-                   SELECT fact_digest, acceptance_run_id, fact_kind,
-                          schema_version, recorded_identity, fact_json
-                   FROM operations_acceptance_facts_previous"""
-            )
-            connection.execute("DROP TABLE operations_acceptance_facts_previous")
+                return False
 
-        self._snapshot_transaction(mutate)
+            def mutate(connection: sqlite3.Connection) -> bool:
+                actual = {
+                    str(row["name"]): _normalize_sql(str(row["sql"]))
+                    for row in connection.execute(
+                        """SELECT name, sql FROM sqlite_master
+                           WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                           ORDER BY name"""
+                    ).fetchall()
+                }
+                if actual == _EXPECTED_SCHEMA:
+                    return False
+                if actual not in (
+                    _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
+                    _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
+                    _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
+                    _PRE_BUDGET_EXPECTED_SCHEMA,
+                    _LEGACY_EXPECTED_SCHEMA,
+                ):
+                    raise OperationsIntegrityError(
+                        "operations schema cannot be upgraded"
+                    )
+                connection.execute(
+                    """ALTER TABLE operations_acceptance_facts
+                       RENAME TO operations_acceptance_facts_previous"""
+                )
+                statement = next(
+                    item
+                    for item in _schema_statements()
+                    if item.lstrip().startswith(
+                        "CREATE TABLE operations_acceptance_facts"
+                    )
+                )
+                connection.execute(statement)
+                connection.execute(
+                    """INSERT INTO operations_acceptance_facts
+                       (fact_digest, acceptance_run_id, fact_kind, schema_version,
+                        recorded_identity, fact_json)
+                       SELECT fact_digest, acceptance_run_id, fact_kind,
+                              schema_version, recorded_identity, fact_json
+                       FROM operations_acceptance_facts_previous"""
+                )
+                connection.execute("DROP TABLE operations_acceptance_facts_previous")
+                return True
+
+            return self._snapshot_transaction(mutate)
 
     def create_run(
         self,

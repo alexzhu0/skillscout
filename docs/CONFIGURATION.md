@@ -78,7 +78,7 @@ export OPENAI_API_KEY='<openai-credential>'
 
 ### DeepSeek
 
-DeepSeek is enabled only with all three settings below. Extraction, generation, and review then use `deepseek-v4-flash`.
+DeepSeek is enabled only with all three settings below. Extraction and generation use `deepseek-v4-flash`; the independent review stage uses `deepseek-v4-pro`.
 
 ```bash
 export SKILLSCOUT_LLM_PROVIDER='deepseek'

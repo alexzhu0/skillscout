@@ -695,6 +695,241 @@ def test_live_authority_recording_rejects_before_opening_state_client(
         )
 
 
+def test_live_authority_recording_upgrades_legacy_state_before_authority_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A state-only authority record upgrades an accepted legacy ledger first.
+
+    This catches removal or reordering of the compatibility migration: the
+    recorder sees the current operations schema before it is allowed to make
+    its first authority-fact write.  The dependency passed to the recorder is
+    operations-only, so this transition cannot acquire semantic or publication
+    capability as part of the migration.
+    """
+
+    import sqlite3
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.application.acceptance as acceptance
+    import skillscout.bootstrap as bootstrap
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    database = tmp_path / "state" / "databases" / "operations.sqlite3"
+    database.parent.mkdir(parents=True)
+    connection = sqlite3.connect(database)
+    try:
+        for statement in operations_state._schema_statements(
+            operations_state._LEGACY_ACCEPTANCE_FACT_KINDS
+        ):
+            connection.execute(statement)
+        connection.execute(
+            f"PRAGMA user_version = {operations_state.OPERATIONS_SCHEMA_VERSION}"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    database.chmod(0o600)
+
+    authority = LiveAcceptanceAuthorityV1.model_construct(
+        authority_digest="sha256:" + ("1" * 64),
+        source_commit_sha="2" * 40,
+        state_commit_sha="3" * 40,
+        state_root_digest="sha256:" + ("4" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        query_set_digest="sha256:" + ("7" * 64),
+        semantic_provider="deepseek",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+    )
+    recorded_schema_fingerprints: list[str] = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        bootstrap,
+        "verify_live_acceptance_authority_state",
+        lambda **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "load_discovery_runtime_config",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+
+    def record_without_external_capability(
+        dependencies: object,
+        *,
+        acceptance_run_id: str,
+        fact: object,
+    ) -> object:
+        assert type(dependencies) is acceptance.LiveAuthorityDependencies
+        assert set(dependencies.__dataclass_fields__) == {"operations_store_factory"}
+        assert acceptance_run_id == "acceptance-legacy-authority"
+        assert fact is authority
+        store = dependencies.operations_store_factory()
+        try:
+            recorded_schema_fingerprints.append(store.export_owned_state().schema_fingerprint)
+        finally:
+            store.close()
+        return SimpleNamespace(fact_digest=authority.authority_digest)
+
+    class VerifiedBarrier:
+        def __init__(self, _config: object, _environ: object) -> None:
+            pass
+
+        def sync_discovery(self, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                status="verified",
+                commit_sha="5" * 40,
+                root_digest="sha256:" + ("6" * 64),
+            )
+
+    monkeypatch.setattr(acceptance, "record_live_authority", record_without_external_capability)
+    monkeypatch.setattr(bootstrap, "_LateStateDurabilityBarrier", VerifiedBarrier)
+
+    result = bootstrap.record_live_acceptance_authority(
+        authority_path=tmp_path / "approved-authority.json",
+        acceptance_run_id="acceptance-legacy-authority",
+        source_commit_sha="2" * 40,
+        state_commit_sha="3" * 40,
+        state_root_digest="sha256:" + ("4" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        environ={},
+    )
+
+    assert result["status"] == "live_authority_persisted"
+    assert recorded_schema_fingerprints == [operations_state._schema_fingerprint()]
+
+
+def test_live_authority_recording_rejects_parent_authority_without_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parent authority is a conflict, not a successful retry receipt."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.application.acceptance as acceptance
+    import skillscout.bootstrap as bootstrap
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    authority = LiveAcceptanceAuthorityV1.model_construct(
+        authority_digest="sha256:" + ("1" * 64),
+        source_commit_sha="2" * 40,
+        state_commit_sha="3" * 40,
+        state_root_digest="sha256:" + ("4" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        query_set_digest="sha256:" + ("7" * 64),
+        semantic_provider="deepseek",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+    )
+
+    class ExistingAuthorityStore:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def __enter__(self) -> ExistingAuthorityStore:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def acceptance_snapshot(self, _run_id: str) -> object:
+            return SimpleNamespace(
+                facts=(
+                    SimpleNamespace(
+                        kind="acceptance_live_authority",
+                        fact_digest=authority.authority_digest,
+                    ),
+                )
+            )
+
+        def upgrade_acceptance_schema(self) -> None:
+            pytest.fail("existing parent authority triggered a local migration")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        bootstrap,
+        "verify_live_acceptance_authority_state",
+        lambda **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "load_discovery_runtime_config",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(operations_state, "OperationsStateStore", ExistingAuthorityStore)
+    monkeypatch.setattr(
+        acceptance,
+        "record_live_authority",
+        lambda *_args, **_kwargs: pytest.fail("parent authority reached a writer"),
+    )
+
+    with pytest.raises(ValueError, match="live acceptance authority"):
+        bootstrap.record_live_acceptance_authority(
+            authority_path=tmp_path / "approved-authority.json",
+            acceptance_run_id="acceptance-existing-authority",
+            source_commit_sha="2" * 40,
+            state_commit_sha="3" * 40,
+            state_root_digest="sha256:" + ("4" * 64),
+            state_repository_id=123,
+            state_repository_full_name="example/state",
+            environ={},
+        )
+
+
+def test_fixed_runner_rejects_legacy_schema_without_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Benchmark construction never repairs legacy state before semantic work."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.bootstrap as bootstrap
+
+    closed: list[bool] = []
+
+    class LegacyOperationsStore:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def export_owned_state(self) -> object:
+            return SimpleNamespace(
+                schema_fingerprint=operations_state._fingerprint_for_schema(
+                    operations_state._LEGACY_EXPECTED_SCHEMA
+                )
+            )
+
+        def upgrade_acceptance_schema(self) -> None:
+            pytest.fail("benchmark construction triggered a legacy migration")
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(operations_state, "OperationsStateStore", LegacyOperationsStore)
+
+    with pytest.raises(ValueError, match="acceptance operations schema is not current"):
+        bootstrap._FixedRepositoryAcceptanceRunner(
+            config=SimpleNamespace(),
+            discovery_config=SimpleNamespace(operations_state=tmp_path / "operations.sqlite3"),
+            barrier=object(),
+            source={},
+            frozen_owner_export=object(),
+            acceptance_run_id="acceptance-legacy-runner",
+        )
+
+    assert closed == [True]
+
+
 def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -855,10 +855,27 @@ def test_pre_budget_state_requires_explicit_acceptance_schema_upgrade(
     path.chmod(0o600)
 
     with module.OperationsStateStore(path) as store:
-        store.upgrade_acceptance_schema()
+        assert store.upgrade_acceptance_schema() is True
         exported = store.export_owned_state()
 
     assert exported.schema_fingerprint == module._schema_fingerprint()
+
+
+def test_current_acceptance_schema_upgrade_is_a_true_noop(tmp_path: Path) -> None:
+    """A current schema must not rewrite local state just to report compatibility."""
+
+    module = _operations_module()
+    path = tmp_path / "operations.sqlite3"
+    with module.OperationsStateStore(path):
+        pass
+    before = path.read_bytes()
+    filesystem_events: list[str] = []
+
+    with module.OperationsStateStore(path, filesystem_seam=filesystem_events.append) as store:
+        assert store.upgrade_acceptance_schema() is False
+
+    assert filesystem_events == []
+    assert path.read_bytes() == before
 
 
 def test_acceptance_intent_and_completion_coexist_idempotently(
