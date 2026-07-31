@@ -141,10 +141,7 @@ def resolve_campaign_resume_lineage(
     for index, item in enumerate(observations[1:], start=1):
         expected_parent = commits[index - 1]
         expected_root = roots[index - 1]
-        if (
-            item.parent_commit_sha != expected_parent
-            or item.prior_root_digest != expected_root
-        ):
+        if item.parent_commit_sha != expected_parent or item.prior_root_digest != expected_root:
             raise ValueError("campaign resume lineage rejected")
 
     final_locators = observations[-1].resume_locators
@@ -158,9 +155,7 @@ def resolve_campaign_resume_lineage(
             lineage_commit_shas=commits,
             lineage_root_digests=roots,
         )
-    ordered = tuple(
-        sorted(final_locators, key=lambda item: item.locator.transition_index)
-    )
+    ordered = tuple(sorted(final_locators, key=lambda item: item.locator.transition_index))
     if len(ordered) != len(observations) - 1:
         raise ValueError("campaign resume transition graph is incomplete")
     previous_locator_digest = None
@@ -180,8 +175,7 @@ def resolve_campaign_resume_lineage(
             or record.object_digest in parent.object_digests
             or record.object_digest not in child.object_digests
             or any(
-                record.object_digest not in later.object_digests
-                for later in observations[index:]
+                record.object_digest not in later.object_digests for later in observations[index:]
             )
         ):
             raise ValueError("campaign resume transition edge rejected")
@@ -212,17 +206,28 @@ def _verify_campaign_transition_fact_delta(
 
     parent_facts = {item.object_digest: item for item in parent.owned_facts}
     child_facts = {item.object_digest: item for item in child.owned_facts}
+    removed = tuple(parent_facts[digest] for digest in sorted(set(parent_facts) - set(child_facts)))
     if (
         len(parent_facts) != len(parent.owned_facts)
         or len(child_facts) != len(child.owned_facts)
-        or not set(parent_facts).issubset(child_facts)
-        or any(child_facts[digest] != fact for digest, fact in parent_facts.items())
+        or any(
+            child_facts[digest] != parent_facts[digest]
+            for digest in set(parent_facts) & set(child_facts)
+        )
+        or (
+            removed
+            and (
+                locator.transition_phase != "result_durable"
+                or len(removed) != 1
+                or removed[0].kind != "semantic_attempt"
+                or removed[0].semantic_stage != locator.semantic_stage
+                or removed[0].attempt_no != locator.attempt_no
+                or removed[0].semantic_status != "started"
+            )
+        )
     ):
         raise ValueError("campaign resume typed fact delta rejected")
-    added = tuple(
-        child_facts[digest]
-        for digest in sorted(set(child_facts) - set(parent_facts))
-    )
+    added = tuple(child_facts[digest] for digest in sorted(set(child_facts) - set(parent_facts)))
     required_kinds = {
         "nomination": "acceptance_nomination",
         "discovery_page": "search_page",
@@ -240,34 +245,32 @@ def _verify_campaign_transition_fact_delta(
     }.get(locator.transition_phase)
     if locator.transition_phase == "terminal":
         kinds = tuple(item.kind for item in added)
-        accepted = (
-            kinds.count("candidate_terminal") == 1
-            and all(
-                kind in {"candidate_terminal", "workflow_terminal"}
-                for kind in kinds
-            )
+        accepted = kinds.count("candidate_terminal") == 1 and all(
+            kind in {"candidate_terminal", "workflow_terminal"} for kind in kinds
         )
     elif locator.transition_phase == "discovery_page":
         kinds = tuple(item.kind for item in added)
-        accepted = (
-            kinds.count("search_page") == 1
-            and all(kind in {"search_page", "candidate"} for kind in kinds)
+        accepted = kinds.count("search_page") == 1 and all(
+            kind in {"search_page", "candidate"} for kind in kinds
         )
-    elif locator.transition_phase == "budget_reserved":
+    elif locator.transition_phase in {
+        "budget_reserved",
+        "candidate_admitted",
+    }:
         kinds = tuple(item.kind for item in added)
+        required_kind = (
+            "acceptance_budget_reservation"
+            if locator.transition_phase == "budget_reserved"
+            else "acceptance_fixed_candidate_admission"
+        )
         accepted = (
-            kinds.count("acceptance_budget_reservation") == 1
+            kinds.count(required_kind) == 1
             and kinds.count("run") <= 1
-            and all(
-                kind in {"acceptance_budget_reservation", "run"}
-                for kind in kinds
-            )
+            and all(kind in {required_kind, "run"} for kind in kinds)
         )
     else:
         accepted = (
-            required_kinds is not None
-            and len(added) == 1
-            and added[0].kind == required_kinds
+            required_kinds is not None and len(added) == 1 and added[0].kind == required_kinds
         )
     if not accepted:
         raise ValueError("campaign resume typed fact delta rejected")
@@ -1032,23 +1035,14 @@ def run_locked_benchmark(
                 and isinstance(record.fact, AcceptanceScenarioResultV1)
             )
         }
-        if (
-            len(existing_scenarios)
-            != len(
-                tuple(
-                    record
-                    for record in snapshot.facts
-                    if record.kind == "acceptance_scenario"
-                )
-            )
-            or not set(existing_scenarios).issubset(
-                {entry.entry_digest for entry in manifest.entries}
-            )
+        if len(existing_scenarios) != len(
+            tuple(record for record in snapshot.facts if record.kind == "acceptance_scenario")
+        ) or not set(existing_scenarios).issubset(
+            {entry.entry_digest for entry in manifest.entries}
         ):
             raise AcceptanceApplicationError("evidence_missing")
         semantic_requests = sum(
-            scenario.semantic_request_count
-            for scenario in existing_scenarios.values()
+            scenario.semantic_request_count for scenario in existing_scenarios.values()
         )
         if semantic_requests > 20:
             raise AcceptanceApplicationError("unauthorized_effect")
@@ -1098,8 +1092,7 @@ def run_locked_benchmark(
                     authority.license_spdx,
                 )
                 or observation.semantic_request_count != len(observation.semantic_attempt_digests)
-                or observation.live_acceptance_authority_digest
-                != live_authority.authority_digest
+                or observation.live_acceptance_authority_digest != live_authority.authority_digest
             ):
                 raise AcceptanceApplicationError("evidence_missing")
             semantic_requests += observation.semantic_request_count
@@ -1107,8 +1100,7 @@ def run_locked_benchmark(
                 raise AcceptanceApplicationError("unauthorized_effect")
             if observation.state_commit_sha is not None:
                 if (
-                    re.fullmatch(r"[0-9a-f]{40}", observation.state_commit_sha)
-                    is None
+                    re.fullmatch(r"[0-9a-f]{40}", observation.state_commit_sha) is None
                     or re.fullmatch(
                         r"sha256:[0-9a-f]{64}",
                         observation.state_root_digest or "",
@@ -1135,19 +1127,11 @@ def run_locked_benchmark(
                 license_spdx=entry.license_spdx,
                 benchmark_manifest_digest=manifest.manifest_digest,
                 benchmark_entry_digest=observation.benchmark_entry_digest,
-                live_acceptance_authority_digest=(
-                    observation.live_acceptance_authority_digest
-                ),
+                live_acceptance_authority_digest=(observation.live_acceptance_authority_digest),
                 discovery_run_id=observation.discovery_run_id,
-                discovery_run_authority_digest=(
-                    observation.discovery_run_authority_digest
-                ),
-                budget_reservation_digest=(
-                    observation.budget_reservation_digest
-                ),
-                fixed_candidate_admission_digest=(
-                    observation.fixed_candidate_admission_digest
-                ),
+                discovery_run_authority_digest=(observation.discovery_run_authority_digest),
+                budget_reservation_digest=(observation.budget_reservation_digest),
+                fixed_candidate_admission_digest=(observation.fixed_candidate_admission_digest),
                 semantic_candidate_reservation_digest=(
                     observation.semantic_candidate_reservation_digest
                 ),
@@ -1175,8 +1159,7 @@ def run_locked_benchmark(
                     item.prompt_version for item in observation.semantic_telemetry
                 ),
                 schema_versions=tuple(
-                    item.output_schema_version
-                    for item in observation.semantic_telemetry
+                    item.output_schema_version for item in observation.semantic_telemetry
                 ),
                 policy_versions=tuple(
                     item.policy_version for item in observation.semantic_telemetry
@@ -1190,15 +1173,11 @@ def run_locked_benchmark(
                     sorted(observation.workflow_spec_authority_digests)
                 ),
                 candidate_terminal_digest=observation.candidate_terminal_digest,
-                workflow_terminal_digests=tuple(
-                    sorted(observation.workflow_terminal_digests)
-                ),
+                workflow_terminal_digests=tuple(sorted(observation.workflow_terminal_digests)),
                 phase3_terminal_summary_digests=tuple(
                     sorted(observation.phase3_terminal_summary_digests)
                 ),
-                skill_artifact_digests=tuple(
-                    sorted(observation.skill_artifact_digests)
-                ),
+                skill_artifact_digests=tuple(sorted(observation.skill_artifact_digests)),
                 package_digests=tuple(sorted(observation.package_digests)),
                 eligible_locator=observation.eligible_locator,
                 eligible_object_digest=observation.eligible_object_digest,
@@ -1356,10 +1335,7 @@ def run_exact_replay(
         )
     finally:
         _close(after_projector)
-    if (
-        type(after_projection) is not CompletedBenchmarkProjection
-        or after_projection != projection
-    ):
+    if type(after_projection) is not CompletedBenchmarkProjection or after_projection != projection:
         raise AcceptanceApplicationError("duplicate_effect")
     replay = ReplayEvidenceV1(
         schema_version="replay-evidence-v1",
@@ -1432,10 +1408,7 @@ def run_exact_replay(
         )
     finally:
         _close(final_projector)
-    if (
-        type(final_projection) is not CompletedBenchmarkProjection
-        or final_projection != projection
-    ):
+    if type(final_projection) is not CompletedBenchmarkProjection or final_projection != projection:
         raise AcceptanceApplicationError("duplicate_effect")
     return replay
 

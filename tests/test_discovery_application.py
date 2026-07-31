@@ -90,10 +90,7 @@ def test_crash_matrix_names_every_non_refundable_durability_seam() -> None:
         "after_final_handoff_sync",
     )
     assert len(seams) == len(set(seams))
-    assert all(
-        seam.startswith(("before_", "after_"))
-        for seam in seams
-    )
+    assert all(seam.startswith(("before_", "after_")) for seam in seams)
 
 
 def test_discovery_dependency_surface_has_no_publication_authority() -> None:
@@ -128,11 +125,7 @@ def test_discovery_source_imports_phase2_phase3_but_never_phase4() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Import)
         for alias in node.names
-    } | {
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
+    } | {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert "skillscout.application.pipeline" in imported
     assert "skillscout.application.phase3" in imported
     assert "skillscout.application.publication" not in imported
@@ -156,9 +149,7 @@ def test_application_contract_exposes_bounded_result_and_run_only() -> None:
         ("self",),
         ("self", "authority"),
     )
-    fields = set(getattr(result, "model_fields", {})) | set(
-        getattr(result, "__annotations__", {})
-    )
+    fields = set(getattr(result, "model_fields", {})) | set(getattr(result, "__annotations__", {}))
     assert {
         "run_id",
         "state_root_digest",
@@ -232,9 +223,7 @@ def test_integrity_and_permanent_failures_stop_the_run(outcome: str) -> None:
 
 
 def test_fatal_summary_counts_only_durably_reserved_candidates() -> None:
-    source = inspect.getsource(
-        _module().DiscoveryApplication._run_operations_store
-    )
+    source = inspect.getsource(_module().DiscoveryApplication._run_operations_store)
     assert (
         '"selected_candidate_count": len(\n'
         "                durable_discovery_reservations\n"
@@ -287,9 +276,7 @@ def test_eligible_handoff_locator_is_bounded_and_non_authorizing() -> None:
         authority_digest=authority,
         workflow_identity_digest=identity,
     )
-    assert locator.locator == (
-        "state/objects/sha256/aa/" + ("a" * 64) + ".json"
-    )
+    assert locator.locator == ("state/objects/sha256/aa/" + ("a" * 64) + ".json")
     assert set(locator.__annotations__) == {
         "locator",
         "authority_digest",
@@ -341,9 +328,7 @@ def test_unexpected_health_failure_collapses_without_raw_exception() -> None:
 
 def _runtime_config(module, tmp_path: Path):
     query_path = tmp_path / "discovery-queries-v1.json"
-    query_path.write_bytes(
-        (ROOT / "config" / "discovery-queries-v1.json").read_bytes()
-    )
+    query_path.write_bytes((ROOT / "config" / "discovery-queries-v1.json").read_bytes())
     return module.load_discovery_runtime_config(
         state_repository_id="910001",
         state_repository_full_name="skillscout/state",
@@ -434,12 +419,8 @@ def test_bootstrap_keeps_source_and_state_credentials_lazy(
             return object()
 
     monkeypatch.setattr("skillscout.adapters.github.GitHubReadClient", Search)
-    monkeypatch.setattr(
-        "skillscout.adapters.state_branch.StateBranchClient", StateClient
-    )
-    monkeypatch.setattr(
-        "skillscout.adapters.state_branch.StateBranchStore", StateStore
-    )
+    monkeypatch.setattr("skillscout.adapters.state_branch.StateBranchClient", StateClient)
+    monkeypatch.setattr("skillscout.adapters.state_branch.StateBranchStore", StateStore)
 
     application = module.build_discovery_application(
         config,
@@ -540,19 +521,13 @@ def test_real_bootstrap_and_operations_store_complete_empty_discovery(
                 status="verified",
                 observed_head="b" * 40,
                 bundle=SimpleNamespace(
-                    root=SimpleNamespace(
-                        root_digest=config.initial_state_root_digest
-                    )
+                    root=SimpleNamespace(root_digest=config.initial_state_root_digest)
                 ),
             )
 
     monkeypatch.setattr("skillscout.adapters.github.GitHubReadClient", Search)
-    monkeypatch.setattr(
-        "skillscout.adapters.state_branch.StateBranchClient", StateClient
-    )
-    monkeypatch.setattr(
-        "skillscout.adapters.state_branch.StateBranchStore", StateStore
-    )
+    monkeypatch.setattr("skillscout.adapters.state_branch.StateBranchClient", StateClient)
+    monkeypatch.setattr("skillscout.adapters.state_branch.StateBranchStore", StateStore)
 
     def sync_discovery(self, **_kwargs: object):
         calls.append("state:sync")
@@ -612,12 +587,8 @@ def test_late_discovery_barrier_accepts_strict_sync_receipt_without_second_resto
     mutation: str,
 ) -> None:
     bootstrap = importlib.import_module("skillscout.bootstrap")
-    operations_module = importlib.import_module(
-        "skillscout.adapters.operations_state"
-    )
-    state_branch = importlib.import_module(
-        "skillscout.adapters.state_branch"
-    )
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
+    state_branch = importlib.import_module("skillscout.adapters.state_branch")
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
     sync_calls = 0
@@ -641,17 +612,11 @@ def test_late_discovery_barrier_accepts_strict_sync_receipt_without_second_resto
             self.bundle = bundle
             receipt = state_branch.StateSyncObservation(
                 status="absent" if mutation == "status" else "verified",
-                previous_head=(
-                    "c" * 40
-                    if mutation == "previous_head"
-                    else observed_head
-                ),
+                previous_head=("c" * 40 if mutation == "previous_head" else observed_head),
                 commit_sha=("z" if mutation == "commit" else "b") * 40,
                 tree_sha=("z" if mutation == "tree" else "c") * 40,
                 root_digest=(
-                    "sha256:" + ("f" * 64)
-                    if mutation == "root"
-                    else bundle.root.root_digest
+                    "sha256:" + ("f" * 64) if mutation == "root" else bundle.root.root_digest
                 ),
             )
             if mutation == "type":
@@ -706,9 +671,7 @@ def test_real_operations_resume_advances_from_persisted_search_cursor(
 ) -> None:
     bootstrap = importlib.import_module("skillscout.bootstrap")
     application = _module()
-    operations_module = importlib.import_module(
-        "skillscout.adapters.operations_state"
-    )
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
     discovery = importlib.import_module("skillscout.domain.discovery")
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
@@ -743,9 +706,7 @@ def test_real_operations_resume_advances_from_persisted_search_cursor(
         **page_values,
         observation_digest=sha256_digest(page_values),
     )
-    with operations_module.OperationsStateStore(
-        config.operations_state
-    ) as store:
+    with operations_module.OperationsStateStore(config.operations_state) as store:
         store.create_run(authority, "2026-07-27T12:00:00.000000Z")
         store.record_search_page(authority.run_id, persisted_page, ())
 
@@ -791,27 +752,17 @@ def test_real_operations_resume_advances_from_persisted_search_cursor(
     result = application.DiscoveryApplication(
         application.DiscoveryDependencies(
             search_factory=Search,
-            operations_store_factory=lambda: (
-                operations_module.OperationsStateStore(
-                    config.operations_state
-                )
+            operations_store_factory=lambda: operations_module.OperationsStateStore(
+                config.operations_state
             ),
             state_restore=lambda: SimpleNamespace(
                 status="verified",
                 observed_head="b" * 40,
-                bundle=SimpleNamespace(
-                    root=SimpleNamespace(
-                        root_digest="sha256:" + ("e" * 64)
-                    )
-                ),
+                bundle=SimpleNamespace(root=SimpleNamespace(root_digest="sha256:" + ("e" * 64))),
             ),
             durability_barrier=Barrier(),
-            phase2_factory=lambda **_kwargs: pytest.fail(
-                "empty resume must not enter Phase 2"
-            ),
-            phase3_factory=lambda **_kwargs: pytest.fail(
-                "empty resume must not enter Phase 3"
-            ),
+            phase2_factory=lambda **_kwargs: pytest.fail("empty resume must not enter Phase 2"),
+            phase3_factory=lambda **_kwargs: pytest.fail("empty resume must not enter Phase 3"),
             query_set=config.query_set,
             initial_state_root_digest=config.initial_state_root_digest,
         )
@@ -827,9 +778,7 @@ def test_real_operations_crosses_candidate_budget_on_next_query_page(
 ) -> None:
     bootstrap = importlib.import_module("skillscout.bootstrap")
     application = _module()
-    operations_module = importlib.import_module(
-        "skillscout.adapters.operations_state"
-    )
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
     discovery = importlib.import_module("skillscout.domain.discovery")
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
@@ -895,9 +844,7 @@ def test_real_operations_crosses_candidate_budget_on_next_query_page(
             query = query_set.queries[query_ordinal - 1]
             values = {
                 "schema_version": "search-page-observation-v1",
-                "discovery_run_authority_digest": (
-                    discovery_run_authority_digest
-                ),
+                "discovery_run_authority_digest": (discovery_run_authority_digest),
                 "query_set_version": query_set.query_set_version,
                 "query_set_digest": query_set.query_set_digest,
                 "query_id": query.query_id,
@@ -959,33 +906,21 @@ def test_real_operations_crosses_candidate_budget_on_next_query_page(
             application.DiscoveryApplication(
                 application.DiscoveryDependencies(
                     search_factory=lambda: search,
-                    operations_store_factory=lambda: (
-                        operations_module.OperationsStateStore(
-                            config.operations_state
-                        )
+                    operations_store_factory=lambda: operations_module.OperationsStateStore(
+                        config.operations_state
                     ),
                     state_restore=lambda: SimpleNamespace(
                         status="verified",
                         observed_head="b" * 40,
                         bundle=SimpleNamespace(
-                            root=SimpleNamespace(
-                                root_digest=(
-                                    config.initial_state_root_digest
-                                )
-                            )
+                            root=SimpleNamespace(root_digest=(config.initial_state_root_digest))
                         ),
                     ),
                     durability_barrier=barrier,
-                    phase2_factory=lambda **_kwargs: pytest.fail(
-                        "probe must stop before Phase 2"
-                    ),
-                    phase3_factory=lambda **_kwargs: pytest.fail(
-                        "probe must stop before Phase 3"
-                    ),
+                    phase2_factory=lambda **_kwargs: pytest.fail("probe must stop before Phase 2"),
+                    phase3_factory=lambda **_kwargs: pytest.fail("probe must stop before Phase 3"),
                     query_set=config.query_set,
-                    initial_state_root_digest=(
-                        config.initial_state_root_digest
-                    ),
+                    initial_state_root_digest=(config.initial_state_root_digest),
                 )
             ).run(authority)
         assert failure.value.code is ErrorCode.PIPELINE_INTERRUPTED
@@ -1004,15 +939,10 @@ def test_real_operations_crosses_candidate_budget_on_next_query_page(
     )
     assert second_search.calls == [(1, 2), (2, 1)]
     assert second_barrier.calls == 2
-    with operations_module.OperationsStateStore(
-        config.operations_state
-    ) as store:
+    with operations_module.OperationsStateStore(config.operations_state) as store:
         prefix = store.snapshot_run(authority.run_id)
     assert len(prefix.candidates) == 75
-    assert sum(
-        item.dedup_disposition == "first_seen"
-        for item in prefix.candidates
-    ) == 74
+    assert sum(item.dedup_disposition == "first_seen" for item in prefix.candidates) == 74
 
     final_search, final_barrier = run_until_barrier(
         ((1, 3), (2, 2)),
@@ -1020,40 +950,25 @@ def test_real_operations_crosses_candidate_budget_on_next_query_page(
     )
     assert final_search.calls == [(1, 3), (2, 2)]
     assert final_barrier.calls == 2
-    with operations_module.OperationsStateStore(
-        config.operations_state
-    ) as store:
+    with operations_module.OperationsStateStore(config.operations_state) as store:
         snapshot = store.snapshot_run(authority.run_id)
     final_page = tuple(
-        item
-        for item in snapshot.candidates
-        if (item.query_ordinal, item.page) == (2, 2)
+        item for item in snapshot.candidates if (item.query_ordinal, item.page) == (2, 2)
     )
     assert len(snapshot.search_pages) == 5
     assert len(snapshot.candidates) == 125
-    assert sum(
-        item.dedup_disposition == "first_seen"
-        for item in snapshot.candidates
-    ) == 100
-    assert sum(
-        item.dedup_disposition == "budget_excluded"
-        for item in snapshot.candidates
-    ) == 20
-    assert tuple(
-        item.dedup_disposition for item in final_page
-    ) == ("first_seen",) * 5 + ("budget_excluded",) * 20
+    assert sum(item.dedup_disposition == "first_seen" for item in snapshot.candidates) == 100
+    assert sum(item.dedup_disposition == "budget_excluded" for item in snapshot.candidates) == 20
+    assert (
+        tuple(item.dedup_disposition for item in final_page)
+        == ("first_seen",) * 5 + ("budget_excluded",) * 20
+    )
 
     state_module = importlib.import_module("skillscout.adapters.state")
-    publication_module = importlib.import_module(
-        "skillscout.adapters.publication_state"
-    )
+    publication_module = importlib.import_module("skillscout.adapters.publication_state")
     pipeline = state_module.SQLiteStateStore(config.pipeline_state)
-    operations = operations_module.OperationsStateStore(
-        config.operations_state
-    )
-    publication = publication_module.PublicationStateStore(
-        config.publication_state
-    )
+    operations = operations_module.OperationsStateStore(config.operations_state)
+    publication = publication_module.PublicationStateStore(config.publication_state)
     try:
         bundle = operations_module.assemble_three_store_bundle(
             pipeline_store=pipeline,
@@ -1062,10 +977,7 @@ def test_real_operations_crosses_candidate_budget_on_next_query_page(
             prior_root_digest=config.initial_state_root_digest,
             state_parent_commit_sha="b" * 40,
             query_set_digest=config.query_set_digest,
-            budget_policy_digest=(
-                discovery.DiscoveryBudgetPolicyV1().budget_policy_digest
-                or ""
-            ),
+            budget_policy_digest=(discovery.DiscoveryBudgetPolicyV1().budget_policy_digest or ""),
             created_at="2026-07-27T12:00:00.000000Z",
         )
     finally:
@@ -1125,9 +1037,7 @@ def test_mixed_workflow_outcomes_persist_exact_handoff_and_degrade(
 ) -> None:
     bootstrap = importlib.import_module("skillscout.bootstrap")
     module = _module()
-    operations_module = importlib.import_module(
-        "skillscout.adapters.operations_state"
-    )
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
     discovery = importlib.import_module("skillscout.domain.discovery")
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
@@ -1249,18 +1159,14 @@ def test_mixed_workflow_outcomes_persist_exact_handoff_and_degrade(
     result = module.DiscoveryApplication(
         module.DiscoveryDependencies(
             search_factory=Search,
-            operations_store_factory=lambda: (
-                operations_module.OperationsStateStore(
-                    config.operations_state
-                )
+            operations_store_factory=lambda: operations_module.OperationsStateStore(
+                config.operations_state
             ),
             state_restore=lambda: SimpleNamespace(
                 status="verified",
                 observed_head="b" * 40,
                 bundle=SimpleNamespace(
-                    root=SimpleNamespace(
-                        root_digest=config.initial_state_root_digest
-                    )
+                    root=SimpleNamespace(root_digest=config.initial_state_root_digest)
                 ),
             ),
             durability_barrier=Barrier(),
@@ -1271,14 +1177,13 @@ def test_mixed_workflow_outcomes_persist_exact_handoff_and_degrade(
         )
     ).run(authority)
 
-    with operations_module.OperationsStateStore(
-        config.operations_state
-    ) as store:
+    with operations_module.OperationsStateStore(config.operations_state) as store:
         snapshot = store.snapshot_run(authority.run_id)
     assert result.eligible_candidates == (locator,)
-    assert tuple(
-        item.outcome for item in snapshot.workflow_terminals
-    ) == ("eligible_local_candidate", "semantic_outcome_unknown")
+    assert tuple(item.outcome for item in snapshot.workflow_terminals) == (
+        "eligible_local_candidate",
+        "semantic_outcome_unknown",
+    )
     assert snapshot.summary.status == "completed_degraded"
 
 
@@ -1303,9 +1208,7 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
 ) -> None:
     bootstrap = importlib.import_module("skillscout.bootstrap")
     discovery = importlib.import_module("skillscout.domain.discovery")
-    operations_module = importlib.import_module(
-        "skillscout.adapters.operations_state"
-    )
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
     pipeline_module = importlib.import_module("skillscout.application.pipeline")
     importlib.import_module("skillscout.adapters.phase2_state")
     monkeypatch.chdir(tmp_path)
@@ -1320,9 +1223,7 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
 
         @property
         def effect_scope(self):
-            return importlib.import_module(
-                "skillscout.domain.enums"
-            ).EffectScope.REMOTE_READ
+            return importlib.import_module("skillscout.domain.enums").EffectScope.REMOTE_READ
 
         def export_owned_state(self) -> object:
             return object()
@@ -1341,9 +1242,7 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
 
     class Barrier:
         def confirm(self, **_kwargs: object) -> object:
-            raise AssertionError(
-                "handled failure does not confirm another transition"
-            )
+            raise AssertionError("handled failure does not confirm another transition")
 
     class PrimaryFailure(RuntimeError):
         pass
@@ -1382,23 +1281,17 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
     monkeypatch.setattr(pipeline_module, "build_phase_two_runtime", build_runtime)
     if primary_outcome == "candidate_source_unavailable":
         monkeypatch.setattr(
-            "skillscout.application.candidate_source."
-            "derive_candidate_subject_descriptors",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                CandidateSourceUnavailable()
-            ),
+            "skillscout.application.candidate_source.derive_candidate_subject_descriptors",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(CandidateSourceUnavailable()),
         )
     elif primary_outcome == "descriptor_source_unavailable":
         monkeypatch.setattr(
-            "skillscout.application.candidate_source."
-            "derive_candidate_subject_descriptors",
+            "skillscout.application.candidate_source.derive_candidate_subject_descriptors",
             lambda *_args, **_kwargs: ({"bounded": "descriptor"},),
         )
         monkeypatch.setattr(
             "skillscout.application.candidate_source.load_candidate_subject",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                CandidateSourceUnavailable()
-            ),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(CandidateSourceUnavailable()),
         )
 
     application = bootstrap.build_discovery_application(
@@ -1450,9 +1343,7 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
             }
         ),
     )
-    operations = operations_module.OperationsStateStore(
-        config.operations_state
-    )
+    operations = operations_module.OperationsStateStore(config.operations_state)
     operations.create_run(authority, "2026-07-28T00:00:00.000000Z")
     try:
         arguments = {
@@ -1489,27 +1380,15 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bootstrap = importlib.import_module("skillscout.bootstrap")
-    discovery_domain = importlib.import_module(
-        "skillscout.domain.discovery"
-    )
-    discovery_application = importlib.import_module(
-        "skillscout.application.discovery"
-    )
-    operations_module = importlib.import_module(
-        "skillscout.adapters.operations_state"
-    )
-    pipeline_module = importlib.import_module(
-        "skillscout.application.pipeline"
-    )
+    discovery_domain = importlib.import_module("skillscout.domain.discovery")
+    discovery_application = importlib.import_module("skillscout.application.discovery")
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
+    pipeline_module = importlib.import_module("skillscout.application.pipeline")
     ports = importlib.import_module("skillscout.application.ports")
     enums = importlib.import_module("skillscout.domain.enums")
     state_module = importlib.import_module("skillscout.adapters.state")
-    publication_module = importlib.import_module(
-        "skillscout.adapters.publication_state"
-    )
-    state_branch_module = importlib.import_module(
-        "skillscout.adapters.state_branch"
-    )
+    publication_module = importlib.import_module("skillscout.adapters.publication_state")
+    state_branch_module = importlib.import_module("skillscout.adapters.state_branch")
     subjects = importlib.import_module("skillscout.domain.subjects")
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
@@ -1533,9 +1412,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
         **repository_values,
         observation_digest=sha256_digest(repository_values),
     )
-    operations = operations_module.OperationsStateStore(
-        config.operations_state
-    )
+    operations = operations_module.OperationsStateStore(config.operations_state)
     operations.create_run(authority, timestamp)
     candidate = None
     for query_ordinal, query in enumerate(config.query_set.queries, start=1):
@@ -1669,9 +1546,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
                 telemetry=None,
             )
 
-    publication = publication_module.PublicationStateStore(
-        config.publication_state
-    )
+    publication = publication_module.PublicationStateStore(config.publication_state)
     phase2_state = state_module.SQLiteStateStore(config.pipeline_state)
     try:
         guard = pipeline_module.SemanticDurabilityGuard(
@@ -1695,9 +1570,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
                 subjects.RepositorySubject(
                     schema_version="1",
                     subject_id=f"repo:{candidate.repository.full_name}",
-                    repository=(
-                        f"https://github.com/{candidate.repository.full_name}"
-                    ),
+                    repository=(f"https://github.com/{candidate.repository.full_name}"),
                 ),
                 tmp_path / "crashed-output",
             )
@@ -1707,9 +1580,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     assert original_provider_calls == 1
 
     phase2_state = state_module.SQLiteStateStore(config.pipeline_state)
-    publication = publication_module.PublicationStateStore(
-        config.publication_state
-    )
+    publication = publication_module.PublicationStateStore(config.publication_state)
     try:
         parent_bundle = operations_module.assemble_three_store_bundle(
             pipeline_store=phase2_state,
@@ -1719,8 +1590,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
             state_parent_commit_sha=reserved_head,
             query_set_digest=config.query_set_digest,
             budget_policy_digest=(
-                discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest
-                or ""
+                discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest or ""
             ),
             created_at=timestamp,
         )
@@ -1755,9 +1625,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
                     sha=started_head,
                     tree_sha=parent_tree_sha,
                     parents=(reserved_head,),
-                    message=state_branch_module._state_commit_message(
-                        started_root
-                    ),
+                    message=state_branch_module._state_commit_message(started_root),
                 )
             }
             self.counter = 20
@@ -1837,8 +1705,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
         state_store=state_branch_store,
         query_set_digest=config.query_set_digest,
         budget_policy_digest=(
-            discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest
-            or ""
+            discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest or ""
         ),
     )
 
@@ -1880,9 +1747,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
             assert transition_phase in {"terminal", "discovery_summary"}
             snapshot = operations_store.snapshot_run(authority.run_id)
             if not snapshot.candidate_terminals:
-                raise AssertionError(
-                    "durable discovery reservation must not be resynchronized"
-                )
+                raise AssertionError("durable discovery reservation must not be resynchronized")
             kind = "summary" if snapshot.summary is not None else "terminal"
             discovery_syncs.append(kind)
             pipeline = (
@@ -1891,9 +1756,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
                 else state_module.SQLiteStateStore(config.pipeline_state)
             )
             owns_pipeline = pipeline_store is None
-            publication_store = publication_module.PublicationStateStore(
-                config.publication_state
-            )
+            publication_store = publication_module.PublicationStateStore(config.publication_state)
             try:
                 bundle = operations_module.assemble_three_store_bundle(
                     pipeline_store=pipeline,
@@ -1903,9 +1766,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
                     state_parent_commit_sha=observed_head,
                     query_set_digest=config.query_set_digest,
                     budget_policy_digest=(
-                        discovery_domain.DiscoveryBudgetPolicyV1()
-                        .budget_policy_digest
-                        or ""
+                        discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest or ""
                     ),
                     created_at=created_at,
                 )
@@ -1928,9 +1789,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     def mismatched_snapshot(store, run_id):
         snapshot = real_snapshot_run(store, run_id)
         semantic = snapshot.semantic_reservations[0].model_copy(
-            update={
-                "phase2_run_authority_digest": "sha256:" + ("2" * 64)
-            }
+            update={"phase2_run_authority_digest": "sha256:" + ("2" * 64)}
         )
         return type(snapshot)(
             search_pages=snapshot.search_pages,
@@ -1949,9 +1808,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
         mismatched_snapshot,
     )
     operations.close()
-    mismatched_operations = operations_module.OperationsStateStore(
-        config.operations_state
-    )
+    mismatched_operations = operations_module.OperationsStateStore(config.operations_state)
     try:
         with pytest.raises(SafeFailure) as mismatch:
             built._dependencies.phase2_factory(
@@ -1989,10 +1846,8 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     application = discovery_application.DiscoveryApplication(
         discovery_application.DiscoveryDependencies(
             search_factory=Search,
-            operations_store_factory=lambda: (
-                operations_module.OperationsStateStore(
-                    config.operations_state
-                )
+            operations_store_factory=lambda: operations_module.OperationsStateStore(
+                config.operations_state
             ),
             state_restore=restore_state,
             durability_barrier=RecoveryBarrier(),
@@ -2016,9 +1871,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
             f"provider_constructions={provider_constructions}"
         )
 
-    with operations_module.OperationsStateStore(
-        config.operations_state
-    ) as restored_operations:
+    with operations_module.OperationsStateStore(config.operations_state) as restored_operations:
         snapshot = restored_operations.snapshot_run(authority.run_id)
     assert provider_constructions == 0
     assert transitions == ["result_outcome_unknown"]
@@ -2032,6 +1885,43 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     assert snapshot.summary.status == "completed_degraded"
     assert result.eligible_candidates == ()
     assert remote.force_values == [False, False, False]
-    assert remote.operations.count("update_state_ref") == 3
-    assert len(remote.operations) == 119
+    expected_sync_count = len(transitions) + len(discovery_syncs)
+    assert expected_sync_count == 3
+    allowed_operations = {
+        "create_blob",
+        "create_commit",
+        "create_tree",
+        "get_blob",
+        "get_commit",
+        "get_state_ref",
+        "get_tree",
+        "update_state_ref",
+    }
+    assert set(remote.operations) <= allowed_operations
+    writes = tuple(
+        operation
+        for operation in remote.operations
+        if operation.startswith("create_") or operation == "update_state_ref"
+    )
+    write_segments: list[tuple[str, ...]] = []
+    pending_writes: list[str] = []
+    for operation in writes:
+        pending_writes.append(operation)
+        if operation == "update_state_ref":
+            write_segments.append(tuple(pending_writes))
+            pending_writes = []
+    assert pending_writes == []
+    assert len(write_segments) == expected_sync_count
+    assert all(
+        segment[-3:] == ("create_tree", "create_commit", "update_state_ref")
+        and segment[:-3]
+        and set(segment[:-3]) == {"create_blob"}
+        for segment in write_segments
+    )
+    maximum_metadata_reads = (2 * expected_sync_count) + 2
+    maximum_blob_reads = 2 * remote.operations.count("create_blob")
+    assert remote.operations.count("get_state_ref") <= maximum_metadata_reads
+    assert remote.operations.count("get_commit") <= maximum_metadata_reads
+    assert remote.operations.count("get_tree") <= maximum_metadata_reads
+    assert remote.operations.count("get_blob") <= maximum_blob_reads
     assert remote.operations[-1] == "get_tree"

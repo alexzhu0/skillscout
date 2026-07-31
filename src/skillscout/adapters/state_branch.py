@@ -42,12 +42,8 @@ _MAX_TREE_ENTRIES = 4_100
 _MAX_REQUEST_ID_CHARS = 128
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
-_GITHUB_REQUEST_ID = re.compile(
-    r"(?:[A-Za-z0-9._-]+|[0-9A-F]+(?::[0-9A-F]+)+)"
-)
-_OBJECT_PATH = re.compile(
-    r"^state/objects/sha256/([0-9a-f]{2})/([0-9a-f]{64})\.json$"
-)
+_GITHUB_REQUEST_ID = re.compile(r"(?:[A-Za-z0-9._-]+|[0-9A-F]+(?::[0-9A-F]+)+)")
+_OBJECT_PATH = re.compile(r"^state/objects/sha256/([0-9a-f]{2})/([0-9a-f]{64})\.json$")
 _DATABASE_PATHS = (
     "state/databases/pipeline.sqlite3",
     "state/databases/operations.sqlite3",
@@ -220,11 +216,7 @@ def _git_blob_id(value: bytes) -> str:
 
 def _state_commit_message(root_digest: str) -> str:
     _require_digest(root_digest)
-    return (
-        "skillscout: persist state\n\n"
-        "SkillScout-State: v1\n"
-        f"Root-Digest: {root_digest}"
-    )
+    return f"skillscout: persist state\n\nSkillScout-State: v1\nRoot-Digest: {root_digest}"
 
 
 def _contains_canary(value: bytes) -> bool:
@@ -343,12 +335,7 @@ class _StateBranchReadClientBase:
             if not isinstance(item, dict) or type(item.get("path")) is not str:
                 _safe_failure()
             path = item["path"]
-            if (
-                not path
-                or "\\" in path
-                or path.startswith("/")
-                or ".." in path.split("/")
-            ):
+            if not path or "\\" in path or path.startswith("/") or ".." in path.split("/"):
                 _safe_failure()
             if item.get("type") == "tree":
                 if item.get("mode") != "040000" or not _allowed_tree_path(path):
@@ -411,9 +398,7 @@ class _StateBranchReadClientBase:
             _safe_failure()
         return content
 
-    def _ref(
-        self, raw: object, expected_sha: str | None = None
-    ) -> StateRefObservation:
+    def _ref(self, raw: object, expected_sha: str | None = None) -> StateRefObservation:
         if (
             not isinstance(raw, dict)
             or raw.get("ref") != STATE_REF
@@ -472,8 +457,7 @@ class _StateBranchReadClientBase:
                 _safe_failure(ErrorCode.STAGE_TRANSIENT_FAILURE)
             if (
                 not 200 <= response.status_code < 300
-                or "application/json"
-                not in response.headers.get("content-type", "")
+                or "application/json" not in response.headers.get("content-type", "")
             ):
                 _safe_failure()
             pieces: list[bytes] = []
@@ -506,11 +490,7 @@ class StateBranchClient(_StateBranchReadClientBase):
     effect_scope = EffectScope.REMOTE_WRITE
 
     def create_blob(self, content: bytes) -> str:
-        if (
-            type(content) is not bytes
-            or not content
-            or len(content) > _MAX_DATABASE_BYTES
-        ):
+        if type(content) is not bytes or not content or len(content) > _MAX_DATABASE_BYTES:
             _safe_failure()
         raw = self._json(
             "POST",
@@ -585,9 +565,7 @@ class StateBranchClient(_StateBranchReadClientBase):
         )
         return self._ref(raw, expected)
 
-    def _ref(
-        self, raw: object, expected_sha: str | None = None
-    ) -> StateRefObservation:
+    def _ref(self, raw: object, expected_sha: str | None = None) -> StateRefObservation:
         if (
             not isinstance(raw, dict)
             or raw.get("ref") != STATE_REF
@@ -646,8 +624,7 @@ class StateBranchClient(_StateBranchReadClientBase):
                 _safe_failure(ErrorCode.STAGE_TRANSIENT_FAILURE)
             if (
                 not 200 <= response.status_code < 300
-                or "application/json"
-                not in response.headers.get("content-type", "")
+                or "application/json" not in response.headers.get("content-type", "")
             ):
                 _safe_failure()
             pieces: list[bytes] = []
@@ -675,6 +652,9 @@ class StateBranchStore:
 
     def __init__(self, remote: object) -> None:
         self._remote = remote
+        self._commit_cache: dict[str, object] = {}
+        self._tree_cache: dict[str, object] = {}
+        self._blob_cache: dict[str, bytes] = {}
 
     def restore(
         self,
@@ -702,14 +682,16 @@ class StateBranchStore:
         read_budget: ResolverReadBudget | None = None,
     ) -> VerifiedStateBundle:
         expected_commit_sha = _sha(commit_sha)
-        commit = self._read(
+        commit = self._cached_read(
+            self._commit_cache,
             "get_commit",
             expected_commit_sha,
             read_budget=read_budget,
         )
         if commit.sha != expected_commit_sha or len(commit.parents) > 1:
             raise StateIntegrityFailure
-        entries = self._read(
+        entries = self._cached_read(
+            self._tree_cache,
             "get_tree",
             commit.tree_sha,
             read_budget=read_budget,
@@ -718,7 +700,8 @@ class StateBranchStore:
         root_entry = entry_map.get("state/root.json")
         if root_entry is None:
             raise StateIntegrityFailure
-        root_bytes = self._read(
+        root_bytes = self._cached_read(
+            self._blob_cache,
             "get_blob",
             root_entry.sha,
             read_budget=read_budget,
@@ -733,17 +716,12 @@ class StateBranchStore:
         expected_paths = _expected_paths(root)
         if set(entry_map) != expected_paths:
             raise StateIntegrityFailure
-        files: list[StateOwnedFile] = [
-            StateOwnedFile("state/root.json", root_bytes)
-        ]
-        object_digests = {
-            item.locator: item.object_digest for item in root.objects
-        }
-        database_digests = {
-            item.locator: item.content_digest for item in root.databases
-        }
+        files: list[StateOwnedFile] = [StateOwnedFile("state/root.json", root_bytes)]
+        object_digests = {item.locator: item.object_digest for item in root.objects}
+        database_digests = {item.locator: item.content_digest for item in root.databases}
         for path in sorted(expected_paths - {"state/root.json"}):
-            content = self._read(
+            content = self._cached_read(
+                self._blob_cache,
                 "get_blob",
                 entry_map[path].sha,
                 read_budget=read_budget,
@@ -753,9 +731,7 @@ class StateBranchStore:
                 content,
                 object_digests.get(path) or database_digests.get(path),
             )
-            if entry_map[path].size is not None and entry_map[path].size != len(
-                content
-            ):
+            if entry_map[path].size is not None and entry_map[path].size != len(content):
                 raise StateIntegrityFailure
             files.append(StateOwnedFile(path, content))
         bundle = VerifiedStateBundle(root, tuple(files))
@@ -771,14 +747,16 @@ class StateBranchStore:
         """Verify one immutable commit manifest without reading owned payload blobs."""
 
         expected_commit_sha = _sha(commit_sha)
-        commit = self._read(
+        commit = self._cached_read(
+            self._commit_cache,
             "get_commit",
             expected_commit_sha,
             read_budget=read_budget,
         )
         if commit.sha != expected_commit_sha or len(commit.parents) > 1:
             raise StateIntegrityFailure
-        entries = self._read(
+        entries = self._cached_read(
+            self._tree_cache,
             "get_tree",
             commit.tree_sha,
             read_budget=read_budget,
@@ -787,7 +765,8 @@ class StateBranchStore:
         root_entry = entry_map.get("state/root.json")
         if root_entry is None:
             raise StateIntegrityFailure
-        root_bytes = self._read(
+        root_bytes = self._cached_read(
+            self._blob_cache,
             "get_blob",
             root_entry.sha,
             read_budget=read_budget,
@@ -807,8 +786,7 @@ class StateBranchStore:
         ):
             raise StateIntegrityFailure
         declared_sizes = {
-            item.locator: item.size_bytes
-            for item in (*root.objects, *root.databases)
+            item.locator: item.size_bytes for item in (*root.objects, *root.databases)
         }
         for path, size in declared_sizes.items():
             entry = entry_map[path]
@@ -818,9 +796,7 @@ class StateBranchStore:
             commit=commit,
             root=root,
             object_digests=tuple(item.object_digest for item in root.objects),
-            declared_content_bytes=(
-                len(root_bytes) + sum(declared_sizes.values())
-            ),
+            declared_content_bytes=(len(root_bytes) + sum(declared_sizes.values())),
         )
 
     def _read(
@@ -833,6 +809,25 @@ class StateBranchStore:
         if read_budget is None:
             return method(*arguments)
         return method(*arguments, read_budget=read_budget)
+
+    def _cached_read(
+        self,
+        cache: dict[str, object] | dict[str, bytes],
+        method_name: str,
+        identity: str,
+        *,
+        read_budget: ResolverReadBudget | None,
+    ) -> object:
+        cached = cache.get(identity)
+        if cached is not None:
+            return cached
+        value = self._read(
+            method_name,
+            identity,
+            read_budget=read_budget,
+        )
+        cache[identity] = value  # type: ignore[assignment]
+        return value
 
     @staticmethod
     def restore_from_fixture(
@@ -851,9 +846,7 @@ class StateBranchStore:
             return StateRestoreObservation("absent", None, None)
         try:
             observed = _sha(state_ref)
-            root = DiscoveryStateRootV1.model_validate(
-                fixture.get("root"), strict=True
-            )
+            root = DiscoveryStateRootV1.model_validate(fixture.get("root"), strict=True)
         except (SafeFailure, ValidationError):
             raise StateIntegrityFailure from None
         if root.state_parent_commit_sha != observed:
@@ -878,9 +871,7 @@ class StateBranchStore:
         }
         if raw_databases != expected_databases or raw_objects != expected_objects:
             raise StateIntegrityFailure
-        return StateRestoreObservation(
-            "verified", observed, VerifiedStateBundle(root)
-        )
+        return StateRestoreObservation("verified", observed, VerifiedStateBundle(root))
 
     def sync(
         self,
@@ -893,8 +884,7 @@ class StateBranchStore:
         files = _validate_bundle(bundle, expected_parent=expected_parent)
         if (
             expected_prior_root_digest is not None
-            and bundle.root.prior_root_digest
-            != _require_digest(expected_prior_root_digest)
+            and bundle.root.prior_root_digest != _require_digest(expected_prior_root_digest)
         ):
             raise StateIntegrityFailure
         try:
@@ -914,15 +904,12 @@ class StateBranchStore:
                 or len(parent_commit.parents) > 1
                 or (
                     expected_prior_root_digest is not None
-                    and parent_commit.message
-                    != _state_commit_message(expected_prior_root_digest)
+                    and parent_commit.message != _state_commit_message(expected_prior_root_digest)
                 )
             ):
                 raise StateBranchConflict
             try:
-                parent_entries = _validate_tree_shape(
-                    self._remote.get_tree(parent_commit.tree_sha)
-                )
+                parent_entries = _validate_tree_shape(self._remote.get_tree(parent_commit.tree_sha))
             except StateIntegrityFailure:
                 raise StateBranchConflict from None
 
@@ -930,10 +917,7 @@ class StateBranchStore:
         for path, content in sorted(files.items()):
             expected_blob_sha = _git_blob_id(content)
             parent_entry = parent_entries.get(path)
-            if (
-                parent_entry is not None
-                and parent_entry.sha == expected_blob_sha
-            ):
+            if parent_entry is not None and parent_entry.sha == expected_blob_sha:
                 blob_sha = expected_blob_sha
             else:
                 blob_sha = self._remote.create_blob(content)
@@ -986,8 +970,7 @@ class StateBranchStore:
             commit.sha != commit_sha
             or commit.tree_sha != tree_sha
             or commit.parents != expected_parents
-            or commit.message
-            != _state_commit_message(bundle.root.root_digest)
+            or commit.message != _state_commit_message(bundle.root.root_digest)
         ):
             raise StateBranchConflict
         entries = self._remote.get_tree(tree_sha)
@@ -1114,9 +1097,7 @@ class StateBranchDurabilityBarrier:
             synchronized = self._state_store.sync(
                 bundle,
                 transition.expected_prior_state_head,
-                expected_prior_root_digest=(
-                    transition.expected_prior_root_digest
-                ),
+                expected_prior_root_digest=(transition.expected_prior_root_digest),
             )
             verified_head = synchronized.commit_sha
         except StateBranchConflict:
@@ -1314,9 +1295,7 @@ def _validate_bundle(
     if root_bytes is None or _parse_root(root_bytes) != root:
         raise StateIntegrityFailure
     object_digests = {item.locator: item.object_digest for item in root.objects}
-    database_digests = {
-        item.locator: item.content_digest for item in root.databases
-    }
+    database_digests = {item.locator: item.content_digest for item in root.databases}
     for path, content in files.items():
         if path == "state/root.json":
             continue

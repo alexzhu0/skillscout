@@ -18,9 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Mapping, NoReturn
 
-_APPROVED_LOCK_DIGEST = (
-    "b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
-)
+_APPROVED_LOCK_DIGEST = "b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
 _EXPECTED_VALIDATOR_RUNTIME_DIGEST = (
     "6ef6a0d4df321648c5ec967762d99e4ad9164a3d070ffae337feda890914ed36"
 )
@@ -45,11 +43,7 @@ ACCEPTANCE_CATALOG_FULL_NAME = "alexzhu0/skillscout-catalog-test"
 
 
 def _discovery_timestamp() -> str:
-    return (
-        datetime.now(UTC)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 class PhaseThreeGateError(RuntimeError):
@@ -155,30 +149,20 @@ class AcceptanceRuntimeConfig:
                 self.acceptance_run_id is not None
                 and (
                     not _closed_identity(self.acceptance_run_id)
-                    or len(self.resume_lineage_commit_shas)
-                    != len(self.resume_lineage_root_digests)
+                    or len(self.resume_lineage_commit_shas) != len(self.resume_lineage_root_digests)
                     or not self.resume_lineage_commit_shas
                     or len(self.resume_lineage_commit_shas) > 256
-                    or self.resume_lineage_commit_shas[-1]
-                    != self.state_commit_sha
-                    or self.resume_lineage_root_digests[-1]
-                    != self.state_root_digest
-                    or any(
-                        not _is_commit_sha(item)
-                        for item in self.resume_lineage_commit_shas
-                    )
-                    or any(
-                        not _is_digest(item)
-                        for item in self.resume_lineage_root_digests
-                    )
+                    or self.resume_lineage_commit_shas[-1] != self.state_commit_sha
+                    or self.resume_lineage_root_digests[-1] != self.state_root_digest
+                    or any(not _is_commit_sha(item) for item in self.resume_lineage_commit_shas)
+                    or any(not _is_digest(item) for item in self.resume_lineage_root_digests)
                     or (
                         self.resume_locator_digest is not None
                         and not _is_digest(self.resume_locator_digest)
                     )
                     or self.resume_transition_index < 0
                     or self.resume_transition_index > 160
-                    or (self.resume_transition_index == 0)
-                    != (self.resume_locator_digest is None)
+                    or (self.resume_transition_index == 0) != (self.resume_locator_digest is None)
                 )
             )
             or (
@@ -234,8 +218,7 @@ def verify_live_acceptance_authority(
 
     try:
         manifest_relative = Path(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
+            ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
         )
         workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
         query_relative = Path("config/discovery-queries-v1.json")
@@ -308,24 +291,20 @@ def verify_live_acceptance_authority(
             canonical_json_bytes(authority) + b"\n",
         }:
             raise ValueError
-        provider = resolve_semantic_provider(
-            os.environ if environ is None else environ
-        )
+        provider = resolve_semantic_provider(os.environ if environ is None else environ)
         budget = DiscoveryBudgetPolicyV1()
         if (
             authority.source_commit_sha != observed_source_commit_sha
             or authority.state_commit_sha != observed_state_commit_sha
             or authority.state_root_digest != observed_state_root_digest
             or authority.state_repository_id != observed_state_repository_id
-            or authority.state_repository_full_name
-            != observed_state_repository_full_name
+            or authority.state_repository_full_name != observed_state_repository_full_name
             or authority.acceptance_workflow_sha256
             != "sha256:" + hashlib.sha256(workflow_bytes).hexdigest()
             or authority.manifest_path != manifest_relative.as_posix()
             or authority.manifest_digest != manifest.manifest_digest
             or authority.nomination_set_digest != manifest.nomination_set_digest
-            or authority.lock_attestation_digest
-            != manifest.lock_attestation.attestation_digest
+            or authority.lock_attestation_digest != manifest.lock_attestation.attestation_digest
             or authority.query_set_digest != query_set.query_set_digest
             or authority.budget_policy_digest != budget.budget_policy_digest
             or provider.provider.value != authority.semantic_provider
@@ -494,8 +473,7 @@ class NominationRuntimeConfig:
             or self.query_set_path.name != _DISCOVERY_QUERY_SET_NAME
             or type(self.query_set) is not DiscoveryQuerySetV1
             or self.query_set_digest != self.query_set.query_set_digest
-            or os.fspath(self.operations_state)
-            != _DISCOVERY_DATABASE_LOCATORS[1]
+            or os.fspath(self.operations_state) != _DISCOVERY_DATABASE_LOCATORS[1]
             or not _is_digest(self.initial_state_root_digest)
         ):
             raise ValueError("nomination runtime configuration rejected")
@@ -622,8 +600,7 @@ def load_acceptance_runtime_config(
                 or type(proof["lineage_root_digests"]) is not list
                 or type(proof["transition_index"]) is not int
                 or (
-                    proof["locator_digest"] is not None
-                    and type(proof["locator_digest"]) is not str
+                    proof["locator_digest"] is not None and type(proof["locator_digest"]) is not str
                 )
             ):
                 raise ValueError
@@ -640,12 +617,8 @@ def load_acceptance_runtime_config(
             extractor_model_id=provider.extract_model,
             generator_model_id=provider.generator_model,
             reviewer_model_id=provider.reviewer_model,
-            live_acceptance_authority_digest=source[
-                "PHASE6_AUTHORITY_DIGEST"
-            ],
-            acceptance_run_id=(
-                acceptance_run_id if resume_proof_path is not None else None
-            ),
+            live_acceptance_authority_digest=source["PHASE6_AUTHORITY_DIGEST"],
+            acceptance_run_id=(acceptance_run_id if resume_proof_path is not None else None),
             resume_locator_digest=resume_locator_digest,
             resume_transition_index=resume_transition_index,
             resume_lineage_commit_shas=resume_commits,
@@ -680,9 +653,7 @@ def load_acceptance_attestation(
         from skillscout.domain.canonical import canonical_json_bytes
 
         model = (
-            HumanSkillReviewAttestationV1
-            if kind == "human-review"
-            else ProbeCleanupAttestationV1
+            HumanSkillReviewAttestationV1 if kind == "human-review" else ProbeCleanupAttestationV1
         )
         attestation = model.model_validate_json(payload, strict=True)
         canonical = canonical_json_bytes(attestation)
@@ -768,12 +739,8 @@ def load_discovery_runtime_config(
         from skillscout.domain.discovery import DiscoveryQuerySetV1
 
         query_set = DiscoveryQuerySetV1.model_validate_json(payload, strict=True)
-        if (
-            query_set.query_set_digest is None
-            or (
-                query_set_digest is not None
-                and query_set_digest != query_set.query_set_digest
-            )
+        if query_set.query_set_digest is None or (
+            query_set_digest is not None and query_set_digest != query_set.query_set_digest
         ):
             raise ValueError
         return DiscoveryRuntimeConfig(
@@ -1063,9 +1030,7 @@ class _LateStateDurabilityBarrier:
             observed_head=observed_head,
             prior_root_digest=prior_root_digest,
             created_at=recorded_at,
-            transition_phase=(
-                "started" if status == "started" else "result_durable"
-            ),
+            transition_phase=("started" if status == "started" else "result_durable"),
             semantic_stage=stage,
             attempt_no=attempt_no,
             semantic_status=status,
@@ -1124,9 +1089,7 @@ class _LateStateDurabilityBarrier:
         from skillscout.domain.discovery import DiscoveryBudgetPolicyV1
 
         client = StateBranchClient(
-            token=_required_credential(
-                self._source, "SKILLSCOUT_STATE_GITHUB_TOKEN"
-            ),
+            token=_required_credential(self._source, "SKILLSCOUT_STATE_GITHUB_TOKEN"),
             repository_id=self._config.state_repository_id,
             repository_full_name=self._config.state_repository_full_name,
         )
@@ -1134,9 +1097,7 @@ class _LateStateDurabilityBarrier:
             barrier = StateBranchDurabilityBarrier(
                 state_store=StateBranchStore(client),
                 query_set_digest=self._config.query_set_digest,
-                budget_policy_digest=(
-                    DiscoveryBudgetPolicyV1().budget_policy_digest or ""
-                ),
+                budget_policy_digest=(DiscoveryBudgetPolicyV1().budget_policy_digest or ""),
             )
             synchronized = barrier.confirm(**arguments)
             self._advance_acceptance_transition(synchronized)
@@ -1198,9 +1159,7 @@ class _LateStateDurabilityBarrier:
             else _default_publication_state(self._config)
         )
         client = StateBranchClient(
-            token=_required_credential(
-                self._source, "SKILLSCOUT_STATE_GITHUB_TOKEN"
-            ),
+            token=_required_credential(self._source, "SKILLSCOUT_STATE_GITHUB_TOKEN"),
             repository_id=self._config.state_repository_id,
             repository_full_name=self._config.state_repository_full_name,
         )
@@ -1212,9 +1171,7 @@ class _LateStateDurabilityBarrier:
                 prior_root_digest=prior_root_digest,
                 state_parent_commit_sha=observed_head,
                 query_set_digest=self._config.query_set_digest,
-                budget_policy_digest=(
-                    DiscoveryBudgetPolicyV1().budget_policy_digest or ""
-                ),
+                budget_policy_digest=(DiscoveryBudgetPolicyV1().budget_policy_digest or ""),
                 created_at=created_at,
             )
             store = StateBranchStore(client)
@@ -1225,15 +1182,9 @@ class _LateStateDurabilityBarrier:
                 or synchronized.previous_head != observed_head
                 or synchronized.root_digest != bundle.root.root_digest
                 or len(synchronized.commit_sha) != 40
-                or any(
-                    character not in "0123456789abcdef"
-                    for character in synchronized.commit_sha
-                )
+                or any(character not in "0123456789abcdef" for character in synchronized.commit_sha)
                 or len(synchronized.tree_sha) != 40
-                or any(
-                    character not in "0123456789abcdef"
-                    for character in synchronized.tree_sha
-                )
+                or any(character not in "0123456789abcdef" for character in synchronized.tree_sha)
             ):
                 raise ValueError("discovery state synchronization rejected")
             self._advance_acceptance_transition(synchronized)
@@ -1314,9 +1265,7 @@ def build_discovery_application(
         from skillscout.adapters.github import GitHubReadClient
 
         return GitHubReadClient(
-            token=_required_credential(
-                source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
-            )
+            token=_required_credential(source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN")
         )
 
     def state_restore() -> object:
@@ -1326,9 +1275,7 @@ def build_discovery_application(
         )
 
         client = StateBranchClient(
-            token=_required_credential(
-                source, "SKILLSCOUT_STATE_GITHUB_TOKEN"
-            ),
+            token=_required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN"),
             repository_id=config.state_repository_id,
             repository_full_name=config.state_repository_full_name,
         )
@@ -1370,6 +1317,7 @@ def build_discovery_application(
 
         operations_store_factory = default_operations_store_factory
     if phase2_factory is None:
+
         def default_phase2_factory(**arguments: object) -> object:
             """Execute one selected repository through the existing Phase 2/3 graph."""
 
@@ -1424,6 +1372,9 @@ def build_discovery_application(
                 CandidateValidationAdapter,
                 LocalCandidateArtifactProjector,
             )
+            from skillscout.domain.candidate_authority import (
+                CandidateExecutionAuthorityV1,
+            )
             from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
             from skillscout.domain.discovery import (
                 DiscoveredCandidateV1,
@@ -1432,6 +1383,7 @@ def build_discovery_application(
                 SemanticReservationV1,
             )
             from skillscout.domain.review import (
+                GeneratorOutcomeEvidenceV1,
                 ReviewAttestationV1,
                 candidate_terminal_summary_bytes,
             )
@@ -1448,7 +1400,8 @@ def build_discovery_application(
             pinned_commit_sha = arguments.get("pinned_commit_sha")
             recovery_only = arguments.get("recovery_only", False)
             if (
-                type(candidate) not in {
+                type(candidate)
+                not in {
                     DiscoveredCandidateV1,
                     FixedAcceptanceCandidate,
                 }
@@ -1461,8 +1414,7 @@ def build_discovery_application(
                 or (
                     pinned_commit_sha is not None
                     and (
-                        type(pinned_commit_sha) is not str
-                        or not _is_commit_sha(pinned_commit_sha)
+                        type(pinned_commit_sha) is not str or not _is_commit_sha(pinned_commit_sha)
                     )
                 )
             ):
@@ -1479,9 +1431,7 @@ def build_discovery_application(
             phase2_authority_digest = sha256_digest(
                 {
                     "schema_version": "discovery-phase2-run-authority-v1",
-                    "discovery_run_authority_digest": (
-                        discovery_authority.authority_digest
-                    ),
+                    "discovery_run_authority_digest": (discovery_authority.authority_digest),
                     "candidate_digest": candidate.candidate_digest,
                     "phase2_profile_version": config.phase2_profile_version,
                     "extractor_model_id": config.extractor_model_id,
@@ -1491,15 +1441,12 @@ def build_discovery_application(
             state_root = prior_root
             semantic_telemetry: list[DiscoverySemanticTelemetry] = []
             reader_telemetry: DiscoveryReaderTelemetry | None = None
-            restored_snapshot = operations.snapshot_run(
-                discovery_authority.run_id
-            )
+            restored_snapshot = operations.snapshot_run(discovery_authority.run_id)
             restored_discovery_reservation = next(
                 (
                     item
                     for item in restored_snapshot.discovery_reservations
-                    if item.repository_id
-                    == candidate.repository.repository_id
+                    if item.repository_id == candidate.repository.repository_id
                 ),
                 None,
             )
@@ -1507,8 +1454,7 @@ def build_discovery_application(
                 (
                     item
                     for item in restored_snapshot.semantic_reservations
-                    if item.repository_id
-                    == candidate.repository.repository_id
+                    if item.repository_id == candidate.repository.repository_id
                 ),
                 None,
             )
@@ -1516,37 +1462,28 @@ def build_discovery_application(
                 recovered_extractor_attempts = tuple(
                     item
                     for item in restored_snapshot.semantic_attempts
-                    if item.repository_id
-                    == candidate.repository.repository_id
-                    and item.workflow_authority_digest
-                    == phase2_authority_digest
+                    if item.repository_id == candidate.repository.repository_id
+                    and item.workflow_authority_digest == phase2_authority_digest
                     and item.stage == "extractor"
                 )
                 if len(recovered_extractor_attempts) != 3:
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             fixed_admission = (
-                candidate.admission
-                if type(candidate) is FixedAcceptanceCandidate
-                else None
+                candidate.admission if type(candidate) is FixedAcceptanceCandidate else None
             )
             if semantic_reservation is not None and (
                 type(semantic_reservation) is not SemanticReservationV1
-                or (
-                    fixed_admission is None
-                    and restored_discovery_reservation is None
-                )
+                or (fixed_admission is None and restored_discovery_reservation is None)
                 or semantic_reservation.discovery_run_authority_digest
                 != discovery_authority.authority_digest
-                or semantic_reservation.repository_id
-                != candidate.repository.repository_id
+                or semantic_reservation.repository_id != candidate.repository.repository_id
                 or semantic_reservation.discovery_reservation_digest
                 != (
                     fixed_admission.admission_digest
                     if fixed_admission is not None
                     else restored_discovery_reservation.reservation_digest
                 )
-                or semantic_reservation.phase2_run_authority_digest
-                != phase2_authority_digest
+                or semantic_reservation.phase2_run_authority_digest != phase2_authority_digest
             ):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
@@ -1558,13 +1495,11 @@ def build_discovery_application(
                 del run_id
                 nonlocal semantic_reservation, state_head, state_root
                 if fixed_admission is not None:
-                    semantic_reservation = (
-                        operations.reserve_acceptance_semantic_candidate(
-                            discovery_authority.run_id,
-                            fixed_admission,
-                            phase2_authority_digest,
-                            _discovery_timestamp(),
-                        )
+                    semantic_reservation = operations.reserve_acceptance_semantic_candidate(
+                        discovery_authority.run_id,
+                        fixed_admission,
+                        phase2_authority_digest,
+                        _discovery_timestamp(),
                     )
                 else:
                     semantic_reservation = operations.reserve_semantic_candidate(
@@ -1597,6 +1532,8 @@ def build_discovery_application(
                 workflow_authority_digest: str,
                 stage: str,
                 attempt_no: int,
+                observed_head: str,
+                prior_root_digest: str,
             ) -> SemanticReservationReceipt:
                 del run_id
                 nonlocal state_head, state_root
@@ -1604,21 +1541,17 @@ def build_discovery_application(
                     raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
                 request = operations.reserve_acceptance_semantic_request(
                     acceptance_run_id=fixed_admission.acceptance_run_id,
-                    fixed_candidate_admission_digest=(
-                        fixed_admission.admission_digest or ""
-                    ),
+                    fixed_candidate_admission_digest=(fixed_admission.admission_digest or ""),
                     repository_id=repository_id,
-                    workflow_spec_authority_digest=(
-                        workflow_authority_digest
-                    ),
+                    workflow_spec_authority_digest=(workflow_authority_digest),
                     stage=stage,  # type: ignore[arg-type]
                     attempt_no=attempt_no,
                     reserved_at=_discovery_timestamp(),
                 )
                 synchronized = barrier.sync_discovery(
                     operations_store=operations,
-                    observed_head=state_head,
-                    prior_root_digest=state_root,
+                    observed_head=observed_head,
+                    prior_root_digest=prior_root_digest,
                     created_at=_discovery_timestamp(),
                     pipeline_store=pipeline_store,
                     transition_phase="request_reserved",
@@ -1643,6 +1576,7 @@ def build_discovery_application(
                 )
             )
             phase2_state = SQLiteStateStore(config.pipeline_state)
+
             def deny_recovery_capability() -> object:
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 
@@ -1650,9 +1584,7 @@ def build_discovery_application(
                 deny_recovery_capability
                 if recovery_only
                 else lambda: GitHubReadClient(
-                    token=_required_credential(
-                        source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN"
-                    )
+                    token=_required_credential(source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN")
                 )
             )
             github = _LazyDiscoveryCapability(
@@ -1686,9 +1618,7 @@ def build_discovery_application(
                 expected_prior_root_digest=state_root,
                 reservation_hook=reserve_before_extractor,
                 request_reservation_hook=(
-                    reserve_before_request
-                    if fixed_admission is not None
-                    else None
+                    reserve_before_request if fixed_admission is not None else None
                 ),
                 operations_run_id=discovery_authority.run_id,
             )
@@ -1702,33 +1632,21 @@ def build_discovery_application(
                 subject = RepositorySubject(
                     schema_version="1",
                     subject_id=f"repo:{candidate.repository.full_name}",
-                    repository=(
-                        f"https://github.com/{candidate.repository.full_name}"
-                    ),
+                    repository=(f"https://github.com/{candidate.repository.full_name}"),
                     ref=pinned_commit_sha,
                 )
                 with tempfile.TemporaryDirectory(
                     prefix="skillscout-discovery-phase2-",
                     dir=Path(tempfile.gettempdir()).resolve(strict=True),
                 ) as phase2_output:
-                    phase2_summary = runtime.runner.run(
-                        subject, Path(phase2_output)
-                    )
+                    phase2_summary = runtime.runner.run(subject, Path(phase2_output))
                 chain = phase2_state.verify_run_chain(phase2_summary.run_id)
                 extractor_result = next(
-                    (
-                        result
-                        for result in chain.results
-                        if result.stage.value == "extractor"
-                    ),
+                    (result for result in chain.results if result.stage.value == "extractor"),
                     None,
                 )
                 reader_result = next(
-                    (
-                        result
-                        for result in chain.results
-                        if result.stage.value == "reader"
-                    ),
+                    (result for result in chain.results if result.stage.value == "reader"),
                     None,
                 )
                 if reader_result is not None:
@@ -1736,13 +1654,9 @@ def build_discovery_application(
                     if isinstance(reader_budgets, dict):
                         reader_telemetry = DiscoveryReaderTelemetry(
                             file_count=int(reader_budgets["files_read"]),
-                            source_file_count=int(
-                                reader_budgets["source_files_read"]
-                            ),
+                            source_file_count=int(reader_budgets["source_files_read"]),
                             total_bytes=int(reader_budgets["total_bytes"]),
-                            estimated_tokens=int(
-                                reader_budgets["estimated_input_tokens"]
-                            ),
+                            estimated_tokens=int(reader_budgets["estimated_input_tokens"]),
                         )
                 for attempt in getattr(chain, "attempts", ()):
                     if attempt.stage.value != "extractor":
@@ -1769,11 +1683,7 @@ def build_discovery_application(
                             request_id=attempt.request_id,
                             actual_model=attempt.model_id,
                             prompt_version=attempt.prompt_version,
-                            schema_version=str(
-                                extractor_result.payload[
-                                    "output_schema_version"
-                                ]
-                            )
+                            schema_version=str(extractor_result.payload["output_schema_version"])
                             if extractor_result is not None
                             else "",
                             policy_version=attempt.policy_version,
@@ -1788,18 +1698,13 @@ def build_discovery_application(
             except SemanticProviderFailure as failure:
                 state_head = phase2_guard.verified_state_head
                 state_root = phase2_guard.state_root_digest
-                if (
-                    failure.disposition
-                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-                ):
+                if failure.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN:
                     outcome = "semantic_outcome_unknown"
                 else:
                     outcome = "permanent_failure"
                 terminal_values = {
                     "schema_version": "discovery-candidate-terminal-v1",
-                    "discovery_run_authority_digest": (
-                        discovery_authority.authority_digest
-                    ),
+                    "discovery_run_authority_digest": (discovery_authority.authority_digest),
                     "repository_id": candidate.repository.repository_id,
                     "semantic_reservation_digest": (
                         semantic_reservation.reservation_digest
@@ -1840,9 +1745,7 @@ def build_discovery_application(
                 )
                 terminal_values = {
                     "schema_version": "discovery-candidate-terminal-v1",
-                    "discovery_run_authority_digest": (
-                        discovery_authority.authority_digest
-                    ),
+                    "discovery_run_authority_digest": (discovery_authority.authority_digest),
                     "repository_id": candidate.repository.repository_id,
                     "semantic_reservation_digest": (
                         semantic_reservation.reservation_digest
@@ -1863,9 +1766,7 @@ def build_discovery_application(
                     state_commit_sha=state_head,
                     state_root_digest=state_root,
                     acceptance_system_outcome=(
-                        "provider_exhausted"
-                        if failure.code is ErrorCode.RETRY_EXHAUSTED
-                        else None
+                        "provider_exhausted" if failure.code is ErrorCode.RETRY_EXHAUSTED else None
                     ),
                 )
             finally:
@@ -1885,9 +1786,7 @@ def build_discovery_application(
             except CandidateSourceUnavailable:
                 terminal_values = {
                     "schema_version": "discovery-candidate-terminal-v1",
-                    "discovery_run_authority_digest": (
-                        discovery_authority.authority_digest
-                    ),
+                    "discovery_run_authority_digest": (discovery_authority.authority_digest),
                     "repository_id": candidate.repository.repository_id,
                     "semantic_reservation_digest": (
                         semantic_reservation.reservation_digest
@@ -1911,19 +1810,15 @@ def build_discovery_application(
             acceptance_system_outcome = None
             if not descriptors:
                 filter_result = next(
-                    result
-                    for result in chain.results
-                    if result.stage.value == "filter"
+                    result for result in chain.results if result.stage.value == "filter"
                 )
                 if filter_result.payload.get("outcome") == "rejected":
                     outcome = "filter_rejected"
                 elif extractor_result is None:
                     outcome = "permanent_failure"
                 else:
-                    outcome, acceptance_system_outcome = (
-                        classify_extractor_terminal(
-                            str(extractor_result.payload.get("outcome"))
-                        )
+                    outcome, acceptance_system_outcome = classify_extractor_terminal(
+                        str(extractor_result.payload.get("outcome"))
                     )
                 workflow_authorities: list[str] = []
                 eligible = []
@@ -1932,6 +1827,75 @@ def build_discovery_application(
                     generator_model_id=provider.generator_model,
                     reviewer_model_id=provider.reviewer_model,
                 )
+
+                def recover_phase3_success_telemetry(
+                    workflow_authority: CandidateExecutionAuthorityV1,
+                ) -> None:
+                    """Project decided predecessors from an interrupted Phase 3 chain."""
+
+                    phase3_state = SQLiteStateStore(config.pipeline_state)
+                    try:
+                        recovered_chain = phase3_state.find_resumable_candidate(workflow_authority)
+                        if recovered_chain is None:
+                            return
+                        generator_attempts = tuple(
+                            attempt
+                            for attempt in recovered_chain.attempts
+                            if attempt.stage.value == "generator" and attempt.status == "succeeded"
+                        )
+                        if not generator_attempts:
+                            return
+                        checkpoint_payloads = phase3_state.read_candidate_checkpoint_payloads(
+                            recovered_chain.identity.run_id
+                        )
+                    finally:
+                        phase3_state.close()
+                    generator_payload = checkpoint_payloads.get("checkpoint_generator_payload")
+                    if generator_payload is None:
+                        return
+                    if type(generator_payload) is not bytes:
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    generator_evidence = GeneratorOutcomeEvidenceV1.model_validate_json(
+                        generator_payload,
+                        strict=True,
+                    )
+                    if (
+                        canonical_json_bytes(generator_evidence) != generator_payload
+                        or generator_evidence.actual_generator_model_id is None
+                        or generator_evidence.request_id is None
+                        or generator_evidence.usage is None
+                    ):
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    recovered = DiscoverySemanticTelemetry(
+                        stage="generator",
+                        workflow_authority_digest=(workflow_authority.authority_digest),
+                        attempt_no=generator_attempts[-1].attempt_no,
+                        request_id=generator_evidence.request_id,
+                        actual_model=(generator_evidence.actual_generator_model_id),
+                        prompt_version=(generator_evidence.generator_prompt_version),
+                        schema_version=(generator_evidence.generator_output_schema_version),
+                        policy_version=(generator_evidence.generator_policy_version),
+                        prompt_tokens=generator_evidence.usage.prompt_tokens,
+                        completion_tokens=(generator_evidence.usage.completion_tokens),
+                        total_tokens=generator_evidence.usage.total_tokens,
+                        latency_ms=generator_evidence.latency_ms,
+                    )
+                    key = (
+                        recovered.stage,
+                        recovered.workflow_authority_digest,
+                        recovered.attempt_no,
+                    )
+                    existing_keys = {
+                        (
+                            item.stage,
+                            item.workflow_authority_digest,
+                            item.attempt_no,
+                        )
+                        for item in semantic_telemetry
+                    }
+                    if key not in existing_keys:
+                        semantic_telemetry.append(recovered)
+
                 workflow_authorities = []
                 eligible = []
                 workflow_outcomes: list[str] = []
@@ -1945,18 +1909,12 @@ def build_discovery_application(
                         descriptor_path.write_bytes(canonical_json_bytes(descriptor))
                         descriptor_path.chmod(0o600)
                         try:
-                            resolved = load_candidate_subject(
-                                descriptor_path, candidate_source
-                            )
+                            resolved = load_candidate_subject(descriptor_path, candidate_source)
                         except CandidateSourceUnavailable:
                             fatal_outcome = "permanent_failure"
                             break
-                        workflow_authority = _execution_authority(
-                            source=resolved, profile=profile
-                        )
-                        workflow_authorities.append(
-                            workflow_authority.authority_digest
-                        )
+                        workflow_authority = _execution_authority(source=resolved, profile=profile)
+                        workflow_authorities.append(workflow_authority.authority_digest)
                         phase3_publication = (
                             _FrozenOwnedState(frozen_owner_export)
                             if frozen_owner_export is not None
@@ -1970,37 +1928,27 @@ def build_discovery_application(
                             operations_store=operations,
                             publication_store=phase3_publication,
                             repository_id=candidate.repository.repository_id,
-                            workflow_authority_digest=(
-                                workflow_authority.authority_digest
-                            ),
+                            workflow_authority_digest=(workflow_authority.authority_digest),
                             provider=provider.provider.value,
                             expected_prior_state_head=state_head,
                             expected_prior_root_digest=state_root,
                             operations_run_id=discovery_authority.run_id,
                             request_reservation_hook=(
-                                reserve_before_request
-                                if fixed_admission is not None
-                                else None
+                                reserve_before_request if fixed_admission is not None else None
                             ),
                         )
                         clients: list[object] = []
 
                         def generator_factory() -> object:
-                            if recovery_only:
-                                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                             client = (
                                 OpenAIGenerationClient(
                                     model=profile.configured_generator_model_id,
-                                    max_output_tokens=(
-                                        profile.max_generator_output_tokens
-                                    ),
+                                    max_output_tokens=(profile.max_generator_output_tokens),
                                 )
                                 if provider.provider is SemanticProvider.OPENAI
                                 else OpenAIGenerationClient(
                                     model=profile.configured_generator_model_id,
-                                    max_output_tokens=(
-                                        profile.max_generator_output_tokens
-                                    ),
+                                    max_output_tokens=(profile.max_generator_output_tokens),
                                     provider_settings=provider,
                                 )
                             )
@@ -2008,21 +1956,15 @@ def build_discovery_application(
                             return client
 
                         def reviewer_factory() -> object:
-                            if recovery_only:
-                                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                             client = (
                                 OpenAIReviewClient(
                                     model=profile.configured_reviewer_model_id,
-                                    max_output_tokens=(
-                                        profile.max_reviewer_output_tokens
-                                    ),
+                                    max_output_tokens=(profile.max_reviewer_output_tokens),
                                 )
                                 if provider.provider is SemanticProvider.OPENAI
                                 else OpenAIReviewClient(
                                     model=profile.configured_reviewer_model_id,
-                                    max_output_tokens=(
-                                        profile.max_reviewer_output_tokens
-                                    ),
+                                    max_output_tokens=(profile.max_reviewer_output_tokens),
                                     provider_settings=provider,
                                 )
                             )
@@ -2045,9 +1987,7 @@ def build_discovery_application(
                                     generator_factory=generator_factory,
                                     validator_factory=CandidateValidationAdapter,
                                     reviewer_factory=reviewer_factory,
-                                    artifact_projector_factory=(
-                                        LocalCandidateArtifactProjector
-                                    ),
+                                    artifact_projector_factory=(LocalCandidateArtifactProjector),
                                     semantic_durability=phase3_guard,
                                 ),
                             )
@@ -2057,13 +1997,12 @@ def build_discovery_application(
                                     output_directory=Path(directory) / "output",
                                 )
                             except SemanticProviderFailure as failure:
+                                recover_phase3_success_telemetry(workflow_authority)
                                 if (
                                     failure.disposition
                                     is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
                                 ):
-                                    workflow_outcomes.append(
-                                        "semantic_outcome_unknown"
-                                    )
+                                    workflow_outcomes.append("semantic_outcome_unknown")
                                     workflow_executions.append(
                                         DiscoveryWorkflowExecution(
                                             workflow_authority_digest=(
@@ -2078,12 +2017,8 @@ def build_discovery_application(
                                             ),
                                         )
                                     )
-                                    state_head = (
-                                        phase3_guard.verified_state_head
-                                    )
-                                    state_root = (
-                                        phase3_guard.state_root_digest
-                                    )
+                                    state_head = phase3_guard.verified_state_head
+                                    state_root = phase3_guard.state_root_digest
                                     continue
                                 workflow_outcomes.append("permanent_failure")
                                 workflow_executions.append(
@@ -2105,8 +2040,9 @@ def build_discovery_application(
                                 state_root = phase3_guard.state_root_digest
                                 break
                             except SafeFailure as failure:
-                                system_outcome, _reason_code = (
-                                    _phase3_safe_failure_outcome(failure.code)
+                                recover_phase3_success_telemetry(workflow_authority)
+                                system_outcome, _reason_code = _phase3_safe_failure_outcome(
+                                    failure.code
                                 )
                                 workflow_outcome = (
                                     "confirmed_retryable"
@@ -2153,28 +2089,19 @@ def build_discovery_application(
                         state_head = phase3_guard.verified_state_head
                         state_root = phase3_guard.state_root_digest
                         workflow_outcomes.append(result.outcome)
-                        terminal_summary = (
-                            result.terminal_summary
-                            or getattr(
-                                result.completed_projection,
-                                "terminal_summary",
-                                None,
-                            )
+                        terminal_summary = result.terminal_summary or getattr(
+                            result.completed_projection,
+                            "terminal_summary",
+                            None,
                         )
-                        completed_projector = (
-                            DescriptorAnchoredCompletedCandidateProjector(
-                                config.pipeline_state
-                            )
+                        completed_projector = DescriptorAnchoredCompletedCandidateProjector(
+                            config.pipeline_state
                         )
-                        completed_projection = (
-                            completed_projector.find_completed_candidate(
-                                workflow_authority
-                            )
+                        completed_projection = completed_projector.find_completed_candidate(
+                            workflow_authority
                         )
                         if completed_projection is None:
-                            raise SafeFailure(
-                                ErrorCode.STATE_INTEGRITY_ERROR
-                            )
+                            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                         generator_evidence = (
                             terminal_summary.generator_outcome_evidence
                             if terminal_summary is not None
@@ -2187,50 +2114,31 @@ def build_discovery_application(
                                 if attempt.stage.value == "generator"
                             )
                             if (
-                                generator_evidence.actual_generator_model_id
-                                is None
+                                generator_evidence.actual_generator_model_id is None
                                 or generator_evidence.request_id is None
                                 or generator_evidence.usage is None
                                 or not generator_attempts
                             ):
-                                raise SafeFailure(
-                                    ErrorCode.STATE_INTEGRITY_ERROR
-                                )
+                                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                             semantic_telemetry.append(
                                 DiscoverySemanticTelemetry(
                                     stage="generator",
-                                    workflow_authority_digest=(
-                                        workflow_authority.authority_digest
-                                    ),
+                                    workflow_authority_digest=(workflow_authority.authority_digest),
                                     attempt_no=generator_attempts[-1].attempt_no,
                                     request_id=generator_evidence.request_id,
-                                    actual_model=(
-                                        generator_evidence.actual_generator_model_id
-                                    ),
-                                    prompt_version=(
-                                        generator_evidence.generator_prompt_version
-                                    ),
+                                    actual_model=(generator_evidence.actual_generator_model_id),
+                                    prompt_version=(generator_evidence.generator_prompt_version),
                                     schema_version=(
                                         generator_evidence.generator_output_schema_version
                                     ),
-                                    policy_version=(
-                                        generator_evidence.generator_policy_version
-                                    ),
-                                    prompt_tokens=(
-                                        generator_evidence.usage.prompt_tokens
-                                    ),
-                                    completion_tokens=(
-                                        generator_evidence.usage.completion_tokens
-                                    ),
-                                    total_tokens=(
-                                        generator_evidence.usage.total_tokens
-                                    ),
+                                    policy_version=(generator_evidence.generator_policy_version),
+                                    prompt_tokens=(generator_evidence.usage.prompt_tokens),
+                                    completion_tokens=(generator_evidence.usage.completion_tokens),
+                                    total_tokens=(generator_evidence.usage.total_tokens),
                                     latency_ms=generator_evidence.latency_ms,
                                 )
                             )
-                        review_payload = completed_projection.artifacts.get(
-                            "review_attestation"
-                        )
+                        review_payload = completed_projection.artifacts.get("review_attestation")
                         if review_payload is not None:
                             attestation = ReviewAttestationV1.model_validate_json(
                                 review_payload,
@@ -2246,33 +2154,19 @@ def build_discovery_application(
                                 or attestation.usage is None
                                 or not reviewer_attempts
                             ):
-                                raise SafeFailure(
-                                    ErrorCode.STATE_INTEGRITY_ERROR
-                                )
+                                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                             semantic_telemetry.append(
                                 DiscoverySemanticTelemetry(
                                     stage="reviewer",
-                                    workflow_authority_digest=(
-                                        workflow_authority.authority_digest
-                                    ),
+                                    workflow_authority_digest=(workflow_authority.authority_digest),
                                     attempt_no=reviewer_attempts[-1].attempt_no,
                                     request_id=attestation.request_id,
-                                    actual_model=(
-                                        attestation.actual_reviewer_model_id
-                                    ),
-                                    prompt_version=(
-                                        attestation.reviewer_prompt_version
-                                    ),
-                                    schema_version=(
-                                        attestation.reviewer_output_schema_version
-                                    ),
-                                    policy_version=(
-                                        attestation.reviewer_policy_version
-                                    ),
+                                    actual_model=(attestation.actual_reviewer_model_id),
+                                    prompt_version=(attestation.reviewer_prompt_version),
+                                    schema_version=(attestation.reviewer_output_schema_version),
+                                    policy_version=(attestation.reviewer_policy_version),
                                     prompt_tokens=attestation.usage.prompt_tokens,
-                                    completion_tokens=(
-                                        attestation.usage.completion_tokens
-                                    ),
+                                    completion_tokens=(attestation.usage.completion_tokens),
                                     total_tokens=attestation.usage.total_tokens,
                                     latency_ms=attestation.latency_ms,
                                 )
@@ -2281,9 +2175,7 @@ def build_discovery_application(
                             result.outcome == "eligible_local_candidate"
                             and terminal_summary is not None
                         ):
-                            terminal_bytes = candidate_terminal_summary_bytes(
-                                terminal_summary
-                            )
+                            terminal_bytes = candidate_terminal_summary_bytes(terminal_summary)
                             pipeline = SQLiteStateStore(config.pipeline_state)
                             try:
                                 matching = []
@@ -2302,21 +2194,15 @@ def build_discovery_application(
                             finally:
                                 pipeline.close()
                             if len(matching) != 1:
-                                raise SafeFailure(
-                                    ErrorCode.STATE_INTEGRITY_ERROR
-                                )
+                                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
                             locator = eligible_candidate_locator(
                                 authority_digest=matching[0].object_digest,
-                                workflow_identity_digest=(
-                                    workflow_authority.authority_digest
-                                ),
+                                workflow_identity_digest=(workflow_authority.authority_digest),
                             )
                             eligible.append(locator)
                             workflow_executions.append(
                                 DiscoveryWorkflowExecution(
-                                    workflow_authority_digest=(
-                                        workflow_authority.authority_digest
-                                    ),
+                                    workflow_authority_digest=(workflow_authority.authority_digest),
                                     outcome="eligible",
                                     workflow_fingerprint=(
                                         workflow_authority.selected_workflow_fingerprint
@@ -2339,9 +2225,7 @@ def build_discovery_application(
                         else:
                             workflow_executions.append(
                                 DiscoveryWorkflowExecution(
-                                    workflow_authority_digest=(
-                                        workflow_authority.authority_digest
-                                    ),
+                                    workflow_authority_digest=(workflow_authority.authority_digest),
                                     outcome=result.outcome,
                                     workflow_fingerprint=(
                                         workflow_authority.selected_workflow_fingerprint
@@ -2357,8 +2241,7 @@ def build_discovery_application(
                                     skill_artifact_digest=(
                                         terminal_summary.generated_artifact_identity.artifact_digest
                                         if terminal_summary is not None
-                                        and terminal_summary.generated_artifact_identity
-                                        is not None
+                                        and terminal_summary.generated_artifact_identity is not None
                                         else None
                                     ),
                                     package_digest=(
@@ -2371,6 +2254,9 @@ def build_discovery_application(
                             )
                 if fatal_outcome is not None:
                     outcome = fatal_outcome
+                    if fatal_outcome == "confirmed_retryable":
+                        workflow_authorities = []
+                        workflow_executions = []
                 elif "semantic_outcome_unknown" in workflow_outcomes:
                     outcome = "semantic_outcome_unknown"
                 elif eligible:
@@ -2384,9 +2270,7 @@ def build_discovery_application(
 
             terminal_values = {
                 "schema_version": "discovery-candidate-terminal-v1",
-                "discovery_run_authority_digest": (
-                    discovery_authority.authority_digest
-                ),
+                "discovery_run_authority_digest": (discovery_authority.authority_digest),
                 "repository_id": candidate.repository.repository_id,
                 "semantic_reservation_digest": (
                     semantic_reservation.reservation_digest
@@ -2495,9 +2379,7 @@ class _CompletedBenchmarkStateProjector:
         self._operations_path = operations_path
         self._pipeline_path = pipeline_path
         self._acceptance_run_id = acceptance_run_id
-        self._expected_live_authority_digest = (
-            expected_live_authority_digest
-        )
+        self._expected_live_authority_digest = expected_live_authority_digest
         self._verified_state_locators = verified_state_locators
 
     def project(
@@ -2546,8 +2428,7 @@ class _CompletedBenchmarkStateProjector:
             len(scenarios) != 5
             or len(live_authorities) != 1
             or any(
-                scenario.live_acceptance_authority_digest
-                != self._expected_live_authority_digest
+                scenario.live_acceptance_authority_digest != self._expected_live_authority_digest
                 for scenario in scenarios
             )
             or {scenario.repository_id for scenario in scenarios}
@@ -2575,15 +2456,11 @@ class _CompletedBenchmarkStateProjector:
             or any(scenario.terminal_class == "system_failure" for scenario in scenarios)
         ):
             raise ValueError("completed benchmark projection rejected")
-        discovery_run_ids = {
-            scenario.discovery_run_id for scenario in scenarios
-        }
+        discovery_run_ids = {scenario.discovery_run_id for scenario in scenarios}
         if len(discovery_run_ids) != 1:
             raise ValueError("completed benchmark discovery authority rejected")
         with OperationsStateStore(self._operations_path) as operations:
-            discovery_snapshot = operations.snapshot_run(
-                next(iter(discovery_run_ids))
-            )
+            discovery_snapshot = operations.snapshot_run(next(iter(discovery_run_ids)))
         repository_ids = {scenario.repository_id for scenario in scenarios}
         semantic_attempt_digests = tuple(
             sorted(
@@ -2615,9 +2492,7 @@ class _CompletedBenchmarkStateProjector:
             semantic_attempt_digests
             != tuple(
                 sorted(
-                    digest
-                    for scenario in scenarios
-                    for digest in scenario.semantic_attempt_digests
+                    digest for scenario in scenarios for digest in scenario.semantic_attempt_digests
                 )
             )
             or workflow_terminal_digests
@@ -2635,12 +2510,7 @@ class _CompletedBenchmarkStateProjector:
                 for digest in scenario.workflow_execution_authority_digests
             }
             or candidate_terminal_digests
-            != tuple(
-                sorted(
-                    scenario.candidate_terminal_digest
-                    for scenario in scenarios
-                )
-            )
+            != tuple(sorted(scenario.candidate_terminal_digest for scenario in scenarios))
         ):
             raise ValueError("completed benchmark operations graph rejected")
         eligible = tuple(
@@ -2671,22 +2541,16 @@ class _CompletedBenchmarkStateProjector:
                         columns = envelope["columns"]
                         values = envelope["values"]
                         if (
-                            envelope["schema_version"]
-                            != "pipeline-rebuild-row-v1"
+                            envelope["schema_version"] != "pipeline-rebuild-row-v1"
                             or type(columns) is not list
                             or type(values) is not list
                             or len(columns) != len(values)
-                            or any(
-                                type(column) is not str
-                                for column in columns
-                            )
+                            or any(type(column) is not str for column in columns)
                         ):
                             raise ValueError
                         raw = dict(zip(columns, values, strict=True))
                     except Exception:
-                        raise ValueError(
-                            "completed benchmark pipeline fact rejected"
-                        ) from None
+                        raise ValueError("completed benchmark pipeline fact rejected") from None
                 else:
                     raw = envelope
                 if owned_fact.kind == "phase3_runs":
@@ -2694,17 +2558,13 @@ class _CompletedBenchmarkStateProjector:
                         continue
                     run_id = raw.get("run_id")
                     if type(run_id) is not str:
-                        raise ValueError(
-                            "completed benchmark typed Phase 3 run rejected"
-                        )
+                        raise ValueError("completed benchmark typed Phase 3 run rejected")
                     chain = pipeline.verify_candidate_run_chain(run_id)
                     if (
                         raw.get("authority_digest")
                         != chain.identity.candidate_execution_authority_digest
                     ):
-                        raise ValueError(
-                            "completed benchmark typed Phase 3 authority rejected"
-                        )
+                        raise ValueError("completed benchmark typed Phase 3 authority rejected")
                     completed_chains.append(chain)
                 elif owned_fact.kind == "phase3_artifact":
                     try:
@@ -2712,27 +2572,19 @@ class _CompletedBenchmarkStateProjector:
                             raw["content_base64"],
                             validate=True,
                         )
-                        terminal = (
-                            CandidateTerminalSummaryV1.model_validate_json(
-                                content,
-                                strict=True,
-                            )
+                        terminal = CandidateTerminalSummaryV1.model_validate_json(
+                            content,
+                            strict=True,
                         )
                     except Exception:
                         continue
                     terminal_objects.append((owned_fact, terminal))
         finally:
             pipeline.close()
-        if (
-            workflow_execution_authorities
-            and (not completed_chains or not terminal_objects)
-        ):
-            raise ValueError(
-                "completed benchmark typed Phase 3 objects are missing"
-            )
+        if workflow_execution_authorities and (not completed_chains or not terminal_objects):
+            raise ValueError("completed benchmark typed Phase 3 objects are missing")
         chain_authorities = {
-            chain.identity.candidate_execution_authority_digest
-            for chain in completed_chains
+            chain.identity.candidate_execution_authority_digest for chain in completed_chains
         }
         terminal_objects = tuple(
             (owned_fact, terminal)
@@ -2740,29 +2592,27 @@ class _CompletedBenchmarkStateProjector:
             if terminal.candidate_execution_authority.authority_digest
             in workflow_execution_authorities
         )
-        if any(
-            terminal.candidate_execution_authority.authority_digest
-            not in chain_authorities
-            for _owned_fact, terminal in terminal_objects
-        ) or {
-            terminal.candidate_execution_authority.authority_digest
-            for _owned_fact, terminal in terminal_objects
-        } != workflow_execution_authorities:
-            raise ValueError(
-                "completed benchmark typed Phase 3 terminal is unbound"
+        if (
+            any(
+                terminal.candidate_execution_authority.authority_digest not in chain_authorities
+                for _owned_fact, terminal in terminal_objects
             )
+            or {
+                terminal.candidate_execution_authority.authority_digest
+                for _owned_fact, terminal in terminal_objects
+            }
+            != workflow_execution_authorities
+        ):
+            raise ValueError("completed benchmark typed Phase 3 terminal is unbound")
         typed_workflow_authorities = {
             terminal.workflow_spec_authority.authority_digest
             for _owned_fact, terminal in terminal_objects
         }
         scenario_workflow_spec_authorities = {
-            digest
-            for scenario in scenarios
-            for digest in scenario.workflow_spec_authority_digests
+            digest for scenario in scenarios for digest in scenario.workflow_spec_authority_digests
         }
         phase3_terminal_digests = {
-            terminal.terminal_summary_digest
-            for _owned_fact, terminal in terminal_objects
+            terminal.terminal_summary_digest for _owned_fact, terminal in terminal_objects
         }
         phase3_skill_digests = {
             terminal.generated_artifact_identity.artifact_digest
@@ -2782,22 +2632,12 @@ class _CompletedBenchmarkStateProjector:
                 for digest in scenario.phase3_terminal_summary_digests
             }
             != phase3_terminal_digests
-            or {
-                digest
-                for scenario in scenarios
-                for digest in scenario.skill_artifact_digests
-            }
+            or {digest for scenario in scenarios for digest in scenario.skill_artifact_digests}
             != phase3_skill_digests
-            or {
-                digest
-                for scenario in scenarios
-                for digest in scenario.package_digests
-            }
+            or {digest for scenario in scenarios for digest in scenario.package_digests}
             != phase3_package_digests
         ):
-            raise ValueError(
-                "completed benchmark typed Phase 3 graph is missing"
-            )
+            raise ValueError("completed benchmark typed Phase 3 graph is missing")
         matching_eligible_objects = tuple(
             (owned_fact, terminal)
             for owned_fact, terminal in terminal_objects
@@ -2806,36 +2646,26 @@ class _CompletedBenchmarkStateProjector:
             == selected.workflow_spec_authority_digest
             and eligible_candidate_locator(
                 authority_digest=owned_fact.object_digest,
-                workflow_identity_digest=(
-                    terminal.workflow_spec_authority.authority_digest
-                ),
+                workflow_identity_digest=(terminal.workflow_spec_authority.authority_digest),
             ).locator
             == selected.eligible_locator
         )
         if len(matching_eligible_objects) != 1:
-            raise ValueError(
-                "completed benchmark typed Phase 3 eligible object is missing"
-            )
-        workflow_authority_digests = tuple(
-            sorted(typed_workflow_authorities)
-        )
-        candidate_fact_digests = tuple(
-            sorted(fact.object_digest for fact in pipeline_export.facts)
-        )
+            raise ValueError("completed benchmark typed Phase 3 eligible object is missing")
+        workflow_authority_digests = tuple(sorted(typed_workflow_authorities))
+        candidate_fact_digests = tuple(sorted(fact.object_digest for fact in pipeline_export.facts))
         acceptance_business_fact_digests = tuple(
             sorted(
                 record.fact_digest
                 for record in snapshot.facts
-                if record.kind
-                not in {"acceptance_replay", "acceptance_replay_evidence"}
+                if record.kind not in {"acceptance_replay", "acceptance_replay_evidence"}
             )
         )
         operations_fact_digests = tuple(
             sorted(
                 fact.object_digest
                 for fact in operations_export.facts
-                if fact.kind
-                not in {"acceptance_replay", "acceptance_replay_evidence"}
+                if fact.kind not in {"acceptance_replay", "acceptance_replay_evidence"}
             )
         )
         skill_identity_digests = tuple(
@@ -2860,20 +2690,14 @@ class _CompletedBenchmarkStateProjector:
             )
         )
         if not skill_identity_digests:
-            raise ValueError(
-                "completed benchmark typed Phase 3 skill identity is missing"
-            )
+            raise ValueError("completed benchmark typed Phase 3 skill identity is missing")
         return CompletedBenchmarkProjection(
             manifest_digest=manifest.manifest_digest,
-            scenario_result_digests=tuple(
-                sorted(scenario.result_digest for scenario in scenarios)
-            ),
+            scenario_result_digests=tuple(sorted(scenario.result_digest for scenario in scenarios)),
             repository_id=selected.repository_id,
             source_commit_sha=selected.exact_commit_sha,
             workflow_fingerprint=selected.workflow_fingerprint,
-            workflow_spec_authority_digest=(
-                selected.workflow_spec_authority_digest
-            ),
+            workflow_spec_authority_digest=(selected.workflow_spec_authority_digest),
             eligible_locators=tuple(
                 sorted(
                     scenario.eligible_locator
@@ -2886,13 +2710,9 @@ class _CompletedBenchmarkStateProjector:
             workflow_spec_authority_digests=workflow_authority_digests,
             skill_identity_digests=skill_identity_digests,
             candidate_fact_digests=candidate_fact_digests,
-            acceptance_business_fact_digests=(
-                acceptance_business_fact_digests
-            ),
+            acceptance_business_fact_digests=(acceptance_business_fact_digests),
             operations_fact_digests=operations_fact_digests,
-            semantic_request_count=sum(
-                scenario.semantic_request_count for scenario in scenarios
-            ),
+            semantic_request_count=sum(scenario.semantic_request_count for scenario in scenarios),
         )
 
     def close(self) -> None:
@@ -2959,21 +2779,16 @@ class _FixedRepositoryAcceptanceRunner:
         self._acceptance_run_id = acceptance_run_id
         authority_records = tuple(
             record.fact
-            for record in self._operations.acceptance_snapshot(
-                acceptance_run_id
-            ).facts
+            for record in self._operations.acceptance_snapshot(acceptance_run_id).facts
             if record.kind == "acceptance_live_authority"
-            and record.fact_digest
-            == config.live_acceptance_authority_digest
+            and record.fact_digest == config.live_acceptance_authority_digest
         )
         if len(authority_records) != 1:
             raise ValueError("live acceptance authority is missing")
         self._live_authority = authority_records[0]
         if (
-            self._live_authority.manifest_digest
-            != config.manifest.manifest_digest
-            or self._live_authority.semantic_provider
-            != config.semantic_provider
+            self._live_authority.manifest_digest != config.manifest.manifest_digest
+            or self._live_authority.semantic_provider != config.semantic_provider
             or self._live_authority.stage_models
             != (
                 config.extractor_model_id,
@@ -3029,8 +2844,7 @@ class _FixedRepositoryAcceptanceRunner:
             resume_roots = config.resume_lineage_root_digests
         elif (
             config.state_commit_sha == self._live_authority.state_commit_sha
-            and config.state_root_digest
-            == self._live_authority.state_root_digest
+            and config.state_root_digest == self._live_authority.state_root_digest
         ):
             resume_commits = (config.state_commit_sha,)
             resume_roots = (config.state_root_digest,)
@@ -3061,34 +2875,23 @@ class _FixedRepositoryAcceptanceRunner:
         repository_id = candidate.repository.repository_id
         snapshot = self._operations.snapshot_run(self._authority.run_id)
         reservations = tuple(
-            item
-            for item in snapshot.semantic_reservations
-            if item.repository_id == repository_id
+            item for item in snapshot.semantic_reservations if item.repository_id == repository_id
         )
         if len(reservations) > 1:
             raise ValueError("fixed acceptance semantic reservation conflict")
-        phase2_authority = (
-            reservations[0].phase2_run_authority_digest
-            if reservations
-            else None
-        )
+        phase2_authority = reservations[0].phase2_run_authority_digest if reservations else None
         prior_attempts = tuple(
             item
             for item in snapshot.semantic_attempts
             if item.repository_id == repository_id
             and item.stage == "extractor"
-            and (
-                phase2_authority is None
-                or item.workflow_authority_digest == phase2_authority
-            )
+            and (phase2_authority is None or item.workflow_authority_digest == phase2_authority)
         )
         prior_attempt_count = max(
             (item.attempt_no for item in prior_attempts),
             default=0,
         )
-        remaining_attempts = (
-            RetryPolicy().max_attempts - prior_attempt_count
-        )
+        remaining_attempts = RetryPolicy().max_attempts - prior_attempt_count
         if remaining_attempts < 0:
             raise ValueError("fixed acceptance semantic retry ledger exceeded")
         execution = None
@@ -3105,7 +2908,10 @@ class _FixedRepositoryAcceptanceRunner:
             )
             self._state_head = execution.state_commit_sha
             self._state_root = execution.state_root_digest
-            if execution.terminal.outcome != "confirmed_retryable":
+            if (
+                getattr(execution, "acceptance_system_outcome", None) == "provider_exhausted"
+                or execution.terminal.outcome != "confirmed_retryable"
+            ):
                 break
         if execution is None:
             execution = self._phase2_factory(
@@ -3154,8 +2960,7 @@ class _FixedRepositoryAcceptanceRunner:
         nominated = tuple(
             entry
             for entry in (
-                nominations[0].search_derived_entries
-                + nominations[0].user_nominated_entries
+                nominations[0].search_derived_entries + nominations[0].user_nominated_entries
             )
             if entry.entry_digest == authority.nomination_entry_digest
         )
@@ -3330,52 +3135,104 @@ class _FixedRepositoryAcceptanceRunner:
             candidate=candidate,
             pinned_commit_sha=authority.exact_commit_sha,
         )
+        persisted_execution = self._operations.snapshot_run(self._authority.run_id)
+        existing_workflow_terminals = {
+            item.workflow_authority_digest: item
+            for item in persisted_execution.workflow_terminals
+            if item.repository_id == authority.repository_id
+        }
+        if len(existing_workflow_terminals) != sum(
+            item.repository_id == authority.repository_id
+            for item in persisted_execution.workflow_terminals
+        ):
+            raise ValueError("acceptance workflow terminal conflict")
         workflow_terminals = []
+        terminal_changed = False
         for workflow in execution.workflows:
-            workflow_terminals.append(
-                self._operations.record_acceptance_workflow_terminal(
-                    acceptance_run_id=self._acceptance_run_id,
-                    fixed_candidate_admission_digest=admission.admission_digest,
-                    semantic_reservation_digest=(
-                        execution.terminal.semantic_reservation_digest
-                    ),
-                    run_id=self._authority.run_id,
-                    repository_id=authority.repository_id,
-                    workflow_authority_digest=workflow.workflow_authority_digest,
-                    outcome=(
-                        "eligible_local_candidate"
-                        if workflow.outcome == "eligible"
-                        else workflow.outcome
-                    ),
-                    eligible_locator=(
-                        workflow.locator.locator
-                        if workflow.locator is not None
-                        else None
-                    ),
-                    eligible_object_digest=(
-                        workflow.locator.authority_digest
-                        if workflow.locator is not None
-                        else None
-                    ),
-                    recorded_at=_discovery_timestamp(),
-                )
+            terminal_outcome = (
+                "eligible_local_candidate" if workflow.outcome == "eligible" else workflow.outcome
             )
-        candidate_terminal = self._operations.record_candidate_terminal(
-            self._authority.run_id,
-            execution.terminal,
+            terminal_locator = workflow.locator.locator if workflow.locator is not None else None
+            terminal_object_digest = (
+                workflow.locator.authority_digest if workflow.locator is not None else None
+            )
+            existing_terminal = existing_workflow_terminals.get(workflow.workflow_authority_digest)
+            if existing_terminal is not None:
+                if (
+                    existing_terminal.run_id,
+                    existing_terminal.repository_id,
+                    existing_terminal.workflow_authority_digest,
+                    existing_terminal.outcome,
+                    existing_terminal.eligible_locator,
+                    existing_terminal.eligible_object_digest,
+                ) != (
+                    self._authority.run_id,
+                    authority.repository_id,
+                    workflow.workflow_authority_digest,
+                    terminal_outcome,
+                    terminal_locator,
+                    terminal_object_digest,
+                ):
+                    raise ValueError("acceptance workflow terminal conflict")
+                workflow_terminals.append(existing_terminal)
+            else:
+                workflow_terminals.append(
+                    self._operations.record_acceptance_workflow_terminal(
+                        acceptance_run_id=self._acceptance_run_id,
+                        fixed_candidate_admission_digest=admission.admission_digest,
+                        semantic_reservation_digest=(
+                            execution.terminal.semantic_reservation_digest
+                        ),
+                        run_id=self._authority.run_id,
+                        repository_id=authority.repository_id,
+                        workflow_authority_digest=workflow.workflow_authority_digest,
+                        outcome=terminal_outcome,
+                        eligible_locator=terminal_locator,
+                        eligible_object_digest=terminal_object_digest,
+                        recorded_at=_discovery_timestamp(),
+                    )
+                )
+                terminal_changed = True
+        existing_candidate_terminals = tuple(
+            item
+            for item in persisted_execution.candidate_terminals
+            if item.repository_id == authority.repository_id
         )
-        synchronized = self._barrier.sync_discovery(
-            operations_store=self._operations,
-            observed_head=self._state_head,
-            prior_root_digest=self._state_root,
-            created_at=_discovery_timestamp(),
-            transition_phase="terminal",
-        )
-        self._state_head = synchronized.commit_sha
-        self._state_root = synchronized.root_digest
-        operations_snapshot = self._operations.snapshot_run(
-            self._authority.run_id
-        )
+        if len(existing_candidate_terminals) > 1:
+            raise ValueError("acceptance candidate terminal conflict")
+        if existing_candidate_terminals:
+            candidate_terminal = existing_candidate_terminals[0]
+            if (
+                candidate_terminal.discovery_run_authority_digest,
+                candidate_terminal.repository_id,
+                candidate_terminal.semantic_reservation_digest,
+                candidate_terminal.outcome,
+                candidate_terminal.workflow_authority_digests,
+            ) != (
+                execution.terminal.discovery_run_authority_digest,
+                execution.terminal.repository_id,
+                execution.terminal.semantic_reservation_digest,
+                execution.terminal.outcome,
+                execution.terminal.workflow_authority_digests,
+            ):
+                raise ValueError("acceptance candidate terminal conflict")
+        else:
+            candidate_terminal = self._operations.record_candidate_terminal(
+                self._authority.run_id,
+                execution.terminal,
+            )
+            terminal_changed = True
+        if terminal_changed:
+            synchronized = self._barrier.sync_discovery(
+                operations_store=self._operations,
+                observed_head=self._state_head,
+                prior_root_digest=self._state_root,
+                created_at=_discovery_timestamp(),
+                transition_phase="terminal",
+            )
+            self._state_head = synchronized.commit_sha
+            self._state_root = synchronized.root_digest
+        operations_snapshot = self._operations.snapshot_run(self._authority.run_id)
         semantic_attempts = tuple(
             attempt
             for attempt in operations_snapshot.semantic_attempts
@@ -3386,16 +3243,13 @@ class _FixedRepositoryAcceptanceRunner:
             for reservation in operations_snapshot.semantic_reservations
             if reservation.repository_id == authority.repository_id
         )
-        acceptance_snapshot = self._operations.acceptance_snapshot(
-            self._acceptance_run_id
-        )
+        acceptance_snapshot = self._operations.acceptance_snapshot(self._acceptance_run_id)
         request_reservations = tuple(
             record
             for record in acceptance_snapshot.facts
             if record.kind == "acceptance_semantic_request_reservation"
             and record.fact.repository_id == authority.repository_id
-            and record.fact.fixed_candidate_admission_digest
-            == admission.admission_digest
+            and record.fact.fixed_candidate_admission_digest == admission.admission_digest
         )
         telemetry_keys = {
             (
@@ -3413,30 +3267,23 @@ class _FixedRepositoryAcceptanceRunner:
             )
             for item in semantic_attempts
         }
-        if (
-            not telemetry_keys.issubset(attempt_keys)
-            or any(
-                attempt.status == "decided"
-                and (
-                    attempt.stage,
-                    attempt.workflow_authority_digest,
-                    attempt.attempt_no,
-                )
-                not in telemetry_keys
-                for attempt in semantic_attempts
+        if not telemetry_keys.issubset(attempt_keys) or any(
+            attempt.status == "decided"
+            and (
+                attempt.stage,
+                attempt.workflow_authority_digest,
+                attempt.attempt_no,
             )
+            not in telemetry_keys
+            for attempt in semantic_attempts
         ):
             raise ValueError("semantic provider telemetry is incomplete")
         semantic_telemetry = tuple(
             AcceptanceSemanticTelemetryV1(
                 schema_version="acceptance-semantic-telemetry-v1",
-                live_acceptance_authority_digest=(
-                    self._live_authority.authority_digest
-                ),
+                live_acceptance_authority_digest=(self._live_authority.authority_digest),
                 stage=item.stage,
-                workflow_spec_authority_digest=(
-                    item.workflow_authority_digest
-                ),
+                workflow_spec_authority_digest=(item.workflow_authority_digest),
                 attempt_no=item.attempt_no,
                 request_id=item.request_id,
                 actual_model=item.actual_model,
@@ -3452,11 +3299,7 @@ class _FixedRepositoryAcceptanceRunner:
         )
         workflows = execution.workflows
         selected_workflow = next(
-            (
-                workflow
-                for workflow in workflows
-                if workflow.locator is not None
-            ),
+            (workflow for workflow in workflows if workflow.locator is not None),
             workflows[0] if workflows else None,
         )
         workflow_execution_authority_digests = tuple(
@@ -3485,11 +3328,7 @@ class _FixedRepositoryAcceptanceRunner:
             )
         )
         package_digests = tuple(
-            sorted(
-                item.package_digest
-                for item in workflows
-                if item.package_digest is not None
-            )
+            sorted(item.package_digest for item in workflows if item.package_digest is not None)
         )
         evidence = {
             self._live_authority.authority_digest,
@@ -3528,15 +3367,11 @@ class _FixedRepositoryAcceptanceRunner:
             outcome=acceptance_outcome,
             reason_code=_acceptance_reason_code(acceptance_outcome),
             evidence_digests=tuple(sorted(evidence)),
-            live_acceptance_authority_digest=(
-                self._live_authority.authority_digest
-            ),
+            live_acceptance_authority_digest=(self._live_authority.authority_digest),
             discovery_run_id=self._authority.run_id,
             discovery_run_authority_digest=self._authority.authority_digest,
             benchmark_entry_digest=authority.entry_digest,
-            budget_reservation_digest=(
-                budget_reservation.reservation_digest
-            ),
+            budget_reservation_digest=(budget_reservation.reservation_digest),
             fixed_candidate_admission_digest=admission.admission_digest,
             semantic_candidate_reservation_digest=(
                 semantic_reservations[0].reservation_digest
@@ -3550,27 +3385,18 @@ class _FixedRepositoryAcceptanceRunner:
             workflow_terminal_digests=tuple(
                 sorted(terminal.terminal_digest for terminal in workflow_terminals)
             ),
-            workflow_execution_authority_digests=(
-                workflow_execution_authority_digests
-            ),
-            workflow_spec_authority_digests=(
-                workflow_spec_authority_digests
-            ),
-            phase3_terminal_summary_digests=(
-                phase3_terminal_summary_digests
-            ),
+            workflow_execution_authority_digests=(workflow_execution_authority_digests),
+            workflow_spec_authority_digests=(workflow_spec_authority_digests),
+            phase3_terminal_summary_digests=(phase3_terminal_summary_digests),
             skill_artifact_digests=skill_artifact_digests,
             package_digests=package_digests,
             eligible_object_digest=(
                 selected_workflow.locator.authority_digest
-                if selected_workflow is not None
-                and selected_workflow.locator is not None
+                if selected_workflow is not None and selected_workflow.locator is not None
                 else None
             ),
             workflow_fingerprint=(
-                selected_workflow.workflow_fingerprint
-                if selected_workflow is not None
-                else None
+                selected_workflow.workflow_fingerprint if selected_workflow is not None else None
             ),
             workflow_spec_authority_digest=(
                 selected_workflow.workflow_spec_authority_digest
@@ -3579,8 +3405,7 @@ class _FixedRepositoryAcceptanceRunner:
             ),
             eligible_locator=(
                 selected_workflow.locator.locator
-                if selected_workflow is not None
-                and selected_workflow.locator is not None
+                if selected_workflow is not None and selected_workflow.locator is not None
                 else None
             ),
             semantic_request_count=len(semantic_attempts),
@@ -3588,9 +3413,7 @@ class _FixedRepositoryAcceptanceRunner:
                 sorted(attempt.attempt_digest for attempt in semantic_attempts)
             ),
             semantic_telemetry=semantic_telemetry,
-            actual_models=tuple(
-                item.actual_model for item in semantic_telemetry
-            ),
+            actual_models=tuple(item.actual_model for item in semantic_telemetry),
             reader_file_count=(
                 execution.reader_telemetry.file_count
                 if execution.reader_telemetry is not None
@@ -3630,14 +3453,16 @@ def _fixed_acceptance_runner_factory(
     acceptance_run_id: str,
 ) -> Callable[[str, str], object]:
     del restored
+    resume_configured = False
 
     def factory(state_commit_sha: str, state_root_digest: str) -> object:
+        nonlocal resume_configured
         lineage_reader = getattr(
             barrier,
             "acceptance_resume_lineage",
             None,
         )
-        if callable(lineage_reader):
+        if resume_configured and callable(lineage_reader):
             resume_commits, resume_roots = lineage_reader()
         else:
             resume_commits = config.resume_lineage_commit_shas
@@ -3647,12 +3472,12 @@ def _fixed_acceptance_runner_factory(
             "acceptance_resume_locator",
             None,
         )
-        if callable(locator_reader):
+        if resume_configured and callable(locator_reader):
             resume_locator_digest, resume_transition_index = locator_reader()
         else:
             resume_locator_digest = config.resume_locator_digest
             resume_transition_index = config.resume_transition_index
-        return _FixedRepositoryAcceptanceRunner(
+        runner = _FixedRepositoryAcceptanceRunner(
             config=replace(
                 config,
                 state_commit_sha=state_commit_sha,
@@ -3668,6 +3493,8 @@ def _fixed_acceptance_runner_factory(
             frozen_owner_export=frozen_owner_export,
             acceptance_run_id=acceptance_run_id,
         )
+        resume_configured = True
+        return runner
 
     return factory
 
@@ -3762,20 +3589,17 @@ def build_live_acceptance_execution(
             and _is_commit_sha(getattr(synchronized, "commit_sha", ""))
             and _is_digest(getattr(synchronized, "root_digest", ""))
         ):
-            verified_state_locators.add(
-                (synchronized.commit_sha, synchronized.root_digest)
-            )
+            verified_state_locators.add((synchronized.commit_sha, synchronized.root_digest))
         return synchronized
 
     if action == "replay":
+
         def projector_factory() -> object:
             return _CompletedBenchmarkStateProjector(
                 operations_path=discovery_config.operations_state,
                 pipeline_path=discovery_config.pipeline_state,
                 acceptance_run_id=acceptance_run_id,
-                expected_live_authority_digest=(
-                    config.live_acceptance_authority_digest
-                ),
+                expected_live_authority_digest=(config.live_acceptance_authority_digest),
                 verified_state_locators=verified_state_locators,
             )
 
@@ -4018,9 +3842,7 @@ def run_protected_handoff_scenario(
         "eligible_candidates": [candidate],
     }
     if mutation == "forged_locator":
-        candidate["locator"] = (
-            "state/objects/sha256/ff/" + ("f" * 64) + ".json"
-        )
+        candidate["locator"] = "state/objects/sha256/ff/" + ("f" * 64) + ".json"
     elif mutation == "extra_locator":
         handoff["eligible_candidates"] = [candidate, dict(candidate)]
     elif mutation == "authority_mismatch":
@@ -4081,10 +3903,7 @@ def read_exact_discovery_state(
         or type(state_repository_id) is not int
         or state_repository_id <= 0
         or not _github_full_name(state_repository_full_name)
-        or tuple(
-            os.fspath(path)
-            for path in (pipeline_state, operations_state, publication_state)
-        )
+        or tuple(os.fspath(path) for path in (pipeline_state, operations_state, publication_state))
         != _DISCOVERY_DATABASE_LOCATORS
     ):
         raise ValueError("protected discovery state configuration rejected")
@@ -4101,9 +3920,7 @@ def read_exact_discovery_state(
         repository_full_name=state_repository_full_name,
     )
     try:
-        observation = StateBranchStore(
-            _PinnedStateRemote(client, state_commit_sha)
-        ).restore()
+        observation = StateBranchStore(_PinnedStateRemote(client, state_commit_sha)).restore()
         if (
             observation.status != "verified"
             or observation.observed_head != state_commit_sha
@@ -4156,9 +3973,7 @@ def read_exact_acceptance_state(
         repository_full_name=state_repository_full_name,
     )
     try:
-        observation = StateBranchStore(
-            _PinnedStateRemote(client, state_commit_sha)
-        ).restore()
+        observation = StateBranchStore(_PinnedStateRemote(client, state_commit_sha)).restore()
         if (
             observation.status != "verified"
             or observation.observed_head != state_commit_sha
@@ -4214,9 +4029,7 @@ def derive_discovery_publication_admissions(
     ):
         raise ValueError("protected discovery state mismatch")
     files = bundle.content_by_path()
-    root_objects = {
-        item.locator: item.object_digest for item in root.objects
-    }
+    root_objects = {item.locator: item.object_digest for item in root.objects}
     if any(
         item.locator not in root_objects
         or root_objects[item.locator] != item.authority_digest
@@ -4261,9 +4074,8 @@ def derive_discovery_publication_admissions(
         )
         for item in handoff.eligible_candidates
     ]
-    if (
-        sorted(persisted_eligible) != sorted(supplied_eligible)
-        or len(persisted_eligible) != len(set(persisted_eligible))
+    if sorted(persisted_eligible) != sorted(supplied_eligible) or len(persisted_eligible) != len(
+        set(persisted_eligible)
     ):
         raise ValueError("protected discovery eligible set rejected")
 
@@ -4292,12 +4104,8 @@ def derive_discovery_publication_admissions(
                 or type(wrapper.get("content_base64")) is not str
             ):
                 raise ValueError
-            terminal_bytes = base64.b64decode(
-                wrapper["content_base64"], validate=True
-            )
-            terminal = CandidateTerminalSummaryV1.model_validate_json(
-                terminal_bytes, strict=True
-            )
+            terminal_bytes = base64.b64decode(wrapper["content_base64"], validate=True)
+            terminal = CandidateTerminalSummaryV1.model_validate_json(terminal_bytes, strict=True)
             if (
                 canonical_json_bytes(wrapper) != files[candidate.locator]
                 or candidate_terminal_summary_bytes(terminal) != terminal_bytes
@@ -4308,12 +4116,8 @@ def derive_discovery_publication_admissions(
                 raise ValueError
         except Exception:
             raise ValueError("protected discovery authority mismatch") from None
-        projector = DescriptorAnchoredCompletedCandidateProjector(
-            phase3_state
-        )
-        completed = projector.find_completed_candidate(
-            terminal.candidate_execution_authority
-        )
+        projector = DescriptorAnchoredCompletedCandidateProjector(phase3_state)
+        completed = projector.find_completed_candidate(terminal.candidate_execution_authority)
         if (
             completed is None
             or completed.terminal_summary != terminal
@@ -4419,9 +4223,7 @@ def load_publication_authority_config(
         if not entries or any(not item for item in entries):
             _publication_config_fail()
         reviewers = tuple(sorted(set(entries)))
-        targets = ReviewerTargetsV1(
-            schema_version="reviewer-targets-v1", reviewers=reviewers
-        )
+        targets = ReviewerTargetsV1(schema_version="reviewer-targets-v1", reviewers=reviewers)
         if len(targets.reviewers) > 16:
             _publication_config_fail()
         return PublicationAuthorityConfig(
@@ -4465,12 +4267,7 @@ def _closed_publication_locator(path: Path, *, root: str) -> str:
     """Admit one fixed workflow-relative locator, never an operator root."""
 
     raw = os.fspath(path)
-    if (
-        type(raw) is not str
-        or not raw.isascii()
-        or len(raw.encode("ascii")) > 255
-        or "\\" in raw
-    ):
+    if type(raw) is not str or not raw.isascii() or len(raw.encode("ascii")) > 255 or "\\" in raw:
         _publication_config_fail()
     parsed = PurePosixPath(raw)
     if (
@@ -4635,7 +4432,10 @@ def build_publication_application(
     from skillscout.application.publication import PublicationApplication, PublicationDependencies
     from skillscout.domain.publication import PublicationAdmissionV1
 
-    if type(admission) is not PublicationAdmissionV1 or type(authority) is not PublicationAuthorityConfig:
+    if (
+        type(admission) is not PublicationAdmissionV1
+        or type(authority) is not PublicationAuthorityConfig
+    ):
         _publication_config_fail()
     if (
         admission.catalog_repository_id != authority.catalog_repository_id
@@ -4730,10 +4530,9 @@ def _read_stable_private_file(path: Path, *, max_bytes: int) -> bytes:
             consumed += len(chunk)
             if consumed > max_bytes:
                 _fail()
-        if (
-            _metadata_facts(opened) != _metadata_facts(os.fstat(descriptor))
-            or _metadata_facts(opened) != _metadata_facts(os.lstat(path))
-        ):
+        if _metadata_facts(opened) != _metadata_facts(os.fstat(descriptor)) or _metadata_facts(
+            opened
+        ) != _metadata_facts(os.lstat(path)):
             _fail()
         return b"".join(chunks)
     except (OSError, ValueError):
@@ -4747,13 +4546,9 @@ def _repository_root() -> Path:
     source_root = Path(os.path.abspath(os.fspath(Path(__file__).parents[2])))
     working_root = Path(os.path.abspath(os.curdir))
     for candidate in (source_root, working_root):
-        if (
-            (candidate / "uv.lock").exists()
-            and (
-                candidate
-                / "config/supply-chain/phase3-gate-b3.lock.sha256"
-            ).exists()
-        ):
+        if (candidate / "uv.lock").exists() and (
+            candidate / "config/supply-chain/phase3-gate-b3.lock.sha256"
+        ).exists():
             return candidate
     _fail()
 
@@ -4788,11 +4583,7 @@ def _record_digest(value: str) -> str:
 
 
 def _closed_record_path(value: str) -> PurePosixPath:
-    if (
-        not value
-        or "\\" in value
-        or any(ord(character) < 32 for character in value)
-    ):
+    if not value or "\\" in value or any(ord(character) < 32 for character in value):
         _fail()
     path = PurePosixPath(value)
     if path.is_absolute() or path.as_posix() != value or not path.parts:
@@ -4802,17 +4593,14 @@ def _closed_record_path(value: str) -> PurePosixPath:
 
 def _verify_validator_distribution() -> ValidatorDistributionAdmission:
     try:
-        distributions = tuple(
-            importlib.metadata.distributions(name=_VALIDATOR_DISTRIBUTION)
-        )
+        distributions = tuple(importlib.metadata.distributions(name=_VALIDATOR_DISTRIBUTION))
         if len(distributions) != 1:
             _fail()
         distribution = distributions[0]
         record_entry = next(
             entry
             for entry in (distribution.files or ())
-            if entry.name == "RECORD"
-            and entry.parent.name.endswith(".dist-info")
+            if entry.name == "RECORD" and entry.parent.name.endswith(".dist-info")
         )
         record_path = Path(distribution.locate_file(record_entry))
         record = _read_stable_private_file(
@@ -4856,10 +4644,7 @@ def _verify_validator_distribution() -> ValidatorDistributionAdmission:
         digest = hashlib.sha256(payload).hexdigest()
         if len(payload) != size or digest != _record_digest(encoded_digest):
             _fail()
-        if (
-            ".." not in path.parts
-            and path.name not in _GENERATED_RECORD_NAMES
-        ):
+        if ".." not in path.parts and path.name not in _GENERATED_RECORD_NAMES:
             observed.append((relative, digest, size))
         if relative == _VALIDATOR_MODULE_RECORD_PATH:
             if admitted_module is not None:
@@ -4883,9 +4668,7 @@ def _verify_validator_distribution() -> ValidatorDistributionAdmission:
         _fail()
     module_origin, module_digest = admitted_module
     return ValidatorDistributionAdmission(
-        distribution_root=os.fspath(
-            Path(os.path.abspath(os.fspath(site_packages)))
-        ),
+        distribution_root=os.fspath(Path(os.path.abspath(os.fspath(site_packages)))),
         module_origin=module_origin,
         package_search_path=os.fspath(Path(module_origin).parent),
         module_digest=f"sha256:{module_digest}",
@@ -4909,19 +4692,13 @@ def reverify_admitted_validator_module(
             if package_search_paths is not None
             else ()
         )
-        origin = (
-            os.path.abspath(os.fspath(module_origin))
-            if module_origin is not None
-            else None
-        )
+        origin = os.path.abspath(os.fspath(module_origin)) if module_origin is not None else None
     except (TypeError, ValueError):
         _fail()
     if (
         origin != admission.module_origin
         or paths != (admission.package_search_path,)
-        or not admission.module_origin.startswith(
-            admission.distribution_root + os.sep
-        )
+        or not admission.module_origin.startswith(admission.distribution_root + os.sep)
     ):
         _fail()
     payload = _read_stable_private_file(

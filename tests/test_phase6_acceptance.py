@@ -19,9 +19,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIER_PATH = ROOT / "tools/verify_phase6_acceptance.py"
-VALIDATION_PATH = (
-    ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-VALIDATION.md"
-)
+VALIDATION_PATH = ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-VALIDATION.md"
 REQUIREMENTS_PATH = ROOT / ".planning/REQUIREMENTS.md"
 
 
@@ -63,21 +61,114 @@ def test_hard_gate_registry_is_exact_blocking_and_current() -> None:
 @pytest.fixture
 def acceptance_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
-    for relative in (
-        Path("tools/verify_phase6_acceptance.py"),
-        Path("tools/verify_phase6_validation_map.py"),
-        Path(".planning/REQUIREMENTS.md"),
-    ):
+    tracked = subprocess.run(
+        ("git", "ls-files", "-z"),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    for encoded in tracked:
+        if not encoded:
+            continue
+        relative = Path(encoded.decode("utf-8"))
         destination = repository / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, destination)
-    phase_source = ROOT / ".planning/phases/06-adversarial-mvp-acceptance"
-    phase_target = repository / ".planning/phases/06-adversarial-mvp-acceptance"
-    phase_target.mkdir(parents=True, exist_ok=True)
-    for path in phase_source.glob("06-??-PLAN.md"):
-        shutil.copy2(path, phase_target / path.name)
-    shutil.copy2(VALIDATION_PATH, phase_target / VALIDATION_PATH.name)
+    subprocess.run(("git", "init", "-q"), cwd=repository, check=True)
     return repository
+
+
+def _replace_once(path: Path, old: str, new: str) -> None:
+    source = path.read_text(encoding="utf-8")
+    assert source.count(old) == 1, (path, old)
+    path.write_text(source.replace(old, new), encoding="utf-8")
+
+
+def _mutate_acceptance_repository(repository: Path, mutation: str) -> None:
+    phase = repository / ".planning/phases/06-adversarial-mvp-acceptance"
+    if mutation == "missing_evidence":
+        (phase / "06-BENCHMARK-MANIFEST.json").unlink()
+    elif mutation == "swapped_evidence":
+        discover = repository / ".github/workflows/discover.yml"
+        publish = repository / ".github/workflows/publish-candidate.yml"
+        discover_bytes = discover.read_bytes()
+        discover.write_bytes(publish.read_bytes())
+        publish.write_bytes(discover_bytes)
+    elif mutation == "duplicate_evidence":
+        validation = phase / "06-VALIDATION.md"
+        source = validation.read_text(encoding="utf-8")
+        row = next(line for line in source.splitlines() if line.startswith("| 06-01-01 |"))
+        marker = "\n## Requirement Inverse Coverage"
+        assert source.count(marker) == 1
+        validation.write_text(
+            source.replace(marker, f"\n{row}{marker}"),
+            encoding="utf-8",
+        )
+    elif mutation == "stale_evidence":
+        state = repository / ".planning/STATE.md"
+        _replace_once(
+            state,
+            "7eca32de7c0468d18c180ebecf567d7239412e54c2776e43621930b894570f63",
+            "0" * 64,
+        )
+    elif mutation == "self_referential_evidence":
+        manifest = phase / "06-BENCHMARK-MANIFEST.json"
+        payload = json.loads(manifest.read_bytes())
+        payload["prior_manifest_digest"] = payload["manifest_digest"]
+        manifest.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="ascii",
+        )
+    elif mutation == "identical_replay_effect":
+        _replace_once(
+            repository / "src/skillscout/domain/acceptance.py",
+            "replay_semantic_effect_count: Literal[0]",
+            "replay_semantic_effect_count: Literal[1]",
+        )
+    elif mutation == "changed_lineage_alias":
+        _replace_once(
+            repository / "src/skillscout/adapters/operations_state.py",
+            '"acceptance_changed_source_draft_update_completion": '
+            "(ChangedSourceDraftUpdateCompletionV1),",
+            '"acceptance_changed_source": (ChangedSourceDraftUpdateCompletionV1),',
+        )
+    elif mutation == "stale_gate_b4":
+        _replace_once(
+            repository / ".planning/STATE.md",
+            "Gate B4 evidence remains historical",
+            "Gate B4 evidence is current",
+        )
+    elif mutation == "stale_draft_head":
+        path = repository / "src/skillscout/domain/acceptance.py"
+        source = path.read_text(encoding="utf-8")
+        before, marker, after = source.partition("class HumanSkillReviewAttestationV1")
+        assert marker and "pr_head_sha: _Sha" in after
+        path.write_text(
+            before + marker + after.replace("pr_head_sha: _Sha", "pr_head_sha: str", 1),
+            encoding="utf-8",
+        )
+    elif mutation == "hard_gate_deleted":
+        _replace_once(
+            repository / "src/skillscout/domain/acceptance.py",
+            '    "fresh_gate_b4_binding",\n',
+            "",
+        )
+    elif mutation == "all_44_inverse_drift":
+        validation = phase / "06-VALIDATION.md"
+        source = validation.read_text(encoding="utf-8")
+        _replace_once(
+            validation,
+            next(line for line in source.splitlines() if line.startswith("| TEST-01 |")),
+            "| TEST-01 | 06-01-01 |",
+        )
+    elif mutation == "benchmark_lock_mismatch":
+        manifest = phase / "06-BENCHMARK-MANIFEST.json"
+        payload = bytearray(manifest.read_bytes())
+        index = payload.index(b'"entry_digest":"sha256:') + len(b'"entry_digest":"sha256:')
+        payload[index] = ord("0") if payload[index] != ord("0") else ord("1")
+        manifest.write_bytes(payload)
+    else:
+        raise AssertionError(mutation)
 
 
 @pytest.mark.parametrize(
@@ -94,6 +185,7 @@ def acceptance_repository(tmp_path: Path) -> Path:
         "stale_draft_head",
         "hard_gate_deleted",
         "all_44_inverse_drift",
+        "benchmark_lock_mismatch",
     ),
 )
 def test_independent_verifier_rejects_whole_phase_evidence_mutation(
@@ -101,8 +193,96 @@ def test_independent_verifier_rejects_whole_phase_evidence_mutation(
     mutation: str,
 ) -> None:
     verifier = _repository_verifier()
-    with pytest.raises(verifier.AcceptanceError):
-        verifier(acceptance_repository, mutation=mutation)
+    _mutate_acceptance_repository(acceptance_repository, mutation)
+    error = sys.modules[verifier.__module__].AcceptanceError
+    with pytest.raises(error):
+        verifier(acceptance_repository)
+
+
+def test_independent_verifier_accepts_complete_current_repository_contract(
+    acceptance_repository: Path,
+) -> None:
+    verifier = _repository_verifier()
+    assert tuple(inspect.signature(verifier).parameters) == ("repository_root",)
+    result = verifier(acceptance_repository)
+
+    assert result.status == "repository_contract_valid_acceptance_incomplete"
+    assert result.structural_valid is True
+    assert result.acceptance_complete is False
+    assert result.plan_count == 15
+    assert result.task_count == 38
+    assert result.requirement_count == 44
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "src/skillscout/application/pipeline.py",
+        "src/skillscout/application/phase3.py",
+        "src/skillscout/adapters/openai_extract.py",
+        "src/skillscout/adapters/openai_generate.py",
+        "src/skillscout/adapters/openai_review.py",
+        "src/skillscout/adapters/semantic_provider.py",
+    ),
+)
+def test_independent_verifier_requires_complete_semantic_execution_surface(
+    acceptance_repository: Path,
+    relative: str,
+) -> None:
+    """Dropping any semantic execution owner must invalidate the repository."""
+
+    verifier = _repository_verifier()
+    error = sys.modules[verifier.__module__].AcceptanceError
+    (acceptance_repository / relative).unlink()
+
+    with pytest.raises(error):
+        verifier(acceptance_repository)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "tools/verify_phase6_validation_map.py",
+        "tools/verify_phase6_source_execution.py",
+    ),
+)
+def test_independent_verifier_parses_but_never_executes_repository_helpers(
+    acceptance_repository: Path,
+    relative: str,
+) -> None:
+    """Repository-owned helper top-level code must receive no verifier authority."""
+
+    verifier = _repository_verifier()
+    helper = acceptance_repository / relative
+    helper.write_text(
+        helper.read_text(encoding="utf-8")
+        + '\nraise RuntimeError("repository helper was executed")\n',
+        encoding="utf-8",
+    )
+
+    result = verifier(acceptance_repository)
+
+    assert result.structural_valid is True
+    assert result.acceptance_complete is False
+
+
+def test_independent_verifier_rejects_symlinked_parent_and_root_escape(
+    acceptance_repository: Path,
+    tmp_path: Path,
+) -> None:
+    verifier = _repository_verifier()
+    error = sys.modules[verifier.__module__].AcceptanceError
+    real_planning = acceptance_repository / ".planning"
+    moved_planning = tmp_path / "moved-planning"
+    real_planning.rename(moved_planning)
+    real_planning.symlink_to(moved_planning, target_is_directory=True)
+    with pytest.raises(error):
+        verifier(acceptance_repository)
+
+    escaped = tmp_path / "escaped"
+    escaped.symlink_to(acceptance_repository, target_is_directory=True)
+    with pytest.raises(error):
+        verifier(escaped)
 
 
 def test_all_44_requirement_ids_are_unique_before_report_rebuild() -> None:
@@ -122,8 +302,44 @@ def test_wave_zero_never_fabricates_a_positive_release_verdict() -> None:
     module = _verifier()
     assert module.main([]) == 1
     assert module.main(["--registry-only"]) == 0
-    assert not (ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-ACCEPTANCE-REPORT.md").exists()
-    assert not (ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-RELEASE-REQUIREMENTS.json").exists()
+    assert not (
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-ACCEPTANCE-REPORT.md"
+    ).exists()
+    assert not (
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-RELEASE-REQUIREMENTS.json"
+    ).exists()
+
+
+def test_default_verifier_cli_runs_repository_verification_before_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The default command must run the independent repository contract."""
+
+    module = _verifier()
+    observed: list[Path] = []
+
+    def verify_repository(repository_root: Path) -> Any:
+        observed.append(repository_root)
+        return module.RepositoryVerification(
+            status="repository_contract_valid_acceptance_incomplete",
+            structural_valid=True,
+            acceptance_complete=False,
+            plan_count=15,
+            task_count=38,
+            requirement_count=44,
+            source_execution_step_count=1,
+            missing_live_artifacts=(
+                "06-ACCEPTANCE-REPORT.md",
+                "06-RELEASE-REQUIREMENTS.json",
+            ),
+        )
+
+    monkeypatch.setattr(module, "verify_repository", verify_repository)
+
+    assert module.main([]) == 1
+    assert observed == [Path.cwd()]
+    assert capsys.readouterr().err == module.INCOMPLETE + "\n"
 
 
 def test_search_credential_gate_rebuilds_exact_plan_06_06_offline_state() -> None:
@@ -155,18 +371,13 @@ def test_search_credential_gate_rejects_a_stale_canonical_state_identity() -> No
 
 
 def test_future_requirement_map_must_be_canonical_and_exactly_all_44() -> None:
-    path = (
-        ROOT
-        / ".planning/phases/06-adversarial-mvp-acceptance"
-        / "06-RELEASE-REQUIREMENTS.json"
-    )
+    path = ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-RELEASE-REQUIREMENTS.json"
     if not path.exists():
         pytest.skip("phase6-release-requirement-map-not-yet-built")
     raw = path.read_bytes()
     payload = json.loads(raw)
     assert raw == (
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-        + "\n"
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
     ).encode("ascii")
     assert len(payload["requirements"]) == 44
     assert set(payload["requirements"]) == set(payload["inverse_requirement_map"])
@@ -177,9 +388,7 @@ def _cli_subcommands() -> dict[str, Any]:
 
     parser = build_parser()
     action = next(
-        item
-        for item in parser._actions
-        if item.__class__.__name__ == "_SubParsersAction"
+        item for item in parser._actions if item.__class__.__name__ == "_SubParsersAction"
     )
     return dict(action.choices)
 
@@ -226,11 +435,7 @@ def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
         "--cleanup",
     }
     for name, required in expected.items():
-        options = {
-            option
-            for action in commands[name]._actions
-            for option in action.option_strings
-        }
+        options = {option for action in commands[name]._actions for option in action.option_strings}
         assert required <= options
         assert forbidden.isdisjoint(options)
     kind = next(
@@ -273,9 +478,7 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
 
     config = bootstrap.load_acceptance_runtime_config(
         manifest_path=(
-            ROOT
-            / ".planning/phases/06-adversarial-mvp-acceptance"
-            / "06-BENCHMARK-MANIFEST.json"
+            ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
         ),
         state_commit_sha=commit,
         state_root_digest=root,
@@ -306,9 +509,7 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
 def test_acceptance_bootstrap_target_is_fixed_and_fact_validation_is_pre_secret() -> None:
     import skillscout.bootstrap as bootstrap
 
-    assert bootstrap.ACCEPTANCE_CATALOG_FULL_NAME == (
-        "alexzhu0/skillscout-catalog-test"
-    )
+    assert bootstrap.ACCEPTANCE_CATALOG_FULL_NAME == ("alexzhu0/skillscout-catalog-test")
     signature = inspect.signature(bootstrap.load_acceptance_runtime_config)
     assert "environ" in signature.parameters
     assert {
@@ -341,9 +542,7 @@ def test_acceptance_cli_unknown_flag_uses_existing_fixed_parser_diagnostic(
     from skillscout.cli import build_parser
 
     with pytest.raises(SystemExit) as failure:
-        build_parser().parse_args(
-            ["run-acceptance", "--unknown", "SECRET_DO_NOT_ECHO"]
-        )
+        build_parser().parse_args(["run-acceptance", "--unknown", "SECRET_DO_NOT_ECHO"])
     captured = capsys.readouterr()
     assert failure.value.code == 2
     assert captured.out == ""
@@ -420,9 +619,7 @@ def test_nomination_cli_emits_persisted_role_neutral_manifest(
     assert payload["state_commit_sha"] == "d" * 40
     assert payload["nomination_set_digest"] == nomination.nomination_set_digest
     assert len(payload["search_derived_entries"]) == 5
-    assert all(
-        "coverage_role" not in entry for entry in payload["search_derived_entries"]
-    )
+    assert all("coverage_role" not in entry for entry in payload["search_derived_entries"])
 
 
 def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> None:
@@ -479,8 +676,7 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     from skillscout.domain.discovery import DiscoveryBudgetPolicyV1, DiscoveryQuerySetV1
 
     manifest_relative = Path(
-        ".planning/phases/06-adversarial-mvp-acceptance/"
-        "06-BENCHMARK-MANIFEST.json"
+        ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
     )
     workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
     query_relative = Path("config/discovery-queries-v1.json")
@@ -496,9 +692,9 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
         (tmp_path / query_relative).read_bytes(),
         strict=True,
     )
-    workflow_digest = "sha256:" + hashlib.sha256(
-        (tmp_path / workflow_relative).read_bytes()
-    ).hexdigest()
+    workflow_digest = (
+        "sha256:" + hashlib.sha256((tmp_path / workflow_relative).read_bytes()).hexdigest()
+    )
     authority = LiveAcceptanceAuthorityV1(
         schema_version="live-acceptance-authority-v1",
         authority_version=1,
@@ -630,11 +826,7 @@ def test_live_authority_cli_accepts_only_a_complete_state_bundle_root() -> None:
 
     commands = _cli_subcommands()
     parser = commands["verify-live-authority"]
-    options = {
-        option
-        for action in parser._actions
-        for option in action.option_strings
-    }
+    options = {option for action in parser._actions for option in action.option_strings}
     assert "--authority-state-root" in options
     assert "--authority-operations-state" not in options
 
@@ -818,11 +1010,7 @@ def test_acceptance_cli_exposes_only_exact_resume_lineage_inputs() -> None:
     """Workflow preflight resolves a descendant checkout without a mutable SHA var."""
 
     parser = _cli_subcommands()["resolve-acceptance-resume"]
-    options = {
-        option
-        for action in parser._actions
-        for option in action.option_strings
-    }
+    options = {option for action in parser._actions for option in action.option_strings}
 
     assert options == {
         "-h",
@@ -921,14 +1109,14 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         object_digest="sha256:" + ("c" * 64),
     )
     bundles = {
-        original_commit: SimpleNamespace(
+        original_commit: state_branch.VerifiedStateBundle(
             root=SimpleNamespace(
                 root_digest=original_root,
                 state_parent_commit_sha="0" * 40,
                 prior_root_digest="sha256:" + ("0" * 64),
             )
         ),
-        anchor_commit: SimpleNamespace(
+        anchor_commit: state_branch.VerifiedStateBundle(
             root=SimpleNamespace(
                 root_digest=anchor_root,
                 state_parent_commit_sha=original_commit,
@@ -950,9 +1138,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             return SimpleNamespace(sha=anchor_commit)
 
         def get_commit(self, sha: str) -> object:
-            parent = (
-                ("0" * 40,) if sha == original_commit else (original_commit,)
-            )
+            parent = ("0" * 40,) if sha == original_commit else (original_commit,)
             return SimpleNamespace(sha=sha, parents=parent)
 
     class Store:
@@ -966,9 +1152,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             read_budget: object,
         ) -> object:
             assert read_budget is not None
-            parent = (
-                ("0" * 40,) if sha == original_commit else (original_commit,)
-            )
+            parent = ("0" * 40,) if sha == original_commit else (original_commit,)
             root = bundles[sha].root
             root.model_dump = lambda **_kwargs: {
                 "root_digest": root.root_digest,
@@ -976,11 +1160,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             return SimpleNamespace(
                 commit=SimpleNamespace(sha=sha, parents=parent),
                 root=root,
-                object_digests=(
-                    (locator_object_digest,)
-                    if sha == anchor_commit
-                    else ()
-                ),
+                object_digests=((locator_object_digest,) if sha == anchor_commit else ()),
                 declared_content_bytes=1_024,
             )
 
@@ -996,14 +1176,16 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
     monkeypatch.setattr(
         cli,
         "_load_verified_live_authority",
-        lambda _arguments: events.append("authority")
-        or SimpleNamespace(
-            authority_digest=authority_digest,
-            source_commit_sha="2" * 40,
-            state_commit_sha=original_commit,
-            state_root_digest=original_root,
-            state_repository_id=123,
-            state_repository_full_name="example/state",
+        lambda _arguments: (
+            events.append("authority")
+            or SimpleNamespace(
+                authority_digest=authority_digest,
+                source_commit_sha="2" * 40,
+                state_commit_sha=original_commit,
+                state_root_digest=original_root,
+                state_repository_id=123,
+                state_repository_full_name="example/state",
+            )
         ),
         raising=False,
     )
@@ -1108,11 +1290,7 @@ def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
             index = commits.index(sha)
             parent = commits[index - 1] if index > 0 else "0" * 40
             root_digest = "sha256:" + f"{index + 1:064x}"
-            prior_root = (
-                "sha256:" + f"{index:064x}"
-                if index > 0
-                else "sha256:" + ("0" * 64)
-            )
+            prior_root = "sha256:" + f"{index:064x}" if index > 0 else "sha256:" + ("0" * 64)
             root = SimpleNamespace(
                 root_digest=root_digest,
                 prior_root_digest=prior_root,
@@ -1237,9 +1415,7 @@ def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
     )
 
     class Operations:
-        def record_acceptance_fact(
-            self, run_id: str, kind: str, fact: object
-        ) -> object:
+        def record_acceptance_fact(self, run_id: str, kind: str, fact: object) -> object:
             assert run_id == "acceptance-resume"
             assert kind == "acceptance_campaign_resume_locator"
             recorded.append(fact)
@@ -1743,9 +1919,9 @@ def test_acceptance_cas_has_no_generic_transition_default() -> None:
 
     import skillscout.bootstrap as bootstrap
 
-    parameter = inspect.signature(
-        bootstrap._LateStateDurabilityBarrier.sync_discovery
-    ).parameters["transition_phase"]
+    parameter = inspect.signature(bootstrap._LateStateDurabilityBarrier.sync_discovery).parameters[
+        "transition_phase"
+    ]
     assert parameter.default is inspect.Parameter.empty
 
 
@@ -1782,20 +1958,11 @@ def test_every_exported_transition_sequence_owns_its_exact_fact_delta() -> None:
         added = tuple(
             CampaignOwnedFactObservation(
                 kind=kind,
-                object_digest="sha256:"
-                + f"{transition_index * 10 + ordinal:064x}",
-                semantic_stage=(
-                    "extractor" if kind == "semantic_attempt" else None
-                ),
-                attempt_no=(
-                    1 if kind == "semantic_attempt" else None
-                ),
+                object_digest="sha256:" + f"{transition_index * 10 + ordinal:064x}",
+                semantic_stage=("extractor" if kind == "semantic_attempt" else None),
+                attempt_no=(1 if kind == "semantic_attempt" else None),
                 semantic_status=(
-                    (
-                        "started"
-                        if phase == "started"
-                        else "confirmed_retryable"
-                    )
+                    ("started" if phase == "started" else "confirmed_retryable")
                     if kind == "semantic_attempt"
                     else None
                 ),
@@ -1806,20 +1973,12 @@ def test_every_exported_transition_sequence_owns_its_exact_fact_delta() -> None:
         child_root = "sha256:" + f"{transition_index:064x}"
         locator = AcceptanceCampaignResumeLocatorV1.model_construct(
             transition_phase=phase,
-            semantic_stage=(
-                "extractor" if phase in {"started", "result_durable"} else None
-            ),
-            attempt_no=(
-                1 if phase in {"started", "result_durable"} else None
-            ),
+            semantic_stage=("extractor" if phase in {"started", "result_durable"} else None),
+            attempt_no=(1 if phase in {"started", "result_durable"} else None),
             semantic_status=(
                 "started"
                 if phase == "started"
-                else (
-                    "confirmed_retryable"
-                    if phase == "result_durable"
-                    else None
-                )
+                else ("confirmed_retryable" if phase == "result_durable" else None)
             ),
         )
         parent = CampaignStateLineageObservation(
@@ -1910,9 +2069,7 @@ def test_live_execution_builder_has_no_publication_state_or_configuration() -> N
     import dataclasses
     import skillscout.bootstrap as bootstrap
 
-    fields = {
-        field.name for field in dataclasses.fields(bootstrap.AcceptanceRuntimeConfig)
-    }
+    fields = {field.name for field in dataclasses.fields(bootstrap.AcceptanceRuntimeConfig)}
     assert "catalog_full_name" not in fields
     source = inspect.getsource(bootstrap.build_live_acceptance_execution)
     for forbidden in (
@@ -1950,9 +2107,7 @@ def test_completed_projector_rejects_unverified_state_locator(
     from skillscout.application.acceptance import load_locked_benchmark_manifest
 
     manifest = load_locked_benchmark_manifest(
-        ROOT
-        / ".planning/phases/06-adversarial-mvp-acceptance"
-        / "06-BENCHMARK-MANIFEST.json"
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
     )
     verified = {
         ("a" * 40, "sha256:" + ("b" * 64)),
@@ -1983,9 +2138,7 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
     import skillscout.bootstrap as bootstrap
 
     manifest_path = (
-        ROOT
-        / ".planning/phases/06-adversarial-mvp-acceptance"
-        / "06-BENCHMARK-MANIFEST.json"
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
     )
     manifest = acceptance.load_locked_benchmark_manifest(manifest_path)
     config = bootstrap.AcceptanceRuntimeConfig(
@@ -2006,9 +2159,7 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
     restored = SimpleNamespace(
         status="verified",
         observed_head=config.state_commit_sha,
-        bundle=SimpleNamespace(
-            root=SimpleNamespace(root_digest=config.state_root_digest)
-        ),
+        bundle=SimpleNamespace(root=SimpleNamespace(root_digest=config.state_root_digest)),
     )
     calls: list[str] = []
     monkeypatch.setattr(
@@ -2024,16 +2175,13 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
     monkeypatch.setattr(
         bootstrap,
         "_LateStateDurabilityBarrier",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            sync_discovery=lambda **_arguments: None
-        ),
+        lambda *_args, **_kwargs: SimpleNamespace(sync_discovery=lambda **_arguments: None),
     )
     monkeypatch.setattr(
         acceptance,
         "run_exact_replay",
         lambda *_args, **_kwargs: (
-            calls.append("replay")
-            or SimpleNamespace(replay_digest="sha256:" + ("c" * 64))
+            calls.append("replay") or SimpleNamespace(replay_digest="sha256:" + ("c" * 64))
         ),
     )
 
@@ -2081,9 +2229,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
                     exact_commit_sha=f"{index:040x}",
                     license_spdx="MIT",
                     selection_source="search_derived",
-                    selection_evidence_digests=(
-                        "sha256:" + f"{index:064x}",
-                    ),
+                    selection_evidence_digests=("sha256:" + f"{index:064x}",),
                 )
                 for index in range(1, 6)
             ),
@@ -2130,8 +2276,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
         {
             **manifest_values,
             "entries": tuple(
-                item.model_dump(mode="json", exclude_none=False)
-                for item in benchmark_entries
+                item.model_dump(mode="json", exclude_none=False) for item in benchmark_entries
             ),
         }
     )
@@ -2152,10 +2297,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
         authority_version=1,
         source_commit_sha="c" * 40,
         acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
-        ),
+        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
         manifest_digest=manifest.manifest_digest,
         nomination_set_digest=manifest.nomination_set_digest,
         lock_attestation_digest=manifest.lock_attestation.attestation_digest,
@@ -2224,11 +2366,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
             workflow_spec_authority_digest=authority_digest,
             attempt_no=1,
             request_id=f"request-{request_suffix}-{stage}",
-            actual_model=(
-                "deepseek-v4-pro"
-                if stage == "reviewer"
-                else "deepseek-v4-flash"
-            ),
+            actual_model=("deepseek-v4-pro" if stage == "reviewer" else "deepseek-v4-flash"),
             prompt_version={
                 "extractor": "extract-prompt-v1",
                 "generator": "generator-prompt-v1",
@@ -2257,26 +2395,15 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
     pipeline_path = state_root / "pipeline.sqlite3"
     publication_path = state_root / "publication.sqlite3"
     with operations_state.OperationsStateStore(operations_path) as operations:
-        operations.record_acceptance_fact(
-            run_id, "acceptance_nomination", nomination
-        )
-        operations.record_acceptance_fact(
-            run_id, "acceptance_benchmark_lock", manifest
-        )
-        operations.record_acceptance_fact(
-            run_id, "acceptance_live_authority", authority
-        )
+        operations.record_acceptance_fact(run_id, "acceptance_nomination", nomination)
+        operations.record_acceptance_fact(run_id, "acceptance_benchmark_lock", manifest)
+        operations.record_acceptance_fact(run_id, "acceptance_live_authority", authority)
         request_ordinal = 0
         for ordinal, entry in enumerate(manifest.entries, start=1):
             eligible = ordinal == 1
-            stages = (
-                ("extractor", "generator", "reviewer")
-                if eligible
-                else ("extractor",)
-            )
+            stages = ("extractor", "generator", "reviewer") if eligible else ("extractor",)
             stage_telemetry = tuple(
-                telemetry(stage, entry.entry_digest, str(ordinal))
-                for stage in stages
+                telemetry(stage, entry.entry_digest, str(ordinal)) for stage in stages
             )
             operations.record_acceptance_fact(
                 run_id,
@@ -2324,17 +2451,11 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
                     run_id,
                     "acceptance_semantic_request_reservation",
                     acceptance_domain.AcceptanceSemanticRequestReservationV1(
-                        schema_version=(
-                            "acceptance-semantic-request-reservation-v1"
-                        ),
+                        schema_version=("acceptance-semantic-request-reservation-v1"),
                         acceptance_run_id=run_id,
-                        fixed_candidate_admission_digest=(
-                            admission.admission_digest
-                        ),
+                        fixed_candidate_admission_digest=(admission.admission_digest),
                         repository_id=entry.repository_id,
-                        workflow_spec_authority_digest=(
-                            item.workflow_spec_authority_digest
-                        ),
+                        workflow_spec_authority_digest=(item.workflow_spec_authority_digest),
                         stage=item.stage,
                         attempt_no=item.attempt_no,
                         request_ordinal=request_ordinal,
@@ -2348,113 +2469,77 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
                 )
             )
             scenario = acceptance_domain.AcceptanceScenarioResultV1(
-                    schema_version="acceptance-scenario-result-v1",
-                    acceptance_run_id=run_id,
-                    scenario_id=f"locked-{ordinal}-{entry.repository_id}",
-                    repository_id=entry.repository_id,
-                    repository_full_name=entry.repository_full_name,
-                    exact_commit_sha=entry.exact_commit_sha,
-                    license_spdx=entry.license_spdx,
-                    benchmark_manifest_digest=manifest.manifest_digest,
-                    benchmark_entry_digest=entry.entry_digest,
-                    live_acceptance_authority_digest=authority.authority_digest,
-                    discovery_run_id=f"{run_id}-semantic",
-                    discovery_run_authority_digest=entry.entry_digest,
-                    budget_reservation_digest=entry.entry_digest,
-                    fixed_candidate_admission_digest=admission.admission_digest,
-                    semantic_candidate_reservation_digest=entry.entry_digest,
-                    terminal_class=(
-                        "eligible" if eligible else "business_terminal"
-                    ),
-                    outcome=(
-                        "eligible_local_candidate" if eligible else "no_workflow"
-                    ),
-                    reason_code=(
-                        "eligible_candidate_completed"
-                        if eligible
-                        else "no_reusable_workflow"
-                    ),
-                    evidence_digests=(entry.entry_digest,),
-                    candidate_funnel=(
-                        (
-                            "fixed_identity",
-                            "deterministic_filter",
-                            "bounded_read",
-                            "extractor",
-                            "qualification",
-                            "generator",
-                            "validation",
-                            "reviewer",
-                        )
-                        if eligible
-                        else (
-                            "fixed_identity",
-                            "deterministic_filter",
-                            "bounded_read",
-                            "extractor",
-                        )
-                    ),
-                    reader_order="readme_docs_examples_manifests_source",
-                    reader_file_count=2,
-                    reader_source_file_count=0,
-                    reader_total_bytes=100,
-                    reader_estimated_tokens=25,
-                    semantic_request_count=len(stage_telemetry),
-                    semantic_request_reservation_digests=attempt_digests,
-                    semantic_attempt_digests=attempt_digests,
-                    semantic_telemetry=stage_telemetry,
-                    actual_models=tuple(
-                        item.actual_model for item in stage_telemetry
-                    ),
-                    prompt_versions=tuple(
-                        item.prompt_version for item in stage_telemetry
-                    ),
-                    schema_versions=tuple(
-                        item.output_schema_version for item in stage_telemetry
-                    ),
-                    policy_versions=tuple(
-                        item.policy_version for item in stage_telemetry
-                    ),
-                    workflow_fingerprint=(
-                        entry.entry_digest if eligible else None
-                    ),
-                    workflow_spec_authority_digest=(
-                        entry.entry_digest if eligible else None
-                    ),
-                    workflow_execution_authority_digests=(
-                        (entry.entry_digest,) if eligible else ()
-                    ),
-                    workflow_spec_authority_digests=(
-                        (entry.entry_digest,) if eligible else ()
-                    ),
-                    candidate_terminal_digest=entry.entry_digest,
-                    workflow_terminal_digests=(
-                        (entry.entry_digest,) if eligible else ()
-                    ),
-                    phase3_terminal_summary_digests=(
-                        (entry.entry_digest,) if eligible else ()
-                    ),
-                    skill_artifact_digests=(
-                        (entry.entry_digest,) if eligible else ()
-                    ),
-                    package_digests=(
-                        (entry.entry_digest,) if eligible else ()
-                    ),
-                    eligible_locator=(
-                        "state/objects/eligible.json" if eligible else None
-                    ),
-                    eligible_object_digest=(
-                        entry.entry_digest if eligible else None
-                    ),
-                    expected_coverage_role=entry.coverage_role,
-                    evaluator_matches_observed=True,
-                    publication_decision=(
-                        "eligible_for_later_publication"
-                        if eligible
-                        else "not_eligible"
-                    ),
-                    warnings=(),
-                    recorded_at=timestamp,
+                schema_version="acceptance-scenario-result-v1",
+                acceptance_run_id=run_id,
+                scenario_id=f"locked-{ordinal}-{entry.repository_id}",
+                repository_id=entry.repository_id,
+                repository_full_name=entry.repository_full_name,
+                exact_commit_sha=entry.exact_commit_sha,
+                license_spdx=entry.license_spdx,
+                benchmark_manifest_digest=manifest.manifest_digest,
+                benchmark_entry_digest=entry.entry_digest,
+                live_acceptance_authority_digest=authority.authority_digest,
+                discovery_run_id=f"{run_id}-semantic",
+                discovery_run_authority_digest=entry.entry_digest,
+                budget_reservation_digest=entry.entry_digest,
+                fixed_candidate_admission_digest=admission.admission_digest,
+                semantic_candidate_reservation_digest=entry.entry_digest,
+                terminal_class=("eligible" if eligible else "business_terminal"),
+                outcome=("eligible_local_candidate" if eligible else "no_workflow"),
+                reason_code=(
+                    "eligible_candidate_completed" if eligible else "no_reusable_workflow"
+                ),
+                evidence_digests=(entry.entry_digest,),
+                candidate_funnel=(
+                    (
+                        "fixed_identity",
+                        "deterministic_filter",
+                        "bounded_read",
+                        "extractor",
+                        "qualification",
+                        "generator",
+                        "validation",
+                        "reviewer",
+                    )
+                    if eligible
+                    else (
+                        "fixed_identity",
+                        "deterministic_filter",
+                        "bounded_read",
+                        "extractor",
+                    )
+                ),
+                reader_order="readme_docs_examples_manifests_source",
+                reader_file_count=2,
+                reader_source_file_count=0,
+                reader_total_bytes=100,
+                reader_estimated_tokens=25,
+                semantic_request_count=len(stage_telemetry),
+                semantic_request_reservation_digests=attempt_digests,
+                semantic_attempt_digests=attempt_digests,
+                semantic_telemetry=stage_telemetry,
+                actual_models=tuple(item.actual_model for item in stage_telemetry),
+                prompt_versions=tuple(item.prompt_version for item in stage_telemetry),
+                schema_versions=tuple(item.output_schema_version for item in stage_telemetry),
+                policy_versions=tuple(item.policy_version for item in stage_telemetry),
+                workflow_fingerprint=(entry.entry_digest if eligible else None),
+                workflow_spec_authority_digest=(entry.entry_digest if eligible else None),
+                workflow_execution_authority_digests=((entry.entry_digest,) if eligible else ()),
+                workflow_spec_authority_digests=((entry.entry_digest,) if eligible else ()),
+                candidate_terminal_digest=entry.entry_digest,
+                workflow_terminal_digests=((entry.entry_digest,) if eligible else ()),
+                phase3_terminal_summary_digests=((entry.entry_digest,) if eligible else ()),
+                skill_artifact_digests=((entry.entry_digest,) if eligible else ()),
+                package_digests=((entry.entry_digest,) if eligible else ()),
+                eligible_locator=("state/objects/eligible.json" if eligible else None),
+                eligible_object_digest=(entry.entry_digest if eligible else None),
+                expected_coverage_role=entry.coverage_role,
+                evaluator_matches_observed=True,
+                publication_decision=(
+                    "eligible_for_later_publication" if eligible else "not_eligible"
+                ),
+                warnings=(),
+                recorded_at=timestamp,
             )
             with pytest.raises(
                 operations_state.OperationsIntegrityError,
@@ -2467,9 +2552,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
                 )
             return
         pipeline = pipeline_state.SQLiteStateStore(pipeline_path)
-        publication = publication_state.PublicationStateStore(
-            publication_path
-        )
+        publication = publication_state.PublicationStateStore(publication_path)
         try:
             bundle = operations_state.assemble_three_store_bundle(
                 pipeline_store=pipeline,
@@ -2496,9 +2579,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
     )
     config = bootstrap.AcceptanceRuntimeConfig(
         manifest_path=(
-            ROOT
-            / ".planning/phases/06-adversarial-mvp-acceptance"
-            / "06-BENCHMARK-MANIFEST.json"
+            ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
         ),
         manifest=manifest,
         state_commit_sha="d" * 40,
@@ -2510,9 +2591,7 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
         live_acceptance_authority_digest=authority.authority_digest,
     )
     commits = iter(("e" * 40, "f" * 40))
-    roots = iter(
-        ("sha256:" + ("1" * 64), "sha256:" + ("2" * 64))
-    )
+    roots = iter(("sha256:" + ("1" * 64), "sha256:" + ("2" * 64)))
 
     class LocalCAS:
         def sync_discovery(self, *, observed_head: str, **_: object) -> object:
@@ -2601,9 +2680,7 @@ def test_fixed_runner_exhausts_only_after_three_same_authority_retries() -> None
 
     runner._phase2_factory = factory
     result = runner._run_phase2_with_retries(
-        candidate=SimpleNamespace(
-            repository=SimpleNamespace(repository_id=101)
-        ),
+        candidate=SimpleNamespace(repository=SimpleNamespace(repository_id=101)),
         pinned_commit_sha="d" * 40,
     )
 
@@ -2671,9 +2748,7 @@ def test_fixed_runner_resumes_only_remaining_same_authority_attempts(
         return retryable
 
     runner._phase2_factory = factory
-    candidate = SimpleNamespace(
-        repository=SimpleNamespace(repository_id=101)
-    )
+    candidate = SimpleNamespace(repository=SimpleNamespace(repository_id=101))
     result = runner._run_phase2_with_retries(
         candidate=candidate,
         pinned_commit_sha="d" * 40,
@@ -2743,9 +2818,7 @@ def test_fixed_runner_does_not_issue_fourth_request_after_durable_exhaustion() -
 
     runner._phase2_factory = recovery_factory
     result = runner._run_phase2_with_retries(
-        candidate=SimpleNamespace(
-            repository=SimpleNamespace(repository_id=101)
-        ),
+        candidate=SimpleNamespace(repository=SimpleNamespace(repository_id=101)),
         pinned_commit_sha="e" * 40,
     )
 
@@ -2818,9 +2891,7 @@ def test_fixed_runner_reconstructs_three_attempt_crash_without_provider_replay(
 
     runner._phase2_factory = recover_factory
     result = runner._run_phase2_with_retries(
-        candidate=SimpleNamespace(
-            repository=SimpleNamespace(repository_id=101)
-        ),
+        candidate=SimpleNamespace(repository=SimpleNamespace(repository_id=101)),
         pinned_commit_sha="e" * 40,
     )
 
@@ -2829,14 +2900,24 @@ def test_fixed_runner_reconstructs_three_attempt_crash_without_provider_replay(
 
 
 @pytest.mark.parametrize(
-    "third_status",
-    ("decided", "confirmed_retryable", "semantic_outcome_unknown"),
+    ("stage", "third_status"),
+    tuple(
+        (stage, status)
+        for stage in ("extractor", "generator", "reviewer")
+        for status in (
+            "decided",
+            "confirmed_retryable",
+            "semantic_outcome_unknown",
+            "exhaustion",
+        )
+    ),
 )
 def test_third_attempt_crash_recovers_through_two_production_processes(
     tmp_path: Path,
+    stage: str,
     third_status: str,
 ) -> None:
-    """A real graph is restored by a second interpreter with no fourth request."""
+    """Two CLI interpreters restore the real graph without a fourth request."""
 
     harness = ROOT / "tests" / "phase6_process_harness.py"
     result_path = tmp_path / "recovery-result.json"
@@ -2846,6 +2927,7 @@ def test_third_attempt_crash_recovers_through_two_production_processes(
             str(harness),
             "crash",
             str(tmp_path),
+            stage,
             third_status,
         ],
         cwd=ROOT,
@@ -2860,6 +2942,7 @@ def test_third_attempt_crash_recovers_through_two_production_processes(
             str(harness),
             "resume",
             str(tmp_path),
+            stage,
             third_status,
             str(result_path),
         ],
@@ -2873,37 +2956,111 @@ def test_third_attempt_crash_recovers_through_two_production_processes(
     assert len(result["process_ids"]) == 2
     assert all(type(item) is int and item > 0 for item in result["process_ids"])
     assert result["process_ids"][0] != result["process_ids"][1]
-    assert result["provider_calls"] == [
-        {"attempt_no": 1, "stage": "extractor"},
-        {"attempt_no": 2, "stage": "extractor"},
-        {"attempt_no": 3, "stage": "extractor"},
+    assert result["cli_commands"] == [
+        {"command": "resolve-acceptance-resume", "process": 1},
+        {"command": "run-acceptance", "process": 1},
+        {"command": "resolve-acceptance-resume", "process": 2},
+        {"command": "run-acceptance", "process": 2},
     ]
+    target_calls = [item for item in result["provider_calls"] if item["stage"] == stage]
+    assert target_calls == [
+        {"attempt_no": 1, "stage": stage},
+        {"attempt_no": 2, "stage": stage},
+        {"attempt_no": 3, "stage": stage},
+    ]
+    assert all(
+        sum(item["stage"] == prior for item in result["provider_calls"]) == 1
+        for prior in ("extractor", "generator", "reviewer")[
+            : ("extractor", "generator", "reviewer").index(stage)
+        ]
+    )
     assert result["third_status"] == third_status
-    assert result["semantic_attempts"] == [
-        {
-            "attempt_no": 1,
-            "stage": "extractor",
-            "status": "confirmed_retryable",
-        },
-        {
-            "attempt_no": 2,
-            "stage": "extractor",
-            "status": "confirmed_retryable",
-        },
-        {
-            "attempt_no": 3,
-            "stage": "extractor",
-            "status": third_status,
-        },
+    assert result["crash_stage"] == stage
+    assert result["crash_transition_phase"] == (
+        "terminal" if third_status == "exhaustion" else "result_durable"
+    )
+    target_attempts = [item for item in result["semantic_attempts"] if item["stage"] == stage]
+    expected_third = "confirmed_retryable" if third_status == "exhaustion" else third_status
+    assert target_attempts == [
+        {"attempt_no": 1, "stage": stage, "status": "confirmed_retryable"},
+        {"attempt_no": 2, "stage": stage, "status": "confirmed_retryable"},
+        {"attempt_no": 3, "stage": stage, "status": expected_third},
     ]
+    first_transition_index = result["locator_transition_indexes"][0]
+    assert result["locator_transition_indexes"] == list(
+        range(
+            first_transition_index,
+            first_transition_index + len(result["locator_transition_indexes"]),
+        )
+    )
+    assert result["locator_first_appearance_indexes"] == (result["locator_transition_indexes"])
+    assert len(result["locator_first_appearance_commit_shas"]) == len(
+        result["locator_transition_indexes"]
+    )
+    assert len(set(result["locator_first_appearance_commit_shas"])) == len(
+        result["locator_first_appearance_commit_shas"]
+    )
     assert result["candidate_terminal_count"] == 1
-    assert result["workflow_terminal_count"] == 0
     assert result["scenario_count"] == 1
-    assert result["workflow_spec_count"] <= 1
+    expected_materialized_count = 1 if third_status == "decided" else 0
+    expected_workflow_terminal_count = {
+        "extractor": {
+            "decided": 1,
+            "confirmed_retryable": 0,
+            "semantic_outcome_unknown": 0,
+            "exhaustion": 0,
+        },
+        "generator": {
+            "decided": 1,
+            "confirmed_retryable": 0,
+            "semantic_outcome_unknown": 1,
+            "exhaustion": 0,
+        },
+        "reviewer": {
+            "decided": 1,
+            "confirmed_retryable": 0,
+            "semantic_outcome_unknown": 1,
+            "exhaustion": 0,
+        },
+    }[stage][third_status]
+    assert result["workflow_terminal_count"] == expected_workflow_terminal_count
+    assert result["phase3_artifact_count"] == expected_materialized_count
+    assert result["workflow_spec_count"] == expected_materialized_count
+    assert result["skill_count"] == expected_materialized_count
+    assert result["package_count"] == expected_materialized_count
     assert result["duplicate_workflow_spec_count"] == 0
     assert result["duplicate_skill_count"] == 0
     assert result["duplicate_package_count"] == 0
-    assert result["provider_calls_after_resume"] == 0
+    stages = ("extractor", "generator", "reviewer")
+    expected_after_resume_stages = (
+        list(stages[stages.index(stage) + 1 :]) if third_status == "decided" else []
+    )
+    assert result["provider_requests_after_resume"] == [
+        {"stage": item} for item in expected_after_resume_stages
+    ]
+    assert result["provider_clients_after_resume"] == [
+        {"stage": item} for item in expected_after_resume_stages
+    ]
+    if third_status == "decided":
+        assert result["resume_benchmark_exit_code"] == 0
+        assert result["resume_benchmark_payload"]["status"] == "benchmark_complete"
+        assert result["semantic_telemetry_stages"] == [
+            "extractor",
+            "generator",
+            "reviewer",
+        ]
+    else:
+        assert result["resume_benchmark_exit_code"] == 1
+        assert result["resume_benchmark_payload"]["error"]["code"] == ("state_integrity_error")
+        target_index = ("extractor", "generator", "reviewer").index(stage)
+        assert (
+            result["semantic_telemetry_stages"]
+            == [
+                "extractor",
+                "generator",
+                "reviewer",
+            ][:target_index]
+        )
 
 
 @pytest.mark.parametrize(
@@ -2945,9 +3102,7 @@ def test_fixed_runner_never_replays_unknown_or_completed_phase2(
     runner._phase2_factory = factory
     assert (
         runner._run_phase2_with_retries(
-            candidate=SimpleNamespace(
-                repository=SimpleNamespace(repository_id=101)
-            ),
+            candidate=SimpleNamespace(repository=SimpleNamespace(repository_id=101)),
             pinned_commit_sha="d" * 40,
         )
         is terminal
@@ -2995,17 +3150,13 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
                 acceptance_domain.NominationEntryV1(
                     schema_version="nomination-entry-v1",
                     repository_full_name=(
-                        "example/approved-repo"
-                        if index == 1
-                        else f"example/repository-{index}"
+                        "example/approved-repo" if index == 1 else f"example/repository-{index}"
                     ),
                     repository_id=840001 if index == 1 else 840000 + index,
                     exact_commit_sha=pinned if index == 1 else f"{index:040x}",
                     license_spdx="MIT",
                     selection_source="search_derived",
-                    selection_evidence_digests=(
-                        "sha256:" + f"{index:064x}",
-                    ),
+                    selection_evidence_digests=("sha256:" + f"{index:064x}",),
                 )
                 for index in range(1, 6)
             ),
@@ -3062,8 +3213,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         {
             **manifest_values,
             "entries": tuple(
-                item.model_dump(mode="json", exclude_none=False)
-                for item in benchmark_entries
+                item.model_dump(mode="json", exclude_none=False) for item in benchmark_entries
             ),
         }
     )
@@ -3104,10 +3254,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         authority_version=1,
         source_commit_sha="c" * 40,
         acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
-        ),
+        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
         manifest_digest=manifest.manifest_digest,
         nomination_set_digest=manifest.nomination_set_digest,
         lock_attestation_digest=manifest.lock_attestation.attestation_digest,
@@ -3165,18 +3312,13 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
     )
     run_id = "acceptance-production-fixed-runner"
     with operations_state.OperationsStateStore(operations_path) as operations:
-        operations.record_acceptance_fact(
-            run_id, "acceptance_nomination", nomination
-        )
-        operations.record_acceptance_fact(
-            run_id, "acceptance_benchmark_lock", manifest
-        )
-        operations.record_acceptance_fact(
-            run_id, "acceptance_live_authority", authority
-        )
+        operations.record_acceptance_fact(run_id, "acceptance_nomination", nomination)
+        operations.record_acceptance_fact(run_id, "acceptance_benchmark_lock", manifest)
+        operations.record_acceptance_fact(run_id, "acceptance_live_authority", authority)
 
     readme_sha = "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"
     guide_sha = "bb02bb02bb02bb02bb02bb02bb02bb02bb02bb02"
+
     def response_with_json(
         response: RecordedResponse,
         values: dict[str, object],
@@ -3189,9 +3331,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
 
     github_routes: dict[tuple[str, str], RecordedResponse] = {}
     for benchmark_entry in manifest.entries:
-        owner, repository_name = (
-            benchmark_entry.repository_full_name.split("/")
-        )
+        owner, repository_name = benchmark_entry.repository_full_name.split("/")
         metadata = json.loads(recorded_fixture("repo_mit").body)
         metadata.update(
             {
@@ -3207,21 +3347,19 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
             f"https://api.github.com/repos/{owner}/{repository_name}/"
             f"contents/LICENSE?ref={benchmark_entry.exact_commit_sha}"
         )
-        github_routes[
-            ("GET", f"/repos/{owner}/{repository_name}")
-        ] = response_with_json(recorded_fixture("repo_mit"), metadata)
+        github_routes[("GET", f"/repos/{owner}/{repository_name}")] = response_with_json(
+            recorded_fixture("repo_mit"), metadata
+        )
         github_routes[
             (
                 "GET",
-                f"/repos/{owner}/{repository_name}/commits/"
-                f"{benchmark_entry.exact_commit_sha}",
+                f"/repos/{owner}/{repository_name}/commits/{benchmark_entry.exact_commit_sha}",
             )
         ] = response_with_json(recorded_fixture("commits_pin"), commit)
         github_routes[
             (
                 "GET",
-                f"/repos/{owner}/{repository_name}/license?"
-                f"ref={benchmark_entry.exact_commit_sha}",
+                f"/repos/{owner}/{repository_name}/license?ref={benchmark_entry.exact_commit_sha}",
             )
         ] = response_with_json(recorded_fixture("license_mit"), license_payload)
         github_routes[
@@ -3313,20 +3451,14 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
             ).encode(),
         )
 
-    extractor_payload = json.loads(
-        recorded_openai_fixture("parsed_2_workflows").body
-    )["output"][0]["content"][0]["text"]
-    generator_payload = json.loads(
-        recorded_openai_generator_fixture("parsed_success").body
-    )["output"][0]["content"][0]["text"]
-    reviewer_cases = json.loads(
-        (
-            ROOT / "tests/fixtures/openai/reviewer/cases.json"
-        ).read_bytes()
-    )
-    reviewer_payload = reviewer_cases["parsed_yes"]["body"]["output"][0][
+    extractor_payload = json.loads(recorded_openai_fixture("parsed_2_workflows").body)["output"][0][
         "content"
     ][0]["text"]
+    generator_payload = json.loads(recorded_openai_generator_fixture("parsed_success").body)[
+        "output"
+    ][0]["content"][0]["text"]
+    reviewer_cases = json.loads((ROOT / "tests/fixtures/openai/reviewer/cases.json").read_bytes())
+    reviewer_payload = reviewer_cases["parsed_yes"]["body"]["output"][0]["content"][0]["text"]
     original_extract = extract_adapter.OpenAIExtractionClient
     original_generate = generate_adapter.OpenAIGenerationClient
     original_review = review_adapter.OpenAIReviewClient
@@ -3361,11 +3493,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         extractor_constructions += 1
         if extractor_constructions == 1:
             recording = RecordedTransport(
-                {
-                    ("POST", "/chat/completions"): recorded_openai_fixture(
-                        "openai_429"
-                    )
-                }
+                {("POST", "/chat/completions"): recorded_openai_fixture("openai_429")}
             )
             semantic_recordings.append(recording)
             return original_extract(
@@ -3411,9 +3539,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
 
     config = bootstrap.AcceptanceRuntimeConfig(
         manifest_path=(
-            ROOT
-            / ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
+            ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
         ),
         manifest=manifest,
         state_commit_sha=authority.state_commit_sha,
@@ -3465,21 +3591,11 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
                 transition=transition,
                 verified_state_head=f"{self.ordinal:040x}",
                 state_root_digest="sha256:" + f"{self.ordinal:064x}",
-                pipeline_database_digest=sha256_digest(
-                    {"pipeline": self.ordinal}
-                ),
-                operations_database_digest=sha256_digest(
-                    {"operations": self.ordinal}
-                ),
-                publication_database_digest=sha256_digest(
-                    {"publication": self.ordinal}
-                ),
-                pipeline_projection_digest=sha256_digest(
-                    {"pipeline_projection": self.ordinal}
-                ),
-                operations_projection_digest=sha256_digest(
-                    {"operations_projection": self.ordinal}
-                ),
+                pipeline_database_digest=sha256_digest({"pipeline": self.ordinal}),
+                operations_database_digest=sha256_digest({"operations": self.ordinal}),
+                publication_database_digest=sha256_digest({"publication": self.ordinal}),
+                pipeline_projection_digest=sha256_digest({"pipeline_projection": self.ordinal}),
+                operations_projection_digest=sha256_digest({"operations_projection": self.ordinal}),
                 publication_projection_digest=sha256_digest(
                     {"publication_projection": self.ordinal}
                 ),
@@ -3487,6 +3603,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
 
     monkeypatch.chdir(tmp_path)
     cas = LocalCAS()
+
     def discovery_factory(
         state_commit_sha: str,
         state_root_digest: str,
@@ -3511,9 +3628,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
     benchmark = acceptance_application.run_locked_benchmark(
         acceptance_application.LockedCampaignDependencies(
             discovery_factory=discovery_factory,
-            operations_store_factory=lambda: (
-                operations_state.OperationsStateStore(operations_path)
-            ),
+            operations_store_factory=lambda: operations_state.OperationsStateStore(operations_path),
             state_sync=cas.sync_discovery,
         ),
         manifest=manifest,
@@ -3523,14 +3638,10 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         recorded_at=timestamp,
     )
     entry = next(
-        item
-        for item in manifest.entries
-        if item.repository_full_name == "example/approved-repo"
+        item for item in manifest.entries if item.repository_full_name == "example/approved-repo"
     )
     observation = next(
-        item
-        for item in benchmark.scenario_results
-        if item.repository_id == entry.repository_id
+        item for item in benchmark.scenario_results if item.repository_id == entry.repository_id
     )
 
     assert observation.outcome == "eligible_local_candidate"
@@ -3550,18 +3661,13 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         "qualification_rejected",
     }
     extractor_attempts = tuple(
-        item
-        for item in snapshot.semantic_attempts
-        if item.stage == "extractor"
+        item for item in snapshot.semantic_attempts if item.stage == "extractor"
     )
-    assert sum(
-        item.status == "confirmed_retryable"
-        for item in extractor_attempts
-    ) == 1
+    assert sum(item.status == "confirmed_retryable" for item in extractor_attempts) == 1
     assert sum(item.status == "decided" for item in extractor_attempts) == 5
-    assert {
-        item.repository_id for item in extractor_attempts
-    } == {item.repository_id for item in manifest.entries}
+    assert {item.repository_id for item in extractor_attempts} == {
+        item.repository_id for item in manifest.entries
+    }
     linked_digests = {
         authority.authority_digest,
         manifest.manifest_digest,
@@ -3694,10 +3800,8 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
     replay = acceptance_application.run_exact_replay(
         acceptance_application.ReplayUpdateDependencies(
             completed_projector_factory=projector_factory,
-            operations_store_factory=lambda: (
-                operations_state.OperationsStateStore(
-                    restored_operations_path
-                )
+            operations_store_factory=lambda: operations_state.OperationsStateStore(
+                restored_operations_path
             ),
             state_sync=replay_sync,
         ),

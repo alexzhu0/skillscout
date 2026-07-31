@@ -176,9 +176,7 @@ class PipelineProfile:
 
 
 PIPELINE_PROFILES: Final[dict[str, PipelineProfile]] = {
-    "fixture-v1": PipelineProfile(
-        tuple(PipelineStage), False, RunStatus.PLANNED_NOT_PUBLISHED
-    ),
+    "fixture-v1": PipelineProfile(tuple(PipelineStage), False, RunStatus.PLANNED_NOT_PUBLISHED),
     "phase2-v1": PipelineProfile(
         (
             PipelineStage.SCOUT,
@@ -294,9 +292,7 @@ class SemanticDurabilityGuard:
         expected_prior_state_head: str,
         expected_prior_root_digest: str,
         reservation_hook: Callable[..., SemanticReservationReceipt] | None = None,
-        request_reservation_hook: (
-            Callable[..., SemanticReservationReceipt] | None
-        ) = None,
+        request_reservation_hook: (Callable[..., SemanticReservationReceipt] | None) = None,
         operations_run_id: str | None = None,
     ) -> None:
         if (
@@ -358,6 +354,40 @@ class SemanticDurabilityGuard:
     def operations_run_id(self) -> str | None:
         return self._operations_run_id
 
+    def already_durable(
+        self,
+        *,
+        run_id: str,
+        stage: Literal["extractor", "generator", "reviewer"],
+        attempt_no: int,
+        status: Literal[
+            "started",
+            "decided",
+            "confirmed_retryable",
+            "semantic_outcome_unknown",
+        ],
+    ) -> bool:
+        """Report an exact durable attempt without creating another transition."""
+
+        snapshot = getattr(self._operations_store, "snapshot_run", None)
+        if not callable(snapshot):
+            return False
+        operations_run_id = self._operations_run_id or run_id
+        try:
+            matches = tuple(
+                item
+                for item in snapshot(operations_run_id).semantic_attempts
+                if item.repository_id == self._repository_id
+                and item.workflow_authority_digest == self._workflow_authority_digest
+                and item.stage == stage
+                and item.attempt_no == attempt_no
+            )
+        except Exception:
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+        if len(matches) > 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        return len(matches) == 1 and matches[0].status == status
+
     def confirm(
         self,
         *,
@@ -385,15 +415,13 @@ class SemanticDurabilityGuard:
                     workflow_authority_digest=self._workflow_authority_digest,
                     stage=stage,
                     attempt_no=attempt_no,
+                    observed_head=self._expected_prior_state_head,
+                    prior_root_digest=self._expected_prior_root_digest,
                 )
                 if type(request_receipt) is not SemanticReservationReceipt:
                     raise TypeError("invalid semantic request reservation receipt")
-                self._expected_prior_state_head = (
-                    request_receipt.verified_state_head
-                )
-                self._expected_prior_root_digest = (
-                    request_receipt.state_root_digest
-                )
+                self._expected_prior_state_head = request_receipt.verified_state_head
+                self._expected_prior_root_digest = request_receipt.state_root_digest
             record = self._operations_store.record_semantic_attempt(
                 run_id=operations_run_id,
                 repository_id=self._repository_id,
@@ -482,12 +510,8 @@ class PipelineRunner:
         self.clock = clock or SystemClock()
         self.ids = ids or UUIDIdProvider()
         self.retry_policy = retry_policy or RetryPolicy()
-        self.publication_writer = publication_writer or _LocalPublicationPlanner(
-            filesystem_seam
-        )
-        self.extraction_writer = extraction_writer or _ExtractionSummaryWriter(
-            filesystem_seam
-        )
+        self.publication_writer = publication_writer or _LocalPublicationPlanner(filesystem_seam)
+        self.extraction_writer = extraction_writer or _ExtractionSummaryWriter(filesystem_seam)
         self.semantic_durability = semantic_durability
 
     def run(
@@ -527,10 +551,7 @@ class PipelineRunner:
             resumable = self.state.find_resumable_run(legacy_identity)
             if resumable is None:
                 resumable = self.state.bind_legacy_run(legacy_identity)
-        if (
-            resumable is None
-            and profile.terminal_status is RunStatus.COMPLETED
-        ):
+        if resumable is None and profile.terminal_status is RunStatus.COMPLETED:
             completed = self.state.find_completed_run(current_identity)
             if completed is not None:
                 chain = self.state.verify_run_chain(completed.run_id, current_identity)
@@ -551,9 +572,7 @@ class PipelineRunner:
         if resumable is None:
             run_id = self.ids.new_run_id()
             schema_version = current_identity.schema_version
-            invocation_event = self.state.create_run(
-                run_id, current_identity, self.clock.now()
-            )
+            invocation_event = self.state.create_run(run_id, current_identity, self.clock.now())
             start_index = invocation_event.reused_stage_count
             previous_output_hash: str | None = None
         else:
@@ -598,9 +617,7 @@ class PipelineRunner:
                 and stage is PipelineStage.EXTRACTOR
             )
             if semantic_stage:
-                requires_request = getattr(
-                    self.processor, "semantic_request_required", None
-                )
+                requires_request = getattr(self.processor, "semantic_request_required", None)
                 if callable(requires_request):
                     semantic_stage = bool(
                         requires_request(
@@ -632,36 +649,50 @@ class PipelineRunner:
                             status="semantic_outcome_unknown",
                         )
                         raise SemanticProviderFailure(
-                            disposition=(
-                                SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-                            ),
+                            disposition=(SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
                             code="semantic_provider_outcome_unknown",
                         )
                     if prior_status == "failed":
                         if prior_error == ErrorCode.STAGE_TRANSIENT_FAILURE.value:
-                            self._confirm_semantic(
+                            if not self.semantic_durability.already_durable(
                                 run_id=run_id,
+                                stage="extractor",
                                 attempt_no=prior_attempt_no,
                                 status="confirmed_retryable",
-                            )
+                            ):
+                                self._confirm_semantic(
+                                    run_id=run_id,
+                                    attempt_no=prior_attempt_no,
+                                    status="confirmed_retryable",
+                                )
                         elif prior_error == ErrorCode.PIPELINE_INTERRUPTED.value:
-                            self._confirm_semantic(
+                            if not self.semantic_durability.already_durable(
                                 run_id=run_id,
+                                stage="extractor",
                                 attempt_no=prior_attempt_no,
                                 status="semantic_outcome_unknown",
-                            )
+                            ):
+                                self._confirm_semantic(
+                                    run_id=run_id,
+                                    attempt_no=prior_attempt_no,
+                                    status="semantic_outcome_unknown",
+                                )
                             raise SemanticProviderFailure(
-                                disposition=(
-                                    SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-                                ),
+                                disposition=(SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
                                 code="semantic_provider_outcome_unknown",
                             )
                         elif prior_error == ErrorCode.STAGE_PERMANENT_FAILURE.value:
-                            self._confirm_semantic(
+                            if not self.semantic_durability.already_durable(
                                 run_id=run_id,
+                                stage="extractor",
                                 attempt_no=prior_attempt_no,
                                 status="decided",
-                            )
+                            ):
+                                self._confirm_semantic(
+                                    run_id=run_id,
+                                    attempt_no=prior_attempt_no,
+                                    status="decided",
+                                )
             self.state.abandon_stale_running(run_id, stage, self.clock.now())
             if self.state.has_permanent_failure(reusable_digest):
                 failure = SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
@@ -732,16 +763,10 @@ class PipelineRunner:
                         telemetry=None,
                     )
             except SemanticProviderFailure as failure:
-                if (
-                    failure.disposition
-                    is SemanticTransportDisposition.CONFIRMED_RETRYABLE
-                ):
+                if failure.disposition is SemanticTransportDisposition.CONFIRMED_RETRYABLE:
                     closed = SafeFailure(ErrorCode.STAGE_TRANSIENT_FAILURE)
                     status = "confirmed_retryable"
-                elif (
-                    failure.disposition
-                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-                ):
+                elif failure.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN:
                     closed = SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
                     status = "semantic_outcome_unknown"
                 else:
@@ -753,8 +778,7 @@ class PipelineRunner:
                     closed,
                     self.clock.now(),
                     retryable=(
-                        failure.disposition
-                        is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                        failure.disposition is SemanticTransportDisposition.CONFIRMED_RETRYABLE
                     ),
                 )
                 if semantic_stage:
@@ -763,15 +787,9 @@ class PipelineRunner:
                         attempt_no=attempt_no,
                         status=status,
                     )
-                if (
-                    failure.disposition
-                    is SemanticTransportDisposition.CONFIRMED_RETRYABLE
-                ):
+                if failure.disposition is SemanticTransportDisposition.CONFIRMED_RETRYABLE:
                     raise closed from None
-                if (
-                    failure.disposition
-                    is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
-                ):
+                if failure.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN:
                     raise
                 raise closed from None
             except SafeFailure as failure:
@@ -1039,9 +1057,7 @@ class PipelineRunner:
                 create=True,
                 filesystem_seam=filesystem_seam,
             )
-            lock_descriptor = PipelineRunner._acquire_publication_lock(
-                anchor, target_name
-            )
+            lock_descriptor = PipelineRunner._acquire_publication_lock(anchor, target_name)
             anchor.recover_stale_temporary(target_name)
             anchor.recover_stale_temporary(f".{target_name}.backup")
             previous = anchor.read_bytes(
@@ -1153,9 +1169,7 @@ def _build_extraction_summary(
         run_id=chain.run.run_id,
         subject_id=chain.run.subject_id,
         repository=(
-            subject.repository
-            if isinstance(subject, RepositorySubject)
-            else subject.subject_id
+            subject.repository if isinstance(subject, RepositorySubject) else subject.subject_id
         ),
         pinned_commit_sha=pinned,
         stage_outcomes=tuple(entries),
@@ -1242,15 +1256,12 @@ def build_phase_two_runtime(
         raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)
     openai_client = processor.openai
     if (
-        not _allow_lazy_dependencies
-        and type(openai_client) is not CurrentOpenAIExtractionClient
+        not _allow_lazy_dependencies and type(openai_client) is not CurrentOpenAIExtractionClient
     ) or (
         _allow_lazy_dependencies
         and (
-            getattr(processor.github, "effect_scope", None)
-            is not EffectScope.REMOTE_READ
-            or getattr(openai_client, "effect_scope", None)
-            is not EffectScope.REMOTE_READ
+            getattr(processor.github, "effect_scope", None) is not EffectScope.REMOTE_READ
+            or getattr(openai_client, "effect_scope", None) is not EffectScope.REMOTE_READ
         )
     ):
         raise SafeFailure(ErrorCode.FORBIDDEN_EFFECT_SCOPE)

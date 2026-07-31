@@ -1,12 +1,19 @@
-"""Two-process production-graph crash/recovery harness for Phase 6 acceptance."""
+"""Two-process production CLI crash/recovery harness for Phase 6 acceptance."""
 
 from __future__ import annotations
 
+import base64
+from contextlib import redirect_stderr, redirect_stdout
+import hashlib
+import importlib.util
+from io import StringIO
 import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
+from tempfile import TemporaryDirectory
 from typing import NoReturn
 
 import httpx
@@ -30,168 +37,658 @@ from skillscout.adapters.operations_state import (
 )
 from skillscout.adapters.publication_state import PublicationStateStore
 from skillscout.adapters.state import SQLiteStateStore
+import skillscout.adapters.state_branch as state_branch
 from skillscout.adapters.state_branch import (
-    StateOwnedFile,
-    StateSyncObservation,
+    StateBranchStore,
+    StateCommitObservation,
+    StateRefObservation,
+    StateTreeEntry,
     VerifiedStateBundle,
 )
-from skillscout.application.acceptance import LiveRepositoryAuthority
-from skillscout.application.ports import DurabilityReceipt
-import skillscout.bootstrap as bootstrap
+import skillscout.cli as cli
 from skillscout.domain.acceptance import (
-    AcceptanceScenarioResultV1,
-    AcceptanceWarningV1,
-    BenchmarkEntryV1,
-    BenchmarkLockAttestationV1,
+    AcceptanceBudgetReservationV1,
+    AcceptanceCampaignResumeLocatorV1,
     LiveAcceptanceAuthorityV1,
     LockedBenchmarkManifestV1,
-    NominationEntryV1,
-    NominationSetV1,
 )
-from skillscout.domain.canonical import sha256_digest
+from skillscout.domain.canonical import canonical_json_bytes
 from skillscout.domain.discovery import (
     DiscoveryBudgetPolicyV1,
     DiscoveryQuerySetV1,
-    DiscoveryStateRootV1,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TIMESTAMP = "2026-07-30T12:00:00.000000Z"
-RUN_ID = "acceptance-production-process-restart"
-TARGET_NAME = "example/repository-1"
-TARGET_ID = 840001
-TARGET_SHA = "1" * 40
-INITIAL_HEAD = "e" * 40
-INITIAL_ROOT = "sha256:" + ("f" * 64)
+RUN_ID = "nomination-80878c1a9a0f28e8fe8c5c63be8932ae"
+LOCK_HEAD = "500b3de1b14d8c0d1e0a4d3a35bf027eb19db2eb"
+LOCK_ROOT = "sha256:a9131fdfec479202f1f626834c805bece17f933e802ecb9877827a9525f94d85"
+STATE_REPOSITORY_ID = 1_310_897_029
+STATE_REPOSITORY = "alexzhu0/skillscout"
+REQUEST_HEADERS = {
+    "content-type": "application/json",
+    "x-github-request-id": "LOCAL-CAS-1",
+}
 
 
 def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(value, sort_keys=True, separators=(",", ":")),
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
 
 
-def _manifest() -> tuple[
-    NominationSetV1,
-    LockedBenchmarkManifestV1,
-]:
-    nominations = tuple(
-        sorted(
-            (
-                NominationEntryV1(
-                    schema_version="nomination-entry-v1",
-                    repository_full_name=f"example/repository-{index}",
-                    repository_id=840000 + index,
-                    exact_commit_sha=f"{index:x}" * 40,
-                    license_spdx="MIT",
-                    selection_source="search_derived",
-                    selection_evidence_digests=(
-                        "sha256:" + f"{index:064x}",
-                    ),
-                )
-                for index in range(1, 6)
-            ),
-            key=lambda item: item.entry_digest,
-        )
-    )
-    nomination = NominationSetV1(
-        schema_version="nomination-set-v1",
-        nomination_set_id=RUN_ID,
-        query_set_digest="sha256:" + ("a" * 64),
-        search_run_authority_digest="sha256:" + ("b" * 64),
-        search_derived_entries=nominations,
-        user_nominated_entries=(),
-        created_at=TIMESTAMP,
-    )
-    roles = (
-        "positive",
-        "positive_multi_workflow",
-        "negative",
-        "negative",
-        "borderline",
-    )
-    entries = tuple(
-        sorted(
-            (
-                BenchmarkEntryV1(
-                    schema_version="benchmark-entry-v1",
-                    repository_full_name=entry.repository_full_name,
-                    repository_id=entry.repository_id,
-                    exact_commit_sha=entry.exact_commit_sha,
-                    license_spdx=entry.license_spdx,
-                    selection_source=entry.selection_source,
-                    coverage_role=role,
-                    nomination_entry_digest=entry.entry_digest,
-                    selection_evidence_digests=entry.selection_evidence_digests,
-                )
-                for entry, role in zip(nominations, roles, strict=True)
-            ),
-            key=lambda item: item.entry_digest,
-        )
-    )
-    values = {
-        "schema_version": "locked-benchmark-manifest-v1",
-        "manifest_version": 1,
-        "nomination_set_digest": nomination.nomination_set_digest,
-        "entries": entries,
-        "prior_manifest_digest": None,
-    }
-    digest = sha256_digest(
-        {
-            **values,
-            "entries": tuple(
-                item.model_dump(mode="json", exclude_none=False)
-                for item in entries
-            ),
-        }
-    )
-    return nomination, LockedBenchmarkManifestV1(
-        **values,
-        manifest_digest=digest,
-        lock_attestation=BenchmarkLockAttestationV1(
-            schema_version="benchmark-lock-attestation-v1",
-            manifest_version=1,
-            nomination_set_digest=nomination.nomination_set_digest,
-            manifest_digest=digest,
-            reviewer_id="acceptance-reviewer",
-            locked_at=TIMESTAMP,
+def _read_json(path: Path, default: object) -> object:
+    return json.loads(path.read_bytes()) if path.exists() else default
+
+
+def _copy_repository(workspace: Path) -> tuple[Path, str]:
+    repository = workspace / "repository"
+    tracked = subprocess.run(
+        ("git", "ls-files", "-z"),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    for encoded in tracked:
+        if not encoded:
+            continue
+        relative = Path(encoded.decode("utf-8"))
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
+    subprocess.run(("git", "init", "-q"), cwd=repository, check=True)
+    subprocess.run(("git", "add", "."), cwd=repository, check=True)
+    subprocess.run(
+        (
+            "git",
+            "-c",
+            "user.name=SkillScout Test",
+            "-c",
+            "user.email=skillscout@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "test fixture",
         ),
+        cwd=repository,
+        check=True,
+    )
+    source_commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return repository, source_commit
+
+
+def _load_phase6_verifier() -> object:
+    path = ROOT / "tools/verify_phase6_acceptance.py"
+    spec = importlib.util.spec_from_file_location("_phase6_process_verifier", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _locked_bundle() -> VerifiedStateBundle:
+    verifier = _load_phase6_verifier()
+    observation = StateBranchStore(verifier._local_state_remote(ROOT, LOCK_HEAD)).restore()
+    if (
+        observation.status != "verified"
+        or observation.observed_head != LOCK_HEAD
+        or observation.bundle is None
+        or observation.bundle.root.root_digest != LOCK_ROOT
+    ):
+        raise AssertionError("locked benchmark state unavailable")
+    return observation.bundle
+
+
+class DurableStateRemote:
+    """Filesystem-backed fake remote behind the production state-client seam."""
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self.path = workspace / "remote-cas.json"
+        self.data = _read_json(
+            self.path,
+            {"head": None, "blobs": {}, "trees": {}, "commits": {}},
+        )
+
+    def close(self) -> None:
+        pass
+
+    def _save(self) -> None:
+        _write_json(self.path, self.data)
+
+    def seed(self, commit_sha: str, bundle: VerifiedStateBundle) -> None:
+        blobs: dict[str, str] = self.data["blobs"]
+        entries: list[dict[str, object]] = []
+        for item in bundle.files:
+            sha = state_branch._git_blob_id(item.content)
+            blobs[sha] = base64.b64encode(item.content).decode("ascii")
+            entries.append(
+                {
+                    "path": item.path,
+                    "sha": sha,
+                    "mode": "100644",
+                    "size": len(item.content),
+                }
+            )
+        entries.sort(key=lambda item: str(item["path"]))
+        tree_sha = hashlib.sha1(
+            canonical_json_bytes(tuple(entries)), usedforsecurity=False
+        ).hexdigest()
+        self.data["trees"][tree_sha] = entries
+        self.data["commits"][commit_sha] = {
+            "tree": tree_sha,
+            "parents": (
+                []
+                if bundle.root.state_parent_commit_sha is None
+                else [bundle.root.state_parent_commit_sha]
+            ),
+            "message": state_branch._state_commit_message(bundle.root.root_digest),
+        }
+        self.data["head"] = commit_sha
+        self._save()
+
+    def get_state_ref(self, *, read_budget: object | None = None) -> StateRefObservation:
+        del read_budget
+        head = self.data["head"]
+        if type(head) is not str:
+            raise state_branch.StateRefNotFound
+        return StateRefObservation(state_branch.STATE_REF, head)
+
+    def get_commit(
+        self,
+        sha: str,
+        *,
+        read_budget: object | None = None,
+    ) -> StateCommitObservation:
+        del read_budget
+        value = self.data["commits"][sha]
+        return StateCommitObservation(
+            sha=sha,
+            tree_sha=value["tree"],
+            parents=tuple(value["parents"]),
+            message=value["message"],
+        )
+
+    def get_tree(
+        self,
+        sha: str,
+        *,
+        read_budget: object | None = None,
+    ) -> tuple[StateTreeEntry, ...]:
+        del read_budget
+        return tuple(
+            StateTreeEntry(
+                path=item["path"],
+                sha=item["sha"],
+                mode=item["mode"],
+                size=item["size"],
+            )
+            for item in self.data["trees"][sha]
+        )
+
+    def get_blob(
+        self,
+        sha: str,
+        *,
+        read_budget: object | None = None,
+    ) -> bytes:
+        del read_budget
+        return base64.b64decode(self.data["blobs"][sha], validate=True)
+
+    def create_blob(self, content: bytes) -> str:
+        sha = state_branch._git_blob_id(content)
+        self.data["blobs"][sha] = base64.b64encode(content).decode("ascii")
+        self._save()
+        return sha
+
+    def create_tree(self, entries: object) -> str:
+        normalized = tuple(
+            sorted(
+                (
+                    {
+                        "path": str(item["path"]),
+                        "sha": str(item["sha"]),
+                        "mode": str(item["mode"]),
+                        "size": len(self.get_blob(str(item["sha"]))),
+                    }
+                    for item in entries
+                ),
+                key=lambda item: item["path"],
+            )
+        )
+        sha = hashlib.sha1(canonical_json_bytes(normalized), usedforsecurity=False).hexdigest()
+        self.data["trees"][sha] = list(normalized)
+        self._save()
+        return sha
+
+    def create_commit(
+        self,
+        message: str,
+        tree: str,
+        parents: object,
+    ) -> str:
+        parent_values = tuple(parents)
+        preimage = canonical_json_bytes(
+            {"message": message, "tree": tree, "parents": parent_values}
+        )
+        sha = hashlib.sha1(preimage, usedforsecurity=False).hexdigest()
+        self.data["commits"][sha] = {
+            "tree": tree,
+            "parents": list(parent_values),
+            "message": message,
+        }
+        self._save()
+        return sha
+
+    def create_state_ref(self, sha: str) -> StateRefObservation:
+        if self.data["head"] is not None:
+            raise state_branch.StateBranchConflict
+        self.data["head"] = sha
+        self._save()
+        return StateRefObservation(state_branch.STATE_REF, sha)
+
+    def update_state_ref(self, sha: str, *, force: bool) -> StateRefObservation:
+        if force is not False:
+            raise state_branch.StateBranchConflict
+        self.data["head"] = sha
+        self._save()
+        self._maybe_crash(sha)
+        return StateRefObservation(state_branch.STATE_REF, sha)
+
+    def _maybe_crash(self, sha: str) -> None:
+        fault_path = self.workspace / "fault.json"
+        if not fault_path.exists() or (self.workspace / "crash.json").exists():
+            return
+        fault = json.loads(fault_path.read_bytes())
+        calls = _read_json(self.workspace / "provider-calls.json", [])
+        target_calls = [item for item in calls if item["stage"] == fault["stage"]]
+        if len(target_calls) != 3:
+            return
+        bundle = StateBranchStore(self).restore_commit(sha)
+        with TemporaryDirectory(prefix="skillscout-process-inspect-") as temporary:
+            temporary_root = Path(temporary).resolve()
+            restore_acceptance_state_bundle(
+                bundle,
+                pipeline_path=temporary_root / "pipeline.sqlite3",
+                operations_path=temporary_root / "operations.sqlite3",
+            )
+            with OperationsStateStore(temporary_root / "operations.sqlite3") as operations:
+                snapshot = operations.snapshot_run(f"{RUN_ID}-semantic")
+                acceptance = operations.acceptance_snapshot(RUN_ID)
+        expected = "confirmed_retryable" if fault["status"] == "exhaustion" else fault["status"]
+        matching = tuple(
+            item
+            for item in snapshot.semantic_attempts
+            if item.stage == fault["stage"] and item.attempt_no == 3 and item.status == expected
+        )
+        if len(matching) != 1:
+            return
+        locators = tuple(
+            record.fact
+            for record in acceptance.facts
+            if record.kind == "acceptance_campaign_resume_locator"
+        )
+        latest_locator = max(locators, key=lambda item: item.transition_index)
+        if fault["status"] == "exhaustion":
+            target_repository_id = _read_json(
+                self.workspace / "setup.json",
+                {},
+            ).get("target_repository_id")
+            exhausted = tuple(
+                item
+                for item in snapshot.candidate_terminals
+                if item.repository_id == target_repository_id
+                and item.outcome == "confirmed_retryable"
+            )
+            if len(exhausted) != 1 or latest_locator.transition_phase != "terminal":
+                return
+        elif latest_locator.transition_phase != "result_durable":
+            return
+        _write_json(
+            self.workspace / "crash.json",
+            {
+                "pid": os.getpid(),
+                "stage": fault["stage"],
+                "status": fault["status"],
+                "transition_phase": latest_locator.transition_phase,
+            },
+        )
+        os._exit(86)
+
+
+def _patch_state_clients(workspace: Path) -> None:
+    def client(**_kwargs: object) -> DurableStateRemote:
+        return DurableStateRemote(workspace)
+
+    state_branch.StateBranchClient = client  # type: ignore[assignment]
+    state_branch.StateBranchReadClient = client  # type: ignore[assignment]
+
+
+def _response(base: RecordedResponse, value: object) -> RecordedResponse:
+    return RecordedResponse(
+        status=base.status,
+        headers=base.headers,
+        body=json.dumps(value).encode(),
     )
 
 
-def _query_set(workspace: Path) -> tuple[Path, DiscoveryQuerySetV1]:
-    path = workspace / "config" / "discovery-queries-v1.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "config/discovery-queries-v1.json", path)
-    return path, DiscoveryQuerySetV1.model_validate_json(
-        path.read_bytes(),
+def _patch_github(
+    workspace: Path,
+    manifest: LockedBenchmarkManifestV1,
+) -> None:
+    routes: dict[tuple[str, str], RecordedResponse] = {}
+    for entry in manifest.entries:
+        owner, name = entry.repository_full_name.split("/")
+        metadata = json.loads(recorded_fixture("repo_mit").body)
+        metadata.update(
+            {
+                "id": entry.repository_id,
+                "name": name,
+                "full_name": entry.repository_full_name,
+            }
+        )
+        metadata["owner"]["login"] = owner
+        metadata["license"]["spdx_id"] = entry.license_spdx
+        commit = json.loads(recorded_fixture("commits_pin").body)
+        commit["sha"] = entry.exact_commit_sha
+        license_payload = json.loads(recorded_fixture("license_mit").body)
+        license_payload["license"]["spdx_id"] = entry.license_spdx
+        license_payload["url"] = (
+            f"https://api.github.com/repos/{owner}/{name}/contents/LICENSE"
+            f"?ref={entry.exact_commit_sha}"
+        )
+        readme_sha = "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"
+        guide_sha = "bb02bb02bb02bb02bb02bb02bb02bb02bb02bb02"
+        routes.update(
+            {
+                ("GET", f"/repos/{owner}/{name}"): _response(
+                    recorded_fixture("repo_mit"), metadata
+                ),
+                (
+                    "GET",
+                    f"/repos/{owner}/{name}/commits/{entry.exact_commit_sha}",
+                ): _response(recorded_fixture("commits_pin"), commit),
+                (
+                    "GET",
+                    f"/repos/{owner}/{name}/license?ref={entry.exact_commit_sha}",
+                ): _response(recorded_fixture("license_mit"), license_payload),
+                (
+                    "GET",
+                    f"/repos/{owner}/{name}/git/trees/{entry.exact_commit_sha}?recursive=1",
+                ): make_tree_fixture(
+                    [
+                        {
+                            "path": "README.md",
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": readme_sha,
+                            "size": 228,
+                        },
+                        {
+                            "path": "docs/guide.md",
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": guide_sha,
+                            "size": 800,
+                        },
+                    ]
+                ),
+                (
+                    "GET",
+                    f"/repos/{owner}/{name}/git/blobs/{readme_sha}",
+                ): recorded_fixture("blob_readme"),
+                (
+                    "GET",
+                    f"/repos/{owner}/{name}/git/blobs/{guide_sha}",
+                ): recorded_fixture("blob_doc"),
+            }
+        )
+    recorded = RecordedTransport(routes)
+    original = github_adapter.GitHubReadClient
+
+    class GitHubProxy:
+        def __init__(self, client: object) -> None:
+            self._client = client
+
+        def get_repo_metadata(self, owner: str, repo: str) -> object:
+            metadata = self._client.get_repo_metadata(owner, repo)
+            _write_json(
+                workspace / "current-repository.json",
+                {"repository_id": metadata.id},
+            )
+            return metadata
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._client, name)
+
+    def github(**kwargs: object) -> object:
+        return GitHubProxy(
+            original(
+                **kwargs,
+                transport=recorded.transport(),
+                sleeper=lambda _delay: None,
+            )
+        )
+
+    github_adapter.GitHubReadClient = github  # type: ignore[assignment]
+
+
+def _fixture_text(path: Path, key: str | None = None) -> str:
+    value = json.loads(path.read_bytes())
+    if key is not None:
+        value = value[key]
+    return value["body"]["output"][0]["content"][0]["text"]
+
+
+def _deepseek_response(
+    content: str,
+    *,
+    stage: str,
+    status: int,
+) -> RecordedResponse:
+    if status != 200:
+        return recorded_openai_fixture("openai_429" if status == 429 else "openai_500")
+    model = "deepseek-v4-pro" if stage == "reviewer" else "deepseek-v4-flash"
+    return RecordedResponse(
+        status=200,
+        headers={"content-type": "application/json"},
+        body=json.dumps(
+            {
+                "id": f"chatcmpl-{stage}-local",
+                "object": "chat.completion",
+                "created": 1,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 20,
+                    "total_tokens": 60,
+                },
+            }
+        ).encode(),
+    )
+
+
+def _patch_semantic(
+    workspace: Path,
+    *,
+    stage: str,
+    status: str,
+    process: int,
+) -> None:
+    parsed = json.loads(_fixture_text(ROOT / "tests/fixtures/openai/parsed_2_workflows.json"))
+    parsed["workflows"] = parsed["workflows"][:1]
+    one_workflow = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+    zero_workflow = _fixture_text(ROOT / "tests/fixtures/openai/parsed_zero_workflows.json")
+    generation = _fixture_text(
+        ROOT / "tests/fixtures/openai/generator/cases.json",
+        "parsed_success",
+    )
+    review = _fixture_text(
+        ROOT / "tests/fixtures/openai/reviewer/cases.json",
+        "parsed_yes",
+    )
+    target_repository_id = _read_json(workspace / "setup.json", {})["target_repository_id"]
+    originals = {
+        "extractor": extract_adapter.OpenAIExtractionClient,
+        "generator": generate_adapter.OpenAIGenerationClient,
+        "reviewer": review_adapter.OpenAIReviewClient,
+    }
+
+    def build(kind: str, content: str) -> object:
+        def factory(**kwargs: object) -> object:
+            current_repository_id = _read_json(
+                workspace / "current-repository.json",
+                {},
+            ).get("repository_id")
+            is_target = current_repository_id == target_repository_id
+            if process == 2:
+                after = _read_json(workspace / "provider-clients-after-resume.json", [])
+                after.append({"stage": kind})
+                _write_json(workspace / "provider-clients-after-resume.json", after)
+            response_content = (
+                zero_workflow
+                if kind == "extractor" and not is_target
+                else one_workflow
+                if kind == "extractor"
+                else content
+            )
+
+            def respond(_request: httpx.Request) -> httpx.Response:
+                response_status = 200
+                if process == 2:
+                    after = _read_json(
+                        workspace / "provider-requests-after-resume.json",
+                        [],
+                    )
+                    after.append({"stage": kind})
+                    _write_json(
+                        workspace / "provider-requests-after-resume.json",
+                        after,
+                    )
+                if is_target:
+                    calls = _read_json(workspace / "provider-calls.json", [])
+                    target_attempt = sum(item["stage"] == kind for item in calls) + 1
+                    calls.append({"attempt_no": target_attempt, "stage": kind})
+                    _write_json(workspace / "provider-calls.json", calls)
+                    if kind == stage:
+                        if target_attempt < 3:
+                            response_status = 429
+                        elif status in {"confirmed_retryable", "exhaustion"}:
+                            response_status = 429
+                        elif status == "semantic_outcome_unknown":
+                            response_status = 500
+                response = _deepseek_response(
+                    response_content,
+                    stage=kind,
+                    status=response_status,
+                )
+                return httpx.Response(
+                    status_code=response.status,
+                    headers=response.headers,
+                    content=response.body,
+                )
+
+            return originals[kind](
+                **kwargs,
+                api_key="local-placeholder",
+                http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+            )
+
+        return factory
+
+    extract_adapter.OpenAIExtractionClient = build(  # type: ignore[assignment]
+        "extractor", one_workflow
+    )
+    generate_adapter.OpenAIGenerationClient = build(  # type: ignore[assignment]
+        "generator", generation
+    )
+    review_adapter.OpenAIReviewClient = build(  # type: ignore[assignment]
+        "reviewer", review
+    )
+
+
+def _materialize_checkout(
+    path: Path,
+    *,
+    bundle: VerifiedStateBundle,
+    commit_sha: str,
+) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    for item in bundle.files:
+        destination = path / item.path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(item.content)
+    git_directory = path / ".git"
+    git_directory.mkdir(parents=True)
+    (git_directory / "HEAD").write_text(f"{commit_sha}\n", encoding="ascii")
+
+
+def _manifest(repository: Path) -> LockedBenchmarkManifestV1:
+    return LockedBenchmarkManifestV1.model_validate_json(
+        (
+            repository / ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+        ).read_bytes(),
         strict=True,
     )
 
 
-def _authority(
-    manifest: LockedBenchmarkManifestV1,
-    query_set: DiscoveryQuerySetV1,
-) -> LiveAcceptanceAuthorityV1:
-    return LiveAcceptanceAuthorityV1(
+def _setup(workspace: Path) -> dict[str, object]:
+    repository, source_commit = _copy_repository(workspace)
+    os.chdir(repository)
+    manifest = _manifest(repository)
+    locked = _locked_bundle()
+    remote = DurableStateRemote(workspace)
+    remote.seed(LOCK_HEAD, locked)
+    state_root = repository / "state/databases"
+    restore_acceptance_state_bundle(
+        locked,
+        pipeline_path=state_root / "pipeline.sqlite3",
+        operations_path=state_root / "operations.sqlite3",
+    )
+    publication = PublicationStateStore(state_root / "publication.sqlite3")
+    publication.close()
+    workflow_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            (repository / ".github/workflows/phase6-acceptance.yml").read_bytes()
+        ).hexdigest()
+    )
+    query = DiscoveryQuerySetV1.model_validate_json(
+        (repository / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    authority = LiveAcceptanceAuthorityV1(
         schema_version="live-acceptance-authority-v1",
         authority_version=1,
-        source_commit_sha="c" * 40,
-        acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
-        ),
+        source_commit_sha=source_commit,
+        acceptance_workflow_sha256=workflow_digest,
+        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
         manifest_digest=manifest.manifest_digest,
         nomination_set_digest=manifest.nomination_set_digest,
         lock_attestation_digest=manifest.lock_attestation.attestation_digest,
-        state_commit_sha=INITIAL_HEAD,
-        state_root_digest=INITIAL_ROOT,
-        state_repository_id=123,
-        state_repository_full_name="example/state",
-        query_set_digest=query_set.query_set_digest,
+        state_commit_sha=LOCK_HEAD,
+        state_root_digest=LOCK_ROOT,
+        state_repository_id=STATE_REPOSITORY_ID,
+        state_repository_full_name=STATE_REPOSITORY,
+        query_set_digest=query.query_set_digest,
         budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
         semantic_provider="deepseek",
         provider_base_url="https://api.deepseek.com",
@@ -229,810 +726,467 @@ def _authority(
         benchmark_scenario_write_count=5,
         replay_semantic_effect_count=0,
         replay_publication_effect_count=0,
-        reviewer_id="acceptance-reviewer",
+        reviewer_id="alexzhu0",
         approved_at=TIMESTAMP,
     )
-
-
-def _paths(workspace: Path) -> tuple[Path, Path, Path]:
-    state_dir = workspace / "state" / "databases"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    return (
-        state_dir / "pipeline.sqlite3",
-        state_dir / "operations.sqlite3",
-        state_dir / "publication.sqlite3",
-    )
-
-
-def _persist_bundle(workspace: Path, bundle: VerifiedStateBundle) -> None:
-    bundle_dir = workspace / "remote-bundle"
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for item in bundle.files:
-        destination = bundle_dir / item.path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(item.content)
-        paths.append(item.path)
-    _write_json(
-        bundle_dir / "bundle.json",
-        {
-            "root": bundle.root.model_dump(mode="json", exclude_none=False),
-            "paths": sorted(paths),
-        },
-    )
-
-
-def _load_bundle(workspace: Path) -> VerifiedStateBundle:
-    bundle_dir = workspace / "remote-bundle"
-    value = json.loads((bundle_dir / "bundle.json").read_bytes())
-    root = DiscoveryStateRootV1.model_validate(value["root"], strict=True)
-    return VerifiedStateBundle(
-        root=root,
-        files=tuple(
-            StateOwnedFile(path=path, content=(bundle_dir / path).read_bytes())
-            for path in value["paths"]
-        ),
-    )
-
-
-class LocalPersistentCAS:
-    """Fake only the remote CAS while preserving real exports and bundles."""
-
-    def __init__(
-        self,
-        *,
-        workspace: Path,
-        query_set_digest: str,
-        budget_policy_digest: str,
-        pipeline_path: Path,
-        publication_path: Path,
-        crash_status: str | None,
-    ) -> None:
-        self.workspace = workspace
-        self.query_set_digest = query_set_digest
-        self.budget_policy_digest = budget_policy_digest
-        self.pipeline_path = pipeline_path
-        self.publication_path = publication_path
-        self.crash_status = crash_status
-        history_path = workspace / "lineage.json"
-        if history_path.exists():
-            self.history = json.loads(history_path.read_bytes())
-        else:
-            self.history = [
-                {"commit_sha": INITIAL_HEAD, "root_digest": INITIAL_ROOT}
-            ]
-        self._resume_lineage = (
-            tuple(item["commit_sha"] for item in self.history),
-            tuple(item["root_digest"] for item in self.history),
+    with OperationsStateStore(state_root / "operations.sqlite3") as operations:
+        operations.upgrade_acceptance_schema()
+        operations.record_acceptance_fact(RUN_ID, "acceptance_live_authority", authority)
+        first_entry = manifest.entries[0]
+        operations.record_acceptance_fact(
+            RUN_ID,
+            "acceptance_budget_reservation",
+            AcceptanceBudgetReservationV1(
+                schema_version="acceptance-budget-reservation-v1",
+                acceptance_run_id=RUN_ID,
+                benchmark_manifest_digest=manifest.manifest_digest,
+                nomination_entry_digest=first_entry.nomination_entry_digest,
+                benchmark_entry_digest=first_entry.entry_digest,
+                repository_id=first_entry.repository_id,
+                repository_full_name=first_entry.repository_full_name,
+                ordinal=1,
+                max_files=25,
+                max_source_files=5,
+                max_file_bytes=131_072,
+                max_total_bytes=524_288,
+                max_estimated_tokens=40_000,
+                semantic_candidate_slots=1,
+                campaign_semantic_request_limit=20,
+                reserved_at=TIMESTAMP,
+            ),
         )
-
-    def configure_acceptance_resume(self, **arguments: object) -> None:
-        commits = arguments["lineage_commit_shas"]
-        roots = arguments["lineage_root_digests"]
-        if type(commits) is not tuple or type(roots) is not tuple:
-            raise ValueError("invalid local CAS resume lineage")
-        self._resume_lineage = (commits, roots)
-
-    def acceptance_resume_lineage(
-        self,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return self._resume_lineage
-
-    def acceptance_resume_locator(self) -> tuple[str | None, int]:
-        return None, 0
-
-    def prepare_acceptance_transition(self, **arguments: object) -> None:
-        del arguments
-
-    def _save(
-        self,
-        *,
-        bundle: VerifiedStateBundle,
-        previous_head: str,
-    ) -> StateSyncObservation:
-        ordinal = len(self.history)
-        commit_sha = f"{ordinal:040x}"
-        _persist_bundle(self.workspace, bundle)
-        observation = StateSyncObservation(
-            status="verified",
-            previous_head=previous_head,
-            commit_sha=commit_sha,
-            tree_sha=f"{ordinal + 1000:040x}",
-            root_digest=bundle.root.root_digest,
+        operations.record_acceptance_fact(
+            RUN_ID,
+            "acceptance_campaign_resume_locator",
+            AcceptanceCampaignResumeLocatorV1(
+                schema_version="acceptance-campaign-resume-locator-v1",
+                acceptance_run_id=RUN_ID,
+                live_acceptance_authority_digest=authority.authority_digest,
+                source_commit_sha=authority.source_commit_sha,
+                manifest_digest=authority.manifest_digest,
+                state_repository_id=authority.state_repository_id,
+                state_repository_full_name=authority.state_repository_full_name,
+                original_state_commit_sha=LOCK_HEAD,
+                original_state_root_digest=LOCK_ROOT,
+                parent_state_commit_sha=LOCK_HEAD,
+                parent_state_root_digest=LOCK_ROOT,
+                transition_index=1,
+                previous_locator_digest=None,
+                transition_phase="budget_reserved",
+                semantic_stage=None,
+                attempt_no=None,
+                semantic_status=None,
+                workflow_authority_digest=None,
+                semantic_provider=authority.semantic_provider,
+                stage_models=authority.stage_models,
+                prompt_versions=authority.prompt_versions,
+                schema_versions=authority.schema_versions,
+                policy_versions=authority.policy_versions,
+                recorded_at=TIMESTAMP,
+            ),
         )
-        self.history.append(
-            {
-                "commit_sha": commit_sha,
-                "root_digest": bundle.root.root_digest,
-            }
-        )
-        _write_json(self.workspace / "lineage.json", self.history)
-        return observation
-
-    def sync_discovery(
-        self,
-        *,
-        operations_store: OperationsStateStore,
-        observed_head: str,
-        prior_root_digest: str,
-        created_at: str,
-        pipeline_store: SQLiteStateStore | None = None,
-        transition_phase: str = "scenario",
-        semantic_stage: str | None = None,
-        attempt_no: int | None = None,
-        semantic_status: str | None = None,
-        workflow_authority_digest: str | None = None,
-    ) -> StateSyncObservation:
-        del (
-            transition_phase,
-            semantic_stage,
-            attempt_no,
-            semantic_status,
-            workflow_authority_digest,
-        )
-        owns_pipeline = pipeline_store is None
-        pipeline = pipeline_store or SQLiteStateStore(self.pipeline_path)
-        publication = PublicationStateStore(self.publication_path)
+        pipeline = SQLiteStateStore(state_root / "pipeline.sqlite3")
+        publication = PublicationStateStore(state_root / "publication.sqlite3")
         try:
-            bundle = _bundle_from_exports(
+            bundle, _ = _bundle_from_exports(
                 pipeline=pipeline.export_owned_state(),
-                operations=operations_store.export_owned_state(),
+                operations=operations.export_owned_state(),
                 publication=publication.export_owned_state(),
-                prior_root_digest=prior_root_digest,
-                state_parent_commit_sha=observed_head,
-                query_set_digest=self.query_set_digest,
-                budget_policy_digest=self.budget_policy_digest,
-                created_at=created_at,
-            )[0]
-            observation = self._save(
-                bundle=bundle,
-                previous_head=observed_head,
+                prior_root_digest=LOCK_ROOT,
+                state_parent_commit_sha=LOCK_HEAD,
+                query_set_digest=query.query_set_digest,
+                budget_policy_digest=authority.budget_policy_digest,
+                created_at=TIMESTAMP,
             )
-            self._resume_lineage = (
-                (*self._resume_lineage[0], observation.commit_sha),
-                (*self._resume_lineage[1], observation.root_digest),
-            )
-            return observation
         finally:
+            pipeline.close()
             publication.close()
-            if owns_pipeline:
-                pipeline.close()
-
-    def confirm(
-        self,
-        *,
-        transition: object,
-        pipeline_store: SQLiteStateStore,
-        operations_store: OperationsStateStore,
-        publication_store: PublicationStateStore,
-    ) -> DurabilityReceipt:
-        bundle, _projection = _bundle_from_exports(
-            pipeline=pipeline_store.export_owned_state(),
-            operations=operations_store.export_owned_state(),
-            publication=publication_store.export_owned_state(),
-            prior_root_digest=transition.expected_prior_root_digest,
-            state_parent_commit_sha=transition.expected_prior_state_head,
-            query_set_digest=self.query_set_digest,
-            budget_policy_digest=self.budget_policy_digest,
-            created_at=transition.recorded_at,
-        )
-        observation = self._save(
-            bundle=bundle,
-            previous_head=transition.expected_prior_state_head,
-        )
-        pipeline, operations, publication, _ = _parse_bundle_exports(bundle)
-        receipt = DurabilityReceipt.from_remote_verification(
-            transition=transition,
-            verified_state_head=observation.commit_sha,
-            state_root_digest=bundle.root.root_digest,
-            pipeline_database_digest=pipeline.database_digest,
-            operations_database_digest=operations.database_digest,
-            publication_database_digest=publication.database_digest,
-            pipeline_projection_digest=pipeline.projection_digest,
-            operations_projection_digest=operations.projection_digest,
-            publication_projection_digest=publication.projection_digest,
-        )
-        if (
-            self.crash_status is not None
-            and transition.stage == "extractor"
-            and transition.attempt_no == 3
-            and transition.transition
-            == {
-                "decided": "result_decided",
-                "confirmed_retryable": "result_confirmed_retryable",
-                "semantic_outcome_unknown": "result_outcome_unknown",
-            }[self.crash_status]
-        ):
-            _write_json(
-                self.workspace / "crash.json",
-                {
-                    "pid": os.getpid(),
-                    "third_status": self.crash_status,
-                },
-            )
-            os._exit(86)
-        self._resume_lineage = (
-            (*self._resume_lineage[0], observation.commit_sha),
-            (*self._resume_lineage[1], observation.root_digest),
-        )
-        return receipt
+    synced = StateBranchStore(remote).sync(
+        bundle,
+        LOCK_HEAD,
+        expected_prior_root_digest=LOCK_ROOT,
+    )
+    authority_bundle = StateBranchStore(remote).restore_commit(synced.commit_sha)
+    _materialize_checkout(
+        workspace / "authority-checkout",
+        bundle=authority_bundle,
+        commit_sha=synced.commit_sha,
+    )
+    setup = {
+        "repository": str(repository),
+        "source_commit_sha": source_commit,
+        "authority_digest": authority.authority_digest,
+        "authority_head": synced.commit_sha,
+        "authority_root": synced.root_digest,
+        "target_repository_id": manifest.entries[-1].repository_id,
+    }
+    _write_json(workspace / "setup.json", setup)
+    return setup
 
 
-def _patch_github(entry: BenchmarkEntryV1) -> None:
-    owner, name = entry.repository_full_name.split("/")
-    metadata = json.loads(recorded_fixture("repo_mit").body)
-    metadata.update(
+def _environment(setup: dict[str, object]) -> None:
+    os.environ.update(
         {
-            "id": entry.repository_id,
-            "name": name,
-            "full_name": entry.repository_full_name,
-        }
-    )
-    commit = json.loads(recorded_fixture("commits_pin").body)
-    commit["sha"] = entry.exact_commit_sha
-    license_payload = json.loads(recorded_fixture("license_mit").body)
-    license_payload["url"] = (
-        f"https://api.github.com/repos/{owner}/{name}/contents/LICENSE"
-        f"?ref={entry.exact_commit_sha}"
-    )
-
-    def response(base: RecordedResponse, value: object) -> RecordedResponse:
-        return RecordedResponse(
-            status=base.status,
-            headers=base.headers,
-            body=json.dumps(value).encode(),
-        )
-
-    readme_sha = "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"
-    guide_sha = "bb02bb02bb02bb02bb02bb02bb02bb02bb02bb02"
-    recording = RecordedTransport(
-        {
-            ("GET", f"/repos/{owner}/{name}"): response(
-                recorded_fixture("repo_mit"), metadata
-            ),
-            (
-                "GET",
-                f"/repos/{owner}/{name}/commits/{entry.exact_commit_sha}",
-            ): response(recorded_fixture("commits_pin"), commit),
-            (
-                "GET",
-                f"/repos/{owner}/{name}/license?ref={entry.exact_commit_sha}",
-            ): response(recorded_fixture("license_mit"), license_payload),
-            (
-                "GET",
-                f"/repos/{owner}/{name}/git/trees/"
-                f"{entry.exact_commit_sha}?recursive=1",
-            ): make_tree_fixture(
-                [
-                    {
-                        "path": "LICENSE",
-                        "mode": "100644",
-                        "type": "blob",
-                        "sha": "bb12bb12bb12bb12bb12bb12bb12bb12bb12bb12",
-                        "size": 1100,
-                    },
-                    {
-                        "path": "README.md",
-                        "mode": "100644",
-                        "type": "blob",
-                        "sha": readme_sha,
-                        "size": 228,
-                    },
-                    {
-                        "path": "docs/guide.md",
-                        "mode": "100644",
-                        "type": "blob",
-                        "sha": guide_sha,
-                        "size": 800,
-                    },
-                ]
-            ),
-            (
-                "GET",
-                f"/repos/{owner}/{name}/git/blobs/{readme_sha}",
-            ): recorded_fixture("blob_readme"),
-            (
-                "GET",
-                f"/repos/{owner}/{name}/git/blobs/{guide_sha}",
-            ): recorded_fixture("blob_doc"),
-        }
-    )
-    original = github_adapter.GitHubReadClient
-    github_adapter.GitHubReadClient = lambda **kwargs: original(  # type: ignore[misc]
-        **kwargs,
-        transport=recording.transport(),
-        sleeper=lambda _delay: None,
-    )
-
-
-def _deepseek_response(
-    content: str,
-    *,
-    status: int,
-) -> RecordedResponse:
-    if status != 200:
-        fixture = "openai_429" if status == 429 else "openai_500"
-        return recorded_openai_fixture(fixture)
-    return RecordedResponse(
-        status=200,
-        headers={"content-type": "application/json"},
-        body=json.dumps(
-            {
-                "id": "chatcmpl-extractor-3",
-                "object": "chat.completion",
-                "created": 1,
-                "model": "deepseek-v4-flash",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": content},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 40,
-                    "completion_tokens": 20,
-                    "total_tokens": 60,
-                },
-            }
-        ).encode(),
-    )
-
-
-def _patch_semantic_for_crash(workspace: Path, third_status: str) -> None:
-    original = extract_adapter.OpenAIExtractionClient
-    successful = json.loads(
-        recorded_openai_fixture("parsed_zero_workflows").body
-    )["output"][0]["content"][0]["text"]
-    constructions = 0
-
-    def extractor(**kwargs: object) -> object:
-        nonlocal constructions
-        constructions += 1
-        calls_path = workspace / "provider-calls.json"
-        calls = (
-            json.loads(calls_path.read_bytes())
-            if calls_path.exists()
-            else []
-        )
-        calls.append({"attempt_no": constructions, "stage": "extractor"})
-        _write_json(calls_path, calls)
-        status = (
-            429
-            if constructions < 3 or third_status == "confirmed_retryable"
-            else 500
-            if third_status == "semantic_outcome_unknown"
-            else 200
-        )
-        recording = RecordedTransport(
-            {
-                ("POST", "/chat/completions"): _deepseek_response(
-                    successful,
-                    status=status,
-                )
-            }
-        )
-        return original(
-            **kwargs,
-            api_key="local-placeholder",
-            http_client=httpx.Client(transport=recording.transport()),
-        )
-
-    extract_adapter.OpenAIExtractionClient = extractor  # type: ignore[assignment]
-
-    def forbidden(**_kwargs: object) -> NoReturn:
-        raise AssertionError("Phase 3 provider constructed in extractor recovery")
-
-    generate_adapter.OpenAIGenerationClient = forbidden  # type: ignore[assignment]
-    review_adapter.OpenAIReviewClient = forbidden  # type: ignore[assignment]
-
-
-def _patch_semantic_for_resume(workspace: Path) -> None:
-    def forbidden(**_kwargs: object) -> NoReturn:
-        path = workspace / "provider-calls-after-resume"
-        path.write_text("1", encoding="ascii")
-        raise AssertionError("provider authority reopened after durable attempt three")
-
-    extract_adapter.OpenAIExtractionClient = forbidden  # type: ignore[assignment]
-    generate_adapter.OpenAIGenerationClient = forbidden  # type: ignore[assignment]
-    review_adapter.OpenAIReviewClient = forbidden  # type: ignore[assignment]
-
-
-def _configs(
-    *,
-    workspace: Path,
-    manifest: LockedBenchmarkManifestV1,
-    authority: LiveAcceptanceAuthorityV1,
-    query_path: Path,
-    query_set: DiscoveryQuerySetV1,
-    state_head: str,
-    state_root: str,
-    operations_path: Path,
-    pipeline_path: Path,
-    publication_path: Path,
-    resume: bool,
-) -> tuple[bootstrap.AcceptanceRuntimeConfig, bootstrap.DiscoveryRuntimeConfig]:
-    lineage = json.loads((workspace / "lineage.json").read_bytes()) if resume else []
-    acceptance = bootstrap.AcceptanceRuntimeConfig(
-        manifest_path=(
-            ROOT
-            / ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
-        ),
-        manifest=manifest,
-        state_commit_sha=state_head,
-        state_root_digest=state_root,
-        semantic_provider="deepseek",
-        extractor_model_id="deepseek-v4-flash",
-        generator_model_id="deepseek-v4-flash",
-        reviewer_model_id="deepseek-v4-pro",
-        live_acceptance_authority_digest=authority.authority_digest,
-        acceptance_run_id=RUN_ID if resume else None,
-        resume_locator_digest=None,
-        resume_transition_index=0,
-        resume_lineage_commit_shas=tuple(
-            item["commit_sha"] for item in lineage
-        ),
-        resume_lineage_root_digests=tuple(
-            item["root_digest"] for item in lineage
-        ),
-    )
-    discovery = bootstrap.DiscoveryRuntimeConfig(
-        state_repository_id=123,
-        state_repository_full_name="example/state",
-        state_ref="refs/heads/skillscout-state",
-        query_set_path=query_path,
-        query_set=query_set,
-        query_set_digest=query_set.query_set_digest,
-        pipeline_state=Path("state/databases/pipeline.sqlite3"),
-        operations_state=Path("state/databases/operations.sqlite3"),
-        publication_state=Path("state/databases/publication.sqlite3"),
-        semantic_provider="deepseek",
-        extractor_model_id="deepseek-v4-flash",
-        generator_model_id="deepseek-v4-flash",
-        reviewer_model_id="deepseek-v4-pro",
-        initial_state_root_digest=authority.state_root_digest,
-    )
-    return acceptance, discovery
-
-
-def _target(
-    manifest: LockedBenchmarkManifestV1,
-) -> tuple[BenchmarkEntryV1, LiveRepositoryAuthority]:
-    entry = next(
-        item for item in manifest.entries if item.repository_id == TARGET_ID
-    )
-    return entry, LiveRepositoryAuthority(
-        repository_full_name=entry.repository_full_name,
-        repository_id=entry.repository_id,
-        exact_commit_sha=entry.exact_commit_sha,
-        license_spdx=entry.license_spdx,
-        nomination_entry_digest=entry.nomination_entry_digest,
-        entry_digest=entry.entry_digest,
-        selection_evidence_digests=entry.selection_evidence_digests,
-    )
-
-
-def crash(workspace: Path, third_status: str) -> NoReturn:
-    nomination, manifest = _manifest()
-    query_path, query_set = _query_set(workspace)
-    authority = _authority(manifest, query_set)
-    pipeline_path, operations_path, publication_path = _paths(workspace)
-    pipeline = SQLiteStateStore(pipeline_path)
-    publication = PublicationStateStore(publication_path)
-    try:
-        frozen_publication = publication.export_owned_state()
-    finally:
-        publication.close()
-        pipeline.close()
-    with OperationsStateStore(operations_path) as operations:
-        operations.record_acceptance_fact(
-            RUN_ID, "acceptance_nomination", nomination
-        )
-        operations.record_acceptance_fact(
-            RUN_ID, "acceptance_benchmark_lock", manifest
-        )
-        operations.record_acceptance_fact(
-            RUN_ID, "acceptance_live_authority", authority
-        )
-    acceptance, discovery = _configs(
-        workspace=workspace,
-        manifest=manifest,
-        authority=authority,
-        query_path=query_path,
-        query_set=query_set,
-        state_head=INITIAL_HEAD,
-        state_root=INITIAL_ROOT,
-        operations_path=operations_path,
-        pipeline_path=pipeline_path,
-        publication_path=publication_path,
-        resume=False,
-    )
-    barrier = LocalPersistentCAS(
-        workspace=workspace,
-        query_set_digest=query_set.query_set_digest,
-        budget_policy_digest=authority.budget_policy_digest,
-        pipeline_path=pipeline_path,
-        publication_path=publication_path,
-        crash_status=third_status,
-    )
-    entry, repository_authority = _target(manifest)
-    _patch_github(entry)
-    _patch_semantic_for_crash(workspace, third_status)
-    runner = bootstrap._FixedRepositoryAcceptanceRunner(
-        config=acceptance,
-        discovery_config=discovery,
-        barrier=barrier,
-        source={
+            "PHASE6_AUTHORITY_DIGEST": str(setup["authority_digest"]),
             "SKILLSCOUT_LLM_PROVIDER": "deepseek",
             "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
             "DEEPSEEK_API_KEY": "local-placeholder",
             "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "local-placeholder",
-        },
-        frozen_owner_export=frozen_publication,
-        acceptance_run_id=RUN_ID,
+            "SKILLSCOUT_STATE_GITHUB_TOKEN": "local-placeholder",
+            "SKILLSCOUT_STATE_REPOSITORY_ID": str(STATE_REPOSITORY_ID),
+            "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": STATE_REPOSITORY,
+        }
     )
-    runner.run(repository_authority)
+
+
+def _record_cli(workspace: Path, command: str, process: int) -> None:
+    commands = _read_json(workspace / "cli-commands.json", [])
+    commands.append({"command": command, "process": process})
+    _write_json(workspace / "cli-commands.json", commands)
+
+
+def _run_cli(arguments: list[str]) -> dict[str, object]:
+    output = StringIO()
+    with redirect_stdout(output):
+        code = cli.main(arguments)
+    if code != 0:
+        raise AssertionError(output.getvalue())
+    lines = tuple(line for line in output.getvalue().splitlines() if line)
+    if len(lines) != 1:
+        raise AssertionError(lines)
+    return json.loads(lines[0])
+
+
+def _invoke_cli(arguments: list[str]) -> tuple[int, dict[str, object]]:
+    """Invoke a production CLI command while retaining an expected error payload."""
+
+    standard_output = StringIO()
+    standard_error = StringIO()
+    with redirect_stdout(standard_output), redirect_stderr(standard_error):
+        code = cli.main(arguments)
+    selected = standard_output if code == 0 else standard_error
+    lines = tuple(line for line in selected.getvalue().splitlines() if line)
+    if len(lines) != 1:
+        raise AssertionError(lines)
+    return code, json.loads(lines[0])
+
+
+def _resolve_resume_proof(
+    workspace: Path,
+    setup: dict[str, object],
+    *,
+    process: int,
+    filename: str,
+) -> tuple[dict[str, object], Path]:
+    remote = DurableStateRemote(workspace)
+    head = remote.get_state_ref().sha
+    head_bundle = StateBranchStore(remote).restore_commit(head)
+    campaign_checkout = workspace / f"campaign-checkout-{process}"
+    _materialize_checkout(
+        campaign_checkout,
+        bundle=head_bundle,
+        commit_sha=head,
+    )
+    _record_cli(workspace, "resolve-acceptance-resume", process)
+    arguments = [
+        "resolve-acceptance-resume",
+        "--authority-state-root",
+        str(workspace / "authority-checkout"),
+        "--authority-state-root-digest",
+        str(setup["authority_root"]),
+        "--campaign-state-root",
+        str(campaign_checkout),
+        "--acceptance-run-id",
+        RUN_ID,
+        "--authority-digest",
+        str(setup["authority_digest"]),
+        "--source-commit-sha",
+        str(setup["source_commit_sha"]),
+        "--state-repository-id",
+        str(STATE_REPOSITORY_ID),
+        "--state-repository-full-name",
+        STATE_REPOSITORY,
+    ]
+    proof = _run_cli(arguments)
+    proof_path = workspace / filename
+    _write_json(proof_path, proof)
+    return proof, proof_path
+
+
+def _locator_first_appearances(
+    workspace: Path,
+    *,
+    authority_head: str,
+    locator_digests: tuple[str, ...],
+) -> tuple[tuple[int, ...], tuple[str, ...]]:
+    """Derive each locator's first presence by restoring the real CAS lineage."""
+
+    remote = DurableStateRemote(workspace)
+    commit_chain: list[str] = []
+    current = remote.get_state_ref().sha
+    while True:
+        commit_chain.append(current)
+        if current == authority_head:
+            break
+        parents = remote.get_commit(current).parents
+        if len(parents) != 1:
+            raise AssertionError("acceptance CAS lineage is not linear")
+        current = parents[0]
+    commit_chain.reverse()
+
+    first_positions: dict[str, int] = {}
+    first_commits: dict[str, str] = {}
+    seen: set[str] = set()
+    store = StateBranchStore(remote)
+    for position, commit_sha in enumerate(commit_chain, start=1):
+        bundle = store.restore_commit(commit_sha)
+        _, operations, _, _ = _parse_bundle_exports(bundle)
+        present: set[str] = set()
+        for fact in operations.facts:
+            if fact.kind != "acceptance_campaign_resume_locator":
+                continue
+            payload = json.loads(fact.payload_json)
+            value = payload.get("value")
+            locator_digest = value.get("locator_digest") if isinstance(value, dict) else None
+            if type(locator_digest) is not str:
+                raise AssertionError("CAS locator fact has no canonical locator digest")
+            present.add(locator_digest)
+        for locator_digest in present - seen:
+            first_positions[locator_digest] = position
+            first_commits[locator_digest] = commit_sha
+        seen.update(present)
+    if set(locator_digests) != set(first_positions):
+        raise AssertionError("locator first-appearance set disagrees with final CAS")
+    return (
+        tuple(first_positions[digest] for digest in locator_digests),
+        tuple(first_commits[digest] for digest in locator_digests),
+    )
+
+
+def crash(workspace: Path, stage: str, status: str) -> NoReturn:
+    setup = _setup(workspace)
+    repository = Path(str(setup["repository"]))
+    os.chdir(repository)
+    manifest = _manifest(repository)
+    _environment(setup)
+    _patch_state_clients(workspace)
+    _patch_github(workspace, manifest)
+    _patch_semantic(workspace, stage=stage, status=status, process=1)
+    _write_json(workspace / "fault.json", {"stage": stage, "status": status})
+    proof, proof_path = _resolve_resume_proof(
+        workspace,
+        setup,
+        process=1,
+        filename="initial-resume-proof.json",
+    )
+    _record_cli(workspace, "run-acceptance", 1)
+    _run_cli(
+        [
+            "run-acceptance",
+            "--action",
+            "benchmark",
+            "--manifest",
+            str(
+                repository / ".planning/phases/06-adversarial-mvp-acceptance/"
+                "06-BENCHMARK-MANIFEST.json"
+            ),
+            "--acceptance-run-id",
+            RUN_ID,
+            "--resume-proof",
+            str(proof_path),
+            "--state-commit-sha",
+            str(proof["state_commit_sha"]),
+            "--state-root-digest",
+            str(proof["state_root_digest"]),
+        ]
+    )
     raise AssertionError("fault seam did not terminate after durable attempt three")
 
 
 def resume(
     workspace: Path,
-    third_status: str,
+    stage: str,
+    status: str,
     result_path: Path,
 ) -> None:
-    nomination, manifest = _manifest()
-    del nomination
-    query_path, query_set = _query_set(workspace)
-    authority = _authority(manifest, query_set)
-    pipeline_path, operations_path, publication_path = _paths(workspace)
-    bundle = _load_bundle(workspace)
-    restore_acceptance_state_bundle(
-        bundle,
-        pipeline_path=pipeline_path,
-        operations_path=operations_path,
+    setup = json.loads((workspace / "setup.json").read_bytes())
+    repository = Path(setup["repository"])
+    os.chdir(repository)
+    manifest = _manifest(repository)
+    _environment(setup)
+    _patch_state_clients(workspace)
+    _patch_github(workspace, manifest)
+    _patch_semantic(workspace, stage=stage, status=status, process=2)
+    proof, proof_path = _resolve_resume_proof(
+        workspace,
+        setup,
+        process=2,
+        filename="resume-proof.json",
     )
-    acceptance, discovery = _configs(
-        workspace=workspace,
-        manifest=manifest,
-        authority=authority,
-        query_path=query_path,
-        query_set=query_set,
-        state_head=json.loads((workspace / "lineage.json").read_bytes())[-1][
-            "commit_sha"
-        ],
-        state_root=bundle.root.root_digest,
-        operations_path=operations_path,
-        pipeline_path=pipeline_path,
-        publication_path=publication_path,
-        resume=True,
-    )
-    barrier = LocalPersistentCAS(
-        workspace=workspace,
-        query_set_digest=query_set.query_set_digest,
-        budget_policy_digest=authority.budget_policy_digest,
-        pipeline_path=pipeline_path,
-        publication_path=publication_path,
-        crash_status=None,
-    )
-    entry, repository_authority = _target(manifest)
-    _patch_github(entry)
-    _patch_semantic_for_resume(workspace)
-    frozen_publication = _parse_bundle_exports(bundle)[2]
-    factory = bootstrap._fixed_acceptance_runner_factory(
-        config=acceptance,
-        discovery_config=discovery,
-        restored=object(),
-        barrier=barrier,
-        source={
-            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
-            "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
-            "DEEPSEEK_API_KEY": "local-placeholder",
-            "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "local-placeholder",
-        },
-        frozen_owner_export=frozen_publication,
-        acceptance_run_id=RUN_ID,
-    )
-    runner = factory(acceptance.state_commit_sha, acceptance.state_root_digest)
-    observation = runner.run(repository_authority)
-    runner.close()
-    from skillscout.application.acceptance import (
-        _candidate_funnel_for_observation,
-        classify_acceptance_terminal,
-    )
-
-    terminal_class = classify_acceptance_terminal(observation.outcome)
-    scenario = AcceptanceScenarioResultV1(
-        schema_version="acceptance-scenario-result-v1",
-        acceptance_run_id=RUN_ID,
-        scenario_id=f"locked-1-{entry.repository_id}",
-        repository_id=entry.repository_id,
-        repository_full_name=entry.repository_full_name,
-        exact_commit_sha=entry.exact_commit_sha,
-        license_spdx=entry.license_spdx,
-        benchmark_manifest_digest=manifest.manifest_digest,
-        benchmark_entry_digest=observation.benchmark_entry_digest,
-        live_acceptance_authority_digest=(
-            observation.live_acceptance_authority_digest
-        ),
-        discovery_run_id=observation.discovery_run_id,
-        discovery_run_authority_digest=(
-            observation.discovery_run_authority_digest
-        ),
-        budget_reservation_digest=observation.budget_reservation_digest,
-        fixed_candidate_admission_digest=(
-            observation.fixed_candidate_admission_digest
-        ),
-        semantic_candidate_reservation_digest=(
-            observation.semantic_candidate_reservation_digest
-        ),
-        terminal_class=terminal_class,
-        outcome=observation.outcome,
-        reason_code=observation.reason_code,
-        evidence_digests=tuple(sorted(set(observation.evidence_digests))),
-        candidate_funnel=_candidate_funnel_for_observation(
-            observation.outcome,
-            observation.semantic_telemetry,
-        ),
-        reader_order="readme_docs_examples_manifests_source",
-        reader_file_count=observation.reader_file_count,
-        reader_source_file_count=observation.reader_source_file_count,
-        reader_total_bytes=observation.reader_total_bytes,
-        reader_estimated_tokens=observation.reader_estimated_tokens,
-        semantic_request_count=observation.semantic_request_count,
-        semantic_request_reservation_digests=tuple(
-            sorted(observation.semantic_request_reservation_digests)
-        ),
-        semantic_attempt_digests=tuple(
-            sorted(observation.semantic_attempt_digests)
-        ),
-        semantic_telemetry=observation.semantic_telemetry,
-        actual_models=observation.actual_models,
-        prompt_versions=tuple(
-            item.prompt_version for item in observation.semantic_telemetry
-        ),
-        schema_versions=tuple(
-            item.output_schema_version for item in observation.semantic_telemetry
-        ),
-        policy_versions=tuple(
-            item.policy_version for item in observation.semantic_telemetry
-        ),
-        workflow_fingerprint=observation.workflow_fingerprint,
-        workflow_spec_authority_digest=(
-            observation.workflow_spec_authority_digest
-        ),
-        workflow_execution_authority_digests=tuple(
-            sorted(observation.workflow_execution_authority_digests)
-        ),
-        workflow_spec_authority_digests=tuple(
-            sorted(observation.workflow_spec_authority_digests)
-        ),
-        candidate_terminal_digest=observation.candidate_terminal_digest,
-        workflow_terminal_digests=tuple(
-            sorted(observation.workflow_terminal_digests)
-        ),
-        phase3_terminal_summary_digests=tuple(
-            sorted(observation.phase3_terminal_summary_digests)
-        ),
-        skill_artifact_digests=tuple(
-            sorted(observation.skill_artifact_digests)
-        ),
-        package_digests=tuple(sorted(observation.package_digests)),
-        eligible_locator=observation.eligible_locator,
-        eligible_object_digest=observation.eligible_object_digest,
-        expected_coverage_role=entry.coverage_role,
-        evaluator_matches_observed=False,
-        publication_decision="not_eligible",
-        warnings=(
-            AcceptanceWarningV1(
-                warning_code="openai_live_absent",
-                impact="Local process recovery covers the DeepSeek provider path.",
-                follow_up="No live provider authority is granted by this test.",
-                security_relevant=False,
+    _record_cli(workspace, "run-acceptance", 2)
+    benchmark_code, completed = _invoke_cli(
+        [
+            "run-acceptance",
+            "--action",
+            "benchmark",
+            "--manifest",
+            str(
+                repository / ".planning/phases/06-adversarial-mvp-acceptance/"
+                "06-BENCHMARK-MANIFEST.json"
             ),
-        ),
-        recorded_at=TIMESTAMP,
-    )
-    with OperationsStateStore(operations_path) as operations:
-        operations.record_acceptance_fact(
+            "--acceptance-run-id",
             RUN_ID,
-            "acceptance_scenario",
-            scenario,
-        )
-        synchronized = barrier.sync_discovery(
-            operations_store=operations,
-            observed_head=observation.state_commit_sha,
-            prior_root_digest=observation.state_root_digest,
-            created_at=TIMESTAMP,
-        )
-        del synchronized
-        discovery_snapshot = operations.snapshot_run(f"{RUN_ID}-semantic")
-        acceptance_snapshot = operations.acceptance_snapshot(RUN_ID)
-    scenario_count = sum(
-        record.kind == "acceptance_scenario"
-        for record in acceptance_snapshot.facts
+            "--resume-proof",
+            str(proof_path),
+            "--state-commit-sha",
+            proof["state_commit_sha"],
+            "--state-root-digest",
+            proof["state_root_digest"],
+        ]
     )
-    workflow_specs = {
-        item.workflow_spec_authority_digest
-        for item in discovery_snapshot.workflow_terminals
-        if item.workflow_spec_authority_digest is not None
-    }
-    skill_digests = {
-        item.skill_artifact_digest
-        for item in discovery_snapshot.workflow_terminals
-        if item.skill_artifact_digest is not None
-    }
-    package_digests = {
-        item.package_digest
-        for item in discovery_snapshot.workflow_terminals
-        if item.package_digest is not None
-    }
+    if status == "decided":
+        if benchmark_code != 0 or completed.get("status") != "benchmark_complete":
+            raise AssertionError(completed)
+    elif benchmark_code != 1 or completed.get("error", {}).get("code") != "state_integrity_error":
+        raise AssertionError(completed)
+    latest = DurableStateRemote(workspace)
+    bundle = StateBranchStore(latest).restore()
+    assert bundle.bundle is not None
+    state_root = repository / "state/databases"
+    restore_acceptance_state_bundle(
+        bundle.bundle,
+        pipeline_path=state_root / "pipeline.sqlite3",
+        operations_path=state_root / "operations.sqlite3",
+    )
+    with OperationsStateStore(state_root / "operations.sqlite3") as operations:
+        discovery = operations.snapshot_run(f"{RUN_ID}-semantic")
+        acceptance = operations.acceptance_snapshot(RUN_ID)
+    target_id = setup["target_repository_id"]
+    target_attempts = tuple(
+        item for item in discovery.semantic_attempts if item.repository_id == target_id
+    )
+    target_terminals = tuple(
+        item for item in discovery.candidate_terminals if item.repository_id == target_id
+    )
+    target_scenarios = tuple(
+        record
+        for record in acceptance.facts
+        if record.kind == "acceptance_scenario" and record.fact.repository_id == target_id
+    )
+    locator_records = tuple(
+        sorted(
+            (
+                record
+                for record in acceptance.facts
+                if record.kind == "acceptance_campaign_resume_locator"
+            ),
+            key=lambda item: item.fact.transition_index,
+        )
+    )
+    locators = tuple(record.fact for record in locator_records)
+    locator_first_indexes, locator_first_commits = _locator_first_appearances(
+        workspace,
+        authority_head=str(setup["authority_head"]),
+        locator_digests=tuple(record.fact_digest for record in locator_records),
+    )
+    workflow_specs = tuple(
+        digest
+        for record in target_scenarios
+        for digest in record.fact.workflow_spec_authority_digests
+    )
+    phase3_artifacts = tuple(
+        digest
+        for record in target_scenarios
+        for digest in record.fact.phase3_terminal_summary_digests
+    )
+    skill_digests = tuple(
+        digest for record in target_scenarios for digest in record.fact.skill_artifact_digests
+    )
+    package_digests = tuple(
+        digest for record in target_scenarios for digest in record.fact.package_digests
+    )
     crash_fact = json.loads((workspace / "crash.json").read_bytes())
+    calls = _read_json(workspace / "provider-calls.json", [])
+    provider_clients_after = _read_json(
+        workspace / "provider-clients-after-resume.json",
+        [],
+    )
+    provider_requests_after = _read_json(
+        workspace / "provider-requests-after-resume.json",
+        [],
+    )
     _write_json(
         result_path,
         {
             "process_ids": [crash_fact["pid"], os.getpid()],
-            "provider_calls": json.loads(
-                (workspace / "provider-calls.json").read_bytes()
-            ),
-            "third_status": third_status,
-            "candidate_terminal_count": len(
-                discovery_snapshot.candidate_terminals
-            ),
-            "workflow_terminal_count": len(
-                discovery_snapshot.workflow_terminals
-            ),
+            "cli_commands": _read_json(workspace / "cli-commands.json", []),
+            "provider_calls": calls,
+            "third_status": status,
+            "crash_stage": stage,
+            "crash_transition_phase": crash_fact["transition_phase"],
             "semantic_attempts": [
                 {
                     "attempt_no": item.attempt_no,
                     "stage": item.stage,
                     "status": item.status,
                 }
-                for item in discovery_snapshot.semantic_attempts
+                for item in target_attempts
             ],
-            "scenario_count": scenario_count,
-            "workflow_spec_count": len(workflow_specs),
-            "duplicate_workflow_spec_count": (
-                len(discovery_snapshot.workflow_terminals)
-                - len(
-                    {
-                        item.workflow_authority_digest
-                        for item in discovery_snapshot.workflow_terminals
-                    }
-                )
+            "locator_transition_indexes": [item.transition_index for item in locators],
+            "locator_first_appearance_indexes": locator_first_indexes,
+            "locator_first_appearance_commit_shas": locator_first_commits,
+            "candidate_terminal_count": len(target_terminals),
+            "workflow_terminal_count": sum(
+                item.repository_id == target_id for item in discovery.workflow_terminals
+            ),
+            "scenario_count": len(target_scenarios),
+            "phase3_artifact_count": len(set(phase3_artifacts)),
+            "workflow_spec_count": len(set(workflow_specs)),
+            "skill_count": len(set(skill_digests)),
+            "package_count": len(set(package_digests)),
+            "duplicate_workflow_spec_count": sum(
+                item.repository_id == target_id for item in discovery.workflow_terminals
+            )
+            - len(
+                {
+                    item.workflow_authority_digest
+                    for item in discovery.workflow_terminals
+                    if item.repository_id == target_id
+                }
             ),
             "duplicate_skill_count": len(skill_digests) - len(set(skill_digests)),
-            "duplicate_package_count": (
-                len(package_digests) - len(set(package_digests))
-            ),
-            "provider_calls_after_resume": int(
-                (workspace / "provider-calls-after-resume").read_text(
-                    encoding="ascii"
-                )
-            )
-            if (workspace / "provider-calls-after-resume").exists()
-            else 0,
+            "duplicate_package_count": len(package_digests) - len(set(package_digests)),
+            "provider_requests_after_resume": provider_requests_after,
+            "provider_clients_after_resume": provider_clients_after,
+            "resume_benchmark_exit_code": benchmark_code,
+            "resume_benchmark_payload": completed,
+            "semantic_telemetry_stages": [
+                item.stage for record in target_scenarios for item in record.fact.semantic_telemetry
+            ],
         },
     )
 
 
 def main() -> int:
-    if len(sys.argv) not in {4, 5}:
+    if len(sys.argv) not in {5, 6}:
         return 2
     action = sys.argv[1]
     workspace = Path(sys.argv[2]).resolve()
-    third_status = sys.argv[3]
-    if third_status not in {
+    stage = sys.argv[3]
+    status = sys.argv[4]
+    if stage not in {"extractor", "generator", "reviewer"}:
+        return 2
+    if status not in {
         "decided",
         "confirmed_retryable",
         "semantic_outcome_unknown",
+        "exhaustion",
     }:
         return 2
-    os.chdir(workspace)
-    if action == "crash" and len(sys.argv) == 4:
-        crash(workspace, third_status)
-    if action == "resume" and len(sys.argv) == 5:
-        resume(workspace, third_status, Path(sys.argv[4]))
+    if action == "crash" and len(sys.argv) == 5:
+        crash(workspace, stage, status)
+    if action == "resume" and len(sys.argv) == 6:
+        resume(workspace, stage, status, Path(sys.argv[5]))
         return 0
     return 2
 

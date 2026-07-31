@@ -97,9 +97,7 @@ def test_transition_authority_is_self_hashed_and_has_no_untrusted_payload_surfac
     module = _ports()
     request = _transition()
     assert request.transition_authority_digest.startswith("sha256:")
-    assert module.SemanticDurabilityTransition.from_dict(
-        request.as_dict()
-    ) == request
+    assert module.SemanticDurabilityTransition.from_dict(request.as_dict()) == request
     exposed = {field.name for field in fields(request)}
     assert not exposed.intersection(
         {
@@ -193,9 +191,7 @@ def test_receipt_binds_parent_root_transition_and_all_three_stores() -> None:
     assert receipt.authorizes(request)
     assert receipt.verified_state_head == STATE_SHA
     assert receipt.expected_prior_state_head == PRIOR_HEAD
-    assert receipt.transition_authority_digest == (
-        request.transition_authority_digest
-    )
+    assert receipt.transition_authority_digest == (request.transition_authority_digest)
     assert receipt.database_digests == (
         "sha256:" + ("1" * 64),
         "sha256:" + ("2" * 64),
@@ -221,11 +217,7 @@ def test_incomplete_or_mismatched_receipt_never_grants_authority(
     request = _transition()
     receipt = _receipt(request)
     changed = request.as_dict()
-    changed[field] = (
-        "a" * 40
-        if field == "expected_prior_state_head"
-        else "sha256:" + ("9" * 64)
-    )
+    changed[field] = "a" * 40 if field == "expected_prior_state_head" else "sha256:" + ("9" * 64)
     if field != "transition_authority_digest":
         changed.pop("transition_authority_digest")
         changed.pop("schema_version")
@@ -263,9 +255,7 @@ def test_barrier_port_is_narrow_and_runtime_checkable() -> None:
             return _receipt(transition)
 
     assert isinstance(Barrier(), module.ThreeStoreDurabilityBarrier)
-    parameters = inspect.signature(
-        module.ThreeStoreDurabilityBarrier.confirm
-    ).parameters
+    parameters = inspect.signature(module.ThreeStoreDurabilityBarrier.confirm).parameters
     assert tuple(parameters) == (
         "self",
         "transition",
@@ -326,9 +316,7 @@ class _Remote:
             sha=head,
             tree_sha=prior_tree,
             parents=("c" * 40,),
-            message=module._state_commit_message(
-                prior_bundle.root.root_digest
-            ),
+            message=module._state_commit_message(prior_bundle.root.root_digest),
         )
 
     def _sha(self) -> str:
@@ -421,26 +409,16 @@ def _owned_stores(
     transition: str,
 ):
     state_module = importlib.import_module("skillscout.adapters.state")
-    operations_module = importlib.import_module(
-        "skillscout.adapters.operations_state"
-    )
-    publication_module = importlib.import_module(
-        "skillscout.adapters.publication_state"
-    )
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
+    publication_module = importlib.import_module("skillscout.adapters.publication_state")
     pipeline = state_module.SQLiteStateStore(tmp_path / "pipeline.sqlite3")
-    operations = operations_module.OperationsStateStore(
-        tmp_path / "operations.sqlite3"
-    )
-    publication = publication_module.PublicationStateStore(
-        tmp_path / "publication.sqlite3"
-    )
+    operations = operations_module.OperationsStateStore(tmp_path / "operations.sqlite3")
+    publication = publication_module.PublicationStateStore(tmp_path / "publication.sqlite3")
     operations.seed_test_reservations(
         run_id="discovery-run-1",
         repository_id=101,
     )
-    coordinator = importlib.import_module(
-        "skillscout.adapters.operations_state"
-    )
+    coordinator = importlib.import_module("skillscout.adapters.operations_state")
     prior_bundle, _ = coordinator._bundle_from_exports(
         pipeline=pipeline.export_owned_state(),
         operations=operations.export_owned_state(),
@@ -557,7 +535,7 @@ def test_two_provider_three_stage_transition_matrix_is_remote_confirmed_and_idem
         pipeline.close()
 
 
-def test_active_and_idempotent_confirmation_each_restore_blob_bodies_once(
+def test_idempotent_confirmation_reuses_verified_immutable_blob_bodies(
     tmp_path: Path,
 ) -> None:
     pipeline, operations, publication, request, prior_bundle = _owned_stores(
@@ -584,7 +562,7 @@ def test_active_and_idempotent_confirmation_each_restore_blob_bodies_once(
             operations_store=operations,
             publication_store=publication,
         )
-        assert remote.blob_reads == expected_body_reads * 2
+        assert remote.blob_reads == expected_body_reads
     finally:
         publication.close()
         operations.close()
@@ -646,22 +624,12 @@ def test_every_export_cas_reread_and_verification_failure_blocks_guarded_effect(
     remote = _Remote(
         _state_branch(),
         prior_bundle=prior_bundle,
-        fail_at=(
-            seam
-            if seam in {"cas", "reread", "commit_message", "projection"}
-            else None
-        ),
+        fail_at=(seam if seam in {"cas", "reread", "commit_message", "projection"} else None),
     )
     stores = {
-        "pipeline_store": _ExportFailure(
-            pipeline, fail=seam == "pipeline_export"
-        ),
-        "operations_store": _ExportFailure(
-            operations, fail=seam == "operations_export"
-        ),
-        "publication_store": _ExportFailure(
-            publication, fail=seam == "publication_export"
-        ),
+        "pipeline_store": _ExportFailure(pipeline, fail=seam == "pipeline_export"),
+        "operations_store": _ExportFailure(operations, fail=seam == "operations_export"),
+        "publication_store": _ExportFailure(publication, fail=seam == "publication_export"),
     }
     try:
         with pytest.raises(_ports().SafeFailure) as failure:
@@ -731,11 +699,7 @@ def test_crash_restart_matrix_never_replays_ambiguous_semantic_effect(
     stage: str,
     crash_seam: str,
 ) -> None:
-    transition = (
-        "attempt_started"
-        if "attempt_started" in crash_seam
-        else "result_outcome_unknown"
-    )
+    transition = "attempt_started" if "attempt_started" in crash_seam else "result_outcome_unknown"
     pipeline, operations, publication, base, prior_bundle = _owned_stores(
         tmp_path,
         stage=stage,

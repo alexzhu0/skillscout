@@ -95,18 +95,14 @@ class SafeArgumentParser(argparse.ArgumentParser):
         if status == 0:
             super().exit(status, message)
         failure = SafeFailure(ErrorCode.INVALID_CLI_ARGUMENTS)
-        diagnostic = json.dumps(
-            {"error": failure.as_dict()}, sort_keys=True, separators=(",", ":")
-        )
+        diagnostic = json.dumps({"error": failure.as_dict()}, sort_keys=True, separators=(",", ":"))
         sys.stderr.write(f"{diagnostic}\n")
         raise SystemExit(2)
 
 
 def build_parser() -> SafeArgumentParser:
     parser = SafeArgumentParser(prog="skillscout")
-    commands = parser.add_subparsers(
-        dest="command", required=True, parser_class=SafeArgumentParser
-    )
+    commands = parser.add_subparsers(dest="command", required=True, parser_class=SafeArgumentParser)
     dry_run = commands.add_parser("dry-run")
     dry_run.add_argument("--fixture", required=True, type=Path)
     dry_run.add_argument("--state", required=True, type=Path)
@@ -368,10 +364,7 @@ class _InterruptingCandidateState:
         return getattr(self._state, name)
 
     def _trip(self, chain: object) -> None:
-        if (
-            not self._tripped
-            and len(getattr(chain, "results", ())) == self._stage_count
-        ):
+        if not self._tripped and len(getattr(chain, "results", ())) == self._stage_count:
             self._tripped = True
             raise SafeFailure(ErrorCode.PIPELINE_INTERRUPTED)
 
@@ -526,8 +519,8 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
             source=SQLitePhaseTwoCandidateSource(arguments.phase2_state),
             profile=profile,
             dependencies=PhaseThreeDependencies(
-                completed_projector_factory=lambda: (
-                    DescriptorAnchoredCompletedCandidateProjector(arguments.state)
+                completed_projector_factory=lambda: DescriptorAnchoredCompletedCandidateProjector(
+                    arguments.state
                 ),
                 mutable_state_factory=mutable_state_factory,
                 generator_factory=generator_factory,
@@ -675,9 +668,7 @@ def _run_publish_candidate(arguments: argparse.Namespace) -> dict[str, object]:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
-_DISCOVERY_QUERY_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "discovery-queries-v1.json"
-)
+_DISCOVERY_QUERY_PATH = Path(__file__).resolve().parents[2] / "config" / "discovery-queries-v1.json"
 _DISCOVERY_PIPELINE_STATE = Path("state/databases/pipeline.sqlite3")
 _DISCOVERY_OPERATIONS_STATE = Path("state/databases/operations.sqlite3")
 _DISCOVERY_PUBLICATION_STATE = Path("state/databases/publication.sqlite3")
@@ -702,9 +693,7 @@ def _run_discover(arguments: argparse.Namespace) -> dict[str, object]:
         reviewer_model_id=provider.reviewer_model,
         initial_state_root_digest=arguments.initial_state_root_digest,
     )
-    result = build_discovery_application(config).run(
-        discovery_run_authority(config)
-    )
+    result = build_discovery_application(config).run(discovery_run_authority(config))
     return {
         "run_id": result.run_id,
         "state_root_digest": result.state_root_digest,
@@ -834,7 +823,10 @@ def _checked_out_git_commit(checkout: Path) -> str:
     if (
         not reference.startswith("refs/")
         or ".." in reference.split("/")
-        or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-" for character in reference)
+        or any(
+            character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-"
+            for character in reference
+        )
     ):
         raise ValueError
     reference_path = git_directory.joinpath(*reference.split("/"))
@@ -1055,9 +1047,7 @@ def _acceptance_resume_projection_from_bundle(
             columns.get("run_id"),
         )
         expected_run_id = (
-            acceptance_run_id
-            if fact.kind.startswith("acceptance_")
-            else semantic_run_id
+            acceptance_run_id if fact.kind.startswith("acceptance_") else semantic_run_id
         )
         if owner_run_id != expected_run_id:
             continue
@@ -1065,36 +1055,20 @@ def _acceptance_resume_projection_from_bundle(
             CampaignOwnedFactObservation(
                 kind=fact.kind,
                 object_digest=fact.object_digest,
-                semantic_stage=(
-                    str(value["stage"])
-                    if fact.kind == "semantic_attempt"
-                    else None
-                ),
-                attempt_no=(
-                    int(value["attempt_no"])
-                    if fact.kind == "semantic_attempt"
-                    else None
-                ),
-                semantic_status=(
-                    str(value["status"])
-                    if fact.kind == "semantic_attempt"
-                    else None
-                ),
+                semantic_stage=(str(value["stage"]) if fact.kind == "semantic_attempt" else None),
+                attempt_no=(int(value["attempt_no"]) if fact.kind == "semantic_attempt" else None),
+                semantic_status=(str(value["status"]) if fact.kind == "semantic_attempt" else None),
             )
         )
-    if (
-        len({item.fact.locator_digest for item in locators}) != len(locators)
-        or set(object_digests)
-        != {item.fact.locator_digest for item in locators}
-    ):
+    if len({item.fact.locator_digest for item in locators}) != len(locators) or set(
+        object_digests
+    ) != {item.fact.locator_digest for item in locators}:
         raise ValueError
     return (
         tuple(
             CampaignResumeLocatorObservation(
                 locator=record.fact,
-                object_digest=object_digests[
-                    record.fact.locator_digest or ""
-                ],
+                object_digest=object_digests[record.fact.locator_digest or ""],
             )
             for record in locators
         ),
@@ -1123,8 +1097,7 @@ def _run_resolve_acceptance_resume(
             authority.authority_digest != arguments.authority_digest
             or authority.source_commit_sha != arguments.source_commit_sha
             or authority.state_repository_id != arguments.state_repository_id
-            or authority.state_repository_full_name
-            != arguments.state_repository_full_name
+            or authority.state_repository_full_name != arguments.state_repository_full_name
         ):
             raise ValueError
         token = os.environ["SKILLSCOUT_STATE_GITHUB_TOKEN"]
@@ -1151,9 +1124,7 @@ def _run_resolve_acceptance_resume(
                         commit_sha=current,
                         root_digest=inspected.root.root_digest,
                         parent_commit_sha=(
-                            inspected.commit.parents[0]
-                            if inspected.commit.parents
-                            else None
+                            inspected.commit.parents[0] if inspected.commit.parents else None
                         ),
                         prior_root_digest=inspected.root.prior_root_digest,
                         object_digests=inspected.object_digests,
@@ -1174,11 +1145,9 @@ def _run_resolve_acceptance_resume(
                     observation.commit_sha,
                     read_budget=read_budget,
                 )
-                locators, owned_facts = (
-                    _acceptance_resume_projection_from_bundle(
-                        restored,
-                        arguments.acceptance_run_id,
-                    )
+                locators, owned_facts = _acceptance_resume_projection_from_bundle(
+                    restored,
+                    arguments.acceptance_run_id,
                 )
                 restored_bundles[observation.commit_sha] = restored
                 descending[index] = CampaignStateLineageObservation(
@@ -1199,7 +1168,10 @@ def _run_resolve_acceptance_resume(
             checkout_root=campaign_checkout,
             expected_root_digest=head_bundle.root.root_digest,
         )
-        if checkout_bundle != head_bundle:
+        if (
+            checkout_bundle.root != head_bundle.root
+            or checkout_bundle.content_by_path() != head_bundle.content_by_path()
+        ):
             raise ValueError
         verified = resolve_campaign_resume_lineage(
             authority_digest=authority.authority_digest,
@@ -1217,10 +1189,7 @@ def _run_resolve_acceptance_resume(
             "locator_digest": verified.locator_digest,
             "transition_index": (
                 max(
-                    (
-                        item.locator.transition_index
-                        for item in locators
-                    ),
+                    (item.locator.transition_index for item in locators),
                     default=0,
                 )
             ),
@@ -1270,9 +1239,7 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
             observed_state_commit_sha=arguments.runtime_state_commit_sha,
             observed_state_root_digest=arguments.runtime_state_root_digest,
             observed_state_repository_id=arguments.state_repository_id,
-            observed_state_repository_full_name=(
-                arguments.state_repository_full_name
-            ),
+            observed_state_repository_full_name=(arguments.state_repository_full_name),
         )
         return {
             "acceptance_run_id": arguments.acceptance_run_id,
@@ -1283,9 +1250,7 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
             "provider": authority.semantic_provider,
             "source_commit_sha": authority.source_commit_sha,
             "state_commit_sha": authority.state_commit_sha,
-            "state_repository_full_name": (
-                authority.state_repository_full_name
-            ),
+            "state_repository_full_name": (authority.state_repository_full_name),
             "state_repository_id": authority.state_repository_id,
             "state_root_digest": authority.state_root_digest,
             "status": "live_authority_verified",
@@ -1376,9 +1341,7 @@ def _run_rebuild_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         )
 
         dependencies = AcceptanceRebuildDependencies(
-            operations_store_factory=lambda: OperationsStateStore(
-                _DISCOVERY_OPERATIONS_STATE
-            )
+            operations_store_factory=lambda: OperationsStateStore(_DISCOVERY_OPERATIONS_STATE)
         )
         snapshot = rebuild_acceptance_snapshot(
             dependencies,
