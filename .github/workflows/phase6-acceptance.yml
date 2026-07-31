@@ -1079,6 +1079,7 @@ jobs:
     permissions:
       contents: write
     env:
+      UV_LINK_MODE: copy
       SKILLSCOUT_LLM_PROVIDER: deepseek
       DEEPSEEK_BASE_URL: https://api.deepseek.com
       PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
@@ -1256,6 +1257,7 @@ jobs:
     permissions:
       contents: write
     env:
+      UV_LINK_MODE: copy
       SKILLSCOUT_LLM_PROVIDER: deepseek
       DEEPSEEK_BASE_URL: https://api.deepseek.com
       PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
@@ -1750,6 +1752,7 @@ jobs:
     permissions:
       contents: write
     env:
+      UV_LINK_MODE: copy
       SKILLSCOUT_LLM_PROVIDER: deepseek
       DEEPSEEK_BASE_URL: https://api.deepseek.com
       PHASE6_ACTION: ${{ inputs.phase6_action }}

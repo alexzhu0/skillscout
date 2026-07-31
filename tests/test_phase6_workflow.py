@@ -849,7 +849,8 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
 
     nomination = _job(source, "nominate")
     offline = _job(source, "offline_adversarial")
-    live = _job(source, "live_benchmark")
+    benchmark = _job(source, "live_benchmark")
+    replay = _job(source, "live_replay")
     changed = _job(source, "changed_source")
     fresh_gate = _job(source, "fresh_gate_b4")
     publication = _job(source, "value_publication")
@@ -868,7 +869,7 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert "${{ secrets." not in offline
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in offline
 
-    for semantic_job in (live, changed):
+    for semantic_job in (benchmark, changed):
         assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in semantic_job
         assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in semantic_job
         assert "SKILLSCOUT_CATALOG" not in semantic_job
@@ -898,6 +899,8 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
         assert "SKILLSCOUT_CATALOG" not in attestation
         assert "record-acceptance-attestation" in attestation
     assert "record-live-authority" in human
+    for job in (benchmark, replay, human):
+        assert "UV_LINK_MODE: copy" in job
     assert "DEEPSEEK_API_KEY" not in human
     assert "SKILLSCOUT_LLM_PROVIDER: deepseek" in human
     assert "SKILLSCOUT_CATALOG" not in human
