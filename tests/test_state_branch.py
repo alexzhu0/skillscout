@@ -1074,6 +1074,149 @@ def test_sync_bootstrap_and_fast_forward_reread_exact_state(
     assert remote.writes[-1] == ("create_ref" if bootstrap else "update_ref")
 
 
+def test_post_cas_uncertainty_reconciles_only_the_exact_successor() -> None:
+    """A lost post-CAS read is recoverable only from the exact child commit."""
+
+    module = _state_module()
+    observed_head = "4" * 40
+
+    class LostFirstPostCasReadRemote(_StateRemote):
+        def __init__(self) -> None:
+            super().__init__(module, observed_head)
+            self._lose_next_post_cas_ref_read = False
+
+        def update_state_ref(self, sha: str, *, force: bool) -> object:
+            response = super().update_state_ref(sha, force=force)
+            self._lose_next_post_cas_ref_read = True
+            return response
+
+        def get_state_ref(self) -> object:
+            if self._lose_next_post_cas_ref_read:
+                self._lose_next_post_cas_ref_read = False
+                raise module.SafeFailure(module.ErrorCode.STAGE_TRANSIENT_FAILURE)
+            return super().get_state_ref()
+
+    remote = LostFirstPostCasReadRemote()
+    bundle = _bundle(module, parent=observed_head, object_count=1)
+    store = module.StateBranchStore(remote)
+
+    with pytest.raises(module.StateBranchPostCasUncertain) as raised:
+        store.sync(bundle, observed_head)
+
+    recovered = store.reconcile_post_cas_uncertainty(
+        raised.value,
+        bundle,
+        observed_head,
+    )
+
+    assert recovered.status == "verified"
+    assert recovered.previous_head == observed_head
+    assert recovered.commit_sha == raised.value.candidate_commit_sha
+    assert recovered.tree_sha == raised.value.candidate_tree_sha
+    assert recovered.root_digest == bundle.root.root_digest
+
+
+@pytest.mark.parametrize("mutation", ("head", "parent", "bundle"))
+def test_post_cas_reconciliation_rejects_every_nonexact_successor(
+    mutation: str,
+) -> None:
+    """A post-CAS recovery never turns a nearby or altered child into success."""
+
+    module = _state_module()
+    observed_head = "4" * 40
+
+    class LostFirstPostCasReadRemote(_StateRemote):
+        def __init__(self) -> None:
+            super().__init__(module, observed_head)
+            self._lose_next_post_cas_ref_read = False
+
+        def update_state_ref(self, sha: str, *, force: bool) -> object:
+            response = super().update_state_ref(sha, force=force)
+            self._lose_next_post_cas_ref_read = True
+            return response
+
+        def get_state_ref(self) -> object:
+            if self._lose_next_post_cas_ref_read:
+                self._lose_next_post_cas_ref_read = False
+                raise module.SafeFailure(module.ErrorCode.STAGE_TRANSIENT_FAILURE)
+            return super().get_state_ref()
+
+    remote = LostFirstPostCasReadRemote()
+    bundle = _bundle(module, parent=observed_head, object_count=1)
+    store = module.StateBranchStore(remote)
+
+    with pytest.raises(module.StateBranchPostCasUncertain) as raised:
+        store.sync(bundle, observed_head)
+
+    candidate = raised.value.candidate_commit_sha
+    if mutation == "head":
+        remote.head = observed_head
+    elif mutation == "parent":
+        commit = remote.commits[candidate]
+        remote.commits[candidate] = module.StateCommitObservation(
+            sha=commit.sha,
+            tree_sha=commit.tree_sha,
+            parents=("5" * 40,),
+            message=commit.message,
+        )
+    else:
+        alternate = _bundle(module, parent=observed_head, object_count=2)
+        alternate_files = alternate.content_by_path()
+        for content in alternate_files.values():
+            remote.blobs[module._git_blob_id(content)] = content
+        alternate_tree = remote._sha()
+        remote.trees[alternate_tree] = tuple(
+            module.StateTreeEntry(
+                path=path,
+                sha=module._git_blob_id(content),
+                mode="100644",
+                size=len(content),
+            )
+            for path, content in sorted(alternate_files.items())
+        )
+        remote.commits[candidate] = module.StateCommitObservation(
+            sha=candidate,
+            tree_sha=alternate_tree,
+            parents=(observed_head,),
+            message=module._state_commit_message(alternate.root.root_digest),
+        )
+
+    with pytest.raises((module.StateBranchConflict, module.StateIntegrityFailure)):
+        store.reconcile_post_cas_uncertainty(
+            raised.value,
+            bundle,
+            observed_head,
+        )
+
+
+def test_post_cas_reconciliation_does_not_wrap_unexpected_programming_errors() -> None:
+    """Only known remote-verification failures may enter reconciliation."""
+
+    module = _state_module()
+    observed_head = "4" * 40
+
+    class UnexpectedPostCasReadRemote(_StateRemote):
+        def __init__(self) -> None:
+            super().__init__(module, observed_head)
+            self._raise_after_cas = False
+
+        def update_state_ref(self, sha: str, *, force: bool) -> object:
+            response = super().update_state_ref(sha, force=force)
+            self._raise_after_cas = True
+            return response
+
+        def get_state_ref(self) -> object:
+            if self._raise_after_cas:
+                raise RuntimeError("synthetic unexpected post-CAS error")
+            return super().get_state_ref()
+
+    with pytest.raises(RuntimeError, match="synthetic unexpected"):
+        module.StateBranchStore(UnexpectedPostCasReadRemote()).sync(
+            _bundle(module, parent=observed_head),
+            observed_head,
+        )
+
+
 def test_sync_secret_canary_fails_before_first_blob_creation() -> None:
     module = _state_module()
     observed_head = "4" * 40

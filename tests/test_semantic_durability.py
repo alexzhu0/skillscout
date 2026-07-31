@@ -647,6 +647,54 @@ def test_every_export_cas_reread_and_verification_failure_blocks_guarded_effect(
         pipeline.close()
 
 
+def test_semantic_durability_never_recovers_a_post_cas_uncertainty(
+    tmp_path: Path,
+) -> None:
+    """Only the authority-carrier path may run the stricter recovery proof."""
+
+    module = _state_branch()
+    pipeline, operations, publication, request, prior_bundle = _owned_stores(
+        tmp_path,
+        stage="extractor",
+        transition="attempt_started",
+    )
+
+    class LostFirstPostCasReadRemote(_Remote):
+        def __init__(self) -> None:
+            super().__init__(module, prior_bundle=prior_bundle)
+            self._lose_next_post_cas_ref_read = False
+
+        def update_state_ref(self, sha: str, *, force: bool):
+            response = super().update_state_ref(sha, force=force)
+            self._lose_next_post_cas_ref_read = True
+            return response
+
+        def get_state_ref(self):
+            if self._lose_next_post_cas_ref_read:
+                self._lose_next_post_cas_ref_read = False
+                raise module.SafeFailure(module.ErrorCode.STAGE_TRANSIENT_FAILURE)
+            return super().get_state_ref()
+
+    remote = LostFirstPostCasReadRemote()
+    try:
+        with pytest.raises(_ports().SafeFailure) as failure:
+            _barrier(remote).confirm(
+                transition=request,
+                pipeline_store=pipeline,
+                operations_store=operations,
+                publication_store=publication,
+            )
+        assert failure.value.code is _ports().ErrorCode.STATE_OPERATION_FAILED
+        # A generic semantic barrier must not fall through to a full-bundle
+        # restore after an uncertain write; only authority-carrier has the
+        # extra exact authority/locator proof needed for that recovery.
+        assert remote.blob_reads == 0
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+
 def test_stale_export_and_missing_attempt_transition_fail_before_remote_write(
     tmp_path: Path,
 ) -> None:

@@ -773,12 +773,19 @@ def record_live_acceptance_authority(
         fact=authority,
     )
     with OperationsStateStore(Path(_DISCOVERY_DATABASE_LOCATORS[1])) as operations:
-        synchronized = _LateStateDurabilityBarrier(config, source).sync_discovery(
+        barrier = _LateStateDurabilityBarrier(config, source)
+        barrier.configure_acceptance_resume(
+            authority=authority,
+            acceptance_run_id=acceptance_run_id,
+            lineage_commit_shas=(state_commit_sha,),
+            lineage_root_digests=(state_root_digest,),
+        )
+        synchronized = barrier.sync_discovery(
             operations_store=operations,
             observed_head=state_commit_sha,
             prior_root_digest=state_root_digest,
             created_at=_discovery_timestamp(),
-            transition_phase="live_authority_recorded",
+            transition_phase="authority_carrier",
         )
     if (
         getattr(synchronized, "status", None) != "verified"
@@ -1191,6 +1198,85 @@ class _LateStateDurabilityBarrier:
         self._pending_resume_locator = locator
         return locator
 
+    def _verify_authority_carrier_recovery(
+        self,
+        *,
+        operations_store: object,
+        observed_head: str,
+        prior_root_digest: str,
+    ) -> None:
+        """Prove the one locally assembled authority-carrier fact delta.
+
+        The state-branch recovery below compares the complete remote bundle
+        byte-for-byte with this local bundle.  Before allowing that recovery,
+        establish that this local child contains exactly the authority and
+        first locator it is supposed to carry, rather than merely a matching
+        root digest.
+        """
+
+        from skillscout.adapters.operations_state import (
+            AcceptanceFactRecord,
+            AcceptanceRunSnapshot,
+        )
+        from skillscout.domain.acceptance import (
+            AcceptanceCampaignResumeLocatorV1,
+            LiveAcceptanceAuthorityV1,
+        )
+
+        resume = self._acceptance_resume
+        locator = self._pending_resume_locator
+        if (
+            resume is None
+            or type(locator) is not AcceptanceCampaignResumeLocatorV1
+            or type(resume.get("authority")) is not LiveAcceptanceAuthorityV1
+            or type(resume.get("acceptance_run_id")) is not str
+        ):
+            raise ValueError("authority carrier recovery proof rejected")
+        authority = resume["authority"]
+        acceptance_run_id = resume["acceptance_run_id"]
+        if (
+            authority.authority_digest is None
+            or locator.acceptance_run_id != acceptance_run_id
+            or locator.live_acceptance_authority_digest != authority.authority_digest
+            or locator.original_state_commit_sha != authority.state_commit_sha
+            or locator.original_state_root_digest != authority.state_root_digest
+            or locator.parent_state_commit_sha != observed_head
+            or locator.parent_state_root_digest != prior_root_digest
+            or locator.transition_index != 1
+            or locator.previous_locator_digest is not None
+            or locator.transition_phase != "authority_carrier"
+        ):
+            raise ValueError("authority carrier recovery proof rejected")
+        snapshot_reader = getattr(operations_store, "acceptance_snapshot", None)
+        if not callable(snapshot_reader):
+            raise ValueError("authority carrier recovery proof rejected")
+        snapshot = snapshot_reader(acceptance_run_id)
+        if (
+            type(snapshot) is not AcceptanceRunSnapshot
+            or snapshot.acceptance_run_id != acceptance_run_id
+            or any(type(record) is not AcceptanceFactRecord for record in snapshot.facts)
+        ):
+            raise ValueError("authority carrier recovery proof rejected")
+        authorities = tuple(
+            record
+            for record in snapshot.facts
+            if record.kind == "acceptance_live_authority"
+        )
+        locators = tuple(
+            record
+            for record in snapshot.facts
+            if record.kind == "acceptance_campaign_resume_locator"
+        )
+        if (
+            len(authorities) != 1
+            or authorities[0].fact_digest != authority.authority_digest
+            or authorities[0].fact != authority
+            or len(locators) != 1
+            or locators[0].fact_digest != locator.locator_digest
+            or locators[0].fact != locator
+        ):
+            raise ValueError("authority carrier recovery proof rejected")
+
     def prepare_acceptance_transition(
         self,
         *,
@@ -1305,6 +1391,7 @@ class _LateStateDurabilityBarrier:
         from skillscout.adapters.state import SQLiteStateStore
         from skillscout.adapters.state_branch import (
             StateBranchClient,
+            StateBranchPostCasUncertain,
             StateBranchStore,
             StateSyncObservation,
         )
@@ -1355,7 +1442,22 @@ class _LateStateDurabilityBarrier:
                 created_at=created_at,
             )
             store = StateBranchStore(client)
-            synchronized = store.sync(bundle, observed_head)
+            try:
+                synchronized = store.sync(bundle, observed_head)
+            except StateBranchPostCasUncertain as uncertainty:
+                if transition_phase != "authority_carrier":
+                    raise
+                self._verify_authority_carrier_recovery(
+                    operations_store=operations_store,
+                    observed_head=observed_head,
+                    prior_root_digest=prior_root_digest,
+                )
+                synchronized = store.reconcile_post_cas_uncertainty(
+                    uncertainty,
+                    bundle,
+                    observed_head,
+                    expected_prior_root_digest=prior_root_digest,
+                )
             if (
                 type(synchronized) is not StateSyncObservation
                 or synchronized.status != "verified"

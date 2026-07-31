@@ -781,13 +781,18 @@ def test_live_authority_recording_upgrades_legacy_state_before_authority_write(
         def __init__(self, _config: object, _environ: object) -> None:
             pass
 
-        def sync_discovery(self, **_kwargs: object) -> object:
+        def configure_acceptance_resume(self, **arguments: object) -> None:
+            configured.append(arguments)
+
+        def sync_discovery(self, **arguments: object) -> object:
+            assert arguments["transition_phase"] == "authority_carrier"
             return SimpleNamespace(
                 status="verified",
                 commit_sha="5" * 40,
                 root_digest="sha256:" + ("6" * 64),
             )
 
+    configured: list[dict[str, object]] = []
     monkeypatch.setattr(acceptance, "record_live_authority", record_without_external_capability)
     monkeypatch.setattr(bootstrap, "_LateStateDurabilityBarrier", VerifiedBarrier)
 
@@ -804,6 +809,14 @@ def test_live_authority_recording_upgrades_legacy_state_before_authority_write(
 
     assert result["status"] == "live_authority_persisted"
     assert recorded_schema_fingerprints == [operations_state._schema_fingerprint()]
+    assert configured == [
+        {
+            "authority": authority,
+            "acceptance_run_id": "acceptance-legacy-authority",
+            "lineage_commit_shas": ("3" * 40,),
+            "lineage_root_digests": ("sha256:" + ("4" * 64),),
+        }
+    ]
 
 
 def test_live_authority_recording_rejects_parent_authority_without_migration(
@@ -1204,6 +1217,23 @@ def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() 
     assert locator.locator_digest == sha256_digest(values)
     assert locator.parent_state_commit_sha == "6" * 40
     assert locator.parent_state_root_digest == "sha256:" + ("7" * 64)
+    authority_carrier = AcceptanceCampaignResumeLocatorV1(
+        **{
+            **values,
+            "transition_phase": "authority_carrier",
+        }
+    )
+    assert authority_carrier.semantic_stage is None
+    with pytest.raises(ValidationError):
+        AcceptanceCampaignResumeLocatorV1(
+            **{
+                **values,
+                "transition_phase": "authority_carrier",
+                "semantic_stage": "extractor",
+                "attempt_no": 1,
+                "workflow_authority_digest": "sha256:" + ("9" * 64),
+            }
+        )
     with pytest.raises(ValidationError):
         AcceptanceCampaignResumeLocatorV1(
             **{
@@ -1812,6 +1842,199 @@ def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
     ]
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ("exact", "missing_authority", "missing_locator", "wrong_locator"),
+)
+def test_authority_carrier_post_cas_recovery_requires_exact_authority_and_locator(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """A live-authority recovery needs its exact local fact carrier before CAS proof."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.bootstrap as bootstrap
+    from skillscout.adapters.operations_state import (
+        AcceptanceFactRecord,
+        AcceptanceRunSnapshot,
+    )
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    parent_commit = "4" * 40
+    parent_root = "sha256:" + ("5" * 64)
+    child_commit = "6" * 40
+    child_tree = "7" * 40
+    child_root = "sha256:" + ("8" * 64)
+    authority = LiveAcceptanceAuthorityV1.model_construct(
+        authority_digest="sha256:" + ("1" * 64),
+        source_commit_sha="2" * 40,
+        manifest_digest="sha256:" + ("3" * 64),
+        state_commit_sha=parent_commit,
+        state_root_digest=parent_root,
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        semantic_provider="deepseek",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+    )
+
+    class Operations:
+        def __init__(self) -> None:
+            authority_fact = authority
+            if mutation == "missing_authority":
+                authority_fact = authority.model_copy(
+                    update={"authority_digest": "sha256:" + ("9" * 64)}
+                )
+            self.facts = (
+                ()
+                if mutation == "missing_authority"
+                else (
+                    AcceptanceFactRecord(
+                        acceptance_run_id="acceptance-recovery",
+                        kind="acceptance_live_authority",
+                        fact_digest=authority_fact.authority_digest or "",
+                        fact=authority_fact,
+                    ),
+                )
+            )
+
+        def record_acceptance_fact(
+            self,
+            run_id: str,
+            kind: str,
+            fact: object,
+        ) -> object:
+            assert run_id == "acceptance-recovery"
+            assert kind == "acceptance_campaign_resume_locator"
+            if mutation != "missing_locator":
+                persisted = fact
+                if mutation == "wrong_locator":
+                    persisted = fact.model_copy(
+                        update={"locator_digest": "sha256:" + ("a" * 64)}
+                    )
+                self.facts = (*self.facts, AcceptanceFactRecord(
+                    acceptance_run_id=run_id,
+                    kind="acceptance_campaign_resume_locator",
+                    fact_digest=persisted.locator_digest,
+                    fact=persisted,
+                ))
+            return object()
+
+        def acceptance_snapshot(self, run_id: str) -> AcceptanceRunSnapshot:
+            assert run_id == "acceptance-recovery"
+            return AcceptanceRunSnapshot(run_id, self.facts)
+
+    reconciliations: list[tuple[object, object, object, object]] = []
+
+    class Client:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Store:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def sync(self, _bundle: object, _head: str) -> object:
+            raise state_branch.StateBranchPostCasUncertain(
+                candidate_commit_sha=child_commit,
+                candidate_tree_sha=child_tree,
+                previous_head=parent_commit,
+                expected_root_digest=child_root,
+            )
+
+        def reconcile_post_cas_uncertainty(
+            self,
+            failure: object,
+            bundle: object,
+            observed_head: object,
+            *,
+            expected_prior_root_digest: object,
+        ) -> object:
+            reconciliations.append(
+                (failure, bundle, observed_head, expected_prior_root_digest)
+            )
+            return state_branch.StateSyncObservation(
+                "verified",
+                parent_commit,
+                child_commit,
+                child_tree,
+                child_root,
+            )
+
+    monkeypatch.setattr(state_branch, "StateBranchClient", Client)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        operations_state,
+        "assemble_three_store_bundle",
+        lambda **_kwargs: SimpleNamespace(root=SimpleNamespace(root_digest=child_root)),
+    )
+    barrier = bootstrap._LateStateDurabilityBarrier(
+        SimpleNamespace(
+            state_repository_id=123,
+            state_repository_full_name="example/state",
+            query_set_digest="sha256:" + ("b" * 64),
+        ),
+        {"SKILLSCOUT_STATE_GITHUB_TOKEN": "fixture-token"},
+        frozen_publication_export=SimpleNamespace(
+            export_digest="sha256:" + ("c" * 64)
+        ),
+    )
+    barrier.configure_acceptance_resume(
+        authority=authority,
+        acceptance_run_id="acceptance-recovery",
+        lineage_commit_shas=(parent_commit,),
+        lineage_root_digests=(parent_root,),
+    )
+
+    if mutation == "exact":
+        synchronized = barrier.sync_discovery(
+            operations_store=Operations(),
+            observed_head=parent_commit,
+            prior_root_digest=parent_root,
+            created_at="2026-07-31T12:00:00.000000Z",
+            pipeline_store=object(),
+            transition_phase="authority_carrier",
+        )
+        assert synchronized.commit_sha == child_commit
+        assert len(reconciliations) == 1
+    else:
+        with pytest.raises(ValueError, match="authority carrier recovery proof"):
+            barrier.sync_discovery(
+                operations_store=Operations(),
+                observed_head=parent_commit,
+                prior_root_digest=parent_root,
+                created_at="2026-07-31T12:00:00.000000Z",
+                pipeline_store=object(),
+                transition_phase="authority_carrier",
+            )
+        assert reconciliations == []
+
+
 def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> None:
     """Every accepted child has a named, chained transition and durable locator."""
 
@@ -2252,6 +2475,7 @@ def test_every_exported_transition_sequence_owns_its_exact_fact_delta() -> None:
 
     phases = (
         ("nomination", ("acceptance_nomination",)),
+        ("authority_carrier", ("acceptance_live_authority",)),
         ("discovery_page", ("search_page", "candidate")),
         ("discovery_reservation", ("discovery_reservation",)),
         ("discovery_summary", ("run_summary",)),
@@ -2321,6 +2545,76 @@ def test_every_exported_transition_sequence_owns_its_exact_fact_delta() -> None:
         parent_facts = child.owned_facts
         parent_commit = child_commit
         parent_root = child_root
+
+
+def test_authority_carrier_transition_requires_only_one_live_authority_fact() -> None:
+    """The post-approval carrier may add only the authority it carries."""
+
+    from skillscout.application.acceptance import (
+        CampaignOwnedFactObservation,
+        CampaignStateLineageObservation,
+        _verify_campaign_transition_fact_delta,
+    )
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    parent = CampaignStateLineageObservation(
+        commit_sha="1" * 40,
+        root_digest="sha256:" + ("2" * 64),
+        parent_commit_sha="0" * 40,
+        prior_root_digest="sha256:" + ("0" * 64),
+        object_digests=(),
+        owned_facts=(),
+    )
+    carrier = CampaignOwnedFactObservation(
+        kind="acceptance_live_authority",
+        object_digest="sha256:" + ("3" * 64),
+    )
+    locator = AcceptanceCampaignResumeLocatorV1.model_construct(
+        transition_phase="authority_carrier",
+    )
+    accepted_child = CampaignStateLineageObservation(
+        commit_sha="4" * 40,
+        root_digest="sha256:" + ("5" * 64),
+        parent_commit_sha=parent.commit_sha,
+        prior_root_digest=parent.root_digest,
+        object_digests=(),
+        owned_facts=(carrier,),
+    )
+    _verify_campaign_transition_fact_delta(
+        locator=locator,
+        parent=parent,
+        child=accepted_child,
+    )
+
+    for invalid_facts in (
+        (),
+        (
+            CampaignOwnedFactObservation(
+                kind="acceptance_scenario",
+                object_digest="sha256:" + ("6" * 64),
+            ),
+        ),
+        (
+            carrier,
+            CampaignOwnedFactObservation(
+                kind="acceptance_scenario",
+                object_digest="sha256:" + ("7" * 64),
+            ),
+        ),
+    ):
+        with pytest.raises(ValueError, match="typed fact delta"):
+            _verify_campaign_transition_fact_delta(
+                locator=locator,
+                parent=parent,
+                child=CampaignStateLineageObservation(
+                    commit_sha="8" * 40,
+                    root_digest="sha256:" + ("9" * 64),
+                    parent_commit_sha=parent.commit_sha,
+                    prior_root_digest=parent.root_digest,
+                    object_digests=(),
+                    owned_facts=invalid_facts,
+                ),
+            )
 
 
 @pytest.mark.parametrize(

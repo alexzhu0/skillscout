@@ -1029,6 +1029,7 @@ def _acceptance_resume_projection_from_bundle(
         "candidate_terminal",
         "run_summary",
         "acceptance_nomination",
+        "acceptance_live_authority",
         "acceptance_budget_reservation",
         "acceptance_fixed_candidate_admission",
         "acceptance_semantic_request_reservation",

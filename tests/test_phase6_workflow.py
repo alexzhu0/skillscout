@@ -849,6 +849,7 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
 
     nomination = _job(source, "nominate")
     offline = _job(source, "offline_adversarial")
+    preflight = _job(source, "live_authority_preflight")
     benchmark = _job(source, "live_benchmark")
     replay = _job(source, "live_replay")
     changed = _job(source, "changed_source")
@@ -902,7 +903,7 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert human.index("verify-live-authority-state") < human.rindex(
         "record-live-authority"
     )
-    for job in (benchmark, replay, human):
+    for job in (preflight, benchmark, replay, human):
         assert "UV_LINK_MODE: copy" in job
     assert "DEEPSEEK_API_KEY" not in human
     assert "SKILLSCOUT_LLM_PROVIDER: deepseek" in human

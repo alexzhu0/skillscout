@@ -381,6 +381,7 @@ class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
     previous_locator_digest: Digest | None
     transition_phase: Literal[
         "nomination",
+        "authority_carrier",
         "discovery_page",
         "discovery_reservation",
         "discovery_summary",

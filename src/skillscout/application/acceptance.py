@@ -230,6 +230,7 @@ def _verify_campaign_transition_fact_delta(
     added = tuple(child_facts[digest] for digest in sorted(set(child_facts) - set(parent_facts)))
     required_kinds = {
         "nomination": "acceptance_nomination",
+        "authority_carrier": "acceptance_live_authority",
         "discovery_page": "search_page",
         "discovery_reservation": "discovery_reservation",
         "discovery_summary": "run_summary",

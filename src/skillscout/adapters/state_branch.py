@@ -70,6 +70,30 @@ class StateBranchConflict(Exception):
     """Closed signal for a changed or unverifiable remote state head."""
 
 
+class StateBranchPostCasUncertain(StateBranchConflict):
+    """A fixed ref write may have landed but its immediate verification failed.
+
+    This is deliberately narrower than a general state-branch conflict.  It is
+    constructed only after the candidate commit exists and a create/update-ref
+    request has been attempted, so a caller can perform one exact immutable
+    recovery proof without treating unrelated errors as successful writes.
+    """
+
+    def __init__(
+        self,
+        *,
+        candidate_commit_sha: str,
+        candidate_tree_sha: str,
+        previous_head: str | None,
+        expected_root_digest: str,
+    ) -> None:
+        self.candidate_commit_sha = candidate_commit_sha
+        self.candidate_tree_sha = candidate_tree_sha
+        self.previous_head = previous_head
+        self.expected_root_digest = expected_root_digest
+        super().__init__("post-CAS state verification is uncertain")
+
+
 class StateRefNotFound(Exception):
     """The exact fixed state ref does not exist."""
 
@@ -938,18 +962,92 @@ class StateBranchStore:
             tree_sha,
             parents,
         )
-        if expected_parent is None:
-            response = self._remote.create_state_ref(commit_sha)
-        else:
-            response = self._remote.update_state_ref(commit_sha, force=False)
-        if response.sha != commit_sha:
+        try:
+            if expected_parent is None:
+                response = self._remote.create_state_ref(commit_sha)
+            else:
+                response = self._remote.update_state_ref(commit_sha, force=False)
+            if response.sha != commit_sha:
+                raise StateBranchConflict
+            return self._verify_sync(
+                bundle,
+                previous_head=expected_parent,
+                commit_sha=commit_sha,
+                tree_sha=tree_sha,
+                expected_files=files,
+            )
+        except (
+            SafeFailure,
+            StateBranchConflict,
+            StateIntegrityFailure,
+            StateRefNotFound,
+        ) as error:
+            # No broad exception handling here: only the known ref-write or
+            # immediate verification failures can be reconciled by proving the
+            # exact candidate commit remotely.  Programming errors and any
+            # other unexpected condition must propagate unchanged.
+            raise StateBranchPostCasUncertain(
+                candidate_commit_sha=commit_sha,
+                candidate_tree_sha=tree_sha,
+                previous_head=expected_parent,
+                expected_root_digest=bundle.root.root_digest,
+            ) from error
+
+    def reconcile_post_cas_uncertainty(
+        self,
+        failure: StateBranchPostCasUncertain,
+        bundle: VerifiedStateBundle,
+        observed_head: str | None,
+        *,
+        expected_prior_root_digest: str | None = None,
+    ) -> StateSyncObservation:
+        """Recover only a fully proven exact child after a post-CAS read loss."""
+
+        if type(failure) is not StateBranchPostCasUncertain:
+            raise StateIntegrityFailure
+        expected_parent = None if observed_head is None else _sha(observed_head)
+        files = _validate_bundle(bundle, expected_parent=expected_parent)
+        if (
+            expected_prior_root_digest is not None
+            and bundle.root.prior_root_digest
+            != _require_digest(expected_prior_root_digest)
+        ):
+            raise StateIntegrityFailure
+        if (
+            failure.previous_head != expected_parent
+            or failure.expected_root_digest != bundle.root.root_digest
+            or _SHA.fullmatch(failure.candidate_commit_sha) is None
+            or _SHA.fullmatch(failure.candidate_tree_sha) is None
+        ):
             raise StateBranchConflict
-        return self._verify_sync(
-            bundle,
-            previous_head=expected_parent,
-            commit_sha=commit_sha,
-            tree_sha=tree_sha,
-            expected_files=files,
+
+        restored = self.restore()
+        if (
+            restored.status != "verified"
+            or restored.observed_head != failure.candidate_commit_sha
+            or restored.bundle is None
+        ):
+            raise StateBranchConflict
+        proof = self.inspect_commit_root(failure.candidate_commit_sha)
+        expected_parents = () if expected_parent is None else (expected_parent,)
+        if (
+            proof.commit.sha != failure.candidate_commit_sha
+            or proof.commit.tree_sha != failure.candidate_tree_sha
+            or proof.commit.parents != expected_parents
+            or proof.commit.message != _state_commit_message(bundle.root.root_digest)
+            or proof.root != bundle.root
+            or proof.root.root_digest != bundle.root.root_digest
+            or restored.bundle.root != bundle.root
+            or restored.bundle.content_by_path() != files
+            or len(restored.bundle.files) != len(bundle.files)
+        ):
+            raise StateBranchConflict
+        return StateSyncObservation(
+            "verified",
+            expected_parent,
+            failure.candidate_commit_sha,
+            failure.candidate_tree_sha,
+            bundle.root.root_digest,
         )
 
     def _verify_sync(
@@ -1100,6 +1198,12 @@ class StateBranchDurabilityBarrier:
                 expected_prior_root_digest=(transition.expected_prior_root_digest),
             )
             verified_head = synchronized.commit_sha
+        except StateBranchPostCasUncertain:
+            # This narrow uncertainty is recoverable only by the
+            # authority-carrier path, which additionally proves its exact
+            # authority and resume-locator fact delta before a full-bundle
+            # reconciliation.  Semantic durability stays fail-closed here.
+            raise
         except StateBranchConflict:
             reread = self._state_store.restore()
             if (
