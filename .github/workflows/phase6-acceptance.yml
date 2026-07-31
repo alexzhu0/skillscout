@@ -15,9 +15,14 @@ on:
           - run-replay
           - run-changed-source
           - gate-b4-and-publish
+          - record-live-authority
           - record-human-review
           - record-probe-cleanup
           - rebuild-report
+      live_authority_json:
+        description: Canonical non-secret LiveAcceptanceAuthorityV1 JSON for one approved benchmark
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -1739,15 +1744,23 @@ jobs:
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action publication --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
 
   human_attestation:
-    if: ${{ inputs.phase6_action == 'record-human-review' }}
+    if: ${{ inputs.phase6_action == 'record-human-review' || (inputs.phase6_action == 'record-live-authority' && github.actor == 'alexzhu0') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
     env:
+      SKILLSCOUT_LLM_PROVIDER: deepseek
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
+      PHASE6_ACTION: ${{ inputs.phase6_action }}
       PHASE6_ATTESTATION: evidence/phase6/human-review.json
-      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
-      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      PHASE6_LIVE_AUTHORITY_JSON: ${{ inputs.live_authority_json }}
+      PHASE6_SOURCE_COMMIT_SHA: ${{ github.sha }}
+      SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
+      SKILLSCOUT_PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
+      SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
       SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Check out the dispatched commit
@@ -1832,11 +1845,32 @@ jobs:
             printf 'UV_MANAGED_PYTHON=1\n'
             printf 'UV_PYTHON_DOWNLOADS=never\n'
           } >> "${GITHUB_ENV}"
-      - name: Record only the bounded human review attestation
+      - name: Record only the selected bounded human authority fact
         run: |
           set -euo pipefail
-          test -f "$PHASE6_ATTESTATION"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-acceptance-attestation --attestation "$PHASE6_ATTESTATION" --kind human-review --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          if [[ "$PHASE6_ACTION" == "record-human-review" ]]; then
+            test -f "$PHASE6_ATTESTATION"
+            .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-acceptance-attestation --attestation "$PHASE6_ATTESTATION" --kind human-review --state-commit-sha "${SKILLSCOUT_PHASE6_STATE_COMMIT_SHA:?}" --state-root-digest "${SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST:?}"
+            exit 0
+          fi
+          test "$PHASE6_ACTION" = "record-live-authority"
+          authority_path="${RUNNER_TEMP}/phase6-live-authority.json"
+          umask 077
+          PHASE6_AUTHORITY_PATH="$authority_path" .venv/bin/python -I - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          raw = os.environ["PHASE6_LIVE_AUTHORITY_JSON"]
+          if not 1 <= len(raw.encode("utf-8")) <= 1_048_576:
+              raise SystemExit("invalid live authority input size")
+          if type(json.loads(raw)) is not dict:
+              raise SystemExit("live authority input must be an object")
+          destination = Path(os.environ["PHASE6_AUTHORITY_PATH"])
+          destination.write_text(raw, encoding="utf-8")
+          destination.chmod(0o600)
+          PY
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-live-authority --authority "$authority_path" --acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}" --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA"
 
   cleanup_attestation:
     if: ${{ inputs.phase6_action == 'record-probe-cleanup' }}

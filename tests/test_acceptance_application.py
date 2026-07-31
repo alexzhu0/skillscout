@@ -38,6 +38,7 @@ REQUIRED_APPLICATION_CONTRACTS = (
     "ReplayUpdateDependencies",
     "HumanAttestationDependencies",
     "CleanupAttestationDependencies",
+    "LiveAuthorityDependencies",
     "AcceptanceRebuildDependencies",
 )
 
@@ -280,9 +281,7 @@ def test_nomination_application_persists_fact_before_exact_state_cas(
     recorded = []
 
     class Store:
-        def record_acceptance_fact(
-            self, acceptance_run_id: str, kind: str, fact: object
-        ) -> object:
+        def record_acceptance_fact(self, acceptance_run_id: str, kind: str, fact: object) -> object:
             from skillscout.adapters.operations_state import AcceptanceFactRecord
 
             recorded.append((acceptance_run_id, kind, fact))
@@ -379,9 +378,9 @@ def test_offline_and_rebuild_application_surfaces_cannot_construct_live_adapters
     module = _application_module(skip_if_missing=True)
     offline = getattr(module, "OfflineEvaluationDependencies", None)
     if offline is not None:
-        assert {
-            field.name for field in dataclasses.fields(offline)
-        }.isdisjoint(LIVE_CAPABILITY_FIELDS | EVALUATOR_ONLY_FIELDS)
+        assert {field.name for field in dataclasses.fields(offline)}.isdisjoint(
+            LIVE_CAPABILITY_FIELDS | EVALUATOR_ONLY_FIELDS
+        )
     rebuild = _field_names("AcceptanceRebuildDependencies")
     assert rebuild.isdisjoint(
         {
@@ -439,19 +438,14 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT
-        / ".planning/phases/06-adversarial-mvp-acceptance"
-        / "06-BENCHMARK-MANIFEST.json"
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
     )
     live_authority = LiveAcceptanceAuthorityV1(
         schema_version="live-acceptance-authority-v1",
         authority_version=1,
         source_commit_sha="c" * 40,
         acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
-        ),
+        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
         manifest_digest=manifest.manifest_digest,
         nomination_set_digest=manifest.nomination_set_digest,
         lock_attestation_digest=manifest.lock_attestation.attestation_digest,
@@ -533,30 +527,28 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                 workflow_fingerprint=None,
                 workflow_spec_authority_digest=None,
                 eligible_locator=None,
-                    semantic_request_count=1,
-                    semantic_attempt_digests=(authority.entry_digest,),
-                    semantic_telemetry=(
-                        module.AcceptanceSemanticTelemetryV1(
-                            schema_version="acceptance-semantic-telemetry-v1",
-                            live_acceptance_authority_digest=(
-                                live_authority.authority_digest
-                            ),
-                            stage="extractor",
-                            workflow_spec_authority_digest=authority.entry_digest,
-                            attempt_no=1,
-                            request_id=f"request-{authority.repository_id}",
-                            actual_model="deepseek-v4-flash",
-                            prompt_version="extract-prompt-v1",
-                            output_schema_version="workflow-spec-v1",
-                            policy_version="extract-policy-v1",
-                            prompt_tokens=10,
-                            completion_tokens=5,
-                            total_tokens=15,
-                            latency_ms=20,
-                        ),
+                semantic_request_count=1,
+                semantic_attempt_digests=(authority.entry_digest,),
+                semantic_telemetry=(
+                    module.AcceptanceSemanticTelemetryV1(
+                        schema_version="acceptance-semantic-telemetry-v1",
+                        live_acceptance_authority_digest=(live_authority.authority_digest),
+                        stage="extractor",
+                        workflow_spec_authority_digest=authority.entry_digest,
+                        attempt_no=1,
+                        request_id=f"request-{authority.repository_id}",
+                        actual_model="deepseek-v4-flash",
+                        prompt_version="extract-prompt-v1",
+                        output_schema_version="workflow-spec-v1",
+                        policy_version="extract-policy-v1",
+                        prompt_tokens=10,
+                        completion_tokens=5,
+                        total_tokens=15,
+                        latency_ms=20,
                     ),
-                    actual_models=("deepseek-v4-flash",),
-                )
+                ),
+                actual_models=("deepseek-v4-flash",),
+            )
 
         def close(self) -> None:
             return None
@@ -590,9 +582,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                 ),
             )
 
-        def record_acceptance_fact(
-            self, acceptance_run_id: str, kind: str, fact: object
-        ) -> object:
+        def record_acceptance_fact(self, acceptance_run_id: str, kind: str, fact: object) -> object:
             persisted.append(fact)
             return module.AcceptanceFactRecord(
                 acceptance_run_id=acceptance_run_id,
@@ -635,8 +625,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
         entry.repository_id for entry in manifest.entries
     )
     assert all(
-        not hasattr(item, "coverage_role")
-        and not hasattr(item, "expected_outcome")
+        not hasattr(item, "coverage_role") and not hasattr(item, "expected_outcome")
         for item in observed
     )
     assert all(item.terminal_class == "business_terminal" for item in persisted)
@@ -677,10 +666,7 @@ def _live_authority_for_manifest(manifest: Any) -> LiveAcceptanceAuthorityV1:
         authority_version=1,
         source_commit_sha="c" * 40,
         acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
-        ),
+        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
         manifest_digest=manifest.manifest_digest,
         nomination_set_digest=manifest.nomination_set_digest,
         lock_attestation_digest=manifest.lock_attestation.attestation_digest,
@@ -731,6 +717,71 @@ def _live_authority_for_manifest(manifest: Any) -> LiveAcceptanceAuthorityV1:
     )
 
 
+def test_live_authority_recorder_allows_one_exact_authority_only() -> None:
+    """A later dispatch cannot replace the human-approved authority in-place."""
+
+    module = _application_module(skip_if_missing=False)
+    manifest = module.load_locked_benchmark_manifest(
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+    )
+    authority = _live_authority_for_manifest(manifest)
+    persisted: list[Any] = []
+
+    class Store:
+        def acceptance_snapshot(self, acceptance_run_id: str) -> Any:
+            assert acceptance_run_id == "acceptance-live-five"
+            return module.AcceptanceRunSnapshot(
+                acceptance_run_id=acceptance_run_id,
+                facts=tuple(persisted),
+            )
+
+        def record_acceptance_fact(
+            self,
+            acceptance_run_id: str,
+            kind: str,
+            fact: Any,
+        ) -> Any:
+            record = module.AcceptanceFactRecord(
+                acceptance_run_id=acceptance_run_id,
+                kind=kind,
+                fact_digest=fact.authority_digest,
+                fact=fact,
+            )
+            if not persisted:
+                persisted.append(record)
+            return record
+
+        def close(self) -> None:
+            return None
+
+    dependencies = module.LiveAuthorityDependencies(operations_store_factory=Store)
+    first = module.record_live_authority(
+        dependencies,
+        acceptance_run_id="acceptance-live-five",
+        fact=authority,
+    )
+    assert first.fact_digest == authority.authority_digest
+    assert len(persisted) == 1
+    repeated = module.record_live_authority(
+        dependencies,
+        acceptance_run_id="acceptance-live-five",
+        fact=authority,
+    )
+    assert repeated.fact_digest == authority.authority_digest
+    persisted[0] = module.AcceptanceFactRecord(
+        acceptance_run_id="acceptance-live-five",
+        kind="acceptance_live_authority",
+        fact_digest="sha256:" + ("f" * 64),
+        fact=authority,
+    )
+    with pytest.raises(module.AcceptanceApplicationError, match="unauthorized_effect"):
+        module.record_live_authority(
+            dependencies,
+            acceptance_run_id="acceptance-live-five",
+            fact=authority,
+        )
+
+
 def _run_attempt_boundary_benchmark(
     *,
     outcome: str,
@@ -741,9 +792,7 @@ def _run_attempt_boundary_benchmark(
 ) -> tuple[Any | None, list[Any]]:
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT
-        / ".planning/phases/06-adversarial-mvp-acceptance"
-        / "06-BENCHMARK-MANIFEST.json"
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
     )
     live_authority = _live_authority_for_manifest(manifest)
     persisted: list[Any] = []
@@ -763,9 +812,7 @@ def _run_attempt_boundary_benchmark(
                 (
                     module.AcceptanceSemanticTelemetryV1(
                         schema_version="acceptance-semantic-telemetry-v1",
-                        live_acceptance_authority_digest=(
-                            live_authority.authority_digest
-                        ),
+                        live_acceptance_authority_digest=(live_authority.authority_digest),
                         stage="extractor",
                         workflow_spec_authority_digest=authority.entry_digest,
                         attempt_no=telemetry_attempt,
@@ -842,9 +889,7 @@ def _run_attempt_boundary_benchmark(
                 ),
             )
 
-        def record_acceptance_fact(
-            self, acceptance_run_id: str, kind: str, fact: Any
-        ) -> Any:
+        def record_acceptance_fact(self, acceptance_run_id: str, kind: str, fact: Any) -> Any:
             persisted.append(fact)
             return module.AcceptanceFactRecord(
                 acceptance_run_id=acceptance_run_id,
@@ -932,9 +977,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT
-        / ".planning/phases/06-adversarial-mvp-acceptance"
-        / "06-BENCHMARK-MANIFEST.json"
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
     )
     events: list[str] = []
 
@@ -948,9 +991,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
             events.append("project")
             return module.CompletedBenchmarkProjection(
                 manifest_digest=manifest.manifest_digest,
-                scenario_result_digests=tuple(
-                    "sha256:" + f"{index:064x}" for index in range(1, 6)
-                ),
+                scenario_result_digests=tuple("sha256:" + f"{index:064x}" for index in range(1, 6)),
                 repository_id=manifest.entries[0].repository_id,
                 source_commit_sha=manifest.entries[0].exact_commit_sha,
                 workflow_fingerprint="sha256:" + ("a" * 64),
@@ -960,9 +1001,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
                 semantic_attempt_digests=tuple(
                     "sha256:" + f"{index:064x}" for index in range(11, 16)
                 ),
-                workflow_spec_authority_digests=(
-                    "sha256:" + ("b" * 64),
-                ),
+                workflow_spec_authority_digests=("sha256:" + ("b" * 64),),
                 skill_identity_digests=("sha256:" + ("c" * 64),),
                 candidate_fact_digests=tuple(
                     "sha256:" + f"{index:064x}" for index in range(21, 26)
@@ -980,9 +1019,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
             return None
 
     class Store:
-        def record_acceptance_fact(
-            self, acceptance_run_id: str, kind: str, fact: object
-        ) -> object:
+        def record_acceptance_fact(self, acceptance_run_id: str, kind: str, fact: object) -> object:
             events.append("record")
             persisted.append((kind, fact))
             return module.AcceptanceFactRecord(
@@ -1057,9 +1094,7 @@ def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> No
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT
-        / ".planning/phases/06-adversarial-mvp-acceptance"
-        / "06-BENCHMARK-MANIFEST.json"
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
     )
     calls = 0
 
@@ -1069,9 +1104,7 @@ def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> No
             calls += 1
             return module.CompletedBenchmarkProjection(
                 manifest_digest=manifest.manifest_digest,
-                scenario_result_digests=tuple(
-                    "sha256:" + f"{index:064x}" for index in range(1, 6)
-                ),
+                scenario_result_digests=tuple("sha256:" + f"{index:064x}" for index in range(1, 6)),
                 repository_id=manifest.entries[0].repository_id,
                 source_commit_sha=manifest.entries[0].exact_commit_sha,
                 workflow_fingerprint="sha256:" + ("a" * 64),
@@ -1079,8 +1112,7 @@ def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> No
                 eligible_locators=("state/objects/eligible.json",),
                 semantic_attempt_count=5 + (calls - 1),
                 semantic_attempt_digests=tuple(
-                    "sha256:" + f"{index:064x}"
-                    for index in range(11, 16 + (calls - 1))
+                    "sha256:" + f"{index:064x}" for index in range(11, 16 + (calls - 1))
                 ),
                 workflow_spec_authority_digests=("sha256:" + ("b" * 64),),
                 skill_identity_digests=("sha256:" + ("c" * 64),),
@@ -1100,9 +1132,7 @@ def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> No
             return None
 
     class Store:
-        def record_acceptance_fact(
-            self, acceptance_run_id: str, kind: str, fact: object
-        ) -> object:
+        def record_acceptance_fact(self, acceptance_run_id: str, kind: str, fact: object) -> object:
             return module.AcceptanceFactRecord(
                 acceptance_run_id=acceptance_run_id,
                 kind=kind,

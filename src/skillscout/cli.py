@@ -21,6 +21,7 @@ from skillscout.bootstrap import (
     derive_discovery_publication_admissions,
     discovery_run_authority,
     load_acceptance_attestation,
+    record_live_acceptance_authority,
     load_acceptance_runtime_config,
     load_verified_state_checkout,
     load_discovery_runtime_config,
@@ -207,6 +208,10 @@ def build_parser() -> SafeArgumentParser:
     )
     record_attestation.add_argument("--state-commit-sha", required=True)
     record_attestation.add_argument("--state-root-digest", required=True)
+    record_authority = commands.add_parser("record-live-authority")
+    record_authority.add_argument("--authority", required=True, type=Path)
+    record_authority.add_argument("--acceptance-run-id", required=True)
+    record_authority.add_argument("--source-commit-sha", required=True)
     rebuild_acceptance = commands.add_parser("rebuild-acceptance")
     rebuild_acceptance.add_argument("--acceptance-run-id", required=True)
     rebuild_acceptance.add_argument("--evidence-root-digest", required=True)
@@ -1236,8 +1241,11 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
             repository_root=Path.cwd().resolve(strict=True),
             authority_bytes=canonical_json_bytes(records[0].fact) + b"\n",
             observed_source_commit_sha=arguments.source_commit_sha,
-            observed_state_commit_sha=arguments.runtime_state_commit_sha,
-            observed_state_root_digest=arguments.runtime_state_root_digest,
+            # The checkout carries the authority fact as a later immutable
+            # state object.  The authority itself intentionally binds the
+            # earlier human-approved campaign root, not that carrier commit.
+            observed_state_commit_sha=records[0].fact.state_commit_sha,
+            observed_state_root_digest=records[0].fact.state_root_digest,
             observed_state_repository_id=arguments.state_repository_id,
             observed_state_repository_full_name=(arguments.state_repository_full_name),
         )
@@ -1318,6 +1326,38 @@ def _run_record_acceptance_attestation(
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
+def _run_record_live_authority(arguments: argparse.Namespace) -> dict[str, object]:
+    """Persist an exact human-approved benchmark authority with state-only scope."""
+
+    try:
+        protected_id, protected_name = _protected_state_repository()
+        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+        raw = _read_live_authority_input(arguments.authority)
+        proposed = LiveAcceptanceAuthorityV1.model_validate_json(raw, strict=True)
+        if (
+            proposed.state_repository_id != protected_id
+            or proposed.state_repository_full_name != protected_name
+        ):
+            raise ValueError
+        result = record_live_acceptance_authority(
+            authority_path=arguments.authority,
+            acceptance_run_id=arguments.acceptance_run_id,
+            source_commit_sha=arguments.source_commit_sha,
+            state_commit_sha=proposed.state_commit_sha,
+            state_root_digest=proposed.state_root_digest,
+            state_repository_id=protected_id,
+            state_repository_full_name=protected_name,
+        )
+        if type(result) is not dict or result.get("status") != "live_authority_persisted":
+            raise ValueError
+        return result
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def _run_rebuild_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
     """Rebuild one report-root fact from the operations-owned projection."""
 
@@ -1391,6 +1431,28 @@ def _read_discovery_handoff(path: Path) -> dict[str, object]:
         if type(decoded) is not dict:
             raise ValueError
         return decoded
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _read_live_authority_input(path: Path) -> bytes:
+    """Read one private canonical authority file without following links."""
+
+    try:
+        metadata = os.lstat(path)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o022
+            or not 1 <= metadata.st_size <= _MAX_CANDIDATE_EVIDENCE_BYTES
+        ):
+            raise ValueError
+        payload = path.read_bytes()
+        if len(payload) != metadata.st_size:
+            raise ValueError
+        return payload
     except Exception:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
@@ -1499,6 +1561,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_verify_acceptance_state(arguments)
         elif arguments.command == "record-acceptance-attestation":
             payload = _run_record_acceptance_attestation(arguments)
+        elif arguments.command == "record-live-authority":
+            payload = _run_record_live_authority(arguments)
         elif arguments.command == "rebuild-acceptance":
             payload = _run_rebuild_acceptance(arguments)
         elif arguments.command == "publish-discovered":

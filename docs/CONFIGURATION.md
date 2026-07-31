@@ -154,6 +154,12 @@ The workflow maps the three non-secret repository settings to the shorter proces
 
 <!-- VERIFY: Confirm the actual state repository ID, full name, initial root digest, and repository-variable scoping in GitHub Actions settings. -->
 
+### Phase 6 live-acceptance authority
+
+The `record-live-authority` Phase 6 dispatch action accepts only a canonical, non-secret `LiveAcceptanceAuthorityV1` JSON object. It is restricted to the configured reviewer identity and verifies the exact source commit, workflow bytes, locked five-repository manifest, state root, provider policy, prompt/schema versions, and 100/20 budgets before it opens the state credential. It writes one immutable `acceptance_live_authority` fact through the state-branch compare-and-swap boundary; it cannot call a model, read source repositories, create a catalog branch, open a Pull Request, approve, merge, or mark a Pull Request ready.
+
+The authority object is not a secret. Still, do not edit its JSON after approval or substitute its `acceptance_run_id`. Record the resulting immutable authority-state commit, root digest, authority digest, and acceptance-run ID in the four `SKILLSCOUT_PHASE6_AUTHORITY_*` / `SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID` repository variables before dispatching `run-benchmark` or `run-replay`. Those later jobs re-check the authority fact before they receive `DEEPSEEK_API_KEY`.
+
 ### Durable state branch
 
 Discovery state is fixed to `refs/heads/skillscout-state`; it is not a CLI-selectable ref. The branch contains:

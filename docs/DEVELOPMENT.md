@@ -63,6 +63,7 @@ The expected terminal status is `planned_not_published`, with `remote_writes_att
 | `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase3_acceptance.py` | Run the read-only Phase 3 architecture and supply-chain acceptance checks. |
 | `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase4_action_audit.py` | Verify the pinned GitHub Action audit evidence. |
 | `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase5_acceptance.py` | Run the independent, read-only Phase 5 operations acceptance inspector. |
+| `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_source_execution.py` | Verify the Phase 6 workflow has no unapproved source-execution or credential zone. |
 
 The repository currently configures Ruff with Python 3.13 syntax and a 100-character line length. It does not configure mypy or another static type-check command in `pyproject.toml`.
 
@@ -220,6 +221,7 @@ Run the directly affected tests during red/green development, then use the repos
 .tools/uv-0.11.29/bin/uv run --locked ruff format --check src tests tools
 .tools/uv-0.11.29/bin/uv run --locked pytest -q
 .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase5_acceptance.py
+.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_source_execution.py
 ```
 
 The independent acceptance inspector is read-only and mutation-tested. A green full suite without the applicable independent acceptance check is insufficient for workflow, budget, retry, state-ownership, or hosted-evidence changes.

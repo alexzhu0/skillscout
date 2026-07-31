@@ -664,6 +664,162 @@ def load_acceptance_attestation(
         raise ValueError("acceptance attestation rejected") from None
 
 
+def load_live_acceptance_authority(
+    *,
+    authority_path: Path,
+    observed_source_commit_sha: str,
+    observed_state_commit_sha: str,
+    observed_state_root_digest: str,
+    observed_state_repository_id: int,
+    observed_state_repository_full_name: str,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Load one canonical human authority before opening any state credential."""
+
+    try:
+        payload = _read_stable_private_file(
+            authority_path,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+        )
+        return verify_live_acceptance_authority(
+            repository_root=Path.cwd().resolve(strict=True),
+            authority_bytes=payload,
+            observed_source_commit_sha=observed_source_commit_sha,
+            observed_state_commit_sha=observed_state_commit_sha,
+            observed_state_root_digest=observed_state_root_digest,
+            observed_state_repository_id=observed_state_repository_id,
+            observed_state_repository_full_name=observed_state_repository_full_name,
+            environ=environ,
+        )
+    except Exception:
+        raise ValueError("live acceptance authority rejected") from None
+
+
+def record_live_acceptance_authority(
+    *,
+    authority_path: Path,
+    acceptance_run_id: str,
+    source_commit_sha: str,
+    state_commit_sha: str,
+    state_root_digest: str,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Record and CAS-persist one verified authority without semantic access.
+
+    All document, workflow, provider, state and budget identities are checked
+    from the authority file first.  Only then does the function resolve the
+    bounded state credential to restore and persist the operations fact.
+    """
+
+    source = os.environ if environ is None else environ
+    authority = load_live_acceptance_authority(
+        authority_path=authority_path,
+        observed_source_commit_sha=source_commit_sha,
+        observed_state_commit_sha=state_commit_sha,
+        observed_state_root_digest=state_root_digest,
+        observed_state_repository_id=state_repository_id,
+        observed_state_repository_full_name=state_repository_full_name,
+        environ=source,
+    )
+    from skillscout.adapters.operations_state import OperationsStateStore
+    from skillscout.application.acceptance import (
+        LiveAuthorityDependencies,
+        record_live_authority,
+    )
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    if type(authority) is not LiveAcceptanceAuthorityV1:
+        raise ValueError("live acceptance authority rejected")
+    restored = read_exact_discovery_state(
+        state_commit_sha=state_commit_sha,
+        state_repository_id=state_repository_id,
+        state_repository_full_name=state_repository_full_name,
+        pipeline_state=Path(_DISCOVERY_DATABASE_LOCATORS[0]),
+        operations_state=Path(_DISCOVERY_DATABASE_LOCATORS[1]),
+        publication_state=Path(_DISCOVERY_DATABASE_LOCATORS[2]),
+        environ=source,
+    )
+    if (
+        getattr(restored, "observed_head", None) != state_commit_sha
+        or getattr(getattr(restored, "bundle", None), "root", None) is None
+        or getattr(restored.bundle.root, "root_digest", None) != state_root_digest
+    ):
+        raise ValueError("live acceptance state authority rejected")
+    query_path = Path("config") / _DISCOVERY_QUERY_SET_NAME
+    config = load_discovery_runtime_config(
+        state_repository_id=str(state_repository_id),
+        state_repository_full_name=state_repository_full_name,
+        state_ref=_DISCOVERY_STATE_REF,
+        query_set_path=query_path,
+        pipeline_state=Path(_DISCOVERY_DATABASE_LOCATORS[0]),
+        operations_state=Path(_DISCOVERY_DATABASE_LOCATORS[1]),
+        publication_state=Path(_DISCOVERY_DATABASE_LOCATORS[2]),
+        semantic_provider=authority.semantic_provider,
+        extractor_model_id=authority.stage_models[0],
+        generator_model_id=authority.stage_models[1],
+        reviewer_model_id=authority.stage_models[2],
+        initial_state_root_digest=state_root_digest,
+        query_set_digest=authority.query_set_digest,
+        environ=source,
+    )
+    with OperationsStateStore(Path(_DISCOVERY_DATABASE_LOCATORS[1])) as operations:
+        existing = tuple(
+            item
+            for item in operations.acceptance_snapshot(acceptance_run_id).facts
+            if item.kind == "acceptance_live_authority"
+        )
+    if len(existing) == 1 and existing[0].fact_digest == authority.authority_digest:
+        return {
+            "acceptance_run_id": acceptance_run_id,
+            "authority_digest": authority.authority_digest,
+            "authority_state_commit_sha": state_commit_sha,
+            "authority_state_root_digest": state_root_digest,
+            "source_commit_sha": authority.source_commit_sha,
+            "state_commit_sha": authority.state_commit_sha,
+            "state_root_digest": authority.state_root_digest,
+            "state_repository_id": authority.state_repository_id,
+            "state_repository_full_name": authority.state_repository_full_name,
+            "status": "live_authority_persisted",
+        }
+    record = record_live_authority(
+        LiveAuthorityDependencies(
+            operations_store_factory=lambda: OperationsStateStore(
+                Path(_DISCOVERY_DATABASE_LOCATORS[1])
+            )
+        ),
+        acceptance_run_id=acceptance_run_id,
+        fact=authority,
+    )
+    with OperationsStateStore(Path(_DISCOVERY_DATABASE_LOCATORS[1])) as operations:
+        synchronized = _LateStateDurabilityBarrier(config, source).sync_discovery(
+            operations_store=operations,
+            observed_head=state_commit_sha,
+            prior_root_digest=state_root_digest,
+            created_at=_discovery_timestamp(),
+            transition_phase="live_authority_recorded",
+        )
+    if (
+        getattr(synchronized, "status", None) != "verified"
+        or not _is_commit_sha(getattr(synchronized, "commit_sha", None))
+        or not _is_digest(getattr(synchronized, "root_digest", None))
+    ):
+        raise ValueError("live acceptance authority persistence rejected")
+    return {
+        "acceptance_run_id": acceptance_run_id,
+        "authority_digest": record.fact_digest,
+        "authority_state_commit_sha": synchronized.commit_sha,
+        "authority_state_root_digest": synchronized.root_digest,
+        "source_commit_sha": authority.source_commit_sha,
+        "state_commit_sha": authority.state_commit_sha,
+        "state_root_digest": authority.state_root_digest,
+        "state_repository_id": authority.state_repository_id,
+        "state_repository_full_name": authority.state_repository_full_name,
+        "status": "live_authority_persisted",
+    }
+
+
 def validate_acceptance_state_authority(
     *,
     state_commit_sha: str,

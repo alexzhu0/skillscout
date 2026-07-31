@@ -659,6 +659,38 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
         )
 
 
+def test_live_authority_recording_rejects_before_opening_state_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed approval input never reaches the state reader or writer."""
+
+    import skillscout.bootstrap as bootstrap
+
+    authority_path = tmp_path / "live-authority.json"
+    authority_path.write_bytes(b"{}")
+    authority_path.chmod(0o600)
+
+    def forbidden_state_read(**_kwargs: object) -> object:
+        pytest.fail("state client opened before live authority validation")
+
+    monkeypatch.setattr(bootstrap, "read_exact_discovery_state", forbidden_state_read)
+    with pytest.raises(ValueError, match="live acceptance authority rejected"):
+        bootstrap.record_live_acceptance_authority(
+            authority_path=authority_path,
+            acceptance_run_id="acceptance-live-five",
+            source_commit_sha="c" * 40,
+            state_commit_sha="d" * 40,
+            state_root_digest="sha256:" + ("e" * 64),
+            state_repository_id=123,
+            state_repository_full_name="example/state",
+            environ={
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            },
+        )
+
+
 def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -829,6 +861,32 @@ def test_live_authority_cli_accepts_only_a_complete_state_bundle_root() -> None:
     options = {option for action in parser._actions for option in action.option_strings}
     assert "--authority-state-root" in options
     assert "--authority-operations-state" not in options
+
+
+def test_live_authority_recording_is_a_closed_state_only_cli_transition() -> None:
+    """The only authority-recording command has no model or catalog surface."""
+
+    commands = _cli_subcommands()
+    parser = commands["record-live-authority"]
+    options = {option for action in parser._actions for option in action.option_strings}
+    assert {
+        "--authority",
+        "--acceptance-run-id",
+        "--source-commit-sha",
+    } <= options
+    assert (
+        not {
+            "--state-commit-sha",
+            "--state-root-digest",
+            "--state-repository-id",
+            "--state-repository-full-name",
+            "--deepseek-api-key",
+            "--openai-api-key",
+            "--catalog-token",
+            "--publish",
+        }
+        & options
+    )
 
 
 def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() -> None:

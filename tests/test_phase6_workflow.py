@@ -841,6 +841,7 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
         "run-replay",
         "run-changed-source",
         "gate-b4-and-publish",
+        "record-live-authority",
         "record-human-review",
         "record-probe-cleanup",
         "rebuild-report",
@@ -893,9 +894,14 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
 
     for attestation in (human, cleanup):
         assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in attestation
-        assert "DEEPSEEK" not in attestation
+        assert "DEEPSEEK_API_KEY" not in attestation
         assert "SKILLSCOUT_CATALOG" not in attestation
         assert "record-acceptance-attestation" in attestation
+    assert "record-live-authority" in human
+    assert "DEEPSEEK_API_KEY" not in human
+    assert "SKILLSCOUT_LLM_PROVIDER: deepseek" in human
+    assert "SKILLSCOUT_CATALOG" not in human
+    assert "github.actor == 'alexzhu0'" in human
     assert "--kind human-review" in human
     assert "--kind probe-cleanup" in cleanup
 
@@ -932,8 +938,7 @@ def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:
     assert (
         "PHASE6_MANIFEST: "
         ".planning/phases/06-adversarial-mvp-acceptance/"
-        "06-BENCHMARK-MANIFEST.json"
-        in preflight
+        "06-BENCHMARK-MANIFEST.json" in preflight
     )
     assert "verify-live-authority" in preflight
     assert "resolve-acceptance-resume" in preflight
@@ -954,10 +959,7 @@ def test_deepseek_only_exact_manifest_jobs_are_distinct_and_bounded() -> None:
     live = _job(source, "live_benchmark")
     replay = _job(source, "live_replay")
 
-    canonical = (
-        ".planning/phases/06-adversarial-mvp-acceptance/"
-        "06-BENCHMARK-MANIFEST.json"
-    )
+    canonical = ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
     assert f"PHASE6_MANIFEST: {canonical}" in preflight
     assert f"PHASE6_MANIFEST: {canonical}" in live
     assert f"PHASE6_MANIFEST: {canonical}" in replay
@@ -981,10 +983,7 @@ def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
     assert benchmark_execution
     assert "DEEPSEEK_API_KEY" not in benchmark_prefix
     assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in benchmark_prefix
-    assert (
-        "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}"
-        in benchmark_prefix
-    )
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in benchmark_prefix
     assert "resolve-acceptance-resume" in benchmark_prefix
     assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in benchmark_execution
     assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}" in benchmark_execution
@@ -1022,13 +1021,8 @@ def test_live_preflight_exports_complete_immutable_handoff_to_consumers() -> Non
     }
     assert "outputs:" in preflight
     for name in required:
-        assert (
-            f"{name}: ${{{{ steps.authority_handoff.outputs.{name} }}}}"
-            in preflight
-        )
-        expression = (
-            "${{ needs.live_authority_preflight.outputs." + name + " }}"
-        )
+        assert f"{name}: ${{{{ steps.authority_handoff.outputs.{name} }}}}" in preflight
+        expression = "${{ needs.live_authority_preflight.outputs." + name + " }}"
         assert expression in benchmark
         assert expression in replay
     for consumer in (benchmark, replay):
@@ -1049,16 +1043,8 @@ def test_benchmark_repeats_authority_and_complete_state_gate_before_secrets() ->
     assert "Check out the exact independently approved authority state" in prefix
     assert "Check out the exact complete campaign state" in prefix
     assert "verify-live-authority" in prefix
-    assert (
-        "--runtime-state-commit-sha "
-        '"$PHASE6_AUTHORITY_STATE_COMMIT_SHA"'
-        in prefix
-    )
-    assert (
-        "--runtime-state-root-digest "
-        '"$PHASE6_AUTHORITY_STATE_ROOT_DIGEST"'
-        in prefix
-    )
+    assert '--runtime-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA"' in prefix
+    assert '--runtime-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST"' in prefix
     assert "resolve-acceptance-resume" in prefix
     assert "verify-acceptance-state" in prefix
     assert "DEEPSEEK_API_KEY" not in prefix
@@ -1106,14 +1092,8 @@ def test_live_resume_uses_no_mutable_commit_or_root_variables() -> None:
     for consumer in (benchmark, replay):
         assert "resolve-acceptance-resume" in consumer
         assert "--resume-proof" in consumer
-        assert (
-            '--state-commit-sha "$PHASE6_STATE_COMMIT_SHA"'
-            in consumer
-        )
-        assert (
-            '--state-root-digest "$PHASE6_STATE_ROOT_DIGEST"'
-            in consumer
-        )
+        assert '--state-commit-sha "$PHASE6_STATE_COMMIT_SHA"' in consumer
+        assert '--state-root-digest "$PHASE6_STATE_ROOT_DIGEST"' in consumer
 
 
 def test_nomination_installation_and_state_cas_are_source_bound() -> None:
@@ -1122,13 +1102,11 @@ def test_nomination_installation_and_state_cas_are_source_bound() -> None:
     assert "UV_LINK_MODE: copy" in nomination
     assert (
         "SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST: "
-        "sha256:b4167cffc31969854260d4acd58b804f4823a4d25d078ef3b5dc88445b75c2e5"
-        in nomination
+        "sha256:b4167cffc31969854260d4acd58b804f4823a4d25d078ef3b5dc88445b75c2e5" in nomination
     )
     assert (
         "SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST: "
-        "${{ vars.SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST }}"
-        not in nomination
+        "${{ vars.SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST }}" not in nomination
     )
 
 

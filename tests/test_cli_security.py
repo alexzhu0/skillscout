@@ -131,9 +131,7 @@ def test_argparse_failures_are_byte_exact_non_echoing_and_non_durable(
 def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
     parser = cli.build_parser()
     subparsers = next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
 
     assert isinstance(parser, cli.SafeArgumentParser)
@@ -148,6 +146,7 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "publish-candidate",
         "rebuild-acceptance",
         "record-acceptance-attestation",
+        "record-live-authority",
         "resolve-acceptance-resume",
         "run-acceptance",
         "verify-acceptance-state",
@@ -614,9 +613,22 @@ def test_publication_command_help_has_only_closed_locator_contracts(run_cli) -> 
     assert verifier.stderr == publisher.stderr == ""
     verifier_options = set(verifier.stdout.split())
     publisher_options = set(publisher.stdout.split())
-    assert {"--candidate", "--phase2-state", "--phase3-state", "--compare-env"}.issubset(verifier_options)
-    assert {"--candidate", "--phase2-state", "--phase3-state", "--publication-state"}.issubset(publisher_options)
-    forbidden = {"--repository", "--branch", "--reviewer", "--merge", "--approve", "--ready", "--force", "--ruleset"}
+    assert {"--candidate", "--phase2-state", "--phase3-state", "--compare-env"}.issubset(
+        verifier_options
+    )
+    assert {"--candidate", "--phase2-state", "--phase3-state", "--publication-state"}.issubset(
+        publisher_options
+    )
+    forbidden = {
+        "--repository",
+        "--branch",
+        "--reviewer",
+        "--merge",
+        "--approve",
+        "--ready",
+        "--force",
+        "--ruleset",
+    }
     assert forbidden.isdisjoint(verifier_options)
     assert forbidden.isdisjoint(publisher_options)
 
@@ -668,11 +680,7 @@ def test_build_candidate_rejects_unsafe_output_before_state_or_semantic_calls(
     )
     output = tmp_path / "output"
     output.mkdir(mode=0o700)
-    state = (
-        output / "phase3.db"
-        if unsafe_shape == "nested-state"
-        else tmp_path / "phase3.db"
-    )
+    state = output / "phase3.db" if unsafe_shape == "nested-state" else tmp_path / "phase3.db"
     if unsafe_shape == "nonempty-output":
         (output / "operator-file").write_bytes(b"must-not-be-overwritten")
     before = _recursive_exact_snapshot(tmp_path)
@@ -728,9 +736,7 @@ def test_completed_candidate_cli_uses_only_read_opens_and_private_memory_sqlite(
     sqlite_targets: list[object] = []
     mutation_calls: list[str] = []
     open_calls: list[int] = []
-    forbidden_flags = (
-        os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_TRUNC | os.O_APPEND
-    )
+    forbidden_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_TRUNC | os.O_APPEND
 
     def read_only_open(path, flags, *args, **kwargs):
         open_calls.append(flags)

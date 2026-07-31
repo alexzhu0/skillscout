@@ -726,6 +726,13 @@ class CleanupAttestationDependencies:
 
 
 @dataclass(frozen=True)
+class LiveAuthorityDependencies:
+    """Operations-owned recorder for one immutable human live authority."""
+
+    operations_store_factory: Callable[[], object]
+
+
+@dataclass(frozen=True)
 class AcceptanceRebuildDependencies:
     """Offline state owner used to reconstruct acceptance evidence."""
 
@@ -1897,6 +1904,47 @@ def record_human_attestation(
         "acceptance_human_review",
         fact,
     )
+
+
+def record_live_authority(
+    dependencies: LiveAuthorityDependencies,
+    *,
+    acceptance_run_id: str,
+    fact: LiveAcceptanceAuthorityV1,
+) -> AcceptanceFactRecord:
+    """Persist the single authority that can unlock one live benchmark run.
+
+    The durable-state boundary is deliberately outside this operation.  It is
+    responsible for the subsequent compare-and-swap write and for returning
+    the immutable state commit that later benchmark/replay jobs verify.
+    """
+
+    if (
+        type(dependencies) is not LiveAuthorityDependencies
+        or type(acceptance_run_id) is not str
+        or not acceptance_run_id
+        or type(fact) is not LiveAcceptanceAuthorityV1
+        or fact.authority_digest is None
+    ):
+        raise TypeError("invalid live authority recorder")
+    store = dependencies.operations_store_factory()
+    try:
+        snapshot = _snapshot(store, acceptance_run_id)
+        existing = tuple(
+            record for record in snapshot.facts if record.kind == "acceptance_live_authority"
+        )
+        if len(existing) > 1 or (
+            len(existing) == 1 and existing[0].fact_digest != fact.authority_digest
+        ):
+            raise AcceptanceApplicationError("unauthorized_effect")
+        return _record_on_open_store(
+            store,
+            acceptance_run_id,
+            "acceptance_live_authority",
+            fact,
+        )
+    finally:
+        _close(store)
 
 
 def record_cleanup_attestation(
