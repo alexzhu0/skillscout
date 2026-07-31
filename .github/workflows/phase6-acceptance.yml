@@ -1873,6 +1873,7 @@ jobs:
           destination.write_text(raw, encoding="utf-8")
           destination.chmod(0o600)
           PY
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-live-authority-state --authority "$authority_path" --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA"
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-live-authority --authority "$authority_path" --acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}" --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA"
 
   cleanup_attestation:

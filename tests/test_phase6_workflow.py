@@ -899,6 +899,9 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
         assert "SKILLSCOUT_CATALOG" not in attestation
         assert "record-acceptance-attestation" in attestation
     assert "record-live-authority" in human
+    assert human.index("verify-live-authority-state") < human.rindex(
+        "record-live-authority"
+    )
     for job in (benchmark, replay, human):
         assert "UV_LINK_MODE: copy" in job
     assert "DEEPSEEK_API_KEY" not in human

@@ -714,13 +714,13 @@ def record_live_acceptance_authority(
     """
 
     source = os.environ if environ is None else environ
-    authority = load_live_acceptance_authority(
+    authority = verify_live_acceptance_authority_state(
         authority_path=authority_path,
-        observed_source_commit_sha=source_commit_sha,
-        observed_state_commit_sha=state_commit_sha,
-        observed_state_root_digest=state_root_digest,
-        observed_state_repository_id=state_repository_id,
-        observed_state_repository_full_name=state_repository_full_name,
+        source_commit_sha=source_commit_sha,
+        state_commit_sha=state_commit_sha,
+        state_root_digest=state_root_digest,
+        state_repository_id=state_repository_id,
+        state_repository_full_name=state_repository_full_name,
         environ=source,
     )
     from skillscout.adapters.operations_state import OperationsStateStore
@@ -732,27 +732,11 @@ def record_live_acceptance_authority(
 
     if type(authority) is not LiveAcceptanceAuthorityV1:
         raise ValueError("live acceptance authority rejected")
-    restored = read_exact_discovery_state(
-        state_commit_sha=state_commit_sha,
-        state_repository_id=state_repository_id,
-        state_repository_full_name=state_repository_full_name,
-        pipeline_state=Path(_DISCOVERY_DATABASE_LOCATORS[0]),
-        operations_state=Path(_DISCOVERY_DATABASE_LOCATORS[1]),
-        publication_state=Path(_DISCOVERY_DATABASE_LOCATORS[2]),
-        environ=source,
-    )
-    if (
-        getattr(restored, "observed_head", None) != state_commit_sha
-        or getattr(getattr(restored, "bundle", None), "root", None) is None
-        or getattr(restored.bundle.root, "root_digest", None) != state_root_digest
-    ):
-        raise ValueError("live acceptance state authority rejected")
-    query_path = Path("config") / _DISCOVERY_QUERY_SET_NAME
     config = load_discovery_runtime_config(
         state_repository_id=str(state_repository_id),
         state_repository_full_name=state_repository_full_name,
         state_ref=_DISCOVERY_STATE_REF,
-        query_set_path=query_path,
+        query_set_path=Path("config") / _DISCOVERY_QUERY_SET_NAME,
         pipeline_state=Path(_DISCOVERY_DATABASE_LOCATORS[0]),
         operations_state=Path(_DISCOVERY_DATABASE_LOCATORS[1]),
         publication_state=Path(_DISCOVERY_DATABASE_LOCATORS[2]),
@@ -818,6 +802,50 @@ def record_live_acceptance_authority(
         "state_repository_full_name": authority.state_repository_full_name,
         "status": "live_authority_persisted",
     }
+
+
+def verify_live_acceptance_authority_state(
+    *,
+    authority_path: Path,
+    source_commit_sha: str,
+    state_commit_sha: str,
+    state_root_digest: str,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Verify exact approved state read authority without mutating it."""
+
+    source = os.environ if environ is None else environ
+    authority = load_live_acceptance_authority(
+        authority_path=authority_path,
+        observed_source_commit_sha=source_commit_sha,
+        observed_state_commit_sha=state_commit_sha,
+        observed_state_root_digest=state_root_digest,
+        observed_state_repository_id=state_repository_id,
+        observed_state_repository_full_name=state_repository_full_name,
+        environ=source,
+    )
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    if type(authority) is not LiveAcceptanceAuthorityV1:
+        raise ValueError("live acceptance authority rejected")
+    restored = read_exact_discovery_state(
+        state_commit_sha=state_commit_sha,
+        state_repository_id=state_repository_id,
+        state_repository_full_name=state_repository_full_name,
+        pipeline_state=Path(_DISCOVERY_DATABASE_LOCATORS[0]),
+        operations_state=Path(_DISCOVERY_DATABASE_LOCATORS[1]),
+        publication_state=Path(_DISCOVERY_DATABASE_LOCATORS[2]),
+        environ=source,
+    )
+    if (
+        getattr(restored, "observed_head", None) != state_commit_sha
+        or getattr(getattr(restored, "bundle", None), "root", None) is None
+        or getattr(restored.bundle.root, "root_digest", None) != state_root_digest
+    ):
+        raise ValueError("live acceptance state authority rejected")
+    return authority
 
 
 def validate_acceptance_state_authority(

@@ -414,6 +414,10 @@ def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
             "--state-commit-sha",
             "--state-root-digest",
         },
+        "verify-live-authority-state": {
+            "--authority",
+            "--source-commit-sha",
+        },
         "rebuild-acceptance": {
             "--acceptance-run-id",
             "--evidence-root-digest",
@@ -887,6 +891,24 @@ def test_live_authority_recording_is_a_closed_state_only_cli_transition() -> Non
         }
         & options
     )
+    preflight_options = {
+        option
+        for action in commands["verify-live-authority-state"]._actions
+        for option in action.option_strings
+    }
+    assert {"--authority", "--source-commit-sha"} <= preflight_options
+    assert not {"--token", "--secret", "--publish", "--catalog"} & preflight_options
+
+
+def test_live_authority_state_preflight_is_read_only() -> None:
+    """The diagnostic preflight cannot persist an authority or invoke a model."""
+
+    import skillscout.cli as cli
+
+    source = inspect.getsource(cli._run_verify_live_authority_state)
+    assert "record_live_acceptance_authority" not in source
+    assert "resolve_semantic_provider" not in source
+    assert "SKILLSCOUT_GITHUB_TOKEN" not in source
 
 
 def test_campaign_resume_locator_binds_exact_authority_and_descendant_lineage() -> None:

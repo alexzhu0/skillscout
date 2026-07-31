@@ -151,6 +151,7 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "run-acceptance",
         "verify-acceptance-state",
         "verify-live-authority",
+        "verify-live-authority-state",
         "verify-publication-admission",
     }
     assert all(isinstance(child, cli.SafeArgumentParser) for child in subparsers.choices.values())

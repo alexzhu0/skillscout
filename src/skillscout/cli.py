@@ -22,6 +22,7 @@ from skillscout.bootstrap import (
     discovery_run_authority,
     load_acceptance_attestation,
     record_live_acceptance_authority,
+    verify_live_acceptance_authority_state,
     load_acceptance_runtime_config,
     load_verified_state_checkout,
     load_discovery_runtime_config,
@@ -212,6 +213,9 @@ def build_parser() -> SafeArgumentParser:
     record_authority.add_argument("--authority", required=True, type=Path)
     record_authority.add_argument("--acceptance-run-id", required=True)
     record_authority.add_argument("--source-commit-sha", required=True)
+    verify_authority_state = commands.add_parser("verify-live-authority-state")
+    verify_authority_state.add_argument("--authority", required=True, type=Path)
+    verify_authority_state.add_argument("--source-commit-sha", required=True)
     rebuild_acceptance = commands.add_parser("rebuild-acceptance")
     rebuild_acceptance.add_argument("--acceptance-run-id", required=True)
     rebuild_acceptance.add_argument("--evidence-root-digest", required=True)
@@ -1358,6 +1362,43 @@ def _run_record_live_authority(arguments: argparse.Namespace) -> dict[str, objec
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
+def _run_verify_live_authority_state(arguments: argparse.Namespace) -> dict[str, object]:
+    """Prove the state read boundary before authority persistence is attempted."""
+
+    try:
+        protected_id, protected_name = _protected_state_repository()
+        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+        raw = _read_live_authority_input(arguments.authority)
+        proposed = LiveAcceptanceAuthorityV1.model_validate_json(raw, strict=True)
+        if (
+            proposed.state_repository_id != protected_id
+            or proposed.state_repository_full_name != protected_name
+        ):
+            raise ValueError
+        authority = verify_live_acceptance_authority_state(
+            authority_path=arguments.authority,
+            source_commit_sha=arguments.source_commit_sha,
+            state_commit_sha=proposed.state_commit_sha,
+            state_root_digest=proposed.state_root_digest,
+            state_repository_id=protected_id,
+            state_repository_full_name=protected_name,
+        )
+        if type(authority) is not LiveAcceptanceAuthorityV1:
+            raise ValueError
+        return {
+            "authority_digest": authority.authority_digest,
+            "source_commit_sha": authority.source_commit_sha,
+            "state_commit_sha": authority.state_commit_sha,
+            "state_root_digest": authority.state_root_digest,
+            "status": "live_authority_state_read_verified",
+        }
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def _run_rebuild_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
     """Rebuild one report-root fact from the operations-owned projection."""
 
@@ -1563,6 +1604,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_record_acceptance_attestation(arguments)
         elif arguments.command == "record-live-authority":
             payload = _run_record_live_authority(arguments)
+        elif arguments.command == "verify-live-authority-state":
+            payload = _run_verify_live_authority_state(arguments)
         elif arguments.command == "rebuild-acceptance":
             payload = _run_rebuild_acceptance(arguments)
         elif arguments.command == "publish-discovered":
