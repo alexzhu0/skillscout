@@ -134,7 +134,7 @@ def _fresh_toolchain_fragment(repository: Path) -> str:
             start = lines.index('venv_root="${repository_root}/.venv"')
             end = lines.index(MANAGED_PYTHON_SYNC, start) + 1
             fragments.append("\n".join(lines[start:end]))
-    assert len(fragments) == 17
+    assert len(fragments) == 19
     assert len(set(fragments)) == 1
     return fragments[0]
 
@@ -334,7 +334,7 @@ def test_source_execution_verifier_requires_repo_managed_cpython_for_every_job(
 ) -> None:
     module = _module()
     result = module.verify_source_execution(_copy_workflows(tmp_path))
-    assert result.managed_python_job_count == 17
+    assert result.managed_python_job_count == 19
     assert result.managed_python_version == MANAGED_PYTHON_VERSION
     assert result.managed_python_root == MANAGED_PYTHON_ROOT
     assert result.network_none_invocation_count == 6
@@ -646,6 +646,33 @@ def test_source_execution_mutations_fail_closed(
     replacement: str,
 ) -> None:
     del mutation
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    _replace_first(repository, needle, replacement)
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        ("lock-fresh-campaign", "run-acceptance --action benchmark"),
+        (
+            "environment: phase6-human-benchmark-lock",
+            "environment: unprotected-environment",
+        ),
+        (
+            "permissions:\n      contents: read\n      actions: read",
+            "permissions:\n      contents: write",
+        ),
+        ("GITHUB_TOKEN: ${{ github.token }}", "GITHUB_TOKEN: ${{ vars.UNRELATED_TOKEN }}"),
+    ),
+)
+def test_source_execution_verifier_rejects_protected_fresh_lock_mutations(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
     module = _module()
     repository = _copy_workflows(tmp_path)
     _replace_first(repository, needle, replacement)

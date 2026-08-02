@@ -556,6 +556,75 @@ def test_v2_benchmark_lock_rejects_selected_entry_not_in_fresh_nomination(
             )
 
 
+def _different_v2_benchmark_lock(nomination: NominationSetV1):
+    """Return a coherent but distinct V2 receipt for the same fresh campaign."""
+
+    model = _v2_symbol("LockedBenchmarkManifestV2")
+    receipt_model = _v2_symbol("BenchmarkLockApprovalReceiptV2")
+    original = _locked_manifest_v2(nomination)
+    receipt_payload = original.approval_receipt.model_dump(
+        mode="json", exclude_none=False
+    )
+    receipt_payload["workflow_run_id"] = 1002
+    receipt_payload.pop("receipt_digest")
+    receipt = receipt_model.model_validate(receipt_payload, strict=True)
+    payload = original.model_dump(mode="json", exclude_none=False)
+    payload["workflow_run_id"] = receipt.workflow_run_id
+    payload["approval_receipt"] = receipt.model_dump(mode="json", exclude_none=False)
+    payload["approval_receipt_digest"] = receipt.receipt_digest
+    payload.pop("lock_digest")
+    return model.model_validate(payload, strict=True)
+
+
+def test_fresh_v2_benchmark_lock_is_singleton_per_run_and_rebuild_rejects_conflicts(
+    tmp_path: Path,
+) -> None:
+    """Only one V2 lock may bind a fresh campaign; V1 history remains independent."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    first = _locked_manifest_v2(nomination)
+    second = _different_v2_benchmark_lock(nomination)
+    path = tmp_path / "one-v2-lock.sqlite3"
+    with module.OperationsStateStore(path) as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        recorded = store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            first,
+        )
+        assert (
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_benchmark_lock",
+                first,
+            )
+            == recorded
+        )
+        with pytest.raises(module.OperationsIntegrityError, match="fresh benchmark lock"):
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_benchmark_lock",
+                second,
+            )
+        exported = store.export_owned_state()
+
+    rebuilt = tmp_path / "one-v2-lock-rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        rebuilt_snapshot = store.acceptance_snapshot(nomination.nomination_set_id)
+    assert [
+        record
+        for record in rebuilt_snapshot.facts
+        if record.kind == "acceptance_benchmark_lock"
+        and record.fact.schema_version == "locked-benchmark-manifest-v2"
+    ] == [recorded]
+
+
 def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     module = _operations_module()
     assert tuple(module.ACCEPTANCE_FACT_MODELS) == (

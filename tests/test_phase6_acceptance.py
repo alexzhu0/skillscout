@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 
@@ -448,6 +449,283 @@ def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
         if "--kind" in action.option_strings
     )
     assert tuple(kind.choices) == ("human-review", "probe-cleanup")
+
+
+def _fresh_lock_inputs() -> tuple[object, object, object]:
+    """Return one fresh Search-only nomination, its static V1 selection, and a snapshot."""
+
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+    from skillscout.domain.acceptance import (
+        BenchmarkEntryV1,
+        BenchmarkLockAttestationV1,
+        LockedBenchmarkManifestV1,
+        NominationEntryV1,
+        NominationSetV1,
+    )
+    from skillscout.domain.canonical import sha256_digest
+
+    roles = ("positive", "positive_multi_workflow", "negative", "negative", "borderline")
+    nominations = tuple(
+        NominationEntryV1(
+            schema_version="nomination-entry-v1",
+            repository_full_name=f"octo-org/fresh-{index}",
+            repository_id=930000 + index,
+            exact_commit_sha=f"{index:040x}",
+            license_spdx="MIT",
+            selection_source="search_derived",
+            selection_evidence_digests=(sha256_digest({"fresh-evidence": index}),),
+        )
+        for index in range(1, 6)
+    )
+    nomination = NominationSetV1(
+        schema_version="nomination-set-v1",
+        nomination_set_id="fresh-campaign",
+        query_set_digest=sha256_digest({"query": "fresh"}),
+        search_run_authority_digest=sha256_digest({"authority": "fresh"}),
+        search_derived_entries=tuple(sorted(nominations, key=lambda item: item.entry_digest)),
+        user_nominated_entries=(),
+        created_at="2026-08-02T00:00:00.000000Z",
+    )
+    entries = tuple(
+        sorted(
+            (
+                BenchmarkEntryV1(
+                    schema_version="benchmark-entry-v1",
+                    repository_full_name=entry.repository_full_name,
+                    repository_id=entry.repository_id,
+                    exact_commit_sha=entry.exact_commit_sha,
+                    license_spdx=entry.license_spdx,
+                    selection_source="search_derived",
+                    coverage_role=role,
+                    nomination_entry_digest=entry.entry_digest,
+                    selection_evidence_digests=entry.selection_evidence_digests,
+                )
+                for entry, role in zip(nomination.search_derived_entries, roles, strict=True)
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+    preimage = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": nomination.nomination_set_digest,
+        "entries": [item.model_dump(mode="json", exclude_none=False) for item in entries],
+        "prior_manifest_digest": None,
+    }
+    manifest_digest = sha256_digest(preimage)
+    manifest = LockedBenchmarkManifestV1(
+        **preimage,
+        lock_attestation=BenchmarkLockAttestationV1(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=nomination.nomination_set_digest,
+            manifest_digest=manifest_digest,
+            reviewer_id="historical-selection",
+            locked_at="2026-08-02T00:00:00.000000Z",
+        ),
+        manifest_digest=manifest_digest,
+    )
+    snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id=nomination.nomination_set_id,
+        facts=(
+            AcceptanceFactRecord(
+                acceptance_run_id=nomination.nomination_set_id,
+                kind="acceptance_nomination",
+                fact_digest=nomination.nomination_set_digest,
+                fact=nomination,
+            ),
+        ),
+    )
+    return nomination, manifest, snapshot
+
+
+def _fresh_lock_receipt() -> object:
+    from skillscout.domain.acceptance import BenchmarkLockApprovalReceiptV2
+    from skillscout.domain.canonical import sha256_digest
+
+    return BenchmarkLockApprovalReceiptV2(
+        schema_version="benchmark-lock-approval-receipt-v2",
+        purpose="benchmark_lock",
+        environment="phase6-human-benchmark-lock",
+        reviewer_login="alexzhu0",
+        reviewer_id=101,
+        workflow_run_id=1001,
+        workflow_run_attempt=1,
+        source_commit_sha="a" * 40,
+        workflow_sha256=sha256_digest({"workflow": "fresh-lock"}),
+        trigger_identity="workflow_dispatch:42",
+        approval_record_digest=sha256_digest({"approval": "redacted"}),
+    )
+
+
+def test_prepare_and_lock_fresh_campaign_cli_routes_have_no_caller_authority() -> None:
+    commands = _cli_subcommands()
+    forbidden = {
+        "--state-repository-id",
+        "--state-repository-full-name",
+        "--initial-state-root-digest",
+        "--manifest",
+        "--reviewer",
+        "--approval",
+        "--token",
+        "--endpoint",
+        "--source",
+        "--workflow",
+    }
+    for name in ("prepare-fresh-campaign", "lock-fresh-campaign"):
+        options = {
+            option
+            for action in commands[name]._actions
+            for option in action.option_strings
+            if option != "-h"
+        }
+        assert options == set()
+        assert forbidden.isdisjoint(options)
+
+
+def test_fresh_benchmark_lock_rebinds_static_v1_manifest_to_current_nomination() -> None:
+    from skillscout.application import acceptance as application
+    from skillscout.domain.acceptance import BenchmarkEntryV1
+
+    nomination, manifest, snapshot = _fresh_lock_inputs()
+    receipt = _fresh_lock_receipt()
+    lock = application.bind_fresh_benchmark_lock(
+        snapshot=snapshot,
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="b" * 40,
+        parent_state_root_digest="sha256:" + ("c" * 64),
+        approval_receipt=receipt,
+    )
+    assert lock.selection_manifest_digest == manifest.manifest_digest
+    assert lock.nomination_set_digest == nomination.nomination_set_digest
+    assert lock.entries == manifest.entries
+
+    changed = BenchmarkEntryV1(
+        schema_version="benchmark-entry-v1",
+        repository_full_name=manifest.entries[0].repository_full_name,
+        repository_id=manifest.entries[0].repository_id,
+        exact_commit_sha="f" * 40,
+        license_spdx=manifest.entries[0].license_spdx,
+        selection_source=manifest.entries[0].selection_source,
+        coverage_role=manifest.entries[0].coverage_role,
+        nomination_entry_digest=manifest.entries[0].nomination_entry_digest,
+        selection_evidence_digests=manifest.entries[0].selection_evidence_digests,
+    )
+    altered_entries = tuple(
+        sorted((changed, *manifest.entries[1:]), key=lambda item: item.entry_digest)
+    )
+    from skillscout.domain.acceptance import BenchmarkLockAttestationV1, LockedBenchmarkManifestV1
+    from skillscout.domain.canonical import sha256_digest
+
+    altered_preimage = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": manifest.nomination_set_digest,
+        "entries": [item.model_dump(mode="json", exclude_none=False) for item in altered_entries],
+        "prior_manifest_digest": None,
+    }
+    altered_digest = sha256_digest(altered_preimage)
+    altered = LockedBenchmarkManifestV1(
+        **altered_preimage,
+        lock_attestation=BenchmarkLockAttestationV1(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=manifest.nomination_set_digest,
+            manifest_digest=altered_digest,
+            reviewer_id="historical-selection",
+            locked_at="2026-08-02T00:00:00.000000Z",
+        ),
+        manifest_digest=altered_digest,
+    )
+    with pytest.raises(application.AcceptanceApplicationError, match="evidence_missing"):
+        application.bind_fresh_benchmark_lock(
+            snapshot=snapshot,
+            selection_manifest=altered,
+            state_repository_id=9001,
+            state_repository_full_name="octo-org/skillscout-state",
+            parent_state_commit_sha="b" * 40,
+            parent_state_root_digest="sha256:" + ("c" * 64),
+            approval_receipt=receipt,
+        )
+
+
+def test_fresh_lock_rejects_approval_before_opening_late_state_capability() -> None:
+    from skillscout.application import acceptance as application
+
+    _nomination, manifest, _snapshot = _fresh_lock_inputs()
+    calls: list[str] = []
+
+    def malformed_receipt() -> object:
+        calls.append("approval")
+        raise application.AcceptanceApplicationError("evidence_missing")
+
+    dependencies = application.FreshCampaignLockDependencies(
+        approval_receipt_factory=malformed_receipt,
+        selection_manifest_factory=lambda: manifest,
+        source_binding_factory=lambda: application.FreshCampaignSourceBinding(
+            source_commit_sha="a" * 40,
+            acceptance_workflow_sha256="sha256:" + ("d" * 64),
+            workflow_run_id=1001,
+            workflow_run_attempt=1,
+            trigger_identity="workflow_dispatch:42",
+        ),
+        state_restore=lambda: pytest.fail("state capability opened before approval"),
+        operations_store_factory=lambda: pytest.fail("operations store opened before approval"),
+        durability_barrier=object(),
+    )
+    application_instance = application.FreshCampaignLockApplication(
+        dependencies,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+    )
+    with pytest.raises(application.AcceptanceApplicationError, match="evidence_missing"):
+        application_instance.run(created_at="2026-08-02T00:00:00.000000Z")
+    assert calls == ["approval"]
+
+
+def test_fixed_host_approval_reader_redacts_comments_and_binds_run_attempt() -> None:
+    from skillscout.adapters.github import GitHubReadClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url == httpx.URL(
+            "https://api.github.com/repos/octo-org/skillscout/actions/runs/1001/approvals"
+        )
+        return httpx.Response(
+            200,
+            json={
+                "total_count": 1,
+                "run_attempt": 1,
+                "approvals": [
+                    {
+                        "user": {"login": "alexzhu0", "id": 101},
+                        "state": "approved",
+                        "environments": [{"id": 1, "name": "phase6-human-benchmark-lock"}],
+                        "comment": "untrusted comment that must not persist",
+                    }
+                ],
+            },
+            request=request,
+        )
+
+    client = GitHubReadClient(transport=httpx.MockTransport(handler), sleeper=lambda _delay: None)
+    try:
+        approvals = client.get_workflow_run_approvals(
+            "octo-org",
+            "skillscout",
+            1001,
+            expected_run_attempt=1,
+        )
+    finally:
+        client.close()
+    assert len(approvals) == 1
+    approval = approvals[0]
+    assert approval.environment == "phase6-human-benchmark-lock"
+    assert approval.reviewer_login == "alexzhu0"
+    assert approval.reviewer_id == 101
+    assert {"comment", "raw_response", "endpoint"}.isdisjoint(approval.model_fields)
 
 
 def test_acceptance_runtime_loads_only_exact_resolver_proof(

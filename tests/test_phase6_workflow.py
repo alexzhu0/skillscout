@@ -356,6 +356,8 @@ def _assert_isolation_workflow(source: str) -> None:
     assert set(re.findall(r"^  ([a-z][a-z0-9_-]*):\n", jobs, re.MULTILINE)) == {
         "isolation_probe",
         "nominate",
+        "prepare_fresh_campaign",
+        "benchmark_lock",
         "offline_adversarial",
         "live_authority_preflight",
         "live_benchmark",
@@ -836,6 +838,8 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     ) == (
         "isolation-probe",
         "nominate",
+        "prepare-fresh-campaign",
+        "lock-fresh-campaign",
         "offline-adversarial",
         "run-benchmark",
         "run-replay",
@@ -848,6 +852,8 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     )
 
     nomination = _job(source, "nominate")
+    fresh_prepare = _job(source, "prepare_fresh_campaign")
+    benchmark_lock = _job(source, "benchmark_lock")
     offline = _job(source, "offline_adversarial")
     preflight = _job(source, "live_authority_preflight")
     benchmark = _job(source, "live_benchmark")
@@ -864,6 +870,33 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert "DEEPSEEK" not in nomination
     assert "SKILLSCOUT_CATALOG" not in nomination
     assert "${{ secrets." not in nomination
+
+    assert "DEEPSEEK" not in fresh_prepare
+    assert "SKILLSCOUT_CATALOG" not in fresh_prepare
+    assert "run-acceptance" not in fresh_prepare
+    assert "prepare-fresh-campaign" in fresh_prepare
+
+    assert "name: skillscout-phase6-benchmark-lock" in benchmark_lock
+    assert "environment: phase6-human-benchmark-lock" in benchmark_lock
+    assert re.search(
+        r"^    permissions:\n      contents: read\n      actions: read$",
+        benchmark_lock,
+        re.MULTILINE,
+    )
+    assert "lock-fresh-campaign" in benchmark_lock
+    for forbidden in (
+        "DEEPSEEK",
+        "semantic",
+        "candidate",
+        "catalog",
+        "pull-request",
+        "reviewer",
+        "publication",
+        "create-github-app-token",
+    ):
+        assert forbidden.casefold() not in benchmark_lock.casefold()
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in benchmark_lock
+    assert "GITHUB_TOKEN: ${{ github.token }}" in benchmark_lock
 
     assert "contents: read" in offline
     assert "contents: write" not in offline
