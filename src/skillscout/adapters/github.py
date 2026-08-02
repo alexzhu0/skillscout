@@ -11,7 +11,7 @@ from typing import Annotated, Any, Callable, Literal, TypeVar
 from urllib.parse import parse_qsl, urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.canonical import sha256_digest
@@ -22,7 +22,7 @@ from skillscout.domain.discovery import (
     SearchRepositoryObservationV1,
 )
 from skillscout.domain.enums import EffectScope
-from skillscout.domain.models import StrictFrozenModel
+from skillscout.domain.models import Digest, StrictFrozenModel
 
 GITHUB_API_BASE = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
@@ -118,6 +118,34 @@ class _RawBlob(_LenientFrozenModel):
     encoding: str
 
 
+class _RawActionsApprovalUser(_LenientFrozenModel):
+    login: _BoundedName
+    id: Annotated[int, Field(ge=1)]
+
+
+class _RawActionsApprovalEnvironment(_LenientFrozenModel):
+    id: Annotated[int, Field(ge=1)]
+    name: _BoundedName
+
+
+class _RawActionsApproval(_LenientFrozenModel):
+    user: _RawActionsApprovalUser
+    state: Literal["approved", "rejected", "pending"]
+    environments: Annotated[
+        tuple[_RawActionsApprovalEnvironment, ...], Field(min_length=1, max_length=32)
+    ]
+
+
+class _RawWorkflowRunAttempt(_LenientFrozenModel):
+    id: Annotated[int, Field(ge=1)]
+    run_attempt: Annotated[int, Field(ge=1)]
+    head_sha: _HexSha
+    event: Literal["workflow_dispatch"]
+    path: Annotated[str, Field(min_length=1, max_length=512)]
+    actor: _RawActionsApprovalUser
+    triggering_actor: _RawActionsApprovalUser
+
+
 class RateLimitFacts(StrictFrozenModel):
     """The rate-limit headers observed on one response, when present."""
 
@@ -165,6 +193,30 @@ class LicenseResponse(StrictFrozenModel):
     status: Literal["confirmed", "not_found", "noassertion"]
     spdx_id: Annotated[str, Field(min_length=1, max_length=64)] | None
     license_blob_sha: _HexSha | None
+
+
+class WorkflowEnvironmentApproval(StrictFrozenModel):
+    """One redacted approved environment record from the fixed Actions endpoint."""
+
+    environment: _BoundedName
+    reviewer_login: _BoundedName
+    reviewer_id: Annotated[int, Field(ge=1)]
+    workflow_run_id: Annotated[int, Field(ge=1)]
+    approval_record_digest: Digest
+
+
+class WorkflowRunAttemptMetadata(StrictFrozenModel):
+    """Redacted fixed-host metadata that binds one exact workflow run attempt."""
+
+    workflow_run_id: Annotated[int, Field(ge=1)]
+    workflow_run_attempt: Annotated[int, Field(ge=1)]
+    source_commit_sha: _HexSha
+    event: Literal["workflow_dispatch"]
+    workflow_path: Annotated[str, Field(min_length=1, max_length=512)]
+    actor_id: Annotated[int, Field(ge=1)]
+    actor_login: _BoundedName
+    triggering_actor_id: Annotated[int, Field(ge=1)]
+    triggering_actor_login: _BoundedName
 
 
 class RedirectFacts(StrictFrozenModel):
@@ -450,6 +502,127 @@ class GitHubReadClient:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         return content
 
+    def get_workflow_run_approvals(
+        self,
+        owner: str,
+        repo: str,
+        workflow_run_id: int,
+    ) -> tuple[WorkflowEnvironmentApproval, ...]:
+        """Read one fixed-host Actions approval history without redirects or comment retention."""
+
+        if type(workflow_run_id) is not int or workflow_run_id <= 0:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        path = (
+            f"/repos/{_require_segment(_OWNER_REPO_PATTERN, owner)}"
+            f"/{_require_segment(_OWNER_REPO_PATTERN, repo)}"
+            f"/actions/runs/{workflow_run_id}/approvals"
+        )
+        response = self._send(path)
+        try:
+            self._last_request_id = response.headers.get("x-github-request-id")
+            if (
+                response.status_code in {301, 302, 303, 307, 308}
+                or not 200 <= response.status_code < 300
+                or "application/json" not in response.headers.get("content-type", "")
+            ):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            raw_approvals = _validate_actions_approval_history(
+                self._read_capped(response, MAX_METADATA_BYTES)
+            )
+        finally:
+            response.close()
+        approvals: list[WorkflowEnvironmentApproval] = []
+        for raw_approval in raw_approvals:
+            if raw_approval.state != "approved":
+                continue
+            for environment in raw_approval.environments:
+                values = {
+                    "environment": environment.name,
+                    "reviewer_login": raw_approval.user.login,
+                    "reviewer_id": raw_approval.user.id,
+                    "workflow_run_id": workflow_run_id,
+                }
+                approvals.append(
+                    _validate(
+                        WorkflowEnvironmentApproval,
+                        {
+                            **values,
+                            "approval_record_digest": sha256_digest(
+                                {
+                                    "schema_version": (
+                                        "github-actions-environment-approval-record-v1"
+                                    ),
+                                    **values,
+                                }
+                            ),
+                        },
+                    )
+                )
+        return tuple(
+            sorted(
+                approvals,
+                key=lambda item: (
+                    item.environment,
+                    item.reviewer_login,
+                    item.reviewer_id,
+                    item.approval_record_digest,
+                ),
+            )
+        )
+
+    def get_workflow_run_attempt(
+        self,
+        owner: str,
+        repo: str,
+        workflow_run_id: int,
+        workflow_run_attempt: int,
+    ) -> WorkflowRunAttemptMetadata:
+        """Read one exact Actions run attempt; no approval response can stand in for it."""
+
+        if (
+            type(workflow_run_id) is not int
+            or workflow_run_id <= 0
+            or type(workflow_run_attempt) is not int
+            or workflow_run_attempt <= 0
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        path = (
+            f"/repos/{_require_segment(_OWNER_REPO_PATTERN, owner)}"
+            f"/{_require_segment(_OWNER_REPO_PATTERN, repo)}"
+            f"/actions/runs/{workflow_run_id}/attempts/{workflow_run_attempt}"
+        )
+        response = self._send(path)
+        try:
+            self._last_request_id = response.headers.get("x-github-request-id")
+            if (
+                response.status_code in {301, 302, 303, 307, 308}
+                or not 200 <= response.status_code < 300
+                or "application/json" not in response.headers.get("content-type", "")
+            ):
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            raw = _validate_json(
+                _RawWorkflowRunAttempt,
+                self._read_capped(response, MAX_METADATA_BYTES),
+            )
+        finally:
+            response.close()
+        if raw.id != workflow_run_id or raw.run_attempt != workflow_run_attempt:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        return _validate(
+            WorkflowRunAttemptMetadata,
+            {
+                "workflow_run_id": raw.id,
+                "workflow_run_attempt": raw.run_attempt,
+                "source_commit_sha": raw.head_sha,
+                "event": raw.event,
+                "workflow_path": raw.path,
+                "actor_id": raw.actor.id,
+                "actor_login": raw.actor.login,
+                "triggering_actor_id": raw.triggering_actor.id,
+                "triggering_actor_login": raw.triggering_actor.login,
+            },
+        )
+
     def _get(
         self,
         path: str,
@@ -694,5 +867,17 @@ def _validate_json(model: type[_ModelT], body: bytes) -> _ModelT:
 
     try:
         return model.model_validate_json(body)
+    except (ValidationError, TypeError, ValueError, UnicodeDecodeError):
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
+
+
+def _validate_actions_approval_history(body: bytes) -> tuple[_RawActionsApproval, ...]:
+    """Accept only GitHub's documented top-level review-history array."""
+
+    try:
+        values = TypeAdapter(tuple[_RawActionsApproval, ...]).validate_json(body)
+        if len(values) > 100:
+            raise ValueError
+        return values
     except (ValidationError, TypeError, ValueError, UnicodeDecodeError):
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None

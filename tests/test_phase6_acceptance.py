@@ -129,9 +129,14 @@ def _mutate_acceptance_repository(repository: Path, mutation: str) -> None:
     elif mutation == "changed_lineage_alias":
         _replace_once(
             repository / "src/skillscout/adapters/operations_state.py",
-            '"acceptance_changed_source_draft_update_completion": '
-            "(ChangedSourceDraftUpdateCompletionV1),",
-            '"acceptance_changed_source": (ChangedSourceDraftUpdateCompletionV1),',
+            '"acceptance_changed_source_draft_update_completion": {\n'
+            '        "changed-source-draft-update-completion-v1": '
+            "ChangedSourceDraftUpdateCompletionV1,\n"
+            "    },",
+            '"acceptance_changed_source": {\n'
+            '        "changed-source-draft-update-completion-v1": '
+            "ChangedSourceDraftUpdateCompletionV1,\n"
+            "    },",
         )
     elif mutation == "stale_gate_b4":
         _replace_once(
@@ -168,6 +173,22 @@ def _mutate_acceptance_repository(repository: Path, mutation: str) -> None:
         index = payload.index(b'"entry_digest":"sha256:') + len(b'"entry_digest":"sha256:')
         payload[index] = ord("0") if payload[index] != ord("0") else ord("1")
         manifest.write_bytes(payload)
+    elif mutation == "benchmark_lock_environment_branch_policy_missing":
+        _replace_once(
+            phase / "06-16-PLAN.md",
+            "require reviewer `alexzhu0`, restrict deployment branches to the protected "
+            "default branch `main` only, leave Prevent self-review disabled",
+            "require reviewer `alexzhu0`, leave Prevent self-review disabled",
+        )
+    elif mutation == "benchmark_lock_validation_branch_policy_missing":
+        _replace_once(
+            phase / "06-VALIDATION.md",
+            "configure `phase6-human-benchmark-lock` with required reviewer "
+            "`alexzhu0`, selected deployment branch `main` only, Prevent self-review "
+            "disabled for the sole reviewer",
+            "configure `phase6-human-benchmark-lock` with required reviewer "
+            "`alexzhu0`, Prevent self-review disabled for the sole reviewer",
+        )
     else:
         raise AssertionError(mutation)
 
@@ -187,6 +208,8 @@ def _mutate_acceptance_repository(repository: Path, mutation: str) -> None:
         "hard_gate_deleted",
         "all_44_inverse_drift",
         "benchmark_lock_mismatch",
+        "benchmark_lock_environment_branch_policy_missing",
+        "benchmark_lock_validation_branch_policy_missing",
     ),
 )
 def test_independent_verifier_rejects_whole_phase_evidence_mutation(
@@ -210,8 +233,8 @@ def test_independent_verifier_accepts_complete_current_repository_contract(
     assert result.status == "repository_contract_valid_acceptance_incomplete"
     assert result.structural_valid is True
     assert result.acceptance_complete is False
-    assert result.plan_count == 15
-    assert result.task_count == 38
+    assert result.plan_count == 18
+    assert result.task_count == 47
     assert result.requirement_count == 44
 
 
@@ -326,8 +349,8 @@ def test_default_verifier_cli_runs_repository_verification_before_incomplete(
             status="repository_contract_valid_acceptance_incomplete",
             structural_valid=True,
             acceptance_complete=False,
-            plan_count=15,
-            task_count=38,
+            plan_count=18,
+            task_count=47,
             requirement_count=44,
             source_execution_step_count=1,
             missing_live_artifacts=(
@@ -547,14 +570,35 @@ def _fresh_lock_receipt() -> object:
         schema_version="benchmark-lock-approval-receipt-v2",
         purpose="benchmark_lock",
         environment="phase6-human-benchmark-lock",
+        source_repository_id=1_310_897_029,
+        source_repository_full_name="alexzhu0/skillscout",
         reviewer_login="alexzhu0",
         reviewer_id=101,
         workflow_run_id=1001,
         workflow_run_attempt=1,
         source_commit_sha="a" * 40,
         workflow_sha256=sha256_digest({"workflow": "fresh-lock"}),
-        trigger_identity="workflow_dispatch:42",
+        trigger_identity="workflow_dispatch:42:alexzhu0",
         approval_record_digest=sha256_digest({"approval": "redacted"}),
+    )
+
+
+def _fresh_lock_handoff(*, manifest: object, receipt: object) -> object:
+    from skillscout.domain.acceptance import FreshBenchmarkLockHandoffV1
+
+    return FreshBenchmarkLockHandoffV1(
+        schema_version="fresh-benchmark-lock-handoff-v1",
+        source_repository_id=1310897029,
+        source_repository_full_name="alexzhu0/skillscout",
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        source_commit_sha=getattr(receipt, "source_commit_sha"),
+        acceptance_workflow_sha256=getattr(receipt, "workflow_sha256"),
+        workflow_run_id=getattr(receipt, "workflow_run_id"),
+        workflow_run_attempt=getattr(receipt, "workflow_run_attempt"),
+        trigger_identity=getattr(receipt, "trigger_identity"),
+        selection_manifest=manifest,
+        approval_receipt=receipt,
     )
 
 
@@ -572,15 +616,54 @@ def test_prepare_and_lock_fresh_campaign_cli_routes_have_no_caller_authority() -
         "--source",
         "--workflow",
     }
-    for name in ("prepare-fresh-campaign", "lock-fresh-campaign"):
+    for name in (
+        "prepare-fresh-campaign",
+        "prepare-fresh-lock-handoff",
+        "lock-fresh-campaign",
+    ):
         options = {
             option
             for action in commands[name]._actions
             for option in action.option_strings
-            if option != "-h"
+            if option not in {"-h", "--help"}
         }
         assert options == set()
         assert forbidden.isdisjoint(options)
+
+
+def test_fresh_campaign_lock_source_context_requires_repository_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The protected source handoff starts with Actions' numeric repository identity."""
+
+    from skillscout import cli
+
+    environment = {
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REPOSITORY_ID": "1310897029",
+        "GITHUB_REPOSITORY": "alexzhu0/skillscout",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_RUN_ID": "1001",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_ACTOR_ID": "42",
+        "GITHUB_ACTOR": "alexzhu0",
+        "GITHUB_TRIGGERING_ACTOR": "alexzhu0",
+    }
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+
+    assert cli._fresh_campaign_lock_source_context() == (
+        1_310_897_029,
+        "alexzhu0/skillscout",
+        "a" * 40,
+        1001,
+        1,
+        "workflow_dispatch:42:alexzhu0",
+    )
+
+    monkeypatch.setenv("GITHUB_REPOSITORY_ID", "0")
+    with pytest.raises(ValueError, match="fresh campaign source context rejected"):
+        cli._fresh_campaign_lock_source_context()
 
 
 def test_fresh_benchmark_lock_rebinds_static_v1_manifest_to_current_nomination() -> None:
@@ -596,6 +679,7 @@ def test_fresh_benchmark_lock_rebinds_static_v1_manifest_to_current_nomination()
         state_repository_full_name="octo-org/skillscout-state",
         parent_state_commit_sha="b" * 40,
         parent_state_root_digest="sha256:" + ("c" * 64),
+        expected_nomination_authority_digest=nomination.search_run_authority_digest,
         approval_receipt=receipt,
     )
     assert lock.selection_manifest_digest == manifest.manifest_digest
@@ -647,30 +731,23 @@ def test_fresh_benchmark_lock_rebinds_static_v1_manifest_to_current_nomination()
             state_repository_full_name="octo-org/skillscout-state",
             parent_state_commit_sha="b" * 40,
             parent_state_root_digest="sha256:" + ("c" * 64),
+            expected_nomination_authority_digest=nomination.search_run_authority_digest,
             approval_receipt=receipt,
         )
 
 
-def test_fresh_lock_rejects_approval_before_opening_late_state_capability() -> None:
+def test_fresh_lock_rejects_invalid_handoff_before_opening_late_state_capability() -> None:
     from skillscout.application import acceptance as application
 
-    _nomination, manifest, _snapshot = _fresh_lock_inputs()
+    nomination, _manifest, _snapshot = _fresh_lock_inputs()
     calls: list[str] = []
 
-    def malformed_receipt() -> object:
-        calls.append("approval")
-        raise application.AcceptanceApplicationError("evidence_missing")
+    def malformed_handoff() -> object:
+        calls.append("handoff")
+        return object()
 
     dependencies = application.FreshCampaignLockDependencies(
-        approval_receipt_factory=malformed_receipt,
-        selection_manifest_factory=lambda: manifest,
-        source_binding_factory=lambda: application.FreshCampaignSourceBinding(
-            source_commit_sha="a" * 40,
-            acceptance_workflow_sha256="sha256:" + ("d" * 64),
-            workflow_run_id=1001,
-            workflow_run_attempt=1,
-            trigger_identity="workflow_dispatch:42",
-        ),
+        handoff_factory=malformed_handoff,
         state_restore=lambda: pytest.fail("state capability opened before approval"),
         operations_store_factory=lambda: pytest.fail("operations store opened before approval"),
         durability_barrier=object(),
@@ -679,13 +756,42 @@ def test_fresh_lock_rejects_approval_before_opening_late_state_capability() -> N
         dependencies,
         state_repository_id=9001,
         state_repository_full_name="octo-org/skillscout-state",
+        source_repository_id=1_310_897_029,
+        source_repository_full_name="alexzhu0/skillscout",
+        query_set_digest=nomination.query_set_digest,
     )
     with pytest.raises(application.AcceptanceApplicationError, match="evidence_missing"):
         application_instance.run(created_at="2026-08-02T00:00:00.000000Z")
-    assert calls == ["approval"]
+    assert calls == ["handoff"]
 
 
-def test_fixed_host_approval_reader_redacts_comments_and_binds_run_attempt() -> None:
+def test_fresh_lock_rejects_mismatched_source_identity_before_opening_state() -> None:
+    """The state-only side must re-admit both source repository identity fields."""
+
+    from skillscout.application import acceptance as application
+
+    nomination, manifest, _snapshot = _fresh_lock_inputs()
+    handoff = _fresh_lock_handoff(manifest=manifest, receipt=_fresh_lock_receipt())
+    dependencies = application.FreshCampaignLockDependencies(
+        handoff_factory=lambda: handoff,
+        state_restore=lambda: pytest.fail("state capability opened for wrong source"),
+        operations_store_factory=lambda: pytest.fail("store opened for wrong source"),
+        durability_barrier=object(),
+    )
+    application_instance = application.FreshCampaignLockApplication(
+        dependencies,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        source_repository_id=1_310_897_030,
+        source_repository_full_name="alexzhu0/skillscout",
+        query_set_digest=nomination.query_set_digest,
+    )
+
+    with pytest.raises(application.AcceptanceApplicationError, match="evidence_missing"):
+        application_instance.run(created_at="2026-08-02T00:00:00.000000Z")
+
+
+def test_fixed_host_approval_reader_redacts_documented_top_level_array() -> None:
     from skillscout.adapters.github import GitHubReadClient
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -695,18 +801,14 @@ def test_fixed_host_approval_reader_redacts_comments_and_binds_run_attempt() -> 
         )
         return httpx.Response(
             200,
-            json={
-                "total_count": 1,
-                "run_attempt": 1,
-                "approvals": [
-                    {
-                        "user": {"login": "alexzhu0", "id": 101},
-                        "state": "approved",
-                        "environments": [{"id": 1, "name": "phase6-human-benchmark-lock"}],
-                        "comment": "untrusted comment that must not persist",
-                    }
-                ],
-            },
+            json=[
+                {
+                    "user": {"login": "alexzhu0", "id": 101},
+                    "state": "approved",
+                    "environments": [{"id": 1, "name": "phase6-human-benchmark-lock"}],
+                    "comment": "untrusted comment that must not persist",
+                }
+            ],
             request=request,
         )
 
@@ -716,7 +818,6 @@ def test_fixed_host_approval_reader_redacts_comments_and_binds_run_attempt() -> 
             "octo-org",
             "skillscout",
             1001,
-            expected_run_attempt=1,
         )
     finally:
         client.close()
@@ -725,7 +826,79 @@ def test_fixed_host_approval_reader_redacts_comments_and_binds_run_attempt() -> 
     assert approval.environment == "phase6-human-benchmark-lock"
     assert approval.reviewer_login == "alexzhu0"
     assert approval.reviewer_id == 101
-    assert {"comment", "raw_response", "endpoint"}.isdisjoint(approval.model_fields)
+    assert {"comment", "raw_response", "endpoint"}.isdisjoint(
+        type(approval).model_fields
+    )
+
+
+@pytest.mark.parametrize(
+    "payload_patch",
+    (
+        {},
+        {"run_attempt": 2},
+    ),
+)
+def test_fixed_host_run_attempt_reader_requires_exact_attempt_metadata(
+    payload_patch: dict[str, object],
+) -> None:
+    from skillscout.adapters.github import GitHubReadClient
+    from skillscout.application.ports import SafeFailure
+
+    payload: dict[str, object] = {
+        "id": 1001,
+        "run_attempt": 1,
+        "head_sha": "a" * 40,
+        "event": "workflow_dispatch",
+        "path": ".github/workflows/phase6-acceptance.yml@main",
+        "actor": {"login": "alexzhu0", "id": 42},
+        "triggering_actor": {"login": "alexzhu0", "id": 42},
+    }
+    payload.update(payload_patch)
+    if not payload_patch:
+        payload.pop("triggering_actor")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL(
+            "https://api.github.com/repos/octo-org/skillscout/actions/runs/1001/attempts/1"
+        )
+        return httpx.Response(200, json=payload, request=request)
+
+    client = GitHubReadClient(transport=httpx.MockTransport(handler), sleeper=lambda _delay: None)
+    try:
+        with pytest.raises(SafeFailure):
+            client.get_workflow_run_attempt("octo-org", "skillscout", 1001, 1)
+    finally:
+        client.close()
+
+
+def test_fixed_host_run_attempt_reader_retains_only_needed_identity_facts() -> None:
+    from skillscout.adapters.github import GitHubReadClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": 1001,
+                "run_attempt": 1,
+                "head_sha": "a" * 40,
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/phase6-acceptance.yml@main",
+                "actor": {"login": "alexzhu0", "id": 42},
+                "triggering_actor": {"login": "alexzhu0", "id": 42},
+                "display_title": "untrusted title",
+            },
+            request=request,
+        )
+
+    client = GitHubReadClient(transport=httpx.MockTransport(handler), sleeper=lambda _delay: None)
+    try:
+        metadata = client.get_workflow_run_attempt("octo-org", "skillscout", 1001, 1)
+    finally:
+        client.close()
+    assert metadata.workflow_path == ".github/workflows/phase6-acceptance.yml@main"
+    assert metadata.actor_id == metadata.triggering_actor_id == 42
+    assert metadata.actor_login == metadata.triggering_actor_login == "alexzhu0"
+    assert {"display_title", "raw_response", "endpoint"}.isdisjoint(type(metadata).model_fields)
 
 
 def test_acceptance_runtime_loads_only_exact_resolver_proof(
@@ -1246,6 +1419,18 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
         destination = tmp_path / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)
+    subprocess.run(("git", "init", "-q"), cwd=tmp_path, check=True)
+    subprocess.run(("git", "config", "user.email", "tests@example.invalid"), cwd=tmp_path, check=True)
+    subprocess.run(("git", "config", "user.name", "SkillScout tests"), cwd=tmp_path, check=True)
+    subprocess.run(("git", "add", "."), cwd=tmp_path, check=True)
+    subprocess.run(("git", "commit", "-qm", "authority source"), cwd=tmp_path, check=True)
+    source_commit_sha = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     manifest = LockedBenchmarkManifestV1.model_validate_json(
         (tmp_path / manifest_relative).read_bytes(),
         strict=True,
@@ -1260,7 +1445,7 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     authority = LiveAcceptanceAuthorityV1(
         schema_version="live-acceptance-authority-v1",
         authority_version=1,
-        source_commit_sha="c" * 40,
+        source_commit_sha=source_commit_sha,
         acceptance_workflow_sha256=workflow_digest,
         manifest_path=manifest_relative.as_posix(),
         manifest_digest=manifest.manifest_digest,
@@ -1316,7 +1501,7 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     verified = bootstrap.verify_live_acceptance_authority(
         repository_root=tmp_path,
         authority_bytes=authority_bytes,
-        observed_source_commit_sha="c" * 40,
+        observed_source_commit_sha=source_commit_sha,
         observed_state_commit_sha="e" * 40,
         observed_state_root_digest="sha256:" + ("f" * 64),
         observed_state_repository_id=123,
@@ -1328,6 +1513,49 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     )
 
     assert verified == authority
+
+    # A parseable working-tree query file must still be the exact blob from the
+    # approved source commit, not merely an unchecked local input.
+    original_query_bytes = (tmp_path / query_relative).read_bytes()
+    (tmp_path / query_relative).write_bytes(original_query_bytes + b"\n")
+    with pytest.raises(ValueError):
+        bootstrap.verify_live_acceptance_authority(
+            repository_root=tmp_path,
+            authority_bytes=authority_bytes,
+            observed_source_commit_sha=source_commit_sha,
+            observed_state_commit_sha="e" * 40,
+            observed_state_root_digest="sha256:" + ("f" * 64),
+            observed_state_repository_id=123,
+            observed_state_repository_full_name="example/state",
+            environ={
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            },
+        )
+    (tmp_path / query_relative).write_bytes(original_query_bytes)
+
+    # A matching collection of files cannot be evaluated from a different
+    # checkout HEAD than the immutable authority source commit.
+    subprocess.run(
+        ("git", "commit", "--allow-empty", "-qm", "different checkout head"),
+        cwd=tmp_path,
+        check=True,
+    )
+    with pytest.raises(ValueError):
+        bootstrap.verify_live_acceptance_authority(
+            repository_root=tmp_path,
+            authority_bytes=authority_bytes,
+            observed_source_commit_sha=source_commit_sha,
+            observed_state_commit_sha="e" * 40,
+            observed_state_root_digest="sha256:" + ("f" * 64),
+            observed_state_repository_id=123,
+            observed_state_repository_full_name="example/state",
+            environ={
+                "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+            },
+        )
+
     import skillscout.domain.extraction as extraction
 
     monkeypatch.setattr(
@@ -1339,7 +1567,7 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
         bootstrap.verify_live_acceptance_authority(
             repository_root=tmp_path,
             authority_bytes=authority_bytes,
-            observed_source_commit_sha="c" * 40,
+            observed_source_commit_sha=source_commit_sha,
             observed_state_commit_sha="e" * 40,
             observed_state_root_digest="sha256:" + ("f" * 64),
             observed_state_repository_id=123,
@@ -1368,7 +1596,7 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
         bootstrap.verify_live_acceptance_authority(
             repository_root=tmp_path,
             authority_bytes=authority_bytes,
-            observed_source_commit_sha="c" * 40,
+            observed_source_commit_sha=source_commit_sha,
             observed_state_commit_sha="d" * 40,
             observed_state_root_digest="sha256:" + ("f" * 64),
             observed_state_repository_id=123,

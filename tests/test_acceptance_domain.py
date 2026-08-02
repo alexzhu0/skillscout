@@ -754,12 +754,49 @@ def _v2_benchmark_entries() -> tuple[Any, ...]:
     )
 
 
+def _v2_selection_manifest() -> Any:
+    """Build the exact immutable V1 selection preimage carried by a V2 lock."""
+
+    attestation_model = _symbol("BenchmarkLockAttestationV1", skip_if_missing=False)
+    manifest_model = _symbol("LockedBenchmarkManifestV1", skip_if_missing=False)
+    entries = _v2_benchmark_entries()
+    preimage = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": DIGEST_C,
+        "entries": [
+            entry.model_dump(mode="json", exclude_none=False)
+            for entry in entries
+        ],
+        "prior_manifest_digest": None,
+    }
+    manifest_digest = sha256_digest(preimage)
+    return manifest_model(
+        **preimage,
+        lock_attestation=attestation_model(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=DIGEST_C,
+            manifest_digest=manifest_digest,
+            reviewer_id="v2-reviewer",
+            locked_at=TIMESTAMP_A,
+        ),
+        manifest_digest=manifest_digest,
+    )
+
+
 def _v2_benchmark_lock_payload() -> dict[str, object]:
     receipt_model = _symbol("BenchmarkLockApprovalReceiptV2", skip_if_missing=False)
+    source_state_binding_digest = _symbol(
+        "fresh_benchmark_source_state_binding_digest",
+        skip_if_missing=False,
+    )
     receipt = receipt_model(
         schema_version="benchmark-lock-approval-receipt-v2",
         purpose="benchmark_lock",
         environment="phase6-human-benchmark-lock",
+        source_repository_id=1_310_897_029,
+        source_repository_full_name="alexzhu0/skillscout",
         reviewer_login="alexzhu0",
         reviewer_id=101,
         workflow_run_id=1001,
@@ -769,18 +806,34 @@ def _v2_benchmark_lock_payload() -> dict[str, object]:
         trigger_identity="workflow_dispatch",
         approval_record_digest=DIGEST_B,
     )
+    selection_manifest = _v2_selection_manifest()
     return {
         "schema_version": "locked-benchmark-manifest-v2",
         "purpose": "benchmark_lock",
+        "source_repository_id": receipt.source_repository_id,
+        "source_repository_full_name": receipt.source_repository_full_name,
         "state_repository_id": 9001,
         "state_repository_full_name": "octo-org/skillscout-state",
         "parent_state_commit_sha": SHA_B,
         "parent_state_root_digest": DIGEST_C,
         "source_commit_sha": SHA_A,
         "acceptance_workflow_sha256": DIGEST_A,
-        "selection_manifest_digest": DIGEST_B,
-        "nomination_set_digest": DIGEST_C,
-        "entries": _v2_benchmark_entries(),
+        "source_state_binding_digest": source_state_binding_digest(
+            source_repository_id=receipt.source_repository_id,
+            source_repository_full_name=receipt.source_repository_full_name,
+            state_repository_id=9001,
+            state_repository_full_name="octo-org/skillscout-state",
+            parent_state_commit_sha=SHA_B,
+            parent_state_root_digest=DIGEST_C,
+            source_commit_sha=SHA_A,
+            acceptance_workflow_sha256=DIGEST_A,
+            selection_manifest_digest=selection_manifest.manifest_digest,
+            nomination_set_digest=selection_manifest.nomination_set_digest,
+        ),
+        "selection_manifest_digest": selection_manifest.manifest_digest,
+        "nomination_set_digest": selection_manifest.nomination_set_digest,
+        "selection_manifest": selection_manifest,
+        "entries": selection_manifest.entries,
         "environment": receipt.environment,
         "approved_reviewer_login": receipt.reviewer_login,
         "approved_reviewer_id": receipt.reviewer_id,
@@ -799,6 +852,8 @@ def test_locked_benchmark_manifest_v2_binds_redacted_environment_approval() -> N
     assert {
         "purpose",
         "environment",
+        "source_repository_id",
+        "source_repository_full_name",
         "reviewer_login",
         "reviewer_id",
         "workflow_run_id",
@@ -811,14 +866,18 @@ def test_locked_benchmark_manifest_v2_binds_redacted_environment_approval() -> N
     } == set(receipt_model.model_fields) - {"schema_version"}
     assert {
         "purpose",
+        "source_repository_id",
+        "source_repository_full_name",
         "state_repository_id",
         "state_repository_full_name",
         "parent_state_commit_sha",
         "parent_state_root_digest",
         "source_commit_sha",
         "acceptance_workflow_sha256",
+        "source_state_binding_digest",
         "selection_manifest_digest",
         "nomination_set_digest",
+        "selection_manifest",
         "entries",
         "environment",
         "approved_reviewer_login",
@@ -881,6 +940,65 @@ def test_locked_benchmark_manifest_v2_rejects_duplicate_or_noncanonical_entries(
     payload["entries"] = [entries[0], *entries[:-1]]
     payload.pop("lock_digest")
     with pytest.raises(ValidationError):
+        manifest_model.model_validate(payload, strict=True)
+
+
+def test_locked_benchmark_manifest_v2_carries_an_exact_v1_selection_preimage() -> None:
+    """A valid role distribution cannot reinterpret the V1-reviewed selection."""
+
+    entry_model = _symbol("BenchmarkEntryV1", skip_if_missing=False)
+    manifest_model = _symbol("LockedBenchmarkManifestV2", skip_if_missing=False)
+    source_binding = _symbol(
+        "fresh_benchmark_source_state_binding_digest",
+        skip_if_missing=False,
+    )
+    payload = manifest_model.model_validate(
+        _v2_benchmark_lock_payload(), strict=True
+    ).model_dump(mode="json", exclude_none=False)
+    entries = payload["entries"]
+    assert isinstance(entries, list)
+    positive = next(item for item in entries if item["coverage_role"] == "positive")
+    negative = next(item for item in entries if item["coverage_role"] == "negative")
+    rewritten: list[dict[str, object]] = []
+    for entry in entries:
+        altered = dict(entry)
+        if entry is positive:
+            altered["coverage_role"] = "negative"
+        elif entry is negative:
+            altered["coverage_role"] = "positive"
+        altered.pop("entry_digest")
+        rewritten.append(
+            entry_model.model_validate(altered, strict=True).model_dump(
+                mode="json", exclude_none=False
+            )
+        )
+    payload["entries"] = sorted(rewritten, key=lambda item: str(item["entry_digest"]))
+    payload.pop("lock_digest")
+    with pytest.raises(ValidationError, match="V1 selection preimage"):
+        manifest_model.model_validate(payload, strict=True)
+
+    payload = manifest_model.model_validate(
+        _v2_benchmark_lock_payload(), strict=True
+    ).model_dump(mode="json", exclude_none=False)
+    selection = payload["selection_manifest"]
+    assert isinstance(selection, dict)
+    selection_digest = str(selection["manifest_digest"])
+    payload["selection_manifest_digest"] = DIGEST_B
+    payload["source_state_binding_digest"] = source_binding(
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        source_repository_id=1_310_897_029,
+        source_repository_full_name="alexzhu0/skillscout",
+        parent_state_commit_sha=SHA_B,
+        parent_state_root_digest=DIGEST_C,
+        source_commit_sha=SHA_A,
+        acceptance_workflow_sha256=DIGEST_A,
+        selection_manifest_digest=DIGEST_B,
+        nomination_set_digest=str(selection["nomination_set_digest"]),
+    )
+    assert selection_digest != DIGEST_B
+    payload.pop("lock_digest")
+    with pytest.raises(ValidationError, match="V1 selection preimage"):
         manifest_model.model_validate(payload, strict=True)
 
 

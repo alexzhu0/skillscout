@@ -25,17 +25,21 @@ from skillscout.domain.acceptance import (
     AcceptanceScenarioResultV1,
     AcceptanceSemanticTelemetryV1,
     AcceptanceWarningV1,
+    BenchmarkLockApprovalReceiptV2,
     ChangedSourceDraftUpdateCompletionV1,
     ChangedSourceEvidenceV1,
+    FreshBenchmarkLockHandoffV1,
     HumanSkillReviewAttestationV1,
     LiveAcceptanceAuthorityV1,
     LockedBenchmarkManifestV1,
+    LockedBenchmarkManifestV2,
     NominationEntryV1,
     NominationSetV1,
     ProbeCleanupAttestationV1,
     PublicationReplayCompletionV1,
     ReplayEvidenceV1,
     ReplayIntentV1,
+    fresh_benchmark_source_state_binding_digest,
 )
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.discovery import (
@@ -687,6 +691,524 @@ class NominationApplication:
         finally:
             _close(store)
             _close(search)
+
+
+@dataclass(frozen=True)
+class FreshCampaignPreparationDependencies:
+    """The sole Search and state capabilities admitted during fresh preparation."""
+
+    search_factory: Callable[[], object]
+    operations_store_factory: Callable[[], object]
+    state_restore: Callable[[], object]
+    durability_barrier: object
+
+
+@dataclass(frozen=True)
+class FreshCampaignPreparationResult:
+    """One fresh Search-derived nomination and the state child that carries it."""
+
+    nomination: NominationSetV1
+    state_commit_sha: str
+    state_root_digest: str
+
+
+@dataclass(frozen=True)
+class FreshCampaignSourceBinding:
+    """Non-secret immutable workflow identity derived from the checked-out source."""
+
+    source_commit_sha: str
+    acceptance_workflow_sha256: str
+    workflow_run_id: int
+    workflow_run_attempt: int
+    trigger_identity: str
+
+    def __post_init__(self) -> None:
+        if (
+            re.fullmatch(r"[0-9a-f]{40}", self.source_commit_sha) is None
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", self.acceptance_workflow_sha256)
+            is None
+            or type(self.workflow_run_id) is not int
+            or self.workflow_run_id <= 0
+            or type(self.workflow_run_attempt) is not int
+            or self.workflow_run_attempt <= 0
+            or self.workflow_run_attempt != 1
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", self.trigger_identity
+            )
+            is None
+        ):
+            raise TypeError("invalid fresh campaign source binding")
+
+
+class FreshCampaignPreparationApplication:
+    """Derive one bounded nomination from the server-verified current state only."""
+
+    def __init__(
+        self,
+        dependencies: FreshCampaignPreparationDependencies,
+        *,
+        query_set: DiscoveryQuerySetV1,
+        state_repository_id: int,
+        state_repository_full_name: str,
+    ) -> None:
+        if (
+            type(dependencies) is not FreshCampaignPreparationDependencies
+            or type(query_set) is not DiscoveryQuerySetV1
+            or type(state_repository_id) is not int
+            or state_repository_id <= 0
+            or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", state_repository_full_name)
+            is None
+        ):
+            raise TypeError("invalid fresh campaign preparation")
+        self._dependencies = dependencies
+        self._query_set = query_set
+        self._state_repository_id = state_repository_id
+        self._state_repository_full_name = state_repository_full_name
+
+    def run(self, *, created_at: str) -> FreshCampaignPreparationResult:
+        """Read the current parent, nominate once, then issue exactly one state CAS."""
+
+        observed_head, prior_root = _verified_fresh_state_parent(
+            self._dependencies.state_restore()
+        )
+        authority_digest = _fresh_nomination_authority_digest(
+            state_repository_id=self._state_repository_id,
+            state_repository_full_name=self._state_repository_full_name,
+            state_commit_sha=observed_head,
+            state_root_digest=prior_root,
+            query_set_digest=self._query_set.query_set_digest,
+        )
+        nomination_set_id = "fresh-nomination-" + authority_digest.removeprefix("sha256:")[:32]
+        search = self._dependencies.search_factory()
+        store: object | None = None
+        try:
+            nomination = nominate_search_candidates(
+                search=search,
+                query_set=self._query_set,
+                search_run_authority_digest=authority_digest,
+                nomination_set_id=nomination_set_id,
+                created_at=created_at,
+            )
+            if nomination.user_nominated_entries:
+                raise AcceptanceApplicationError("evidence_missing")
+            store = self._dependencies.operations_store_factory()
+            _record_on_open_store(
+                store,
+                nomination.nomination_set_id,
+                "acceptance_nomination",
+                nomination,
+            )
+            sync = getattr(self._dependencies.durability_barrier, "sync_nomination", None)
+            if not callable(sync):
+                raise AcceptanceApplicationError("evidence_missing")
+            synchronized = sync(
+                operations_store=store,
+                observed_head=observed_head,
+                prior_root_digest=prior_root,
+                created_at=created_at,
+            )
+            state_commit_sha, state_root_digest = _verified_fresh_state_sync(
+                synchronized,
+                observed_head=observed_head,
+            )
+            return FreshCampaignPreparationResult(
+                nomination=nomination,
+                state_commit_sha=state_commit_sha,
+                state_root_digest=state_root_digest,
+            )
+        finally:
+            _close(store)
+            _close(search)
+
+
+@dataclass(frozen=True)
+class FreshCampaignLockHandoffDependencies:
+    """Read-only capabilities admitted only to the protected approval job."""
+
+    approval_receipt_factory: Callable[[], object]
+    selection_manifest_factory: Callable[[], object]
+    source_binding_factory: Callable[[], object]
+    source_repository_id_factory: Callable[[], object]
+
+
+class FreshCampaignLockHandoffApplication:
+    """Build the sole canonical redacted handoff before state authority exists."""
+
+    def __init__(
+        self,
+        dependencies: FreshCampaignLockHandoffDependencies,
+        *,
+        source_repository_full_name: str,
+        state_repository_id: int,
+        state_repository_full_name: str,
+    ) -> None:
+        if (
+            type(dependencies) is not FreshCampaignLockHandoffDependencies
+            or re.fullmatch(
+                r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source_repository_full_name
+            )
+            is None
+            or type(state_repository_id) is not int
+            or state_repository_id <= 0
+            or re.fullmatch(
+                r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", state_repository_full_name
+            )
+            is None
+        ):
+            raise TypeError("invalid fresh campaign lock handoff")
+        self._dependencies = dependencies
+        self._source_repository_full_name = source_repository_full_name
+        self._state_repository_id = state_repository_id
+        self._state_repository_full_name = state_repository_full_name
+
+    def run(self) -> FreshBenchmarkLockHandoffV1:
+        """Verify the protected run and return only canonical non-secret facts."""
+
+        source = self._dependencies.source_binding_factory()
+        receipt = self._dependencies.approval_receipt_factory()
+        manifest = self._dependencies.selection_manifest_factory()
+        source_repository_id = self._dependencies.source_repository_id_factory()
+        if (
+            type(source) is not FreshCampaignSourceBinding
+            or type(receipt) is not BenchmarkLockApprovalReceiptV2
+            or type(manifest) is not LockedBenchmarkManifestV1
+            or type(source_repository_id) is not int
+            or source_repository_id <= 0
+            or receipt.source_repository_id != source_repository_id
+            or receipt.source_repository_full_name != self._source_repository_full_name
+            or (
+                receipt.source_commit_sha,
+                receipt.workflow_sha256,
+                receipt.workflow_run_id,
+                receipt.workflow_run_attempt,
+                receipt.trigger_identity,
+            )
+            != (
+                source.source_commit_sha,
+                source.acceptance_workflow_sha256,
+                source.workflow_run_id,
+                source.workflow_run_attempt,
+                source.trigger_identity,
+            )
+        ):
+            raise AcceptanceApplicationError("evidence_missing")
+        return FreshBenchmarkLockHandoffV1(
+            schema_version="fresh-benchmark-lock-handoff-v1",
+            source_repository_id=source_repository_id,
+            source_repository_full_name=self._source_repository_full_name,
+            state_repository_id=self._state_repository_id,
+            state_repository_full_name=self._state_repository_full_name,
+            source_commit_sha=source.source_commit_sha,
+            acceptance_workflow_sha256=source.acceptance_workflow_sha256,
+            workflow_run_id=source.workflow_run_id,
+            workflow_run_attempt=source.workflow_run_attempt,
+            trigger_identity=source.trigger_identity,
+            selection_manifest=manifest,
+            approval_receipt=receipt,
+        )
+
+
+@dataclass(frozen=True)
+class FreshCampaignLockDependencies:
+    """State-only capabilities admitted after the protected handoff is complete."""
+
+    handoff_factory: Callable[[], object]
+    state_restore: Callable[[], object]
+    operations_store_factory: Callable[[], object]
+    durability_barrier: object
+
+
+@dataclass(frozen=True)
+class FreshCampaignLockResult:
+    """The one V2 lock fact and the sole forward state child that carries it."""
+
+    lock: LockedBenchmarkManifestV2
+    state_commit_sha: str
+    state_root_digest: str
+
+
+def bind_fresh_benchmark_lock(
+    *,
+    snapshot: AcceptanceRunSnapshot,
+    selection_manifest: LockedBenchmarkManifestV1,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    parent_state_commit_sha: str,
+    parent_state_root_digest: str,
+    expected_nomination_authority_digest: str,
+    approval_receipt: BenchmarkLockApprovalReceiptV2,
+) -> LockedBenchmarkManifestV2:
+    """Build V2 only from the fixed V1 bytes re-admitted against the fresh state."""
+
+    if (
+        type(snapshot) is not AcceptanceRunSnapshot
+        or type(selection_manifest) is not LockedBenchmarkManifestV1
+        or type(state_repository_id) is not int
+        or state_repository_id <= 0
+        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", state_repository_full_name)
+        is None
+        or re.fullmatch(r"[0-9a-f]{40}", parent_state_commit_sha) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", parent_state_root_digest) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", expected_nomination_authority_digest)
+        is None
+        or type(approval_receipt) is not BenchmarkLockApprovalReceiptV2
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    try:
+        nomination = re_admit_locked_manifest(snapshot, selection_manifest)
+    except (AcceptanceApplicationError, TypeError):
+        raise AcceptanceApplicationError("evidence_missing") from None
+    if (
+        nomination.user_nominated_entries
+        or len(nomination.search_derived_entries) < 5
+        or nomination.search_run_authority_digest != expected_nomination_authority_digest
+        or any(entry.selection_source != "search_derived" for entry in selection_manifest.entries)
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    return LockedBenchmarkManifestV2(
+        schema_version="locked-benchmark-manifest-v2",
+        purpose="benchmark_lock",
+        source_repository_id=approval_receipt.source_repository_id,
+        source_repository_full_name=approval_receipt.source_repository_full_name,
+        state_repository_id=state_repository_id,
+        state_repository_full_name=state_repository_full_name,
+        parent_state_commit_sha=parent_state_commit_sha,
+        parent_state_root_digest=parent_state_root_digest,
+        source_commit_sha=approval_receipt.source_commit_sha,
+        acceptance_workflow_sha256=approval_receipt.workflow_sha256,
+        source_state_binding_digest=fresh_benchmark_source_state_binding_digest(
+            source_repository_id=approval_receipt.source_repository_id,
+            source_repository_full_name=approval_receipt.source_repository_full_name,
+            state_repository_id=state_repository_id,
+            state_repository_full_name=state_repository_full_name,
+            parent_state_commit_sha=parent_state_commit_sha,
+            parent_state_root_digest=parent_state_root_digest,
+            source_commit_sha=approval_receipt.source_commit_sha,
+            acceptance_workflow_sha256=approval_receipt.workflow_sha256,
+            selection_manifest_digest=selection_manifest.manifest_digest,
+            nomination_set_digest=selection_manifest.nomination_set_digest,
+        ),
+        selection_manifest_digest=selection_manifest.manifest_digest,
+        nomination_set_digest=selection_manifest.nomination_set_digest,
+        selection_manifest=selection_manifest,
+        entries=selection_manifest.entries,
+        environment=approval_receipt.environment,
+        approved_reviewer_login=approval_receipt.reviewer_login,
+        approved_reviewer_id=approval_receipt.reviewer_id,
+        workflow_run_id=approval_receipt.workflow_run_id,
+        workflow_run_attempt=approval_receipt.workflow_run_attempt,
+        trigger_identity=approval_receipt.trigger_identity,
+        approval_record_digest=approval_receipt.approval_record_digest,
+        approval_receipt=approval_receipt,
+        approval_receipt_digest=approval_receipt.receipt_digest,
+    )
+
+
+class FreshCampaignLockApplication:
+    """Persist one approval-bound V2 lock only after the late state read revalidates it."""
+
+    def __init__(
+        self,
+        dependencies: FreshCampaignLockDependencies,
+        *,
+        state_repository_id: int,
+        state_repository_full_name: str,
+        source_repository_id: int,
+        source_repository_full_name: str,
+        query_set_digest: str,
+    ) -> None:
+        if (
+            type(dependencies) is not FreshCampaignLockDependencies
+            or type(state_repository_id) is not int
+            or state_repository_id <= 0
+            or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", state_repository_full_name)
+            is None
+            or type(source_repository_id) is not int
+            or source_repository_id <= 0
+            or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source_repository_full_name)
+            is None
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", query_set_digest) is None
+        ):
+            raise TypeError("invalid fresh campaign lock")
+        self._dependencies = dependencies
+        self._state_repository_id = state_repository_id
+        self._state_repository_full_name = state_repository_full_name
+        self._source_repository_id = source_repository_id
+        self._source_repository_full_name = source_repository_full_name
+        self._query_set_digest = query_set_digest
+
+    def run(self, *, created_at: str) -> FreshCampaignLockResult:
+        """Restore state only after re-admitting the protected canonical handoff."""
+
+        handoff = self._dependencies.handoff_factory()
+        if (
+            type(handoff) is not FreshBenchmarkLockHandoffV1
+            or handoff.state_repository_id != self._state_repository_id
+            or handoff.state_repository_full_name != self._state_repository_full_name
+            or handoff.source_repository_id != self._source_repository_id
+            or handoff.source_repository_full_name != self._source_repository_full_name
+        ):
+            raise AcceptanceApplicationError("evidence_missing")
+        manifest = handoff.selection_manifest
+        receipt = handoff.approval_receipt
+        restored = self._dependencies.state_restore()
+        observed_head, prior_root = _verified_fresh_state_parent(restored)
+        expected_nomination_authority_digest = _fresh_nomination_authority_from_current_root(
+            restored,
+            state_repository_id=self._state_repository_id,
+            state_repository_full_name=self._state_repository_full_name,
+            query_set_digest=self._query_set_digest,
+        )
+        store: object | None = None
+        try:
+            store = self._dependencies.operations_store_factory()
+            lookup = getattr(store, "acceptance_snapshot_for_fact", None)
+            if not callable(lookup):
+                raise AcceptanceApplicationError("evidence_missing")
+            try:
+                snapshot = lookup(
+                    "acceptance_nomination",
+                    manifest.nomination_set_digest,
+                )
+            except AcceptanceApplicationError:
+                raise
+            except Exception:
+                raise AcceptanceApplicationError("evidence_missing") from None
+            if type(snapshot) is not AcceptanceRunSnapshot:
+                raise AcceptanceApplicationError("evidence_missing")
+            if any(
+                record.kind == "acceptance_benchmark_lock"
+                and type(record.fact) is LockedBenchmarkManifestV2
+                for record in snapshot.facts
+            ):
+                raise AcceptanceApplicationError("duplicate_effect")
+            lock = bind_fresh_benchmark_lock(
+                snapshot=snapshot,
+                selection_manifest=manifest,
+                state_repository_id=self._state_repository_id,
+                state_repository_full_name=self._state_repository_full_name,
+                parent_state_commit_sha=observed_head,
+                parent_state_root_digest=prior_root,
+                expected_nomination_authority_digest=expected_nomination_authority_digest,
+                approval_receipt=receipt,
+            )
+            _record_on_open_store(
+                store,
+                snapshot.acceptance_run_id,
+                "acceptance_benchmark_lock",
+                lock,
+            )
+            sync = getattr(self._dependencies.durability_barrier, "sync_benchmark_lock", None)
+            if not callable(sync):
+                raise AcceptanceApplicationError("evidence_missing")
+            synchronized = sync(
+                operations_store=store,
+                observed_head=observed_head,
+                prior_root_digest=prior_root,
+                created_at=created_at,
+            )
+            state_commit_sha, state_root_digest = _verified_fresh_state_sync(
+                synchronized,
+                observed_head=observed_head,
+            )
+            return FreshCampaignLockResult(
+                lock=lock,
+                state_commit_sha=state_commit_sha,
+                state_root_digest=state_root_digest,
+            )
+        finally:
+            _close(store)
+
+
+def _verified_fresh_state_parent(restored: object) -> tuple[str, str]:
+    """Accept only the exact read-verified current state parent supplied by the state adapter."""
+
+    observed_head = getattr(restored, "observed_head", None)
+    prior_root = getattr(
+        getattr(getattr(restored, "bundle", None), "root", None),
+        "root_digest",
+        None,
+    )
+    if (
+        getattr(restored, "status", None) != "verified"
+        or type(observed_head) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", observed_head) is None
+        or type(prior_root) is not str
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", prior_root) is None
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    return observed_head, prior_root
+
+
+def _verified_fresh_state_sync(
+    synchronized: object,
+    *,
+    observed_head: str,
+) -> tuple[str, str]:
+    """Require one verified forward CAS; callers deliberately do not compensate or retry."""
+
+    state_commit_sha = getattr(synchronized, "commit_sha", None)
+    state_root_digest = getattr(synchronized, "root_digest", None)
+    if (
+        getattr(synchronized, "status", None) != "verified"
+        or getattr(synchronized, "previous_head", None) != observed_head
+        or type(state_commit_sha) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", state_commit_sha) is None
+        or type(state_root_digest) is not str
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", state_root_digest) is None
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    return state_commit_sha, state_root_digest
+
+
+def _fresh_nomination_authority_digest(
+    *,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    state_commit_sha: str,
+    state_root_digest: str,
+    query_set_digest: str,
+) -> str:
+    """Return the exact Search authority for one verified state parent."""
+
+    return sha256_digest(
+        {
+            "schema_version": "fresh-campaign-nomination-authority-v1",
+            "state_repository_id": state_repository_id,
+            "state_repository_full_name": state_repository_full_name,
+            "state_commit_sha": state_commit_sha,
+            "state_root_digest": state_root_digest,
+            "query_set_digest": query_set_digest,
+        }
+    )
+
+
+def _fresh_nomination_authority_from_current_root(
+    restored: object,
+    *,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    query_set_digest: str,
+) -> str:
+    """Require the current root's immediate parent to be the nomination authority."""
+
+    root = getattr(getattr(restored, "bundle", None), "root", None)
+    parent_commit_sha = getattr(root, "state_parent_commit_sha", None)
+    prior_root_digest = getattr(root, "prior_root_digest", None)
+    if (
+        type(parent_commit_sha) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", parent_commit_sha) is None
+        or type(prior_root_digest) is not str
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", prior_root_digest) is None
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    return _fresh_nomination_authority_digest(
+        state_repository_id=state_repository_id,
+        state_repository_full_name=state_repository_full_name,
+        state_commit_sha=parent_commit_sha,
+        state_root_digest=prior_root_digest,
+        query_set_digest=query_set_digest,
+    )
 
 
 @dataclass(frozen=True)

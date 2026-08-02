@@ -415,10 +415,13 @@ def _v2_symbol(name: str):
 def _locked_manifest_v2(nomination: NominationSetV1):
     receipt_model = _v2_symbol("BenchmarkLockApprovalReceiptV2")
     manifest_model = _v2_symbol("LockedBenchmarkManifestV2")
+    source_state_binding_digest = _v2_symbol("fresh_benchmark_source_state_binding_digest")
     receipt = receipt_model(
         schema_version="benchmark-lock-approval-receipt-v2",
         purpose="benchmark_lock",
         environment="phase6-human-benchmark-lock",
+        source_repository_id=1_310_897_029,
+        source_repository_full_name="alexzhu0/skillscout",
         reviewer_login="alexzhu0",
         reviewer_id=101,
         workflow_run_id=1001,
@@ -432,14 +435,29 @@ def _locked_manifest_v2(nomination: NominationSetV1):
     return manifest_model(
         schema_version="locked-benchmark-manifest-v2",
         purpose="benchmark_lock",
+        source_repository_id=receipt.source_repository_id,
+        source_repository_full_name=receipt.source_repository_full_name,
         state_repository_id=9001,
         state_repository_full_name="octo-org/skillscout-state",
         parent_state_commit_sha="b" * 40,
         parent_state_root_digest=DIGEST_C,
         source_commit_sha="a" * 40,
         acceptance_workflow_sha256=DIGEST_A,
+        source_state_binding_digest=source_state_binding_digest(
+            source_repository_id=receipt.source_repository_id,
+            source_repository_full_name=receipt.source_repository_full_name,
+            state_repository_id=9001,
+            state_repository_full_name="octo-org/skillscout-state",
+            parent_state_commit_sha="b" * 40,
+            parent_state_root_digest=DIGEST_C,
+            source_commit_sha="a" * 40,
+            acceptance_workflow_sha256=DIGEST_A,
+            selection_manifest_digest=manifest.manifest_digest,
+            nomination_set_digest=nomination.nomination_set_digest,
+        ),
         selection_manifest_digest=manifest.manifest_digest,
         nomination_set_digest=nomination.nomination_set_digest,
+        selection_manifest=manifest,
         entries=manifest.entries,
         environment=receipt.environment,
         approved_reviewer_login=receipt.reviewer_login,
@@ -513,10 +531,88 @@ def test_benchmark_lock_schema_registry_preserves_v1_history_and_restores_v2(
     assert restored.projection == exported.projection
 
 
-def test_v2_benchmark_lock_rejects_selected_entry_not_in_fresh_nomination(
+def test_v2_lock_rebuild_revalidates_its_embedded_v1_selection_preimage(
     tmp_path: Path,
 ) -> None:
+    """Rebuild cannot reinterpret a same-nomination V2 role assignment."""
+
     module = _operations_module()
+    nomination = _nomination_set()
+    fresh_v2 = _locked_manifest_v2(nomination)
+    source = tmp_path / "v2-preimage-source.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            fresh_v2,
+        )
+        exported = store.export_owned_state()
+
+    owned = next(
+        fact
+        for fact in exported.facts
+        if fact.kind == "acceptance_benchmark_lock"
+        and module._fact_payload(fact)["value"]["schema_version"]
+        == "locked-benchmark-manifest-v2"
+    )
+    payload = json.loads(owned.payload_json)
+    value = payload["value"]
+    assert isinstance(value, dict)
+    entries = value["entries"]
+    assert isinstance(entries, list)
+    positive = next(item for item in entries if item["coverage_role"] == "positive")
+    negative = next(item for item in entries if item["coverage_role"] == "negative")
+    rewritten: list[dict[str, object]] = []
+    for entry in entries:
+        altered = dict(entry)
+        if entry is positive:
+            altered["coverage_role"] = "negative"
+        elif entry is negative:
+            altered["coverage_role"] = "positive"
+        altered.pop("entry_digest")
+        rewritten.append(
+            BenchmarkEntryV1.model_validate(altered, strict=True).model_dump(
+                mode="json", exclude_none=False
+            )
+        )
+    value["entries"] = sorted(rewritten, key=lambda item: str(item["entry_digest"]))
+    payload_json = module._json_text(payload)
+    rewritten_owned = owned.model_copy(
+        update={
+            "payload_json": payload_json,
+            "object_digest": sha256_digest(payload_json.encode("utf-8")),
+        }
+    )
+    facts = tuple(rewritten_owned if fact == owned else fact for fact in exported.facts)
+    projection = module._projection_from_facts(facts)
+    invalid_database = b"not-a-sqlite-database"
+    tampered = exported.model_copy(
+        update={
+            "database_bytes": invalid_database,
+            "database_digest": sha256_digest(invalid_database),
+            "facts": facts,
+            "projection": projection,
+            "projection_digest": projection.projection_digest,
+            "export_digest": module._export_digest(
+                schema_fingerprint=exported.schema_fingerprint,
+                facts=facts,
+                projection=projection,
+            ),
+        }
+    )
+    with pytest.raises(module.OperationsIntegrityError, match="acceptance fact model"):
+        module.OperationsStateStore.rebuild_owned_state(
+            tmp_path / "v2-preimage-rejected.sqlite3",
+            tampered,
+        )
+
+
+def test_v2_benchmark_lock_rejects_selected_entry_not_in_fresh_nomination() -> None:
     v2_model = _v2_symbol("LockedBenchmarkManifestV2")
     nomination = _nomination_set()
     fresh_v2 = _locked_manifest_v2(nomination)
@@ -540,20 +636,8 @@ def test_v2_benchmark_lock_rejects_selected_entry_not_in_fresh_nomination(
         )
     ]
     payload.pop("lock_digest")
-    mismatched = v2_model.model_validate(payload, strict=True)
-
-    with module.OperationsStateStore(tmp_path / "mismatched-v2-lock.sqlite3") as store:
-        store.record_acceptance_fact(
-            nomination.nomination_set_id,
-            "acceptance_nomination",
-            nomination,
-        )
-        with pytest.raises(module.OperationsIntegrityError, match="selection"):
-            store.record_acceptance_fact(
-                nomination.nomination_set_id,
-                "acceptance_benchmark_lock",
-                mismatched,
-            )
+    with pytest.raises(ValueError, match="V1 selection preimage"):
+        v2_model.model_validate(payload, strict=True)
 
 
 def _different_v2_benchmark_lock(nomination: NominationSetV1):

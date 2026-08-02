@@ -24,6 +24,16 @@ INVALID = "phase6 acceptance registry invalid"
 REPOSITORY_SUCCESS = "phase6 repository contract valid"
 _MAX_REPOSITORY_FILE_BYTES = 2_000_000
 _PHASE = Path(".planning/phases/06-adversarial-mvp-acceptance")
+_PHASE_PLAN_COUNT = 18
+_PHASE_TASK_COUNT = 47
+_PHASE_REGISTRY_SURFACE_COUNT = 87
+_PHASE_REGISTRY_UNIQUE_SURFACE_COUNT = 85
+_VERSIONED_FACT_REGISTRY_SURFACES = frozenset(
+    {
+        "acceptance_benchmark_lock",
+        "acceptance_live_authority",
+    }
+)
 _WORKFLOWS = (
     Path(".github/workflows/discover.yml"),
     Path(".github/workflows/publish-candidate.yml"),
@@ -61,7 +71,10 @@ _REQUIRED_REPOSITORY_FILES = (
     Path("tools/verify_phase6_source_execution.py"),
     Path("tools/verify_phase6_validation_map.py"),
     *_WORKFLOWS,
-    *(_PHASE / f"06-{index:02d}-PLAN.md" for index in range(1, 16)),
+    *(
+        _PHASE / f"06-{index:02d}-PLAN.md"
+        for index in range(1, _PHASE_PLAN_COUNT + 1)
+    ),
 )
 
 PLAN_06_06_STATE_COMMIT = "37f8dcbf74c85f2471670373fd03f71d9f155bae"
@@ -293,7 +306,7 @@ def _verify_plan_validation_contract(root: Path) -> tuple[int, int]:
 
         plans: dict[str, tuple[int, tuple[str, ...]]] = {}
         tasks: dict[str, tuple[str, str | None]] = {}
-        for index in range(1, 16):
+        for index in range(1, _PHASE_PLAN_COUNT + 1):
             source = _repository_text(root, _PHASE / f"06-{index:02d}-PLAN.md")
             number = re.search(r'^plan:\s*"(\d{2})"$', source, re.MULTILINE)
             wave = re.search(r"^wave:\s*(\d+)$", source, re.MULTILINE)
@@ -340,7 +353,50 @@ def _verify_plan_validation_contract(root: Path) -> tuple[int, int]:
                     ),
                 )
 
+        fresh_lock_plan = _repository_text(root, _PHASE / "06-16-PLAN.md")
+        required_environment_setup = (
+            "Create environment `phase6-fresh-nomination`; require no reviewer or "
+            "custom deployment rule, restrict deployment branches to the protected "
+            "default branch `main` only, and store "
+            "`SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN` only as this "
+            "environment's secret (not as a repository-level fallback).",
+            "Create environment `phase6-human-benchmark-lock`; require reviewer "
+            "`alexzhu0`, restrict deployment branches to the protected default branch "
+            "`main` only, leave Prevent self-review disabled because the sole required "
+            "reviewer may approve a run they initiated, enable no custom deployment "
+            "protection rule or signature/key scheme, and store "
+            "`SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN` only as this "
+            "environment's secret (not as a repository-level fallback).",
+        )
+        if any(requirement not in fresh_lock_plan for requirement in required_environment_setup):
+            _reject()
+
         validation = _repository_text(root, _PHASE / "06-VALIDATION.md")
+        manual_section = validation.split("## Manual-Only Verifications", 1)[1].split(
+            "## Validation Sign-Off", 1
+        )[0]
+        benchmark_lock_row = next(
+            (
+                line
+                for line in manual_section.splitlines()
+                if line.startswith("| Lock the five-repository benchmark |")
+            ),
+            None,
+        )
+        required_benchmark_lock_manual_contract = (
+            "configure `phase6-human-benchmark-lock` with required reviewer "
+            "`alexzhu0`, selected deployment branch `main` only",
+            "Prevent self-review disabled for the sole reviewer",
+            "no custom protection rule",
+            "`SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN` only as an "
+            "environment secret with no repository-level fallback",
+        )
+        if benchmark_lock_row is None or any(
+            requirement not in benchmark_lock_row
+            for requirement in required_benchmark_lock_manual_contract
+        ):
+            _reject()
+
         row_section = validation.split("## Per-Task Verification Map", 1)[1].split(
             "## Requirement Inverse Coverage", 1
         )[0]
@@ -374,7 +430,11 @@ def _verify_plan_validation_contract(root: Path) -> tuple[int, int]:
                 requirement_ids,
                 html.unescape(command),
             )
-        if len(plans) != 15 or len(tasks) != 38 or set(rows) != set(tasks):
+        if (
+            len(plans) != _PHASE_PLAN_COUNT
+            or len(tasks) != _PHASE_TASK_COUNT
+            or set(rows) != set(tasks)
+        ):
             _reject()
         for task_id, (plan_id, row_wave, _requirements, command) in rows.items():
             task_command = tasks[task_id][1]
@@ -415,9 +475,22 @@ def _verify_plan_validation_contract(root: Path) -> tuple[int, int]:
             for cells in (tuple(cell.strip() for cell in line.strip().strip("|").split("|")),)
             if len(cells) == 4
         )
+        registry_counts = {
+            surface: registry_surfaces.count(surface) for surface in set(registry_surfaces)
+        }
         if (
-            len(registry_surfaces) != 69
-            or len(set(registry_surfaces)) != len(registry_surfaces)
+            len(registry_surfaces) != _PHASE_REGISTRY_SURFACE_COUNT
+            or len(registry_counts) != _PHASE_REGISTRY_UNIQUE_SURFACE_COUNT
+            or {
+                surface
+                for surface, count in registry_counts.items()
+                if count != 1
+            }
+            != _VERSIONED_FACT_REGISTRY_SURFACES
+            or any(
+                registry_counts[surface] != 2
+                for surface in _VERSIONED_FACT_REGISTRY_SURFACES
+            )
             or "SemanticStage" not in registry_surfaces
             or "verify_phase6_source_execution.py" not in registry_surfaces
         ):

@@ -10,7 +10,10 @@ import importlib.metadata
 import io
 import json
 import os
+import re
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, replace
@@ -227,25 +230,26 @@ def verify_live_acceptance_authority(
             type(authority_bytes) is not bytes
             or not authority_bytes
             or len(authority_bytes) > _ACCEPTANCE_MANIFEST_BYTES
+            or _checked_out_repository_commit(root) != observed_source_commit_sha
         ):
             raise ValueError
-        manifest_bytes = _read_exact_repository_file(
+        manifest_bytes = _read_exact_checked_out_source_file(
             root,
-            root / manifest_relative,
-            manifest_relative,
-            _ACCEPTANCE_MANIFEST_BYTES,
+            source_commit_sha=observed_source_commit_sha,
+            relative_path=manifest_relative,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
         )
-        workflow_bytes = _read_exact_repository_file(
+        workflow_bytes = _read_exact_checked_out_source_file(
             root,
-            root / workflow_relative,
-            workflow_relative,
-            _ACCEPTANCE_MANIFEST_BYTES,
+            source_commit_sha=observed_source_commit_sha,
+            relative_path=workflow_relative,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
         )
-        query_bytes = _read_exact_repository_file(
+        query_bytes = _read_exact_checked_out_source_file(
             root,
-            root / query_relative,
-            query_relative,
-            _DISCOVERY_DIGEST_BYTES,
+            source_commit_sha=observed_source_commit_sha,
+            relative_path=query_relative,
+            max_bytes=_DISCOVERY_DIGEST_BYTES,
         )
         from skillscout.adapters.semantic_provider import resolve_semantic_provider
         from skillscout.domain.acceptance import (
@@ -431,6 +435,36 @@ def _trusted_repository_root(repository_root: Path) -> Path:
     return resolved
 
 
+def _checked_out_repository_commit(repository_root: Path) -> str:
+    """Resolve the checked-out source commit without shelling out or following links."""
+
+    git_directory = repository_root / ".git"
+    if git_directory.is_symlink() or not git_directory.is_dir():
+        raise ValueError
+    head_path = git_directory / "HEAD"
+    if head_path.is_symlink() or not head_path.is_file():
+        raise ValueError
+    head = head_path.read_text(encoding="ascii").strip()
+    if _is_commit_sha(head):
+        return head
+    if not head.startswith("ref: "):
+        raise ValueError
+    reference = head.removeprefix("ref: ")
+    if (
+        not reference.startswith("refs/")
+        or ".." in reference.split("/")
+        or re.fullmatch(r"[A-Za-z0-9._/-]{1,256}", reference) is None
+    ):
+        raise ValueError
+    reference_path = git_directory.joinpath(*reference.split("/"))
+    if reference_path.is_symlink() or not reference_path.is_file():
+        raise ValueError
+    commit = reference_path.read_text(encoding="ascii").strip()
+    if not _is_commit_sha(commit):
+        raise ValueError
+    return commit
+
+
 def _read_exact_repository_file(
     root: Path,
     path: Path,
@@ -448,6 +482,97 @@ def _read_exact_repository_file(
     if path.resolve(strict=True) != expected or not path.is_file():
         raise ValueError
     return _read_stable_private_file(path, max_bytes=max_bytes)
+
+
+def _read_checked_out_commit_blob(
+    root: Path,
+    *,
+    source_commit_sha: str,
+    relative_path: Path,
+    max_bytes: int,
+) -> bytes:
+    """Read one fixed authority file from the checked-out commit, never the index."""
+
+    if (
+        not _is_commit_sha(source_commit_sha)
+        or relative_path.is_absolute()
+        or not relative_path.parts
+        or any(part in {"", ".", ".."} for part in relative_path.parts)
+        or type(max_bytes) is not int
+        or max_bytes <= 0
+    ):
+        raise ValueError
+    git = shutil.which("git", path=os.defpath)
+    if git is None:
+        raise ValueError
+    executable = Path(git)
+    if not executable.is_absolute() or not executable.is_file():
+        raise ValueError
+    object_name = f"{source_commit_sha}:{relative_path.as_posix()}"
+    environment = {
+        "PATH": os.defpath,
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    }
+
+    def read_git(*arguments: str) -> bytes:
+        try:
+            completed = subprocess.run(
+                (os.fspath(executable), "-C", os.fspath(root), *arguments),
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise ValueError from None
+        if completed.returncode != 0:
+            raise ValueError
+        return completed.stdout
+
+    size_text = read_git("cat-file", "-s", object_name)
+    try:
+        size = int(size_text.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError):
+        raise ValueError from None
+    if size < 0 or size > max_bytes:
+        raise ValueError
+    blob = read_git("cat-file", "blob", object_name)
+    if len(blob) != size:
+        raise ValueError
+    return blob
+
+
+def _read_exact_checked_out_source_file(
+    root: Path,
+    *,
+    source_commit_sha: str,
+    relative_path: Path,
+    max_bytes: int,
+) -> bytes:
+    """Require a fixed working-tree authority file to equal its exact commit blob."""
+
+    working_tree = _read_exact_repository_file(
+        root,
+        root / relative_path,
+        relative_path,
+        max_bytes,
+    )
+    committed = _read_checked_out_commit_blob(
+        root,
+        source_commit_sha=source_commit_sha,
+        relative_path=relative_path,
+        max_bytes=max_bytes,
+    )
+    if working_tree != committed:
+        raise ValueError
+    return committed
 
 
 @dataclass(frozen=True)
@@ -479,11 +604,113 @@ class NominationRuntimeConfig:
             raise ValueError("nomination runtime configuration rejected")
 
 
+@dataclass(frozen=True)
+class FreshCampaignPreparationRuntimeConfig:
+    """Closed configuration for deriving a fresh nomination from current state."""
+
+    state_repository_id: int
+    state_repository_full_name: str
+    query_set_path: Path
+    query_set: object
+    query_set_digest: str
+    operations_state: Path
+
+    def __post_init__(self) -> None:
+        from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+        if (
+            type(self.state_repository_id) is not int
+            or self.state_repository_id <= 0
+            or not _github_full_name(self.state_repository_full_name)
+            or not isinstance(self.query_set_path, Path)
+            or self.query_set_path.name != _DISCOVERY_QUERY_SET_NAME
+            or type(self.query_set) is not DiscoveryQuerySetV1
+            or self.query_set_digest != self.query_set.query_set_digest
+            or os.fspath(self.operations_state) != _DISCOVERY_DATABASE_LOCATORS[1]
+        ):
+            raise ValueError("fresh campaign preparation configuration rejected")
+
+
+@dataclass(frozen=True)
+class FreshCampaignLockRuntimeConfig:
+    """Fixed source and workflow identity for one protected, state-only V2 lock."""
+
+    preparation: FreshCampaignPreparationRuntimeConfig
+    repository_root: Path
+    selection_manifest: object
+    source_repository_id: int
+    source_repository_full_name: str
+    source_commit_sha: str
+    acceptance_workflow_sha256: str
+    workflow_run_id: int
+    workflow_run_attempt: int
+    trigger_identity: str
+
+    def __post_init__(self) -> None:
+        from skillscout.domain.acceptance import LockedBenchmarkManifestV1
+
+        if (
+            type(self.preparation) is not FreshCampaignPreparationRuntimeConfig
+            or not isinstance(self.repository_root, Path)
+            or type(self.selection_manifest) is not LockedBenchmarkManifestV1
+            or type(self.source_repository_id) is not int
+            or self.source_repository_id <= 0
+            or not _github_full_name(self.source_repository_full_name)
+            or not _is_commit_sha(self.source_commit_sha)
+            or not _is_digest(self.acceptance_workflow_sha256)
+            or type(self.workflow_run_id) is not int
+            or self.workflow_run_id <= 0
+            or type(self.workflow_run_attempt) is not int
+            or self.workflow_run_attempt <= 0
+            or self.workflow_run_attempt != 1
+            or not _fresh_campaign_trigger_identity(self.trigger_identity)
+        ):
+            raise ValueError("fresh campaign lock configuration rejected")
+
+
 def _is_commit_sha(value: object) -> bool:
     return (
         type(value) is str
         and len(value) == 40
         and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _fresh_campaign_trigger_identity(value: object) -> bool:
+    """Accept the one initial actor identity emitted by a first workflow-dispatch attempt."""
+
+    return (
+        type(value) is str
+        and re.fullmatch(
+            r"workflow_dispatch:[1-9][0-9]*:[A-Za-z0-9-]{1,39}",
+            value,
+        )
+        is not None
+    )
+
+
+def _fresh_campaign_trigger_actor(value: str) -> tuple[int, str]:
+    """Unpack the reviewed initial actor identity without accepting a rerun identity."""
+
+    match = re.fullmatch(
+        r"workflow_dispatch:([1-9][0-9]*):([A-Za-z0-9-]{1,39})",
+        value,
+    )
+    if match is None:
+        raise ValueError("fresh campaign source identity rejected")
+    return int(match.group(1)), match.group(2)
+
+
+def _is_fresh_campaign_workflow_path(value: object) -> bool:
+    """Require Actions metadata to name this exact workflow file at a bounded ref."""
+
+    return (
+        type(value) is str
+        and re.fullmatch(
+            r"\.github/workflows/phase6-acceptance\.yml@[A-Za-z0-9._/-]{1,200}",
+            value,
+        )
+        is not None
     )
 
 
@@ -527,6 +754,163 @@ def load_nomination_runtime_config(
         )
     except Exception:
         raise ValueError("nomination runtime configuration rejected") from None
+
+
+def load_fresh_campaign_preparation_runtime_config(
+    *,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    query_set_path: Path,
+    operations_state: Path,
+) -> FreshCampaignPreparationRuntimeConfig:
+    """Validate the closed, non-secret inputs for a current-state Search nomination."""
+
+    try:
+        if (
+            type(state_repository_id) is not int
+            or state_repository_id <= 0
+            or not _github_full_name(state_repository_full_name)
+            or not isinstance(query_set_path, Path)
+            or query_set_path.name != _DISCOVERY_QUERY_SET_NAME
+        ):
+            raise ValueError
+        payload = _read_stable_private_file(
+            query_set_path,
+            max_bytes=_DISCOVERY_DIGEST_BYTES,
+        )
+        from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+        query_set = DiscoveryQuerySetV1.model_validate_json(payload, strict=True)
+        if query_set.query_set_digest is None:
+            raise ValueError
+        return FreshCampaignPreparationRuntimeConfig(
+            state_repository_id=state_repository_id,
+            state_repository_full_name=state_repository_full_name,
+            query_set_path=query_set_path,
+            query_set=query_set,
+            query_set_digest=query_set.query_set_digest,
+            operations_state=operations_state,
+        )
+    except Exception:
+        raise ValueError("fresh campaign preparation configuration rejected") from None
+
+
+def load_fresh_campaign_lock_runtime_config(
+    *,
+    preparation: FreshCampaignPreparationRuntimeConfig,
+    repository_root: Path,
+    source_repository_id: int,
+    source_repository_full_name: str,
+    source_commit_sha: str,
+    workflow_run_id: int,
+    workflow_run_attempt: int,
+    trigger_identity: str,
+) -> FreshCampaignLockRuntimeConfig:
+    """Read only the fixed checked-out selection and workflow before any credential lookup."""
+
+    try:
+        if type(preparation) is not FreshCampaignPreparationRuntimeConfig:
+            raise ValueError
+        root = _trusted_repository_root(repository_root)
+        if _checked_out_repository_commit(root) != source_commit_sha:
+            raise ValueError
+        manifest_relative = Path(
+            ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+        )
+        workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
+        manifest_bytes = _read_exact_checked_out_source_file(
+            root,
+            source_commit_sha=source_commit_sha,
+            relative_path=manifest_relative,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+        )
+        workflow_bytes = _read_exact_checked_out_source_file(
+            root,
+            source_commit_sha=source_commit_sha,
+            relative_path=workflow_relative,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+        )
+        from skillscout.domain.acceptance import LockedBenchmarkManifestV1
+        from skillscout.domain.canonical import canonical_json_bytes
+
+        manifest = LockedBenchmarkManifestV1.model_validate_json(manifest_bytes, strict=True)
+        canonical = canonical_json_bytes(manifest)
+        if manifest_bytes not in {canonical, canonical + b"\n"}:
+            raise ValueError
+        return FreshCampaignLockRuntimeConfig(
+            preparation=preparation,
+            repository_root=root,
+            selection_manifest=manifest,
+            source_repository_id=source_repository_id,
+            source_repository_full_name=source_repository_full_name,
+            source_commit_sha=source_commit_sha,
+            acceptance_workflow_sha256="sha256:" + hashlib.sha256(workflow_bytes).hexdigest(),
+            workflow_run_id=workflow_run_id,
+            workflow_run_attempt=workflow_run_attempt,
+            trigger_identity=trigger_identity,
+        )
+    except Exception:
+        raise ValueError("fresh campaign lock configuration rejected") from None
+
+
+def _fresh_campaign_lock_handoff_matches_config(
+    *,
+    config: FreshCampaignLockRuntimeConfig,
+    handoff: object,
+) -> bool:
+    """Require a received approval handoff to bind this exact source configuration."""
+
+    from skillscout.domain.acceptance import FreshBenchmarkLockHandoffV1
+
+    return (
+        type(handoff) is FreshBenchmarkLockHandoffV1
+        and handoff.source_repository_id == config.source_repository_id
+        and handoff.source_repository_full_name == config.source_repository_full_name
+        and handoff.state_repository_id == config.preparation.state_repository_id
+        and handoff.state_repository_full_name
+        == config.preparation.state_repository_full_name
+        and handoff.source_commit_sha == config.source_commit_sha
+        and handoff.acceptance_workflow_sha256 == config.acceptance_workflow_sha256
+        and handoff.workflow_run_id == config.workflow_run_id
+        and handoff.workflow_run_attempt == config.workflow_run_attempt
+        and handoff.trigger_identity == config.trigger_identity
+        and handoff.selection_manifest == config.selection_manifest
+    )
+
+
+def load_fresh_campaign_lock_handoff(
+    *,
+    config: FreshCampaignLockRuntimeConfig,
+    handoff_bytes: bytes,
+) -> object:
+    """Parse one exact canonical approval handoff before any state credential lookup."""
+
+    try:
+        if (
+            type(config) is not FreshCampaignLockRuntimeConfig
+            or type(handoff_bytes) is not bytes
+            or not handoff_bytes
+            or len(handoff_bytes) > _ACCEPTANCE_MANIFEST_BYTES
+        ):
+            raise ValueError
+        from skillscout.domain.acceptance import FreshBenchmarkLockHandoffV1
+        from skillscout.domain.canonical import canonical_json_bytes
+
+        handoff = FreshBenchmarkLockHandoffV1.model_validate_json(
+            handoff_bytes,
+            strict=True,
+        )
+        if (
+            handoff_bytes != canonical_json_bytes(handoff)
+            or not _fresh_campaign_lock_handoff_matches_config(
+                config=config,
+                handoff=handoff,
+            )
+        ):
+            raise ValueError
+        return handoff
+    except Exception:
+        raise ValueError("fresh campaign lock handoff rejected") from None
 
 
 def load_acceptance_runtime_config(
@@ -1040,7 +1424,11 @@ class _LateStateDurabilityBarrier:
 
     def __init__(
         self,
-        config: DiscoveryRuntimeConfig | NominationRuntimeConfig,
+        config: (
+            DiscoveryRuntimeConfig
+            | NominationRuntimeConfig
+            | FreshCampaignPreparationRuntimeConfig
+        ),
         source: Mapping[str, str],
         *,
         frozen_publication_export: object | None = None,
@@ -1483,6 +1871,14 @@ class _LateStateDurabilityBarrier:
         return self.sync_discovery(  # type: ignore[arg-type]
             **arguments,
             transition_phase="nomination",
+        )
+
+    def sync_benchmark_lock(self, **arguments: object) -> object:
+        """Persist the protected fresh lock through one forward CAS with no recovery path."""
+
+        return self.sync_discovery(  # type: ignore[arg-type]
+            **arguments,
+            transition_phase="benchmark_lock",
         )
 
 
@@ -4019,6 +4415,292 @@ def build_nomination_application(
         ),
         query_set=config.query_set,  # type: ignore[arg-type]
         initial_state_root_digest=config.initial_state_root_digest,
+    )
+
+
+def _restore_verified_fresh_campaign_state(
+    *,
+    config: FreshCampaignPreparationRuntimeConfig,
+    source: Mapping[str, str],
+    pipeline_path: Path,
+    publication_path: Path,
+) -> object:
+    """Read-verify the configured state repository identity before restoring it."""
+
+    from skillscout.adapters.github import GitHubReadClient
+    from skillscout.adapters.operations_state import restore_three_store_bundle
+    from skillscout.adapters.state_branch import StateBranchClient, StateBranchStore
+
+    token = _required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN")
+    owner, repository = config.state_repository_full_name.split("/", 1)
+    metadata_client = GitHubReadClient(token=token)
+    try:
+        metadata = metadata_client.get_repo_metadata(owner, repository)
+    finally:
+        metadata_client.close()
+    _verify_fresh_campaign_state_repository_identity(metadata=metadata, config=config)
+    client = StateBranchClient(
+        token=token,
+        repository_id=config.state_repository_id,
+        repository_full_name=config.state_repository_full_name,
+    )
+    try:
+        observation = StateBranchStore(client).restore()
+        bundle = getattr(observation, "bundle", None)
+        if bundle is None or getattr(bundle, "root", None) is None:
+            raise ValueError("fresh campaign state rejected")
+        restore_three_store_bundle(
+            bundle,
+            pipeline_path=pipeline_path,
+            operations_path=config.operations_state,
+            publication_path=publication_path,
+        )
+        return observation
+    finally:
+        client.close()
+
+
+def _verify_fresh_campaign_state_repository_identity(
+    *,
+    metadata: object,
+    config: FreshCampaignPreparationRuntimeConfig,
+) -> None:
+    """Accept only the configured numeric state repository identity on the fixed host."""
+
+    if (
+        type(config) is not FreshCampaignPreparationRuntimeConfig
+        or getattr(metadata, "id", None) != config.state_repository_id
+        or getattr(metadata, "owner", None) is None
+        or getattr(metadata, "name", None) is None
+        or f"{getattr(metadata, 'owner')}/{getattr(metadata, 'name')}"
+        != config.state_repository_full_name
+    ):
+        raise ValueError("fresh campaign state repository identity rejected")
+
+
+def build_fresh_campaign_preparation_application(
+    config: FreshCampaignPreparationRuntimeConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Compose only bounded Search, current-state restore, and one nomination CAS."""
+
+    if type(config) is not FreshCampaignPreparationRuntimeConfig:
+        raise ValueError("fresh campaign preparation configuration rejected")
+    source = os.environ if environ is None else environ
+    pipeline_path = Path(_DISCOVERY_DATABASE_LOCATORS[0])
+    publication_path = Path(_DISCOVERY_DATABASE_LOCATORS[2])
+
+    def search_factory() -> object:
+        from skillscout.adapters.github import GitHubReadClient
+
+        return GitHubReadClient(
+            token=_required_credential(source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN")
+        )
+
+    def state_restore() -> object:
+        return _restore_verified_fresh_campaign_state(
+            config=config,
+            source=source,
+            pipeline_path=pipeline_path,
+            publication_path=publication_path,
+        )
+
+    def operations_store_factory() -> object:
+        from skillscout.adapters.operations_state import OperationsStateStore
+
+        return OperationsStateStore(config.operations_state)
+
+    from skillscout.application.acceptance import (
+        FreshCampaignPreparationApplication,
+        FreshCampaignPreparationDependencies,
+    )
+
+    return FreshCampaignPreparationApplication(
+        FreshCampaignPreparationDependencies(
+            search_factory=search_factory,
+            operations_store_factory=operations_store_factory,
+            state_restore=state_restore,
+            durability_barrier=_LateStateDurabilityBarrier(config, source),
+        ),
+        query_set=config.query_set,  # type: ignore[arg-type]
+        state_repository_id=config.state_repository_id,
+        state_repository_full_name=config.state_repository_full_name,
+    )
+
+
+def build_fresh_campaign_lock_handoff_application(
+    config: FreshCampaignLockRuntimeConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Compose only protected approval reads and emit a redacted canonical handoff."""
+
+    if type(config) is not FreshCampaignLockRuntimeConfig:
+        raise ValueError("fresh campaign lock configuration rejected")
+    source = os.environ if environ is None else environ
+    preparation = config.preparation
+
+    def source_binding_factory() -> object:
+        from skillscout.application.acceptance import FreshCampaignSourceBinding
+
+        return FreshCampaignSourceBinding(
+            source_commit_sha=config.source_commit_sha,
+            acceptance_workflow_sha256=config.acceptance_workflow_sha256,
+            workflow_run_id=config.workflow_run_id,
+            workflow_run_attempt=config.workflow_run_attempt,
+            trigger_identity=config.trigger_identity,
+        )
+
+    def selection_manifest_factory() -> object:
+        return config.selection_manifest
+
+    def source_repository_id_factory() -> object:
+        from skillscout.adapters.github import GitHubReadClient
+
+        owner, repository = config.source_repository_full_name.split("/", 1)
+        client = GitHubReadClient(token=_required_credential(source, "GITHUB_TOKEN"))
+        try:
+            metadata = client.get_repo_metadata(owner, repository)
+        finally:
+            client.close()
+        if (
+            metadata.id != config.source_repository_id
+            or f"{metadata.owner}/{metadata.name}" != config.source_repository_full_name
+        ):
+            raise ValueError("fresh benchmark source repository identity is invalid")
+        return metadata.id
+
+    def approval_receipt_factory() -> object:
+        from skillscout.adapters.github import GitHubReadClient
+        from skillscout.domain.acceptance import BenchmarkLockApprovalReceiptV2
+
+        owner, repository = config.source_repository_full_name.split("/", 1)
+        expected_actor_id, expected_actor_login = _fresh_campaign_trigger_actor(
+            config.trigger_identity
+        )
+        client = GitHubReadClient(token=_required_credential(source, "GITHUB_TOKEN"))
+        try:
+            attempt = client.get_workflow_run_attempt(
+                owner,
+                repository,
+                config.workflow_run_id,
+                config.workflow_run_attempt,
+            )
+            approvals = client.get_workflow_run_approvals(
+                owner,
+                repository,
+                config.workflow_run_id,
+            )
+        finally:
+            client.close()
+        if (
+            config.workflow_run_attempt != 1
+            or attempt.source_commit_sha != config.source_commit_sha
+            or attempt.event != "workflow_dispatch"
+            or not _is_fresh_campaign_workflow_path(attempt.workflow_path)
+            or attempt.actor_id != expected_actor_id
+            or attempt.actor_login != expected_actor_login
+            or attempt.triggering_actor_id != expected_actor_id
+            or attempt.triggering_actor_login != expected_actor_login
+        ):
+            raise ValueError("fresh benchmark run attempt binding is invalid")
+        matching = tuple(
+            approval
+            for approval in approvals
+            if (
+                approval.environment == "phase6-human-benchmark-lock"
+                and approval.reviewer_login == "alexzhu0"
+            )
+        )
+        if len(matching) != 1:
+            raise ValueError("fresh benchmark approval is missing or ambiguous")
+        approval = matching[0]
+        return BenchmarkLockApprovalReceiptV2(
+            schema_version="benchmark-lock-approval-receipt-v2",
+            purpose="benchmark_lock",
+            environment="phase6-human-benchmark-lock",
+            source_repository_id=config.source_repository_id,
+            source_repository_full_name=config.source_repository_full_name,
+            reviewer_login="alexzhu0",
+            reviewer_id=approval.reviewer_id,
+            workflow_run_id=config.workflow_run_id,
+            workflow_run_attempt=config.workflow_run_attempt,
+            source_commit_sha=config.source_commit_sha,
+            workflow_sha256=config.acceptance_workflow_sha256,
+            trigger_identity=config.trigger_identity,
+            approval_record_digest=approval.approval_record_digest,
+        )
+
+    from skillscout.application.acceptance import (
+        FreshCampaignLockHandoffApplication,
+        FreshCampaignLockHandoffDependencies,
+    )
+
+    return FreshCampaignLockHandoffApplication(
+        FreshCampaignLockHandoffDependencies(
+            approval_receipt_factory=approval_receipt_factory,
+            selection_manifest_factory=selection_manifest_factory,
+            source_binding_factory=source_binding_factory,
+            source_repository_id_factory=source_repository_id_factory,
+        ),
+        source_repository_full_name=config.source_repository_full_name,
+        state_repository_id=preparation.state_repository_id,
+        state_repository_full_name=preparation.state_repository_full_name,
+    )
+
+
+def build_fresh_campaign_lock_application(
+    config: FreshCampaignLockRuntimeConfig,
+    handoff: object,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Compose state-only persistence after exact source and approval handoff admission."""
+
+    if (
+        type(config) is not FreshCampaignLockRuntimeConfig
+        or not _fresh_campaign_lock_handoff_matches_config(
+            config=config,
+            handoff=handoff,
+        )
+    ):
+        raise ValueError("fresh campaign lock configuration rejected")
+    source = os.environ if environ is None else environ
+    preparation = config.preparation
+    pipeline_path = Path(_DISCOVERY_DATABASE_LOCATORS[0])
+    publication_path = Path(_DISCOVERY_DATABASE_LOCATORS[2])
+
+    def state_restore() -> object:
+        return _restore_verified_fresh_campaign_state(
+            config=preparation,
+            source=source,
+            pipeline_path=pipeline_path,
+            publication_path=publication_path,
+        )
+
+    def operations_store_factory() -> object:
+        from skillscout.adapters.operations_state import OperationsStateStore
+
+        return OperationsStateStore(preparation.operations_state)
+
+    from skillscout.application.acceptance import (
+        FreshCampaignLockApplication,
+        FreshCampaignLockDependencies,
+    )
+
+    return FreshCampaignLockApplication(
+        FreshCampaignLockDependencies(
+            handoff_factory=lambda: handoff,
+            state_restore=state_restore,
+            operations_store_factory=operations_store_factory,
+            durability_barrier=_LateStateDurabilityBarrier(preparation, source),
+        ),
+        state_repository_id=preparation.state_repository_id,
+        state_repository_full_name=preparation.state_repository_full_name,
+        source_repository_id=config.source_repository_id,
+        source_repository_full_name=config.source_repository_full_name,
+        query_set_digest=preparation.query_set_digest,
     )
 
 

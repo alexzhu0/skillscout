@@ -144,6 +144,7 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "lock-fresh-campaign",
         "nominate-benchmark",
         "prepare-fresh-campaign",
+        "prepare-fresh-lock-handoff",
         "publish-discovered",
         "publish-candidate",
         "rebuild-acceptance",

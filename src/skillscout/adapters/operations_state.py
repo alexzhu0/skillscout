@@ -1132,6 +1132,25 @@ def _validate_v2_benchmark_lock_selection(
             )
 
 
+def _validate_v2_benchmark_lock_cardinality(
+    connection: sqlite3.Connection,
+    *,
+    acceptance_run_id: str,
+) -> None:
+    """A fresh campaign has one immutable V2 lock; V1 history remains unrestricted."""
+
+    rows = connection.execute(
+        """SELECT fact_digest FROM operations_acceptance_facts
+           WHERE acceptance_run_id = ?
+             AND fact_kind = 'acceptance_benchmark_lock'
+             AND schema_version = 'locked-benchmark-manifest-v2'
+           ORDER BY fact_digest""",
+        (acceptance_run_id,),
+    ).fetchall()
+    if len(rows) > 1:
+        raise OperationsIntegrityError("fresh benchmark lock cardinality is invalid")
+
+
 def _validate_acceptance_references(
     connection: sqlite3.Connection,
     *,
@@ -1538,6 +1557,10 @@ def _validate_acceptance_references(
         if not isinstance(nomination, NominationSetV1):
             raise OperationsIntegrityError("benchmark nomination model is invalid")
         if isinstance(fact, LockedBenchmarkManifestV2):
+            _validate_v2_benchmark_lock_cardinality(
+                connection,
+                acceptance_run_id=acceptance_run_id,
+            )
             _validate_v2_benchmark_lock_selection(fact, nomination)
     elif kind == "acceptance_live_authority":
         assert isinstance(fact, LiveAcceptanceAuthorityV1)
@@ -3264,6 +3287,20 @@ class OperationsStateStore:
                         "acceptance fact digest was reused across authority"
                     )
                 return record(_acceptance_row_fact(digest_row))
+            if kind == "acceptance_benchmark_lock" and isinstance(
+                validated, LockedBenchmarkManifestV2
+            ):
+                existing_v2 = connection.execute(
+                    """SELECT fact_digest FROM operations_acceptance_facts
+                       WHERE acceptance_run_id = ?
+                         AND fact_kind = 'acceptance_benchmark_lock'
+                         AND schema_version = 'locked-benchmark-manifest-v2'""",
+                    (acceptance_run_id,),
+                ).fetchall()
+                if existing_v2:
+                    raise OperationsIntegrityError(
+                        "fresh benchmark lock is already bound for this run"
+                    )
             identity_row = connection.execute(
                 """SELECT * FROM operations_acceptance_facts
                    WHERE acceptance_run_id = ? AND fact_kind = ?
@@ -3359,6 +3396,33 @@ class OperationsStateStore:
                     for row in rows
                 ),
             )
+
+    def acceptance_snapshot_for_fact(
+        self,
+        kind: _AcceptanceFactKind,
+        fact_digest: str,
+    ) -> AcceptanceRunSnapshot:
+        """Resolve exactly one canonical fact identity without accepting a caller run ID."""
+
+        if (
+            kind not in _ACCEPTANCE_FACT_KINDS
+            or type(fact_digest) is not str
+            or _DIGEST_PATTERN.fullmatch(fact_digest) is None
+        ):
+            raise ValueError("invalid acceptance fact lookup")
+        with self._thread_lock:
+            if self._connection is None or self._poisoned:
+                raise OperationsStateError("operations state is unavailable")
+            rows = self._connection.execute(
+                """SELECT acceptance_run_id FROM operations_acceptance_facts
+                   WHERE fact_kind = ? AND fact_digest = ?
+                   ORDER BY acceptance_run_id""",
+                (kind, fact_digest),
+            ).fetchall()
+            if len(rows) != 1:
+                raise OperationsIntegrityError("acceptance fact lookup is not unique")
+            acceptance_run_id = str(rows[0]["acceptance_run_id"])
+        return self.acceptance_snapshot(acceptance_run_id)
 
     def reserve_acceptance_semantic_request(
         self,

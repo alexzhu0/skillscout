@@ -279,6 +279,8 @@ class BenchmarkLockApprovalReceiptV2(_SelfDigestedModel):
     schema_version: Literal["benchmark-lock-approval-receipt-v2"]
     purpose: Literal["benchmark_lock"]
     environment: Literal["phase6-human-benchmark-lock"]
+    source_repository_id: _Positive
+    source_repository_full_name: _FullName
     reviewer_login: Literal["alexzhu0"]
     reviewer_id: _Positive
     workflow_run_id: _Positive
@@ -290,6 +292,78 @@ class BenchmarkLockApprovalReceiptV2(_SelfDigestedModel):
     receipt_digest: Digest | None = None
 
 
+class FreshBenchmarkLockHandoffV1(_SelfDigestedModel):
+    """Canonical, redacted authority passed from approval to state persistence."""
+
+    _digest_field = "handoff_digest"
+
+    schema_version: Literal["fresh-benchmark-lock-handoff-v1"]
+    source_repository_id: _Positive
+    source_repository_full_name: _FullName
+    state_repository_id: _Positive
+    state_repository_full_name: _FullName
+    source_commit_sha: _Sha
+    acceptance_workflow_sha256: Digest
+    workflow_run_id: _Positive
+    workflow_run_attempt: _Positive
+    trigger_identity: _Identifier
+    selection_manifest: LockedBenchmarkManifestV1
+    approval_receipt: BenchmarkLockApprovalReceiptV2
+    handoff_digest: Digest | None = None
+
+    @model_validator(mode="after")
+    def validate_handoff_binding(self) -> Self:
+        receipt = self.approval_receipt
+        if (
+            self.workflow_run_attempt != 1
+            or receipt.source_repository_id != self.source_repository_id
+            or receipt.source_repository_full_name != self.source_repository_full_name
+            or receipt.source_commit_sha != self.source_commit_sha
+            or receipt.workflow_sha256 != self.acceptance_workflow_sha256
+            or receipt.workflow_run_id != self.workflow_run_id
+            or receipt.workflow_run_attempt != self.workflow_run_attempt
+            or receipt.trigger_identity != self.trigger_identity
+            or any(
+                entry.selection_source != BenchmarkSelectionSource.SEARCH_DERIVED
+                for entry in self.selection_manifest.entries
+            )
+        ):
+            raise ValueError("fresh benchmark lock handoff binding mismatch")
+        return self
+
+
+def fresh_benchmark_source_state_binding_digest(
+    *,
+    source_repository_id: int,
+    source_repository_full_name: str,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    parent_state_commit_sha: str,
+    parent_state_root_digest: str,
+    source_commit_sha: str,
+    acceptance_workflow_sha256: str,
+    selection_manifest_digest: str,
+    nomination_set_digest: str,
+) -> str:
+    """Canonically bind the immutable source/workflow to one exact state parent."""
+
+    return sha256_digest(
+        {
+            "schema_version": "fresh-benchmark-source-state-binding-v1",
+            "source_repository_id": source_repository_id,
+            "source_repository_full_name": source_repository_full_name,
+            "state_repository_id": state_repository_id,
+            "state_repository_full_name": state_repository_full_name,
+            "parent_state_commit_sha": parent_state_commit_sha,
+            "parent_state_root_digest": parent_state_root_digest,
+            "source_commit_sha": source_commit_sha,
+            "acceptance_workflow_sha256": acceptance_workflow_sha256,
+            "selection_manifest_digest": selection_manifest_digest,
+            "nomination_set_digest": nomination_set_digest,
+        }
+    )
+
+
 class LockedBenchmarkManifestV2(_SelfDigestedModel):
     """Fresh benchmark lock bound to canonical state and protected approval evidence."""
 
@@ -297,14 +371,18 @@ class LockedBenchmarkManifestV2(_SelfDigestedModel):
 
     schema_version: Literal["locked-benchmark-manifest-v2"]
     purpose: Literal["benchmark_lock"]
+    source_repository_id: _Positive
+    source_repository_full_name: _FullName
     state_repository_id: _Positive
     state_repository_full_name: _FullName
     parent_state_commit_sha: _Sha
     parent_state_root_digest: Digest
     source_commit_sha: _Sha
     acceptance_workflow_sha256: Digest
+    source_state_binding_digest: Digest
     selection_manifest_digest: Digest
     nomination_set_digest: Digest
+    selection_manifest: LockedBenchmarkManifestV1
     entries: Annotated[tuple[BenchmarkEntryV1, ...], Field(min_length=5, max_length=5)]
     environment: Literal["phase6-human-benchmark-lock"]
     approved_reviewer_login: Literal["alexzhu0"]
@@ -346,12 +424,25 @@ class LockedBenchmarkManifestV2(_SelfDigestedModel):
             raise ValueError("fresh benchmark lock entries are not canonical and unique")
         receipt = self.approval_receipt
         if (
-            receipt.purpose != self.purpose
+            self.selection_manifest.manifest_digest != self.selection_manifest_digest
+            or self.selection_manifest.nomination_set_digest != self.nomination_set_digest
+            or self.selection_manifest.entries != self.entries
+            or any(
+                entry.selection_source != BenchmarkSelectionSource.SEARCH_DERIVED
+                for entry in self.selection_manifest.entries
+            )
+        ):
+            raise ValueError("fresh benchmark lock V1 selection preimage mismatch")
+        if (
+            self.workflow_run_attempt != 1
+            or receipt.purpose != self.purpose
             or receipt.environment != self.environment
             or receipt.reviewer_login != self.approved_reviewer_login
             or receipt.reviewer_id != self.approved_reviewer_id
             or receipt.workflow_run_id != self.workflow_run_id
             or receipt.workflow_run_attempt != self.workflow_run_attempt
+            or receipt.source_repository_id != self.source_repository_id
+            or receipt.source_repository_full_name != self.source_repository_full_name
             or receipt.source_commit_sha != self.source_commit_sha
             or receipt.workflow_sha256 != self.acceptance_workflow_sha256
             or receipt.trigger_identity != self.trigger_identity
@@ -359,6 +450,19 @@ class LockedBenchmarkManifestV2(_SelfDigestedModel):
             or receipt.receipt_digest != self.approval_receipt_digest
         ):
             raise ValueError("fresh benchmark lock approval receipt binding mismatch")
+        if self.source_state_binding_digest != fresh_benchmark_source_state_binding_digest(
+            source_repository_id=self.source_repository_id,
+            source_repository_full_name=self.source_repository_full_name,
+            state_repository_id=self.state_repository_id,
+            state_repository_full_name=self.state_repository_full_name,
+            parent_state_commit_sha=self.parent_state_commit_sha,
+            parent_state_root_digest=self.parent_state_root_digest,
+            source_commit_sha=self.source_commit_sha,
+            acceptance_workflow_sha256=self.acceptance_workflow_sha256,
+            selection_manifest_digest=self.selection_manifest_digest,
+            nomination_set_digest=self.nomination_set_digest,
+        ):
+            raise ValueError("fresh benchmark source/state binding mismatch")
         return self
 
 

@@ -28,6 +28,9 @@ LOCAL_LOCKED = f"{LOCAL_UV} run --locked"
 CAMPAIGN_RUNNER = ".venv/bin/python -I -m skillscout.application.phase6_adversarial_runner"
 MANAGED_PYTHON_VERSION = "3.13.14"
 MANAGED_PYTHON_ROOT = "${GITHUB_WORKSPACE}/.tools/python"
+FRESH_MATERIALIZATION_RUN_SHA256 = (
+    "00e1268ea5957663acc02e1c213a42d24f7fdfca47dc3ad3b76999cd229b5e30"
+)
 MANAGED_PYTHON_INSTALL = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     f"{LOCAL_UV} python install {MANAGED_PYTHON_VERSION} "
@@ -212,20 +215,32 @@ def _read(root: Path, relative: Path) -> str:
     return payload.decode("utf-8", errors="strict")
 
 
-def _direct_keys(lines: list[str], indent: int, *, first_item: bool = False) -> tuple[str, ...]:
+def _direct_keys(
+    lines: list[str],
+    indent: int,
+    *,
+    first_item: bool = False,
+    reject_unrecognized: bool = False,
+) -> tuple[str, ...]:
     keys: list[str] = []
     prefix = " " * indent
     for line in lines:
-        if not line.startswith(prefix) or not line.strip() or line.lstrip().startswith("#"):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        _require(line.startswith(prefix))
+        if len(line) - len(line.lstrip(" ")) != indent:
             continue
         tail = line[indent:]
         if first_item and tail.startswith("- "):
             tail = tail[2:]
         elif first_item and line.startswith(" " * (indent - 2) + "- "):
             tail = line[indent:]
-        match = re.match(r"([A-Za-z_][A-Za-z0-9_-]*):", tail)
-        if match:
-            keys.append(match.group(1))
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):(?:\s*\S.*)?", tail)
+        if match is None:
+            if reject_unrecognized:
+                _require(False)
+            continue
+        keys.append(match.group(1))
     _require(len(keys) == len(set(keys)))
     return tuple(keys)
 
@@ -275,6 +290,71 @@ def _job_from_lines(name: str, lines: list[str]) -> _Job:
     return _Job(name=name, source="\n".join(lines), steps=steps)
 
 
+def _direct_mapping(source: str, *, indent: int, name: str) -> dict[str, str]:
+    """Read one flat, plain-key YAML mapping and reject every other syntax.
+
+    This verifier deliberately does not deserialize untrusted workflow YAML.  These
+    protected maps are a closed, scalar-only subset, so accepting quoted keys,
+    aliases, merge keys, tags, or a nested value would create an authority bypass:
+    GitHub would honor the addition while this line-oriented verifier ignored it.
+    """
+
+    lines = source.splitlines()
+    header = " " * indent + name + ":"
+    indexes = [index for index, line in enumerate(lines) if line == header]
+    _require(len(indexes) == 1)
+    values: dict[str, str] = {}
+    child_prefix = " " * (indent + 2)
+    for line in lines[indexes[0] + 1 :]:
+        if line and len(line) - len(line.lstrip(" ")) <= indent:
+            break
+        if not line.strip():
+            continue
+        _require(line.startswith(child_prefix))
+        _require(len(line) - len(line.lstrip(" ")) == indent + 2)
+        tail = line[indent + 2 :]
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):\s*(\S.*)", tail)
+        _require(match is not None)
+        key, value = match.groups()
+        _require(key not in values)
+        values[key] = value
+    return values
+
+
+def _direct_scalar(source: str, *, indent: int, name: str) -> str:
+    """Return one exact plain scalar from a closed protected mapping level.
+
+    The caller compares this raw scalar to an expected literal.  That rules out
+    YAML comments, quoted/tagged values, aliases, and other alternate syntax
+    rather than treating a security-relevant substring in a comment as proof.
+    """
+
+    prefix = " " * indent + name + ":"
+    lines = source.splitlines()
+    matches = [line for line in lines if line.startswith(prefix)]
+    _require(len(matches) == 1)
+    value = matches[0][len(prefix) :]
+    _require(value.startswith(" "))
+    value = value[1:]
+    _require(bool(value) and value == value.strip())
+    return value
+
+
+def _job_direct_keys(job: _Job) -> tuple[str, ...]:
+    return _direct_keys(
+        job.source.splitlines()[1:],
+        4,
+        reject_unrecognized=True,
+    )
+
+
+def _step_direct_keys(step: _Step) -> tuple[str, ...]:
+    lines = step.source.splitlines()
+    _require(bool(lines) and lines[0].startswith("      - "))
+    normalized = ["        " + lines[0][8:], *lines[1:]]
+    return _direct_keys(normalized, 8, reject_unrecognized=True)
+
+
 def _parse_jobs(source: str) -> tuple[_Job, ...]:
     _require("\t" not in source and "\r" not in source)
     lines = source.splitlines()
@@ -295,6 +375,52 @@ def _parse_jobs(source: str) -> tuple[_Job, ...]:
         end = job_starts[offset + 1][0] if offset + 1 < len(job_starts) else len(lines)
         jobs.append(_job_from_lines(name, lines[start:end]))
     return tuple(jobs)
+
+
+def _closed_phase6_root_context(source: str) -> None:
+    """Close inherited workflow context before evaluating fresh-job boundaries.
+
+    A root ``env`` or custom ``defaults.run.shell`` applies to the fresh jobs
+    without appearing in their local source blocks.  This owned workflow uses
+    a deliberately tiny root grammar so those inherited authorities cannot be
+    smuggled in via quoted keys, aliases, comments, or an extra map.
+    """
+
+    lines = source.splitlines()
+    root_keys: list[str] = []
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line.startswith(" "):
+            continue
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):(?:\s*(\S.*))?", line)
+        _require(match is not None)
+        root_keys.append(match.group(1))
+    _require(
+        tuple(root_keys)
+        == ("name", "on", "permissions", "concurrency", "defaults", "jobs")
+    )
+    _require(
+        _direct_scalar(source, indent=0, name="name")
+        == "Phase 6 adversarial MVP acceptance"
+    )
+    _require(_direct_mapping(source, indent=0, name="permissions") == {"contents": "read"})
+    _require(
+        _direct_mapping(source, indent=0, name="concurrency")
+        == {
+            "group": "skillscout-phase6-acceptance",
+            "cancel-in-progress": "false",
+        }
+    )
+    defaults_indexes = [index for index, line in enumerate(lines) if line == "defaults:"]
+    _require(len(defaults_indexes) == 1)
+    defaults_lines: list[str] = []
+    for line in lines[defaults_indexes[0] + 1 :]:
+        if line and not line.startswith(" "):
+            break
+        if line.strip() and not line.lstrip().startswith("#"):
+            defaults_lines.append(line)
+    _require(tuple(defaults_lines) == ("  run:", "    shell: bash"))
 
 
 def _run_has_entry(run: str) -> bool:
@@ -356,6 +482,8 @@ def _recognized_entry(run: str) -> bool:
             if (
                 stripped.startswith(LOCAL_LOCKED + " ")
                 or stripped.startswith(CAMPAIGN_RUNNER + " ")
+                or stripped
+                == f"handoff=\"$({LOCAL_LOCKED} python -m skillscout.cli prepare-fresh-lock-handoff)\""
                 or heredoc_active
             ):
                 found = True
@@ -366,65 +494,99 @@ def _recognized_entry(run: str) -> bool:
     return found and not heredoc_active
 
 
-def _checkout_is_closed(step: _Step) -> bool:
+def _closed_action_step(
+    step: _Step,
+    *,
+    action: str,
+    with_values: dict[str, str],
+    allowed_action_comment: str | None = None,
+) -> bool:
+    """Accept only one exact, plain-key action configuration.
+
+    Actions execute before the workflow's shell guardrails.  The protected
+    contract therefore treats their input maps as closed syntax, rather than
+    accepting a required-looking substring that may be present in a comment.
+    """
+
+    if set(_step_direct_keys(step)) != {"name", "uses", "with"}:
+        return False
+    action_value = _direct_scalar(step.source, indent=8, name="uses")
+    allowed_actions = {action}
+    if allowed_action_comment is not None:
+        allowed_actions.add(f"{action} # {allowed_action_comment}")
     return (
-        CHECKOUT in step.source
-        and "ref: ${{ github.sha }}" in step.source
-        and "persist-credentials: false" in step.source
-        and re.search(r"(?m)^\s+path:", step.source) is None
+        action_value in allowed_actions
+        and _direct_mapping(step.source, indent=8, name="with") == with_values
+    )
+
+
+def _checkout_is_closed(step: _Step) -> bool:
+    return _closed_action_step(
+        step,
+        action=CHECKOUT,
+        with_values={
+            "ref": "${{ github.sha }}",
+            "persist-credentials": "false",
+        },
     )
 
 
 def _authority_checkout_is_closed(step: _Step) -> bool:
-    legacy_authority = (
-        CHECKOUT in step.source
-        and "ref: ${{ env.PHASE6_AUTHORITY_STATE_COMMIT_SHA }}" in step.source
-        and "path: .phase6-authority-state" in step.source
-        and "persist-credentials: false" in step.source
+    legacy_authority = _closed_action_step(
+        step,
+        action=CHECKOUT,
+        with_values={
+            "ref": "${{ env.PHASE6_AUTHORITY_STATE_COMMIT_SHA }}",
+            "path": ".phase6-authority-state",
+            "persist-credentials": "false",
+        },
     )
-    verified_handoff = (
-        CHECKOUT in step.source
-        and (
-            (
-                "ref: ${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}"
-                in step.source
-                and "path: .phase6-authority-state" in step.source
-            )
-            or (
-                "ref: ${{ needs.live_authority_preflight.outputs.state_commit_sha }}"
-                in step.source
-                and "path: .phase6-campaign-state" in step.source
-            )
+    verified_handoff = any(
+        _closed_action_step(
+            step,
+            action=CHECKOUT,
+            with_values=with_values,
         )
-        and (
-            "repository: ${{ needs.live_authority_preflight.outputs.state_repository_full_name }}"
-            in step.source
+        for with_values in (
+            {
+                "repository": "${{ needs.live_authority_preflight.outputs.state_repository_full_name }}",
+                "ref": "${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}",
+                "path": ".phase6-authority-state",
+                "persist-credentials": "false",
+                "token": "''",
+            },
+            {
+                "repository": "${{ needs.live_authority_preflight.outputs.state_repository_full_name }}",
+                "ref": "${{ needs.live_authority_preflight.outputs.state_commit_sha }}",
+                "path": ".phase6-campaign-state",
+                "persist-credentials": "false",
+                "token": "''",
+            },
         )
-        and "persist-credentials: false" in step.source
-        and "token: ''" in step.source
     )
     return legacy_authority or verified_handoff
 
 
 def _campaign_candidate_checkout_is_closed(step: _Step) -> bool:
-    return (
-        CHECKOUT in step.source
-        and (
-            "repository: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}"
-            in step.source
-        )
-        and "ref: skillscout-state" in step.source
-        and "path: .phase6-campaign-state" in step.source
-        and "persist-credentials: false" in step.source
-        and "token: ${{ github.token }}" in step.source
+    return _closed_action_step(
+        step,
+        action=CHECKOUT,
+        with_values={
+            "repository": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}",
+            "ref": "skillscout-state",
+            "path": ".phase6-campaign-state",
+            "persist-credentials": "false",
+            "token": "${{ github.token }}",
+        },
     )
 
 
 def _setup_is_closed(step: _Step) -> bool:
-    return (
-        SETUP_UV in step.source
-        and "version: 0.11.29" in step.source
-        and "enable-cache: false" in step.source
+    return _closed_action_step(
+        step,
+        action=SETUP_UV,
+        with_values={"version": "0.11.29", "enable-cache": "false"},
+        allowed_action_comment="v9.0.0",
     )
 
 
@@ -445,6 +607,21 @@ def _materialization_is_closed(step: _Step) -> bool:
         *MANAGED_PYTHON_TOOLCHAIN,
     )
     return all(value in step.run for value in required)
+
+
+def _fresh_materialization_is_exact(step: _Step) -> bool:
+    """Require the pre-secret fresh-job toolchain block byte-for-byte.
+
+    A substring check would allow an injected command to replace a required
+    line with a comment, poisoning the local uv executable before a later step
+    receives the state credential.
+    """
+
+    return (
+        step.run is not None
+        and hashlib.sha256(step.run.encode("utf-8")).hexdigest()
+        == FRESH_MATERIALIZATION_RUN_SHA256
+    )
 
 
 def _python_runtime_preflight_is_closed(step: _Step) -> bool:
@@ -623,6 +800,183 @@ def _closed_offline_diagnostic_upload_count(jobs: tuple[_Job, ...]) -> int:
     return len(diagnostic_uploads)
 
 
+def _fresh_campaign_jobs_are_closed(jobs: tuple[_Job, ...]) -> None:
+    """Enforce trusted-source state routes and their separated approval handoff."""
+
+    by_name = {job.name: job for job in jobs}
+    _require(len(by_name) == len(jobs))
+    _require({"prepare_fresh_campaign", "benchmark_lock"} <= set(by_name))
+    prepare = by_name["prepare_fresh_campaign"]
+    approval = by_name["benchmark_lock"]
+
+    _require(
+        set(_job_direct_keys(prepare))
+        == {
+            "name",
+            "if",
+            "environment",
+            "runs-on",
+            "timeout-minutes",
+            "permissions",
+            "env",
+            "steps",
+        }
+    )
+    _require(
+        set(_job_direct_keys(approval))
+        == {
+            "name",
+            "if",
+            "environment",
+            "runs-on",
+            "timeout-minutes",
+            "permissions",
+            "env",
+            "steps",
+        }
+    )
+    _require(
+        _direct_mapping(prepare.source, indent=4, name="permissions")
+        == {"contents": "read"}
+    )
+    _require(
+        _direct_mapping(approval.source, indent=4, name="permissions")
+        == {"contents": "read", "actions": "read"}
+    )
+    job_environment = {
+        "UV_LINK_MODE": "copy",
+        "SKILLSCOUT_STATE_REPOSITORY_ID": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}",
+        "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}",
+    }
+    _require(_direct_mapping(prepare.source, indent=4, name="env") == job_environment)
+    _require(_direct_mapping(approval.source, indent=4, name="env") == job_environment)
+    _require(
+        _direct_scalar(prepare.source, indent=4, name="name")
+        == "skillscout-phase6-prepare-fresh-campaign"
+    )
+    _require(
+        _direct_scalar(prepare.source, indent=4, name="if")
+        == "${{ inputs.phase6_action == 'prepare-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}"
+    )
+    _require(
+        _direct_scalar(prepare.source, indent=4, name="environment")
+        == "phase6-fresh-nomination"
+    )
+    _require(_direct_scalar(prepare.source, indent=4, name="runs-on") == "ubuntu-24.04")
+    _require(_direct_scalar(prepare.source, indent=4, name="timeout-minutes") == "30")
+    _require(
+        _direct_scalar(approval.source, indent=4, name="name")
+        == "skillscout-phase6-benchmark-lock"
+    )
+    _require(
+        _direct_scalar(approval.source, indent=4, name="if")
+        == "${{ inputs.phase6_action == 'lock-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}"
+    )
+    _require(
+        _direct_scalar(approval.source, indent=4, name="environment")
+        == "phase6-human-benchmark-lock"
+    )
+    _require(_direct_scalar(approval.source, indent=4, name="runs-on") == "ubuntu-24.04")
+    _require(_direct_scalar(approval.source, indent=4, name="timeout-minutes") == "30")
+
+    expected_prefix = (
+        "Check out the dispatched commit",
+        "Materialize the pinned uv binary",
+        "Verify the repository-local locked toolchain",
+    )
+    _require(tuple(step.name for step in prepare.steps) == (*expected_prefix, "Prepare one bounded fresh Search nomination"))
+    _require(
+        tuple(step.name for step in approval.steps)
+        == (
+            *expected_prefix,
+            "Verify and emit one environment-approved benchmark lock handoff",
+            "Persist one verified environment-approved benchmark lock",
+        )
+    )
+    for job in (prepare, approval):
+        _require(
+            tuple(_step_direct_keys(step) for step in job.steps[:3])
+            == (("name", "uses", "with"), ("name", "uses", "with"), ("name", "run"))
+        )
+        _require(_checkout_is_closed(job.steps[0]))
+        _require(_setup_is_closed(job.steps[1]))
+        _require(_fresh_materialization_is_exact(job.steps[2]))
+
+    prepare_step = prepare.steps[-1]
+    approval_step = approval.steps[-2]
+    persist_step = approval.steps[-1]
+    _require(set(_step_direct_keys(prepare_step)) == {"name", "env", "run"})
+    _require(set(_step_direct_keys(approval_step)) == {"name", "id", "env", "run"})
+    _require(set(_step_direct_keys(persist_step)) == {"name", "env", "run"})
+    _require(
+        _direct_mapping(prepare_step.source, indent=8, name="env")
+        == {
+            "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "${{ github.token }}",
+            "SKILLSCOUT_STATE_GITHUB_TOKEN": "${{ secrets.SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN }}",
+        }
+    )
+    _require(
+        _direct_mapping(approval_step.source, indent=8, name="env")
+        == {"GITHUB_TOKEN": "${{ github.token }}"}
+    )
+    _require(
+        _direct_mapping(persist_step.source, indent=8, name="env")
+        == {
+            "SKILLSCOUT_STATE_GITHUB_TOKEN": "${{ secrets.SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN }}",
+            "PHASE6_FRESH_LOCK_HANDOFF": "${{ steps.prepare_handoff.outputs.fresh_lock_handoff }}",
+        }
+    )
+    _require(
+        tuple(prepare_step.run.splitlines())
+        == (
+            "set -euo pipefail",
+            "umask 077",
+            f"{LOCAL_LOCKED} python -m skillscout.cli prepare-fresh-campaign",
+        )
+    )
+    _require(
+        tuple(approval_step.run.splitlines())
+        == (
+            "set -euo pipefail",
+            "umask 077",
+            f"handoff=\"$({LOCAL_LOCKED} python -m skillscout.cli prepare-fresh-lock-handoff)\"",
+            "[[ -n \"${handoff}\" && \"${handoff}\" != *$'\\n'* ]]",
+            "printf 'fresh_lock_handoff=%s\\n' \"${handoff}\" >> \"${GITHUB_OUTPUT}\"",
+        )
+    )
+    _require(
+        tuple(persist_step.run.splitlines())
+        == (
+            "set -euo pipefail",
+            "umask 077",
+            f"{LOCAL_LOCKED} python -m skillscout.cli lock-fresh-campaign",
+        )
+    )
+    for job in (prepare, approval):
+        for forbidden in (
+            "deepseek",
+            "semantic",
+            "candidate",
+            "catalog",
+            "pull-request",
+            "reviewer",
+            "publication",
+            "create-github-app-token",
+            "curl",
+            "wget",
+            "http://",
+            "https://",
+        ):
+            _require(forbidden not in job.source.casefold())
+    _require(
+        all(
+            "SKILLSCOUT_STATE_GITHUB_TOKEN" not in step.source
+            for step in approval.steps[:-1]
+        )
+    )
+    _require(re.search(r"(?m)^\s{10}GITHUB_TOKEN:", persist_step.source) is None)
+
+
 def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     root = Path(os.path.abspath(os.fspath(repository_root)))
     _require(root.is_dir())
@@ -636,8 +990,10 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
         jobs = _parse_jobs(source)
         _reject_forbidden_sources(source, jobs)
         if relative == Path(".github/workflows/phase6-acceptance.yml"):
+            _closed_phase6_root_context(source)
             diagnostic_upload_count += _closed_offline_diagnostic_upload_count(jobs)
             control_user_mapping_count += _closed_control_user_mapping_count(jobs)
+            _fresh_campaign_jobs_are_closed(jobs)
         for job in jobs:
             checkout_indexes = tuple(
                 index for index, step in enumerate(job.steps) if CHECKOUT in step.source
@@ -733,7 +1089,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     )
                 )
     _require(bool(findings))
-    _require(managed_python_job_count == 17)
+    _require(managed_python_job_count == 19)
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     _require(control_user_mapping_count == EXPECTED_CONTROL_USER_MAPPINGS)
     _require(diagnostic_upload_count == 1)

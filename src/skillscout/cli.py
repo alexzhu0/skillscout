@@ -8,6 +8,7 @@ import argparse
 from datetime import UTC, datetime
 import json
 import os
+import re
 import stat
 import sys
 from tempfile import TemporaryDirectory
@@ -16,6 +17,9 @@ from typing import Mapping, NoReturn, Sequence
 
 from skillscout.bootstrap import (
     build_discovery_application,
+    build_fresh_campaign_lock_application,
+    build_fresh_campaign_lock_handoff_application,
+    build_fresh_campaign_preparation_application,
     build_nomination_application,
     build_publication_application,
     derive_discovery_publication_admissions,
@@ -26,6 +30,9 @@ from skillscout.bootstrap import (
     load_acceptance_runtime_config,
     load_verified_state_checkout,
     load_discovery_runtime_config,
+    load_fresh_campaign_lock_runtime_config,
+    load_fresh_campaign_lock_handoff,
+    load_fresh_campaign_preparation_runtime_config,
     load_nomination_runtime_config,
     load_publication_authority_config,
     read_exact_acceptance_state,
@@ -148,6 +155,9 @@ def build_parser() -> SafeArgumentParser:
     nominate_benchmark.add_argument("--state-repository-id", required=True)
     nominate_benchmark.add_argument("--state-repository-full-name", required=True)
     nominate_benchmark.add_argument("--initial-state-root-digest", required=True)
+    commands.add_parser("prepare-fresh-campaign")
+    commands.add_parser("prepare-fresh-lock-handoff")
+    commands.add_parser("lock-fresh-campaign")
     run_acceptance = commands.add_parser("run-acceptance")
     run_acceptance.add_argument(
         "--action",
@@ -763,6 +773,168 @@ def _run_nominate_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
         ],
         "status": "nomination_persisted",
     }
+
+
+def _fresh_campaign_preparation_config() -> object:
+    """Derive the state-only fresh preparation authority from fixed repository settings."""
+
+    repository_id, repository_full_name = _protected_state_repository()
+    return load_fresh_campaign_preparation_runtime_config(
+        state_repository_id=repository_id,
+        state_repository_full_name=repository_full_name,
+        query_set_path=_DISCOVERY_QUERY_PATH,
+        operations_state=_DISCOVERY_OPERATIONS_STATE,
+    )
+
+
+def _fresh_campaign_lock_source_context() -> tuple[int, str, str, int, int, str]:
+    """Accept only GitHub-provided workflow-dispatch identity, never a caller assertion."""
+
+    try:
+        source_repository_id = os.environ["GITHUB_REPOSITORY_ID"]
+        source_repository = os.environ["GITHUB_REPOSITORY"]
+        source_commit_sha = os.environ["GITHUB_SHA"]
+        run_id = os.environ["GITHUB_RUN_ID"]
+        run_attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+        actor_id = os.environ["GITHUB_ACTOR_ID"]
+        actor_login = os.environ["GITHUB_ACTOR"]
+        triggering_actor_login = os.environ["GITHUB_TRIGGERING_ACTOR"]
+        if (
+            os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch"
+            or not source_repository_id.isascii()
+            or not source_repository_id.isdecimal()
+            or source_repository_id.startswith("0")
+            or source_repository.count("/") != 1
+            or len(source_commit_sha) != 40
+            or any(character not in "0123456789abcdef" for character in source_commit_sha)
+            or not run_id.isdecimal()
+            or run_id.startswith("0")
+            or not run_attempt.isdecimal()
+            or run_attempt != "1"
+            or not actor_id.isdecimal()
+            or actor_id.startswith("0")
+            or re.fullmatch(r"[A-Za-z0-9-]{1,39}", actor_login) is None
+            or triggering_actor_login != actor_login
+        ):
+            raise ValueError
+        return (
+            int(source_repository_id),
+            source_repository,
+            source_commit_sha,
+            int(run_id),
+            int(run_attempt),
+            f"workflow_dispatch:{actor_id}:{actor_login}",
+        )
+    except Exception:
+        raise ValueError("fresh campaign source context rejected") from None
+
+
+def _run_prepare_fresh_campaign() -> dict[str, object]:
+    """Run only the bounded Search nomination from the current canonical parent."""
+
+    try:
+        config = _fresh_campaign_preparation_config()
+        result = build_fresh_campaign_preparation_application(config).run(
+            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        )
+        nomination = result.nomination
+        return {
+            "nomination_set_id": nomination.nomination_set_id,
+            "nomination_set_digest": nomination.nomination_set_digest,
+            "search_run_authority_digest": nomination.search_run_authority_digest,
+            "state_commit_sha": result.state_commit_sha,
+            "state_root_digest": result.state_root_digest,
+            "candidate_count": len(nomination.search_derived_entries),
+            "search_derived_entries": [
+                entry.model_dump(mode="json", exclude_none=False)
+                for entry in nomination.search_derived_entries
+            ],
+            "status": "fresh_campaign_prepared",
+        }
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _run_lock_fresh_campaign() -> dict[str, object]:
+    """Read protected approval then persist exactly one fresh V2 benchmark lock."""
+
+    try:
+        preparation = _fresh_campaign_preparation_config()
+        (
+            source_repository_id,
+            source_repository_full_name,
+            source_commit_sha,
+            workflow_run_id,
+            workflow_run_attempt,
+            trigger_identity,
+        ) = _fresh_campaign_lock_source_context()
+        config = load_fresh_campaign_lock_runtime_config(
+            preparation=preparation,
+            repository_root=Path.cwd().resolve(strict=True),
+            source_repository_id=source_repository_id,
+            source_repository_full_name=source_repository_full_name,
+            source_commit_sha=source_commit_sha,
+            workflow_run_id=workflow_run_id,
+            workflow_run_attempt=workflow_run_attempt,
+            trigger_identity=trigger_identity,
+        )
+        handoff = load_fresh_campaign_lock_handoff(
+            config=config,
+            handoff_bytes=os.environ["PHASE6_FRESH_LOCK_HANDOFF"].encode("utf-8"),
+        )
+        result = build_fresh_campaign_lock_application(config, handoff).run(
+            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        )
+        lock = result.lock
+        return {
+            "lock_digest": lock.lock_digest,
+            "source_repository_id": lock.source_repository_id,
+            "source_repository_full_name": lock.source_repository_full_name,
+            "selection_manifest_digest": lock.selection_manifest_digest,
+            "nomination_set_digest": lock.nomination_set_digest,
+            "approval_record_digest": lock.approval_record_digest,
+            "approval_receipt_digest": lock.approval_receipt_digest,
+            "state_commit_sha": result.state_commit_sha,
+            "state_root_digest": result.state_root_digest,
+            "status": "fresh_campaign_locked",
+        }
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _run_prepare_fresh_lock_handoff() -> dict[str, object]:
+    """Emit only the canonical protected approval receipt and fixed source handoff."""
+
+    try:
+        preparation = _fresh_campaign_preparation_config()
+        (
+            source_repository_id,
+            source_repository_full_name,
+            source_commit_sha,
+            workflow_run_id,
+            workflow_run_attempt,
+            trigger_identity,
+        ) = _fresh_campaign_lock_source_context()
+        config = load_fresh_campaign_lock_runtime_config(
+            preparation=preparation,
+            repository_root=Path.cwd().resolve(strict=True),
+            source_repository_id=source_repository_id,
+            source_repository_full_name=source_repository_full_name,
+            source_commit_sha=source_commit_sha,
+            workflow_run_id=workflow_run_id,
+            workflow_run_attempt=workflow_run_attempt,
+            trigger_identity=trigger_identity,
+        )
+        handoff = build_fresh_campaign_lock_handoff_application(config).run()
+        return handoff.model_dump(mode="json", exclude_none=False)
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
 def _restore_acceptance_state(
@@ -1593,6 +1765,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_discover(arguments)
         elif arguments.command == "nominate-benchmark":
             payload = _run_nominate_benchmark(arguments)
+        elif arguments.command == "prepare-fresh-campaign":
+            payload = _run_prepare_fresh_campaign()
+        elif arguments.command == "prepare-fresh-lock-handoff":
+            payload = _run_prepare_fresh_lock_handoff()
+        elif arguments.command == "lock-fresh-campaign":
+            payload = _run_lock_fresh_campaign()
         elif arguments.command == "run-acceptance":
             payload = _run_acceptance(arguments)
         elif arguments.command == "verify-live-authority":

@@ -875,15 +875,39 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert "SKILLSCOUT_CATALOG" not in fresh_prepare
     assert "run-acceptance" not in fresh_prepare
     assert "prepare-fresh-campaign" in fresh_prepare
+    assert "environment: phase6-fresh-nomination" in fresh_prepare
+    assert (
+        "if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' && "
+        "github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}"
+        in fresh_prepare
+    )
+    prepare_prefix, _, prepare_operation = fresh_prepare.partition(
+        "      - name: Prepare one bounded fresh Search nomination"
+    )
+    assert prepare_operation
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in prepare_prefix
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in prepare_prefix
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}" in prepare_operation
+    assert (
+        "SKILLSCOUT_STATE_GITHUB_TOKEN: "
+        "${{ secrets.SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN }}"
+        in prepare_operation
+    )
+    assert "${{ secrets.SKILLSCOUT_STATE_GITHUB_TOKEN }}" not in prepare_operation
 
     assert "name: skillscout-phase6-benchmark-lock" in benchmark_lock
     assert "environment: phase6-human-benchmark-lock" in benchmark_lock
+    assert (
+        "if: ${{ inputs.phase6_action == 'lock-fresh-campaign' && "
+        "github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}"
+        in benchmark_lock
+    )
     assert re.search(
         r"^    permissions:\n      contents: read\n      actions: read$",
         benchmark_lock,
         re.MULTILINE,
     )
-    assert "lock-fresh-campaign" in benchmark_lock
+    assert "prepare-fresh-lock-handoff" in benchmark_lock
     for forbidden in (
         "DEEPSEEK",
         "semantic",
@@ -895,8 +919,25 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
         "create-github-app-token",
     ):
         assert forbidden.casefold() not in benchmark_lock.casefold()
-    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in benchmark_lock
-    assert "GITHUB_TOKEN: ${{ github.token }}" in benchmark_lock
+    approval_prefix, _, approval_and_persist = benchmark_lock.partition(
+        "      - name: Verify and emit one environment-approved benchmark lock handoff"
+    )
+    assert approval_and_persist
+    approval_operation, _, persist_operation = approval_and_persist.partition(
+        "      - name: Persist one verified environment-approved benchmark lock"
+    )
+    assert persist_operation
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in approval_prefix
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in approval_operation
+    assert "GITHUB_TOKEN: ${{ github.token }}" in approval_operation
+    assert "PHASE6_FRESH_LOCK_HANDOFF: ${{ steps.prepare_handoff.outputs.fresh_lock_handoff }}" in persist_operation
+    assert (
+        "SKILLSCOUT_STATE_GITHUB_TOKEN: "
+        "${{ secrets.SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN }}"
+        in persist_operation
+    )
+    assert "${{ secrets.SKILLSCOUT_STATE_GITHUB_TOKEN }}" not in persist_operation
+    assert "lock-fresh-campaign" in persist_operation
 
     assert "contents: read" in offline
     assert "contents: write" not in offline
