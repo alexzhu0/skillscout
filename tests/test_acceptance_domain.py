@@ -720,6 +720,170 @@ def test_locked_manifest_strict_json_round_trip_preserves_tuple_contracts() -> N
     ) == manifest
 
 
+def _v2_benchmark_entries() -> tuple[Any, ...]:
+    entry_model = _symbol("BenchmarkEntryV1", skip_if_missing=False)
+    roles = (
+        "positive",
+        "positive_multi_workflow",
+        "negative",
+        "negative",
+        "borderline",
+    )
+    return tuple(
+        sorted(
+            (
+                entry_model(
+                    schema_version="benchmark-entry-v1",
+                    repository_full_name=f"octo-org/v2-workflow-{index}",
+                    repository_id=920000 + index,
+                    exact_commit_sha=f"{index:040x}",
+                    license_spdx="MIT",
+                    selection_source="search_derived",
+                    coverage_role=role,
+                    nomination_entry_digest=sha256_digest(
+                        {"v2-nomination": index}
+                    ),
+                    selection_evidence_digests=(
+                        sha256_digest({"v2-evidence": index}),
+                    ),
+                )
+                for index, role in enumerate(roles, 1)
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+
+
+def _v2_benchmark_lock_payload() -> dict[str, object]:
+    receipt_model = _symbol("BenchmarkLockApprovalReceiptV2", skip_if_missing=False)
+    receipt = receipt_model(
+        schema_version="benchmark-lock-approval-receipt-v2",
+        purpose="benchmark_lock",
+        environment="phase6-human-benchmark-lock",
+        reviewer_login="alexzhu0",
+        reviewer_id=101,
+        workflow_run_id=1001,
+        workflow_run_attempt=1,
+        source_commit_sha=SHA_A,
+        workflow_sha256=DIGEST_A,
+        trigger_identity="workflow_dispatch",
+        approval_record_digest=DIGEST_B,
+    )
+    return {
+        "schema_version": "locked-benchmark-manifest-v2",
+        "purpose": "benchmark_lock",
+        "state_repository_id": 9001,
+        "state_repository_full_name": "octo-org/skillscout-state",
+        "parent_state_commit_sha": SHA_B,
+        "parent_state_root_digest": DIGEST_C,
+        "source_commit_sha": SHA_A,
+        "acceptance_workflow_sha256": DIGEST_A,
+        "selection_manifest_digest": DIGEST_B,
+        "nomination_set_digest": DIGEST_C,
+        "entries": _v2_benchmark_entries(),
+        "environment": receipt.environment,
+        "approved_reviewer_login": receipt.reviewer_login,
+        "approved_reviewer_id": receipt.reviewer_id,
+        "workflow_run_id": receipt.workflow_run_id,
+        "workflow_run_attempt": receipt.workflow_run_attempt,
+        "trigger_identity": receipt.trigger_identity,
+        "approval_record_digest": receipt.approval_record_digest,
+        "approval_receipt": receipt,
+        "approval_receipt_digest": receipt.receipt_digest,
+    }
+
+
+def test_locked_benchmark_manifest_v2_binds_redacted_environment_approval() -> None:
+    receipt_model = _symbol("BenchmarkLockApprovalReceiptV2", skip_if_missing=False)
+    manifest_model = _symbol("LockedBenchmarkManifestV2", skip_if_missing=False)
+    assert {
+        "purpose",
+        "environment",
+        "reviewer_login",
+        "reviewer_id",
+        "workflow_run_id",
+        "workflow_run_attempt",
+        "source_commit_sha",
+        "workflow_sha256",
+        "trigger_identity",
+        "approval_record_digest",
+        "receipt_digest",
+    } == set(receipt_model.model_fields) - {"schema_version"}
+    assert {
+        "purpose",
+        "state_repository_id",
+        "state_repository_full_name",
+        "parent_state_commit_sha",
+        "parent_state_root_digest",
+        "source_commit_sha",
+        "acceptance_workflow_sha256",
+        "selection_manifest_digest",
+        "nomination_set_digest",
+        "entries",
+        "environment",
+        "approved_reviewer_login",
+        "approved_reviewer_id",
+        "workflow_run_id",
+        "workflow_run_attempt",
+        "trigger_identity",
+        "approval_record_digest",
+        "approval_receipt",
+        "approval_receipt_digest",
+        "lock_digest",
+    } == set(manifest_model.model_fields) - {"schema_version"}
+    assert {"actor", "comment", "approval_comment", "endpoint", "raw_response"}.isdisjoint(
+        receipt_model.model_fields
+    )
+
+    manifest = manifest_model.model_validate(_v2_benchmark_lock_payload(), strict=True)
+    assert manifest.purpose == "benchmark_lock"
+    assert manifest.approval_receipt_digest == manifest.approval_receipt.receipt_digest
+    assert manifest_model.model_validate_json(
+        canonical_json_bytes(manifest), strict=True
+    ) == manifest
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("environment",), "other-environment"),
+        (("approved_reviewer_login",), "automation-bot"),
+        (("approval_receipt", "purpose"), "live_execution"),
+        (("approval_receipt", "environment"), "other-environment"),
+        (("approval_receipt", "comment"), "approve this"),
+    ),
+)
+def test_locked_benchmark_manifest_v2_rejects_forged_or_unredacted_approval(
+    path: tuple[str, ...], value: object
+) -> None:
+    manifest_model = _symbol("LockedBenchmarkManifestV2", skip_if_missing=False)
+    payload = manifest_model.model_validate(
+        _v2_benchmark_lock_payload(), strict=True
+    ).model_dump(mode="json", exclude_none=False)
+    target: dict[str, object] = payload
+    for key in path[:-1]:
+        nested = target[key]
+        assert isinstance(nested, dict)
+        target = nested
+    target[path[-1]] = value
+    payload.pop("lock_digest")
+    with pytest.raises(ValidationError):
+        manifest_model.model_validate(payload, strict=True)
+
+
+def test_locked_benchmark_manifest_v2_rejects_duplicate_or_noncanonical_entries() -> None:
+    manifest_model = _symbol("LockedBenchmarkManifestV2", skip_if_missing=False)
+    payload = manifest_model.model_validate(
+        _v2_benchmark_lock_payload(), strict=True
+    ).model_dump(mode="json", exclude_none=False)
+    entries = payload["entries"]
+    assert isinstance(entries, list)
+    payload["entries"] = [entries[0], *entries[:-1]]
+    payload.pop("lock_digest")
+    with pytest.raises(ValidationError):
+        manifest_model.model_validate(payload, strict=True)
+
+
 def test_human_review_contract_requires_exact_head_and_complete_d17_checklist() -> None:
     model = _symbol("HumanSkillReviewAttestationV1")
     assert {

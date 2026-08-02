@@ -405,6 +405,157 @@ def _locked_manifest(
     )
 
 
+def _v2_symbol(name: str):
+    module = importlib.import_module("skillscout.domain.acceptance")
+    value = getattr(module, name, None)
+    assert value is not None, f"missing V2 benchmark-lock contract: {name}"
+    return value
+
+
+def _locked_manifest_v2(nomination: NominationSetV1):
+    receipt_model = _v2_symbol("BenchmarkLockApprovalReceiptV2")
+    manifest_model = _v2_symbol("LockedBenchmarkManifestV2")
+    receipt = receipt_model(
+        schema_version="benchmark-lock-approval-receipt-v2",
+        purpose="benchmark_lock",
+        environment="phase6-human-benchmark-lock",
+        reviewer_login="alexzhu0",
+        reviewer_id=101,
+        workflow_run_id=1001,
+        workflow_run_attempt=1,
+        source_commit_sha="a" * 40,
+        workflow_sha256=DIGEST_A,
+        trigger_identity="workflow_dispatch",
+        approval_record_digest=DIGEST_B,
+    )
+    manifest = _locked_manifest(nomination)
+    return manifest_model(
+        schema_version="locked-benchmark-manifest-v2",
+        purpose="benchmark_lock",
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="b" * 40,
+        parent_state_root_digest=DIGEST_C,
+        source_commit_sha="a" * 40,
+        acceptance_workflow_sha256=DIGEST_A,
+        selection_manifest_digest=manifest.manifest_digest,
+        nomination_set_digest=nomination.nomination_set_digest,
+        entries=manifest.entries,
+        environment=receipt.environment,
+        approved_reviewer_login=receipt.reviewer_login,
+        approved_reviewer_id=receipt.reviewer_id,
+        workflow_run_id=receipt.workflow_run_id,
+        workflow_run_attempt=receipt.workflow_run_attempt,
+        trigger_identity=receipt.trigger_identity,
+        approval_record_digest=receipt.approval_record_digest,
+        approval_receipt=receipt,
+        approval_receipt_digest=receipt.receipt_digest,
+    )
+
+
+def test_benchmark_lock_schema_registry_preserves_v1_history_and_restores_v2(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    v1_model = _v2_symbol("LockedBenchmarkManifestV1")
+    v2_model = _v2_symbol("LockedBenchmarkManifestV2")
+    registry = module.ACCEPTANCE_FACT_MODELS["acceptance_benchmark_lock"]
+    assert tuple(registry) == (
+        "locked-benchmark-manifest-v1",
+        "locked-benchmark-manifest-v2",
+    )
+    assert registry["locked-benchmark-manifest-v1"] is v1_model
+    assert registry["locked-benchmark-manifest-v2"] is v2_model
+
+    nomination = _nomination_set()
+    historical_v1 = _locked_manifest(nomination)
+    fresh_v2 = _locked_manifest_v2(nomination)
+    source = tmp_path / "versioned-lock-source.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        historical = store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            historical_v1,
+        )
+        fresh = store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            fresh_v2,
+        )
+        exported = store.export_owned_state()
+
+    historical_fact = next(
+        fact
+        for fact in exported.facts
+        if fact.payload_json == module._json_text(
+            historical_v1.model_dump(mode="json", exclude_none=False)
+        )
+    )
+    assert historical_fact.payload_json == module._json_text(
+        historical_v1.model_dump(mode="json", exclude_none=False)
+    )
+    assert historical.fact == historical_v1
+    assert fresh.fact == fresh_v2
+
+    rebuilt = tmp_path / "versioned-lock-rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        snapshot = store.acceptance_snapshot(nomination.nomination_set_id)
+        restored = store.export_owned_state()
+
+    assert {type(record.fact) for record in snapshot.facts} >= {v1_model, v2_model}
+    assert restored.facts == exported.facts
+    assert restored.projection == exported.projection
+
+
+def test_v2_benchmark_lock_rejects_selected_entry_not_in_fresh_nomination(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    v2_model = _v2_symbol("LockedBenchmarkManifestV2")
+    nomination = _nomination_set()
+    fresh_v2 = _locked_manifest_v2(nomination)
+    original = fresh_v2.entries[0]
+    changed = BenchmarkEntryV1(
+        schema_version="benchmark-entry-v1",
+        repository_full_name=original.repository_full_name,
+        repository_id=original.repository_id,
+        exact_commit_sha="f" * 40,
+        license_spdx=original.license_spdx,
+        selection_source=original.selection_source,
+        coverage_role=original.coverage_role,
+        nomination_entry_digest=original.nomination_entry_digest,
+        selection_evidence_digests=original.selection_evidence_digests,
+    )
+    payload = fresh_v2.model_dump(mode="json", exclude_none=False)
+    payload["entries"] = [
+        item.model_dump(mode="json", exclude_none=False)
+        for item in sorted(
+            (changed, *fresh_v2.entries[1:]), key=lambda item: item.entry_digest
+        )
+    ]
+    payload.pop("lock_digest")
+    mismatched = v2_model.model_validate(payload, strict=True)
+
+    with module.OperationsStateStore(tmp_path / "mismatched-v2-lock.sqlite3") as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        with pytest.raises(module.OperationsIntegrityError, match="selection"):
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_benchmark_lock",
+                mismatched,
+            )
+
+
 def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     module = _operations_module()
     assert tuple(module.ACCEPTANCE_FACT_MODELS) == (
