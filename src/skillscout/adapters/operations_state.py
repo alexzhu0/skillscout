@@ -48,6 +48,7 @@ from skillscout.domain.acceptance import (
     HumanSkillReviewAttestationV1,
     LiveAcceptanceAuthorityV1,
     LockedBenchmarkManifestV1,
+    LockedBenchmarkManifestV2,
     NominationSetV1,
     OfflineAdversarialRunV1,
     ProbeCleanupAttestationV1,
@@ -235,6 +236,7 @@ _FactKind = Literal[
 _AcceptanceFactModel: TypeAlias = (
     NominationSetV1
     | LockedBenchmarkManifestV1
+    | LockedBenchmarkManifestV2
     | LiveAcceptanceAuthorityV1
     | AcceptanceCampaignResumeLocatorV1
     | AcceptanceBudgetReservationV1
@@ -256,57 +258,108 @@ _AcceptanceFactModel: TypeAlias = (
     | AcceptanceEvidenceRootV1
 )
 
-_ACCEPTANCE_FACT_MODEL_VALUES: Final = {
-    "acceptance_nomination": NominationSetV1,
-    "acceptance_benchmark_lock": LockedBenchmarkManifestV1,
-    "acceptance_live_authority": LiveAcceptanceAuthorityV1,
-    "acceptance_campaign_resume_locator": AcceptanceCampaignResumeLocatorV1,
-    "acceptance_budget_reservation": AcceptanceBudgetReservationV1,
-    "acceptance_fixed_candidate_admission": AcceptanceFixedCandidateAdmissionV1,
-    "acceptance_semantic_request_reservation": (
-        AcceptanceSemanticRequestReservationV1
-    ),
-    "acceptance_scenario": AcceptanceScenarioResultV1,
-    "acceptance_hosted_isolation_capability": HostedIsolationCapabilityV1,
-    "acceptance_offline_adversarial_run": OfflineAdversarialRunV1,
-    "acceptance_replay": ReplayIntentV1,
-    "acceptance_replay_evidence": ReplayEvidenceV1,
-    "acceptance_changed_source": ChangedSourceEvidenceV1,
-    "acceptance_publication_replay_completion": PublicationReplayCompletionV1,
-    "acceptance_changed_source_draft_update_completion": (ChangedSourceDraftUpdateCompletionV1),
-    "acceptance_gate_b4": GateB4BindingV1,
-    "acceptance_human_review": HumanSkillReviewAttestationV1,
-    "acceptance_cleanup": ProbeCleanupAttestationV1,
-    "acceptance_reviewer_calibration": ReviewerCalibrationV1,
-    "acceptance_gate": AcceptanceGateResultV1,
-    "acceptance_report_root": AcceptanceEvidenceRootV1,
+_ACCEPTANCE_FACT_MODEL_VALUES: Final[
+    Mapping[str, Mapping[str, type[StrictFrozenModel]]]
+] = {
+    "acceptance_nomination": {"nomination-set-v1": NominationSetV1},
+    "acceptance_benchmark_lock": {
+        "locked-benchmark-manifest-v1": LockedBenchmarkManifestV1,
+        "locked-benchmark-manifest-v2": LockedBenchmarkManifestV2,
+    },
+    "acceptance_live_authority": {"live-acceptance-authority-v1": LiveAcceptanceAuthorityV1},
+    "acceptance_campaign_resume_locator": {
+        "acceptance-campaign-resume-locator-v1": AcceptanceCampaignResumeLocatorV1,
+    },
+    "acceptance_budget_reservation": {
+        "acceptance-budget-reservation-v1": AcceptanceBudgetReservationV1,
+    },
+    "acceptance_fixed_candidate_admission": {
+        "acceptance-fixed-candidate-admission-v1": AcceptanceFixedCandidateAdmissionV1,
+    },
+    "acceptance_semantic_request_reservation": {
+        "acceptance-semantic-request-reservation-v1": AcceptanceSemanticRequestReservationV1,
+    },
+    "acceptance_scenario": {"acceptance-scenario-result-v1": AcceptanceScenarioResultV1},
+    "acceptance_hosted_isolation_capability": {
+        "hosted-isolation-capability-v1": HostedIsolationCapabilityV1,
+    },
+    "acceptance_offline_adversarial_run": {
+        "offline-adversarial-run-v1": OfflineAdversarialRunV1,
+    },
+    "acceptance_replay": {"replay-intent-v1": ReplayIntentV1},
+    "acceptance_replay_evidence": {"replay-evidence-v1": ReplayEvidenceV1},
+    "acceptance_changed_source": {"changed-source-evidence-v1": ChangedSourceEvidenceV1},
+    "acceptance_publication_replay_completion": {
+        "publication-replay-completion-v1": PublicationReplayCompletionV1,
+    },
+    "acceptance_changed_source_draft_update_completion": {
+        "changed-source-draft-update-completion-v1": ChangedSourceDraftUpdateCompletionV1,
+    },
+    "acceptance_gate_b4": {"gate-b4-binding-v1": GateB4BindingV1},
+    "acceptance_human_review": {
+        "human-skill-review-attestation-v1": HumanSkillReviewAttestationV1,
+    },
+    "acceptance_cleanup": {"probe-cleanup-attestation-v1": ProbeCleanupAttestationV1},
+    "acceptance_reviewer_calibration": {
+        "reviewer-calibration-v1": ReviewerCalibrationV1,
+    },
+    "acceptance_gate": {"acceptance-gate-result-v1": AcceptanceGateResultV1},
+    "acceptance_report_root": {"acceptance-evidence-root-v1": AcceptanceEvidenceRootV1},
 }
-ACCEPTANCE_FACT_MODELS: Final[Mapping[str, type[StrictFrozenModel]]] = MappingProxyType(
-    _ACCEPTANCE_FACT_MODEL_VALUES
-)
-_ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, str]] = MappingProxyType(
+ACCEPTANCE_FACT_MODELS: Final[
+    Mapping[str, Mapping[str, type[StrictFrozenModel]]]
+] = MappingProxyType(
     {
-        "acceptance_nomination": "nomination_set_digest",
-        "acceptance_benchmark_lock": "manifest_digest",
-        "acceptance_live_authority": "authority_digest",
-        "acceptance_campaign_resume_locator": "locator_digest",
-        "acceptance_budget_reservation": "reservation_digest",
-        "acceptance_fixed_candidate_admission": "admission_digest",
-        "acceptance_semantic_request_reservation": "reservation_digest",
-        "acceptance_scenario": "result_digest",
-        "acceptance_hosted_isolation_capability": "capability_digest",
-        "acceptance_offline_adversarial_run": "run_digest",
-        "acceptance_replay": "replay_digest",
-        "acceptance_replay_evidence": "replay_digest",
-        "acceptance_changed_source": "changed_source_digest",
-        "acceptance_publication_replay_completion": "completion_digest",
-        "acceptance_changed_source_draft_update_completion": "completion_digest",
-        "acceptance_gate_b4": "binding_digest",
-        "acceptance_human_review": "attestation_digest",
-        "acceptance_cleanup": "attestation_digest",
-        "acceptance_reviewer_calibration": "calibration_digest",
-        "acceptance_gate": "gate_digest",
-        "acceptance_report_root": "root_digest",
+        kind: MappingProxyType(dict(versions))
+        for kind, versions in _ACCEPTANCE_FACT_MODEL_VALUES.items()
+    }
+)
+_ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
+    {
+        "acceptance_nomination": {"nomination-set-v1": "nomination_set_digest"},
+        "acceptance_benchmark_lock": {
+            "locked-benchmark-manifest-v1": "manifest_digest",
+            "locked-benchmark-manifest-v2": "lock_digest",
+        },
+        "acceptance_live_authority": {"live-acceptance-authority-v1": "authority_digest"},
+        "acceptance_campaign_resume_locator": {
+            "acceptance-campaign-resume-locator-v1": "locator_digest",
+        },
+        "acceptance_budget_reservation": {
+            "acceptance-budget-reservation-v1": "reservation_digest",
+        },
+        "acceptance_fixed_candidate_admission": {
+            "acceptance-fixed-candidate-admission-v1": "admission_digest",
+        },
+        "acceptance_semantic_request_reservation": {
+            "acceptance-semantic-request-reservation-v1": "reservation_digest",
+        },
+        "acceptance_scenario": {"acceptance-scenario-result-v1": "result_digest"},
+        "acceptance_hosted_isolation_capability": {
+            "hosted-isolation-capability-v1": "capability_digest",
+        },
+        "acceptance_offline_adversarial_run": {
+            "offline-adversarial-run-v1": "run_digest",
+        },
+        "acceptance_replay": {"replay-intent-v1": "replay_digest"},
+        "acceptance_replay_evidence": {"replay-evidence-v1": "replay_digest"},
+        "acceptance_changed_source": {"changed-source-evidence-v1": "changed_source_digest"},
+        "acceptance_publication_replay_completion": {
+            "publication-replay-completion-v1": "completion_digest",
+        },
+        "acceptance_changed_source_draft_update_completion": {
+            "changed-source-draft-update-completion-v1": "completion_digest",
+        },
+        "acceptance_gate_b4": {"gate-b4-binding-v1": "binding_digest"},
+        "acceptance_human_review": {
+            "human-skill-review-attestation-v1": "attestation_digest",
+        },
+        "acceptance_cleanup": {"probe-cleanup-attestation-v1": "attestation_digest"},
+        "acceptance_reviewer_calibration": {
+            "reviewer-calibration-v1": "calibration_digest",
+        },
+        "acceptance_gate": {"acceptance-gate-result-v1": "gate_digest"},
+        "acceptance_report_root": {"acceptance-evidence-root-v1": "root_digest"},
     }
 )
 _ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
@@ -904,8 +957,22 @@ def _contains_forbidden_acceptance_key(value: object) -> bool:
     return False
 
 
+def _acceptance_fact_model(
+    kind: str,
+    schema_version: object,
+) -> type[StrictFrozenModel] | None:
+    if type(schema_version) is not str:
+        return None
+    versions = ACCEPTANCE_FACT_MODELS.get(kind)
+    if versions is None:
+        return None
+    return versions.get(schema_version)
+
+
 def _acceptance_fact_digest(kind: str, fact: StrictFrozenModel) -> str:
-    field = _ACCEPTANCE_DIGEST_FIELDS.get(kind)
+    schema_version = getattr(fact, "schema_version", None)
+    fields = _ACCEPTANCE_DIGEST_FIELDS.get(kind)
+    field = None if fields is None else fields.get(schema_version)
     digest = None if field is None else getattr(fact, field, None)
     if type(digest) is not str or _DIGEST_PATTERN.fullmatch(digest) is None:
         raise OperationsIntegrityError("acceptance fact self-digest is invalid")
@@ -916,9 +983,11 @@ def _validate_acceptance_model(
     kind: str,
     raw: object,
 ) -> _AcceptanceFactModel:
-    model = ACCEPTANCE_FACT_MODELS.get(kind)
-    if model is None or not isinstance(raw, dict) or _contains_forbidden_acceptance_key(raw):
+    if not isinstance(raw, dict) or _contains_forbidden_acceptance_key(raw):
         raise OperationsIntegrityError("acceptance fact kind or redaction boundary is invalid")
+    model = _acceptance_fact_model(kind, raw.get("schema_version"))
+    if model is None:
+        raise OperationsIntegrityError("acceptance fact kind or schema version is invalid")
     try:
         # JSON arrays are the canonical wire form of frozen tuple fields.
         # Exact post-parse byte equality below rejects every coercive drift.
@@ -1025,6 +1094,44 @@ def _acceptance_fact_by_digest(
     return _acceptance_row_fact(row)
 
 
+def _validate_v2_benchmark_lock_selection(
+    lock: LockedBenchmarkManifestV2,
+    nomination: NominationSetV1,
+) -> None:
+    if lock.nomination_set_digest != nomination.nomination_set_digest:
+        raise OperationsIntegrityError("fresh benchmark lock nomination binding mismatch")
+    nomination_entries = {
+        entry.repository_id: entry
+        for entry in nomination.search_derived_entries
+    }
+    if len(nomination_entries) != len(nomination.search_derived_entries):
+        raise OperationsIntegrityError("fresh nomination entries are not unique")
+    for entry in lock.entries:
+        nomination_entry = nomination_entries.get(entry.repository_id)
+        if (
+            entry.selection_source != "search_derived"
+            or nomination_entry is None
+            or entry.nomination_entry_digest != nomination_entry.entry_digest
+            or (
+                entry.repository_full_name,
+                entry.exact_commit_sha,
+                entry.license_spdx,
+                entry.selection_source,
+                entry.selection_evidence_digests,
+            )
+            != (
+                nomination_entry.repository_full_name,
+                nomination_entry.exact_commit_sha,
+                nomination_entry.license_spdx,
+                nomination_entry.selection_source,
+                nomination_entry.selection_evidence_digests,
+            )
+        ):
+            raise OperationsIntegrityError(
+                "fresh benchmark lock selection chain is invalid"
+            )
+
+
 def _validate_acceptance_references(
     connection: sqlite3.Connection,
     *,
@@ -1056,7 +1163,8 @@ def _validate_acceptance_references(
             kind="acceptance_benchmark_lock",
             digest=fact.benchmark_manifest_digest,
         )
-        assert isinstance(manifest, LockedBenchmarkManifestV1)
+        if not isinstance(manifest, LockedBenchmarkManifestV1):
+            raise OperationsIntegrityError("scenario requires historical benchmark lock")
         entries = tuple(
             entry
             for entry in manifest.entries
@@ -1419,13 +1527,18 @@ def _validate_acceptance_references(
         ):
             raise OperationsIntegrityError("changed-source intent binding mismatch")
     elif kind == "acceptance_benchmark_lock":
-        assert isinstance(fact, LockedBenchmarkManifestV1)
-        _acceptance_fact_by_digest(
+        if not isinstance(fact, (LockedBenchmarkManifestV1, LockedBenchmarkManifestV2)):
+            raise OperationsIntegrityError("benchmark lock model is invalid")
+        nomination = _acceptance_fact_by_digest(
             connection,
             acceptance_run_id=acceptance_run_id,
             kind="acceptance_nomination",
             digest=fact.nomination_set_digest,
         )
+        if not isinstance(nomination, NominationSetV1):
+            raise OperationsIntegrityError("benchmark nomination model is invalid")
+        if isinstance(fact, LockedBenchmarkManifestV2):
+            _validate_v2_benchmark_lock_selection(fact, nomination)
     elif kind == "acceptance_live_authority":
         assert isinstance(fact, LiveAcceptanceAuthorityV1)
         manifest = _acceptance_fact_by_digest(
@@ -1434,7 +1547,8 @@ def _validate_acceptance_references(
             kind="acceptance_benchmark_lock",
             digest=fact.manifest_digest,
         )
-        assert isinstance(manifest, LockedBenchmarkManifestV1)
+        if not isinstance(manifest, LockedBenchmarkManifestV1):
+            raise OperationsIntegrityError("historical live authority requires V1 lock")
         if (
             fact.nomination_set_digest != manifest.nomination_set_digest
             or fact.lock_attestation_digest
@@ -1486,7 +1600,8 @@ def _validate_acceptance_references(
             kind="acceptance_benchmark_lock",
             digest=fact.benchmark_manifest_digest,
         )
-        assert isinstance(manifest, LockedBenchmarkManifestV1)
+        if not isinstance(manifest, LockedBenchmarkManifestV1):
+            raise OperationsIntegrityError("budget reservation requires historical benchmark lock")
         entries = tuple(
             entry
             for entry in manifest.entries
@@ -1510,7 +1625,8 @@ def _validate_acceptance_references(
             kind="acceptance_benchmark_lock",
             digest=fact.benchmark_manifest_digest,
         )
-        assert isinstance(manifest, LockedBenchmarkManifestV1)
+        if not isinstance(manifest, LockedBenchmarkManifestV1):
+            raise OperationsIntegrityError("fixed admission requires historical benchmark lock")
         entries = tuple(
             entry
             for entry in manifest.entries
@@ -1706,9 +1822,15 @@ def _projection_from_facts(
             continue
         payload = _fact_payload(fact)
         nested = payload.get("value")
-        if not isinstance(nested, dict) or type(nested.get(target[1])) is not str:
+        digest_field = target[1]
+        if fact.kind == "acceptance_benchmark_lock" and isinstance(nested, dict):
+            digest_field = _ACCEPTANCE_DIGEST_FIELDS[fact.kind].get(
+                nested.get("schema_version"),
+                "",
+            )
+        if not isinstance(nested, dict) or type(nested.get(digest_field)) is not str:
             raise OperationsIntegrityError("operations projection fact is malformed")
-        fields[target[0]].append(str(nested[target[1]]))
+        fields[target[0]].append(str(nested[digest_field]))
     values: dict[str, object] = {
         "schema_version": "operations-state-projection-v1",
         **{name: tuple(sorted(digests)) for name, digests in fields.items()},
@@ -3100,7 +3222,7 @@ class OperationsStateStore:
     ) -> AcceptanceFactRecord:
         """Append one exact typed acceptance fact or return its exact duplicate."""
 
-        model = ACCEPTANCE_FACT_MODELS.get(kind)
+        model = _acceptance_fact_model(kind, getattr(fact, "schema_version", None))
         if (
             model is None
             or type(fact) is not model

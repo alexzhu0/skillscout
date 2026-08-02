@@ -271,6 +271,97 @@ class LockedBenchmarkManifestV1(StrictFrozenModel):
         return self
 
 
+class BenchmarkLockApprovalReceiptV2(_SelfDigestedModel):
+    """Redacted, purpose-bound evidence from the protected benchmark lock gate."""
+
+    _digest_field = "receipt_digest"
+
+    schema_version: Literal["benchmark-lock-approval-receipt-v2"]
+    purpose: Literal["benchmark_lock"]
+    environment: Literal["phase6-human-benchmark-lock"]
+    reviewer_login: Literal["alexzhu0"]
+    reviewer_id: _Positive
+    workflow_run_id: _Positive
+    workflow_run_attempt: _Positive
+    source_commit_sha: _Sha
+    workflow_sha256: Digest
+    trigger_identity: _Identifier
+    approval_record_digest: Digest
+    receipt_digest: Digest | None = None
+
+
+class LockedBenchmarkManifestV2(_SelfDigestedModel):
+    """Fresh benchmark lock bound to canonical state and protected approval evidence."""
+
+    _digest_field = "lock_digest"
+
+    schema_version: Literal["locked-benchmark-manifest-v2"]
+    purpose: Literal["benchmark_lock"]
+    state_repository_id: _Positive
+    state_repository_full_name: _FullName
+    parent_state_commit_sha: _Sha
+    parent_state_root_digest: Digest
+    source_commit_sha: _Sha
+    acceptance_workflow_sha256: Digest
+    selection_manifest_digest: Digest
+    nomination_set_digest: Digest
+    entries: Annotated[tuple[BenchmarkEntryV1, ...], Field(min_length=5, max_length=5)]
+    environment: Literal["phase6-human-benchmark-lock"]
+    approved_reviewer_login: Literal["alexzhu0"]
+    approved_reviewer_id: _Positive
+    workflow_run_id: _Positive
+    workflow_run_attempt: _Positive
+    trigger_identity: _Identifier
+    approval_record_digest: Digest
+    approval_receipt: BenchmarkLockApprovalReceiptV2
+    approval_receipt_digest: Digest
+    lock_digest: Digest | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_entries(cls, value: object) -> object:
+        if isinstance(value, dict):
+            payload = dict(value)
+            if isinstance(payload.get("entries"), list):
+                payload["entries"] = tuple(payload["entries"])
+            return payload
+        return value
+
+    @model_validator(mode="after")
+    def validate_fresh_lock(self) -> Self:
+        roles = tuple(entry.coverage_role for entry in self.entries)
+        if (
+            roles.count(BenchmarkCoverageRole.POSITIVE) != 1
+            or roles.count(BenchmarkCoverageRole.POSITIVE_MULTI_WORKFLOW) != 1
+            or roles.count(BenchmarkCoverageRole.NEGATIVE) != 2
+            or roles.count(BenchmarkCoverageRole.BORDERLINE) != 1
+        ):
+            raise ValueError("fresh benchmark lock does not have the exact role distribution")
+        entry_digests = tuple(entry.entry_digest for entry in self.entries)
+        if (
+            entry_digests != tuple(sorted(entry_digests))
+            or len(set(entry_digests)) != 5
+            or len({entry.repository_id for entry in self.entries}) != 5
+        ):
+            raise ValueError("fresh benchmark lock entries are not canonical and unique")
+        receipt = self.approval_receipt
+        if (
+            receipt.purpose != self.purpose
+            or receipt.environment != self.environment
+            or receipt.reviewer_login != self.approved_reviewer_login
+            or receipt.reviewer_id != self.approved_reviewer_id
+            or receipt.workflow_run_id != self.workflow_run_id
+            or receipt.workflow_run_attempt != self.workflow_run_attempt
+            or receipt.source_commit_sha != self.source_commit_sha
+            or receipt.workflow_sha256 != self.acceptance_workflow_sha256
+            or receipt.trigger_identity != self.trigger_identity
+            or receipt.approval_record_digest != self.approval_record_digest
+            or receipt.receipt_digest != self.approval_receipt_digest
+        ):
+            raise ValueError("fresh benchmark lock approval receipt binding mismatch")
+        return self
+
+
 class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
     """Human-approved immutable authority consumed by protected live execution."""
 

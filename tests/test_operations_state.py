@@ -492,12 +492,12 @@ def test_benchmark_lock_schema_registry_preserves_v1_history_and_restores_v2(
     historical_fact = next(
         fact
         for fact in exported.facts
-        if fact.payload_json == module._json_text(
-            historical_v1.model_dump(mode="json", exclude_none=False)
-        )
+        if fact.kind == "acceptance_benchmark_lock"
+        and module._fact_payload(fact)["value"]
+        == historical_v1.model_dump(mode="json", exclude_none=False)
     )
-    assert historical_fact.payload_json == module._json_text(
-        historical_v1.model_dump(mode="json", exclude_none=False)
+    assert module._fact_payload(historical_fact)["value"] == historical_v1.model_dump(
+        mode="json", exclude_none=False
     )
     assert historical.fact == historical_v1
     assert fresh.fact == fresh_v2
