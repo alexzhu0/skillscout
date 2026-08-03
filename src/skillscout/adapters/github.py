@@ -813,7 +813,7 @@ def _search_next_page(
         observed = parse_qsl(target.query, keep_blank_values=True, strict_parsing=True)
     except ValueError:
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
-    if observed != expected:
+    if sorted(observed) != sorted(expected):
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
     if current_page == query_set.max_pages_per_query:
         return None
