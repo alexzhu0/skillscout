@@ -218,6 +218,38 @@ def test_page_one_projects_exact_request_page_rate_and_allowlisted_items() -> No
         assert canary not in recorder_summary
 
 
+def test_search_accepts_equivalent_next_link_query_parameters_in_any_order() -> None:
+    path = _search_path(1, 1)
+    response = recorded_search_fixture("page_one")
+    headers = dict(response.headers)
+    headers["link"] = (
+        "<https://api.github.com/search/repositories?"
+        "order=desc&page=2&per_page=25&"
+        "q=%22agent+workflow%22+in%3Aname%2Cdescription%2Creadme+"
+        "is%3Apublic+archived%3Afalse&sort=updated>; rel=\"next\""
+    )
+    recorded = RecordedTransport(
+        {
+            ("GET", path): type(response)(
+                status=response.status,
+                headers=headers,
+                body=response.body,
+            )
+        }
+    )
+
+    with GitHubReadClient(
+        token=TOKEN_CANARY,
+        transport=recorded.transport(),
+        sleeper=lambda _seconds: None,
+    ) as client:
+        page, repositories = _invoke_search(client, query_ordinal=1, page=1)
+
+    assert page.next_page == 2
+    assert len(repositories) == 3
+    assert recorded.call_count("GET", path) == 1
+
+
 def _recorded_search_with_request_id(request_id: str | None) -> RecordedTransport:
     path = _search_path(1, 1)
     recorded_response = recorded_search_fixture("page_one")
