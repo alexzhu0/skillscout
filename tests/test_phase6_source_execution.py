@@ -98,13 +98,26 @@ def _append_future_live_authority_job(repository: Path) -> Path:
     module = _module()
     path = repository / Path(".github/workflows/phase6-acceptance.yml")
     source = path.read_text(encoding="utf-8")
-    benchmark_lock = next(job for job in module._parse_jobs(source) if job.name == "benchmark_lock")
+    jobs = module._parse_jobs(source)
+    benchmark_lock = next(job for job in jobs if job.name == "benchmark_lock")
+    cleanup = next(job for job in jobs if job.name == "cleanup_attestation")
     assert tuple(step.name for step in benchmark_lock.steps[:3]) == (
         "Check out the dispatched commit",
         "Materialize the pinned uv binary",
         "Verify the repository-local locked toolchain",
     )
     trusted_prefix = "\n".join(step.source for step in benchmark_lock.steps[:3])
+    live_input_start = source.index("      live_authority_json:\n")
+    live_input_end = source.index("\npermissions:\n", live_input_start)
+    source = source[:live_input_start] + source[live_input_end:]
+    human_start = source.index("  human_attestation:\n")
+    human_end = source.index("  cleanup_attestation:\n", human_start)
+    safe_human = cleanup.source.replace(
+        "  cleanup_attestation:\n",
+        "  human_attestation:\n",
+        1,
+    )
+    source = source[:human_start] + safe_human + "\n" + source[human_end:]
     future_job = f'''\
   {LIVE_AUTHORITY_JOB_NAME}:
     name: {LIVE_AUTHORITY_ENVIRONMENT}
@@ -411,9 +424,15 @@ def test_source_execution_fixture_accepts_future_protected_live_authority_route(
     """The planned V2 route is a closed state-only checkout-local command."""
 
     module = _module()
-    job = _future_live_authority_job(_copy_workflows(tmp_path))
+    repository = _copy_workflows(tmp_path)
+    job = _future_live_authority_job(repository)
 
-    module._closed_live_authority_job(job)
+    module._planned_live_authority_route_is_closed(
+        (repository / Path(".github/workflows/phase6-acceptance.yml")).read_text(
+            encoding="utf-8"
+        ),
+        (job,),
+    )
 
 
 def test_source_execution_verifier_accepts_future_protected_authority_fixture(
@@ -497,7 +516,10 @@ def test_source_execution_fixture_rejects_protected_live_authority_mutations(
     )
 
     with pytest.raises(module.SourceExecutionError):
-        module._closed_live_authority_job(job)
+        module._planned_live_authority_route_is_closed(
+            path.read_text(encoding="utf-8"),
+            (job,),
+        )
 
 
 def test_fresh_locked_toolchain_installs_project_for_phase6_control_runtime(

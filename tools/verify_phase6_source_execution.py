@@ -31,6 +31,9 @@ MANAGED_PYTHON_ROOT = "${GITHUB_WORKSPACE}/.tools/python"
 FRESH_MATERIALIZATION_RUN_SHA256 = (
     "00e1268ea5957663acc02e1c213a42d24f7fdfca47dc3ad3b76999cd229b5e30"
 )
+LIVE_AUTHORITY_JOB = "record_live_authority"
+LIVE_AUTHORITY_ENVIRONMENT = "skillscout-phase6-live-authority"
+LIVE_AUTHORITY_STATE_SECRET = "SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN"
 MANAGED_PYTHON_INSTALL = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     f"{LOCAL_UV} python install {MANAGED_PYTHON_VERSION} "
@@ -988,6 +991,132 @@ def _fresh_campaign_jobs_are_closed(jobs: tuple[_Job, ...]) -> None:
     _require(re.search(r"(?m)^\s{10}GITHUB_TOKEN:", persist_step.source) is None)
 
 
+def _closed_live_authority_job(job: _Job) -> None:
+    """Accept only the planned environment-B, state-only V2 recorder route."""
+
+    _require(job.name == LIVE_AUTHORITY_JOB)
+    _require(
+        set(_job_direct_keys(job))
+        == {
+            "name",
+            "if",
+            "environment",
+            "runs-on",
+            "timeout-minutes",
+            "permissions",
+            "env",
+            "steps",
+        }
+    )
+    _require(
+        _direct_scalar(job.source, indent=4, name="name")
+        == LIVE_AUTHORITY_ENVIRONMENT
+    )
+    _require(
+        _direct_scalar(job.source, indent=4, name="if")
+        == "${{ inputs.phase6_action == 'record-live-authority' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}"
+    )
+    _require(
+        _direct_scalar(job.source, indent=4, name="environment")
+        == LIVE_AUTHORITY_ENVIRONMENT
+    )
+    _require(_direct_scalar(job.source, indent=4, name="runs-on") == "ubuntu-24.04")
+    _require(_direct_scalar(job.source, indent=4, name="timeout-minutes") == "30")
+    _require(
+        _direct_mapping(job.source, indent=4, name="permissions")
+        == {"contents": "read", "actions": "read"}
+    )
+    _require(
+        _direct_mapping(job.source, indent=4, name="env")
+        == {
+            "UV_LINK_MODE": "copy",
+            "SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID": "${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}",
+            "SKILLSCOUT_STATE_REPOSITORY_ID": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}",
+            "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}",
+        }
+    )
+
+    expected_prefix = (
+        "Check out the dispatched commit",
+        "Materialize the pinned uv binary",
+        "Verify the repository-local locked toolchain",
+    )
+    _require(
+        tuple(step.name for step in job.steps)
+        == (*expected_prefix, "Persist one environment-approved V2 live authority")
+    )
+    _require(
+        tuple(_step_direct_keys(step) for step in job.steps[:3])
+        == (("name", "uses", "with"), ("name", "uses", "with"), ("name", "run"))
+    )
+    _require(_checkout_is_closed(job.steps[0]))
+    _require(_setup_is_closed(job.steps[1]))
+    _require(_fresh_materialization_is_exact(job.steps[2]))
+
+    persist = job.steps[-1]
+    _require(set(_step_direct_keys(persist)) == {"name", "env", "run"})
+    _require(
+        _direct_mapping(persist.source, indent=8, name="env")
+        == {
+            "GITHUB_TOKEN": "${{ github.token }}",
+            "SKILLSCOUT_STATE_GITHUB_TOKEN": f"${{{{ secrets.{LIVE_AUTHORITY_STATE_SECRET} }}}}",
+        }
+    )
+    _require(
+        persist.run is not None
+        and tuple(persist.run.splitlines())
+        == (
+            "set -euo pipefail",
+            "umask 077",
+            f'{LOCAL_LOCKED} python -m skillscout.cli record-live-authority '
+            '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        )
+    )
+    for forbidden in (
+        "live_authority_json",
+        "github.actor",
+        "deepseek",
+        "semantic",
+        "candidate",
+        "catalog",
+        "pull-request",
+        "reviewer",
+        "publication",
+        "create-github-app-token",
+        "curl",
+        "wget",
+        "http://",
+        "https://",
+    ):
+        _require(forbidden not in job.source.casefold())
+    _require(
+        all(
+            "SKILLSCOUT_STATE_GITHUB_TOKEN" not in step.source
+            for step in job.steps[:-1]
+        )
+    )
+    _require("SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in job.source)
+
+
+def _planned_live_authority_route_is_closed(source: str, jobs: tuple[_Job, ...]) -> bool:
+    """Validate the final route when it is present, without requiring its prior bytes."""
+
+    planned = tuple(job for job in jobs if job.name == LIVE_AUTHORITY_JOB)
+    if not planned:
+        return False
+    _require(len(planned) == 1)
+    _require("live_authority_json" not in source.casefold())
+    recorder_steps = tuple(
+        (job, step)
+        for job in jobs
+        for step in job.steps
+        if step.run is not None and "record-live-authority" in step.run
+    )
+    _require(len(recorder_steps) == 1 and recorder_steps[0][0] == planned[0])
+    _closed_live_authority_job(planned[0])
+    return True
+
+
 def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     root = Path(os.path.abspath(os.fspath(repository_root)))
     _require(root.is_dir())
@@ -996,6 +1125,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     network_none_invocation_count = 0
     control_user_mapping_count = 0
     diagnostic_upload_count = 0
+    planned_live_authority = False
     for relative in WORKFLOW_PATHS:
         source = _read(root, relative)
         jobs = _parse_jobs(source)
@@ -1005,6 +1135,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
             diagnostic_upload_count += _closed_offline_diagnostic_upload_count(jobs)
             control_user_mapping_count += _closed_control_user_mapping_count(jobs)
             _fresh_campaign_jobs_are_closed(jobs)
+            planned_live_authority = _planned_live_authority_route_is_closed(source, jobs)
         for job in jobs:
             checkout_indexes = tuple(
                 index for index, step in enumerate(job.steps) if CHECKOUT in step.source
@@ -1100,7 +1231,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     )
                 )
     _require(bool(findings))
-    _require(managed_python_job_count == 16)
+    _require(managed_python_job_count == 16 + int(planned_live_authority))
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     _require(control_user_mapping_count == EXPECTED_CONTROL_USER_MAPPINGS)
     _require(diagnostic_upload_count == 1)
