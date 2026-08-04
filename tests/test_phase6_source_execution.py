@@ -106,6 +106,24 @@ def _replace_live_authority_route(path: Path, old: str, new: str) -> None:
     path.write_text(source.replace(job.source, replacement, 1), encoding="utf-8")
 
 
+def _replace_phase6_job(path: Path, name: str, old: str, new: str) -> None:
+    module = _module()
+    source = path.read_text(encoding="utf-8")
+    job = next(job for job in module._parse_jobs(source) if job.name == name)
+    assert job.source.count(old) == 1
+    replacement = job.source.replace(old, new, 1)
+    assert source.count(job.source) == 1
+    path.write_text(source.replace(job.source, replacement, 1), encoding="utf-8")
+
+
+def _remove_phase6_job(path: Path, name: str) -> None:
+    module = _module()
+    source = path.read_text(encoding="utf-8")
+    job = next(job for job in module._parse_jobs(source) if job.name == name)
+    assert source.count(job.source) == 1
+    path.write_text(source.replace(job.source, "", 1), encoding="utf-8")
+
+
 def _version_guards(repository: Path) -> tuple[str, ...]:
     module = _module()
     guards: list[str] = []
@@ -386,6 +404,20 @@ def test_source_execution_verifier_accepts_protected_authority_route(
     assert any(step.job_name == LIVE_AUTHORITY_JOB_NAME for step in result.authoritative_steps)
 
 
+def test_source_execution_verifier_requires_final_live_authority_job(
+    tmp_path: Path,
+) -> None:
+    """The post-Task2 source proof has no transitional 16-job route."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    _remove_phase6_job(path, LIVE_AUTHORITY_JOB_NAME)
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
 @pytest.mark.parametrize(
     "obfuscated_subcommand",
     ("record-live''-authority", "record-live\\-authority"),
@@ -409,6 +441,66 @@ def test_source_execution_rejects_obfuscated_recorder_outside_dedicated_job(
     )
     assert source.count(needle) == 1
     path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
+    "shell_built_recorder",
+    (
+        '.venv/bin/py\\thon -m skillscout.cli record-live\\-authority '
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        "$(printf '%s' .venv/bin/py)thon -m skillscout.cli record-live''-authority "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        "eval .venv/bin/py''thon -m skillscout.cli record-live''-authority "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        "printf 'ignored\\n' | .venv/bin/py''thon -m skillscout.cli "
+        "record-live''-authority "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+    ),
+    ids=("escaped", "command-substitution", "eval", "pipe"),
+)
+def test_source_execution_rejects_shell_built_live_recorder_outside_environment_b(
+    tmp_path: Path,
+    shell_built_recorder: str,
+) -> None:
+    """A non-final state-writer job cannot add an unparsed shell recorder."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    needle = '          test -f "$PHASE6_ATTESTATION"\n'
+    replacement = f"{needle}          {shell_built_recorder}\n"
+    _replace_phase6_job(path, "human_attestation", needle, replacement)
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+def test_source_execution_rejects_human_if_comment_spoof_with_live_recorder(
+    tmp_path: Path,
+) -> None:
+    """A comment cannot stand in for the human-only action gate."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    _replace_phase6_job(
+        path,
+        "human_attestation",
+        "    if: ${{ inputs.phase6_action == 'record-human-review' }}",
+        "    if: ${{ inputs.phase6_action == format('{0}{1}', 'record-live-', 'authority') }}\n"
+        "    # if: ${{ inputs.phase6_action == 'record-human-review' }}",
+    )
+    _replace_phase6_job(
+        path,
+        "human_attestation",
+        '          test -f "$PHASE6_ATTESTATION"\n',
+        '          test -f "$PHASE6_ATTESTATION"\n'
+        "          .venv/bin/py''thon -m skillscout.cli record-live''-authority "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"\n',
+    )
 
     with pytest.raises(module.SourceExecutionError):
         module.verify_source_execution(repository)
