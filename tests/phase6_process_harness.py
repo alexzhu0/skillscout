@@ -72,6 +72,15 @@ REQUEST_HEADERS = {
 }
 
 
+def _lock_anchor() -> state_branch.StateLineageAnchor:
+    """The fixed live authority bounds this harness's synthetic remote history."""
+
+    return state_branch.StateLineageAnchor(
+        commit_sha=LOCK_HEAD,
+        root_digest=LOCK_ROOT,
+    )
+
+
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -314,7 +323,10 @@ class DurableStateRemote:
         target_calls = [item for item in calls if item["stage"] == fault["stage"]]
         if len(target_calls) != 3:
             return
-        bundle = StateBranchStore(self).restore_commit(sha)
+        bundle = StateBranchStore(self).restore_commit(
+            sha,
+            lineage_anchor=_lock_anchor(),
+        )
         with TemporaryDirectory(prefix="skillscout-process-inspect-") as temporary:
             temporary_root = Path(temporary).resolve()
             restore_acceptance_state_bundle(
@@ -732,6 +744,69 @@ def _setup(workspace: Path) -> dict[str, object]:
     with OperationsStateStore(state_root / "operations.sqlite3") as operations:
         operations.upgrade_acceptance_schema()
         operations.record_acceptance_fact(RUN_ID, "acceptance_live_authority", authority)
+        authority_locator = AcceptanceCampaignResumeLocatorV1(
+            schema_version="acceptance-campaign-resume-locator-v1",
+            acceptance_run_id=RUN_ID,
+            live_acceptance_authority_digest=authority.authority_digest,
+            source_commit_sha=authority.source_commit_sha,
+            manifest_digest=authority.manifest_digest,
+            state_repository_id=authority.state_repository_id,
+            state_repository_full_name=authority.state_repository_full_name,
+            original_state_commit_sha=LOCK_HEAD,
+            original_state_root_digest=LOCK_ROOT,
+            parent_state_commit_sha=LOCK_HEAD,
+            parent_state_root_digest=LOCK_ROOT,
+            transition_index=1,
+            previous_locator_digest=None,
+            transition_phase="authority_carrier",
+            semantic_stage=None,
+            attempt_no=None,
+            semantic_status=None,
+            workflow_authority_digest=None,
+            semantic_provider=authority.semantic_provider,
+            stage_models=authority.stage_models,
+            prompt_versions=authority.prompt_versions,
+            schema_versions=authority.schema_versions,
+            policy_versions=authority.policy_versions,
+            recorded_at=TIMESTAMP,
+        )
+        operations.record_acceptance_fact(
+            RUN_ID,
+            "acceptance_campaign_resume_locator",
+            authority_locator,
+        )
+        pipeline = SQLiteStateStore(state_root / "pipeline.sqlite3")
+        publication = PublicationStateStore(state_root / "publication.sqlite3")
+        try:
+            authority_bundle, _ = _bundle_from_exports(
+                pipeline=pipeline.export_owned_state(),
+                operations=operations.export_owned_state(),
+                publication=publication.export_owned_state(),
+                prior_root_digest=LOCK_ROOT,
+                state_parent_commit_sha=LOCK_HEAD,
+                query_set_digest=query.query_set_digest,
+                budget_policy_digest=authority.budget_policy_digest,
+                created_at=TIMESTAMP,
+            )
+        finally:
+            pipeline.close()
+            publication.close()
+    authority_synced = StateBranchStore(remote).sync(
+        authority_bundle,
+        LOCK_HEAD,
+        expected_prior_root_digest=LOCK_ROOT,
+        lineage_anchor=_lock_anchor(),
+    )
+    authority_state_bundle = StateBranchStore(remote).restore_commit(
+        authority_synced.commit_sha,
+        lineage_anchor=_lock_anchor(),
+    )
+    _materialize_checkout(
+        workspace / "authority-checkout",
+        bundle=authority_state_bundle,
+        commit_sha=authority_synced.commit_sha,
+    )
+    with OperationsStateStore(state_root / "operations.sqlite3") as operations:
         first_entry = manifest.entries[0]
         operations.record_acceptance_fact(
             RUN_ID,
@@ -768,10 +843,10 @@ def _setup(workspace: Path) -> dict[str, object]:
                 state_repository_full_name=authority.state_repository_full_name,
                 original_state_commit_sha=LOCK_HEAD,
                 original_state_root_digest=LOCK_ROOT,
-                parent_state_commit_sha=LOCK_HEAD,
-                parent_state_root_digest=LOCK_ROOT,
-                transition_index=1,
-                previous_locator_digest=None,
+                parent_state_commit_sha=authority_synced.commit_sha,
+                parent_state_root_digest=authority_synced.root_digest,
+                transition_index=2,
+                previous_locator_digest=authority_locator.locator_digest,
                 transition_phase="budget_reserved",
                 semantic_stage=None,
                 attempt_no=None,
@@ -792,8 +867,8 @@ def _setup(workspace: Path) -> dict[str, object]:
                 pipeline=pipeline.export_owned_state(),
                 operations=operations.export_owned_state(),
                 publication=publication.export_owned_state(),
-                prior_root_digest=LOCK_ROOT,
-                state_parent_commit_sha=LOCK_HEAD,
+                prior_root_digest=authority_synced.root_digest,
+                state_parent_commit_sha=authority_synced.commit_sha,
                 query_set_digest=query.query_set_digest,
                 budget_policy_digest=authority.budget_policy_digest,
                 created_at=TIMESTAMP,
@@ -801,23 +876,18 @@ def _setup(workspace: Path) -> dict[str, object]:
         finally:
             pipeline.close()
             publication.close()
-    synced = StateBranchStore(remote).sync(
+    StateBranchStore(remote).sync(
         bundle,
-        LOCK_HEAD,
-        expected_prior_root_digest=LOCK_ROOT,
-    )
-    authority_bundle = StateBranchStore(remote).restore_commit(synced.commit_sha)
-    _materialize_checkout(
-        workspace / "authority-checkout",
-        bundle=authority_bundle,
-        commit_sha=synced.commit_sha,
+        authority_synced.commit_sha,
+        expected_prior_root_digest=authority_synced.root_digest,
+        lineage_anchor=_lock_anchor(),
     )
     setup = {
         "repository": str(repository),
         "source_commit_sha": source_commit,
         "authority_digest": authority.authority_digest,
-        "authority_head": synced.commit_sha,
-        "authority_root": synced.root_digest,
+        "authority_head": authority_synced.commit_sha,
+        "authority_root": authority_synced.root_digest,
         "target_repository_id": manifest.entries[-1].repository_id,
     }
     _write_json(workspace / "setup.json", setup)
@@ -828,6 +898,8 @@ def _environment(setup: dict[str, object]) -> None:
     os.environ.update(
         {
             "PHASE6_AUTHORITY_DIGEST": str(setup["authority_digest"]),
+            "PHASE6_AUTHORITY_STATE_COMMIT_SHA": str(setup["authority_head"]),
+            "PHASE6_AUTHORITY_STATE_ROOT_DIGEST": str(setup["authority_root"]),
             "SKILLSCOUT_LLM_PROVIDER": "deepseek",
             "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
             "DEEPSEEK_API_KEY": "local-placeholder",
@@ -880,7 +952,10 @@ def _resolve_resume_proof(
 ) -> tuple[dict[str, object], Path]:
     remote = DurableStateRemote(workspace)
     head = remote.get_state_ref().sha
-    head_bundle = StateBranchStore(remote).restore_commit(head)
+    head_bundle = StateBranchStore(remote).restore_commit(
+        head,
+        lineage_anchor=_lock_anchor(),
+    )
     campaign_checkout = workspace / f"campaign-checkout-{process}"
     _materialize_checkout(
         campaign_checkout,
@@ -892,6 +967,8 @@ def _resolve_resume_proof(
         "resolve-acceptance-resume",
         "--authority-state-root",
         str(workspace / "authority-checkout"),
+        "--authority-state-commit-sha",
+        str(setup["authority_head"]),
         "--authority-state-root-digest",
         str(setup["authority_root"]),
         "--campaign-state-root",
@@ -908,6 +985,13 @@ def _resolve_resume_proof(
         STATE_REPOSITORY,
     ]
     proof = _run_cli(arguments)
+    if (
+        proof.get("lineage_commit_shas", [])[:2]
+        != [LOCK_HEAD, str(setup["authority_head"])]
+        or proof.get("lineage_root_digests", [])[:2]
+        != [LOCK_ROOT, str(setup["authority_root"])]
+    ):
+        raise AssertionError("resume proof omitted the verified authority carrier")
     proof_path = workspace / filename
     _write_json(proof_path, proof)
     return proof, proof_path
@@ -939,7 +1023,10 @@ def _locator_first_appearances(
     seen: set[str] = set()
     store = StateBranchStore(remote)
     for position, commit_sha in enumerate(commit_chain, start=1):
-        bundle = store.restore_commit(commit_sha)
+        bundle = store.restore_commit(
+            commit_sha,
+            lineage_anchor=_lock_anchor(),
+        )
         _, operations, _, _ = _parse_bundle_exports(bundle)
         present: set[str] = set()
         for fact in operations.facts:
@@ -1050,7 +1137,7 @@ def resume(
     elif benchmark_code != 1 or completed.get("error", {}).get("code") != "state_integrity_error":
         raise AssertionError(completed)
     latest = DurableStateRemote(workspace)
-    bundle = StateBranchStore(latest).restore()
+    bundle = StateBranchStore(latest).restore(lineage_anchor=_lock_anchor())
     assert bundle.bundle is not None
     state_root = repository / "state/databases"
     restore_acceptance_state_bundle(
@@ -1135,6 +1222,16 @@ def resume(
             "locator_transition_indexes": [item.transition_index for item in locators],
             "locator_first_appearance_indexes": locator_first_indexes,
             "locator_first_appearance_commit_shas": locator_first_commits,
+            "resume_lineage_commit_shas": proof["lineage_commit_shas"],
+            "resume_lineage_root_digests": proof["lineage_root_digests"],
+            "expected_resume_lineage_commit_prefix": [
+                LOCK_HEAD,
+                str(setup["authority_head"]),
+            ],
+            "expected_resume_lineage_root_prefix": [
+                LOCK_ROOT,
+                str(setup["authority_root"]),
+            ],
             "candidate_terminal_count": len(target_terminals),
             "workflow_terminal_count": sum(
                 item.repository_id == target_id for item in discovery.workflow_terminals

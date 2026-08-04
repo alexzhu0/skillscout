@@ -768,9 +768,19 @@ class FreshCampaignPreparationApplication:
     def run(self, *, created_at: str) -> FreshCampaignPreparationResult:
         """Read the current parent, nominate once, then issue exactly one state CAS."""
 
-        observed_head, prior_root = _verified_fresh_state_parent(
-            self._dependencies.state_restore()
+        restored = self._dependencies.state_restore()
+        observed_head, prior_root = _verified_fresh_state_parent(restored)
+        recovered = _recover_exact_fresh_nomination(
+            restored=restored,
+            operations_store_factory=self._dependencies.operations_store_factory,
+            query_set_digest=self._query_set.query_set_digest,
+            state_repository_id=self._state_repository_id,
+            state_repository_full_name=self._state_repository_full_name,
+            observed_head=observed_head,
+            state_root_digest=prior_root,
         )
+        if recovered is not None:
+            return recovered
         authority_digest = _fresh_nomination_authority_digest(
             state_repository_id=self._state_repository_id,
             state_repository_full_name=self._state_repository_full_name,
@@ -1208,6 +1218,83 @@ def _fresh_nomination_authority_from_current_root(
         state_commit_sha=parent_commit_sha,
         state_root_digest=prior_root_digest,
         query_set_digest=query_set_digest,
+    )
+
+
+def _recover_exact_fresh_nomination(
+    *,
+    restored: object,
+    operations_store_factory: Callable[[], object],
+    query_set_digest: str,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    observed_head: str,
+    state_root_digest: str,
+) -> FreshCampaignPreparationResult | None:
+    """Return one exact durable fresh nomination without a second Search or CAS.
+
+    A post-CAS read loss can leave the state child durable while the originating
+    process has no result to return.  The deterministic nomination identity is
+    bound to that child's declared parent, so only its one exact persisted fact
+    may be reused.  An absent identity means this is an ordinary new campaign;
+    any malformed or ambiguous identity fails closed.
+    """
+
+    root = getattr(getattr(restored, "bundle", None), "root", None)
+    if root is None:
+        raise AcceptanceApplicationError("evidence_missing")
+    if getattr(root, "prior_root_digest", object()) is None:
+        if getattr(restored, "is_genesis", None) is True:
+            return None
+        raise AcceptanceApplicationError("evidence_missing")
+    authority_digest = _fresh_nomination_authority_from_current_root(
+        restored,
+        state_repository_id=state_repository_id,
+        state_repository_full_name=state_repository_full_name,
+        query_set_digest=query_set_digest,
+    )
+    nomination_set_id = "fresh-nomination-" + authority_digest.removeprefix("sha256:")[:32]
+    store: object | None = None
+    try:
+        store = operations_store_factory()
+        snapshot = _snapshot(store, nomination_set_id)
+    finally:
+        _close(store)
+    if (
+        type(snapshot) is not AcceptanceRunSnapshot
+        or snapshot.acceptance_run_id != nomination_set_id
+        or type(snapshot.facts) is not tuple
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    if not snapshot.facts:
+        return None
+    if len(snapshot.facts) != 1 or type(snapshot.facts[0]) is not AcceptanceFactRecord:
+        raise AcceptanceApplicationError("evidence_missing")
+    record = snapshot.facts[0]
+    nomination = record.fact
+    if (
+        record.acceptance_run_id != nomination_set_id
+        or record.kind != "acceptance_nomination"
+        or type(nomination) is not NominationSetV1
+        or nomination.nomination_set_id != nomination_set_id
+        or nomination.nomination_set_digest is None
+        or record.fact_digest != nomination.nomination_set_digest
+        or nomination.query_set_digest != query_set_digest
+        or nomination.search_run_authority_digest != authority_digest
+        or getattr(root, "query_set_digest", None) != query_set_digest
+        or getattr(root, "created_at", None) != nomination.created_at
+        or len(nomination.search_derived_entries) < 5
+        or bool(nomination.user_nominated_entries)
+        or any(
+            entry.selection_source != "search_derived"
+            for entry in nomination.search_derived_entries
+        )
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    return FreshCampaignPreparationResult(
+        nomination=nomination,
+        state_commit_sha=observed_head,
+        state_root_digest=state_root_digest,
     )
 
 

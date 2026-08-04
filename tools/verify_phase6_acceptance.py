@@ -26,12 +26,14 @@ _MAX_REPOSITORY_FILE_BYTES = 2_000_000
 _PHASE = Path(".planning/phases/06-adversarial-mvp-acceptance")
 _PHASE_PLAN_COUNT = 18
 _PHASE_TASK_COUNT = 47
-_PHASE_REGISTRY_SURFACE_COUNT = 87
+_PHASE_REGISTRY_SURFACE_COUNT = 85
 _PHASE_REGISTRY_UNIQUE_SURFACE_COUNT = 85
 _VERSIONED_FACT_REGISTRY_SURFACES = frozenset(
     {
-        "acceptance_benchmark_lock",
-        "acceptance_live_authority",
+        "acceptance_benchmark_lock/v1",
+        "acceptance_benchmark_lock/v2",
+        "acceptance_live_authority/v1",
+        "acceptance_live_authority/v2",
     }
 )
 _WORKFLOWS = (
@@ -298,6 +300,8 @@ def _verify_plan_validation_contract(root: Path) -> tuple[int, int]:
                 "parse_rows",
                 "parse_inverse",
                 "parse_registry",
+                "verify_checkpoint_topology",
+                "verify_dependency_topology",
                 "verify",
             }
             <= helper_functions
@@ -481,16 +485,8 @@ def _verify_plan_validation_contract(root: Path) -> tuple[int, int]:
         if (
             len(registry_surfaces) != _PHASE_REGISTRY_SURFACE_COUNT
             or len(registry_counts) != _PHASE_REGISTRY_UNIQUE_SURFACE_COUNT
-            or {
-                surface
-                for surface, count in registry_counts.items()
-                if count != 1
-            }
-            != _VERSIONED_FACT_REGISTRY_SURFACES
-            or any(
-                registry_counts[surface] != 2
-                for surface in _VERSIONED_FACT_REGISTRY_SURFACES
-            )
+            or any(count != 1 for count in registry_counts.values())
+            or not _VERSIONED_FACT_REGISTRY_SURFACES <= set(registry_surfaces)
             or "SemanticStage" not in registry_surfaces
             or "verify_phase6_source_execution.py" not in registry_surfaces
         ):

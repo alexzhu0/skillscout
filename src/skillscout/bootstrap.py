@@ -43,6 +43,21 @@ _DISCOVERY_DATABASE_LOCATORS = (
 )
 _DISCOVERY_DIGEST_BYTES = 65_536
 ACCEPTANCE_CATALOG_FULL_NAME = "alexzhu0/skillscout-catalog-test"
+# Phase-one hosted discovery is intentionally single-tenant: the checked
+# baseline below is meaningful only in this state repository.  The workflow's
+# token is scoped here as well, so accepting an arbitrary CLI target would
+# only create an unreviewed state-authority mode.
+_HOSTED_STATE_REPOSITORY_ID = 1_310_897_029
+_HOSTED_STATE_REPOSITORY_FULL_NAME = "alexzhu0/skillscout"
+_PHASE6_STATE_LINEAGE_ANCHOR_COMMIT_SHA = "37f8dcbf74c85f2471670373fd03f71d9f155bae"
+_PHASE6_STATE_LINEAGE_ANCHOR_ROOT_DIGEST = (
+    "sha256:b4167cffc31969854260d4acd58b804f4823a4d25d078ef3b5dc88445b75c2e5"
+)
+_ACCEPTANCE_STATE_LINEAGE_MAX_HOPS = 160
+# The same code-reviewed baseline anchors ordinary discovery and Search-only
+# nomination.  Those graphs can create hundreds of checkpoints in one run, so
+# their bounded horizon is deliberately wider than Phase 6 recovery's 160.
+_DISCOVERY_STATE_LINEAGE_MAX_HOPS = 4_096
 
 
 def _discovery_timestamp() -> str:
@@ -73,6 +88,9 @@ class DiscoveryRuntimeConfig:
     initial_state_root_digest: str
     phase2_profile_version: str = "phase2-v1"
     phase3_profile_version: str = "phase3-profile-v1"
+    state_lineage_anchor_commit_sha: str = _PHASE6_STATE_LINEAGE_ANCHOR_COMMIT_SHA
+    state_lineage_anchor_root_digest: str = _PHASE6_STATE_LINEAGE_ANCHOR_ROOT_DIGEST
+    state_lineage_anchor_max_hops: int = _DISCOVERY_STATE_LINEAGE_MAX_HOPS
 
     def __post_init__(self) -> None:
         from skillscout.domain.discovery import DiscoveryQuerySetV1
@@ -115,6 +133,10 @@ class DiscoveryRuntimeConfig:
             or self.phase2_profile_version != "phase2-v1"
             or self.phase3_profile_version != "phase3-profile-v1"
             or not _is_digest(self.initial_state_root_digest)
+            or not _is_commit_sha(self.state_lineage_anchor_commit_sha)
+            or not _is_digest(self.state_lineage_anchor_root_digest)
+            or type(self.state_lineage_anchor_max_hops) is not int
+            or not 1 <= self.state_lineage_anchor_max_hops <= _DISCOVERY_STATE_LINEAGE_MAX_HOPS
         ):
             raise ValueError("discovery runtime configuration rejected")
 
@@ -137,6 +159,8 @@ class AcceptanceRuntimeConfig:
     resume_transition_index: int = 0
     resume_lineage_commit_shas: tuple[str, ...] = ()
     resume_lineage_root_digests: tuple[str, ...] = ()
+    state_lineage_anchor_commit_sha: str | None = None
+    state_lineage_anchor_root_digest: str | None = None
 
     def __post_init__(self) -> None:
         from skillscout.domain.acceptance import LockedBenchmarkManifestV1
@@ -166,6 +190,19 @@ class AcceptanceRuntimeConfig:
                     or self.resume_transition_index < 0
                     or self.resume_transition_index > 160
                     or (self.resume_transition_index == 0) != (self.resume_locator_digest is None)
+                    or self.state_lineage_anchor_commit_sha is None
+                    or self.state_lineage_anchor_root_digest is None
+                    or not _is_commit_sha(self.state_lineage_anchor_commit_sha)
+                    or not _is_digest(self.state_lineage_anchor_root_digest)
+                    or len(self.resume_lineage_commit_shas) < 2
+                    or (
+                        self.state_lineage_anchor_commit_sha,
+                        self.state_lineage_anchor_root_digest,
+                    )
+                    != (
+                        self.resume_lineage_commit_shas[1],
+                        self.resume_lineage_root_digests[1],
+                    )
                 )
             )
             or (
@@ -175,6 +212,8 @@ class AcceptanceRuntimeConfig:
                     or self.resume_transition_index != 0
                     or self.resume_lineage_commit_shas
                     or self.resume_lineage_root_digests
+                    or self.state_lineage_anchor_commit_sha is not None
+                    or self.state_lineage_anchor_root_digest is not None
                 )
             )
             or self.semantic_provider not in {"openai", "deepseek"}
@@ -586,6 +625,9 @@ class NominationRuntimeConfig:
     query_set_digest: str
     operations_state: Path
     initial_state_root_digest: str
+    state_lineage_anchor_commit_sha: str = _PHASE6_STATE_LINEAGE_ANCHOR_COMMIT_SHA
+    state_lineage_anchor_root_digest: str = _PHASE6_STATE_LINEAGE_ANCHOR_ROOT_DIGEST
+    state_lineage_anchor_max_hops: int = _DISCOVERY_STATE_LINEAGE_MAX_HOPS
 
     def __post_init__(self) -> None:
         from skillscout.domain.discovery import DiscoveryQuerySetV1
@@ -600,6 +642,10 @@ class NominationRuntimeConfig:
             or self.query_set_digest != self.query_set.query_set_digest
             or os.fspath(self.operations_state) != _DISCOVERY_DATABASE_LOCATORS[1]
             or not _is_digest(self.initial_state_root_digest)
+            or not _is_commit_sha(self.state_lineage_anchor_commit_sha)
+            or not _is_digest(self.state_lineage_anchor_root_digest)
+            or type(self.state_lineage_anchor_max_hops) is not int
+            or not 1 <= self.state_lineage_anchor_max_hops <= _DISCOVERY_STATE_LINEAGE_MAX_HOPS
         ):
             raise ValueError("nomination runtime configuration rejected")
 
@@ -614,6 +660,9 @@ class FreshCampaignPreparationRuntimeConfig:
     query_set: object
     query_set_digest: str
     operations_state: Path
+    state_lineage_anchor_commit_sha: str
+    state_lineage_anchor_root_digest: str
+    state_lineage_anchor_max_hops: int = _DISCOVERY_STATE_LINEAGE_MAX_HOPS
 
     def __post_init__(self) -> None:
         from skillscout.domain.discovery import DiscoveryQuerySetV1
@@ -627,6 +676,10 @@ class FreshCampaignPreparationRuntimeConfig:
             or type(self.query_set) is not DiscoveryQuerySetV1
             or self.query_set_digest != self.query_set.query_set_digest
             or os.fspath(self.operations_state) != _DISCOVERY_DATABASE_LOCATORS[1]
+            or not _is_commit_sha(self.state_lineage_anchor_commit_sha)
+            or not _is_digest(self.state_lineage_anchor_root_digest)
+            or type(self.state_lineage_anchor_max_hops) is not int
+            or not 1 <= self.state_lineage_anchor_max_hops <= _DISCOVERY_STATE_LINEAGE_MAX_HOPS
         ):
             raise ValueError("fresh campaign preparation configuration rejected")
 
@@ -674,6 +727,20 @@ def _is_commit_sha(value: object) -> bool:
         and len(value) == 40
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def require_hosted_state_repository(
+    *,
+    state_repository_id: str,
+    state_repository_full_name: str,
+) -> None:
+    """Close normal discovery to the sole code-reviewed state authority."""
+
+    if (
+        state_repository_id != str(_HOSTED_STATE_REPOSITORY_ID)
+        or state_repository_full_name != _HOSTED_STATE_REPOSITORY_FULL_NAME
+    ):
+        raise ValueError("hosted state repository rejected")
 
 
 def _fresh_campaign_trigger_identity(value: object) -> bool:
@@ -790,6 +857,12 @@ def load_fresh_campaign_preparation_runtime_config(
             query_set=query_set,
             query_set_digest=query_set.query_set_digest,
             operations_state=operations_state,
+            state_lineage_anchor_commit_sha=(
+                _PHASE6_STATE_LINEAGE_ANCHOR_COMMIT_SHA
+            ),
+            state_lineage_anchor_root_digest=(
+                _PHASE6_STATE_LINEAGE_ANCHOR_ROOT_DIGEST
+            ),
         )
     except Exception:
         raise ValueError("fresh campaign preparation configuration rejected") from None
@@ -930,6 +1003,7 @@ def load_acceptance_runtime_config(
             or manifest_path.name != _ACCEPTANCE_MANIFEST_NAME
             or not _is_commit_sha(state_commit_sha)
             or not _is_digest(state_root_digest)
+            or (acceptance_run_id is None) != (resume_proof_path is None)
         ):
             raise ValueError
         payload = _read_stable_private_file(
@@ -954,9 +1028,9 @@ def load_acceptance_runtime_config(
         resume_transition_index = 0
         resume_commits: tuple[str, ...] = ()
         resume_roots: tuple[str, ...] = ()
+        state_lineage_anchor_commit_sha: str | None = None
+        state_lineage_anchor_root_digest: str | None = None
         if resume_proof_path is not None:
-            if acceptance_run_id is None:
-                raise ValueError
             proof_bytes = _read_stable_private_file(
                 resume_proof_path,
                 max_bytes=65_536,
@@ -992,6 +1066,28 @@ def load_acceptance_runtime_config(
             resume_transition_index = proof["transition_index"]
             resume_commits = tuple(proof["lineage_commit_shas"])
             resume_roots = tuple(proof["lineage_root_digests"])
+            try:
+                state_lineage_anchor_commit_sha = source[
+                    "PHASE6_AUTHORITY_STATE_COMMIT_SHA"
+                ]
+                state_lineage_anchor_root_digest = source[
+                    "PHASE6_AUTHORITY_STATE_ROOT_DIGEST"
+                ]
+            except Exception:
+                raise ValueError from None
+            if (
+                not resume_commits
+                or len(resume_commits) != len(resume_roots)
+                or any(not _is_commit_sha(item) for item in resume_commits)
+                or any(not _is_digest(item) for item in resume_roots)
+                or len(resume_commits) < 2
+                or (
+                    state_lineage_anchor_commit_sha,
+                    state_lineage_anchor_root_digest,
+                )
+                != (resume_commits[1], resume_roots[1])
+            ):
+                raise ValueError
         return AcceptanceRuntimeConfig(
             manifest_path=manifest_path,
             manifest=manifest,
@@ -1007,6 +1103,8 @@ def load_acceptance_runtime_config(
             resume_transition_index=resume_transition_index,
             resume_lineage_commit_shas=resume_commits,
             resume_lineage_root_digests=resume_roots,
+            state_lineage_anchor_commit_sha=state_lineage_anchor_commit_sha,
+            state_lineage_anchor_root_digest=state_lineage_anchor_root_digest,
         )
     except Exception:
         raise ValueError("acceptance runtime configuration rejected") from None
@@ -1253,6 +1351,30 @@ def _is_digest(value: object) -> bool:
     return all(character in "0123456789abcdef" for character in value[7:])
 
 
+def _configured_state_lineage_anchor(config: object) -> object | None:
+    """Build one externally verified state anchor from closed runtime config."""
+
+    commit_sha = getattr(config, "state_lineage_anchor_commit_sha", None)
+    root_digest = getattr(config, "state_lineage_anchor_root_digest", None)
+    max_hops = getattr(config, "state_lineage_anchor_max_hops", 160)
+    if commit_sha is None and root_digest is None:
+        return None
+    if (
+        not _is_commit_sha(commit_sha)
+        or not _is_digest(root_digest)
+        or type(max_hops) is not int
+        or not 1 <= max_hops <= _DISCOVERY_STATE_LINEAGE_MAX_HOPS
+    ):
+        raise ValueError("state lineage anchor rejected")
+    from skillscout.adapters.state_branch import StateLineageAnchor
+
+    return StateLineageAnchor(
+        commit_sha=commit_sha,
+        root_digest=root_digest,
+        max_hops=max_hops,
+    )
+
+
 def _closed_identity(value: object) -> bool:
     return (
         type(value) is str
@@ -1438,6 +1560,21 @@ class _LateStateDurabilityBarrier:
         self._frozen_publication_export = frozen_publication_export
         self._acceptance_resume: dict[str, object] | None = None
         self._pending_resume_locator: object | None = None
+        self._state_branch_read_cache: object | None = None
+
+    def _state_lineage_anchor(self) -> object | None:
+        """Return the independently verified bounded state anchor, when present."""
+
+        return _configured_state_lineage_anchor(self._config)
+
+    def state_branch_read_cache(self) -> object:
+        """Return the run-scoped immutable Git-object cache for this writer."""
+
+        if self._state_branch_read_cache is None:
+            from skillscout.adapters.state_branch import StateBranchReadCache
+
+            self._state_branch_read_cache = StateBranchReadCache()
+        return self._state_branch_read_cache
 
     def configure_acceptance_resume(
         self,
@@ -1665,6 +1802,67 @@ class _LateStateDurabilityBarrier:
         ):
             raise ValueError("authority carrier recovery proof rejected")
 
+    def _verify_nomination_recovery(
+        self,
+        *,
+        operations_store: object,
+        observed_head: str,
+        prior_root_digest: str,
+        created_at: str,
+    ) -> None:
+        """Prove the exact Search-only fact that the local CAS child carries."""
+
+        from skillscout.adapters.operations_state import (
+            AcceptanceFactRecord,
+            AcceptanceRunSnapshot,
+        )
+        from skillscout.application.acceptance import _fresh_nomination_authority_digest
+        from skillscout.domain.acceptance import NominationSetV1
+
+        authority_digest = _fresh_nomination_authority_digest(
+            state_repository_id=self._config.state_repository_id,
+            state_repository_full_name=self._config.state_repository_full_name,
+            state_commit_sha=observed_head,
+            state_root_digest=prior_root_digest,
+            query_set_digest=self._config.query_set_digest,
+        )
+        nomination_set_id = "fresh-nomination-" + authority_digest.removeprefix("sha256:")[:32]
+        snapshot_reader = getattr(operations_store, "acceptance_snapshot", None)
+        if not callable(snapshot_reader):
+            raise ValueError("nomination recovery proof rejected")
+        try:
+            snapshot = snapshot_reader(nomination_set_id)
+        except Exception:
+            raise ValueError("nomination recovery proof rejected") from None
+        if (
+            type(snapshot) is not AcceptanceRunSnapshot
+            or snapshot.acceptance_run_id != nomination_set_id
+            or type(snapshot.facts) is not tuple
+            or len(snapshot.facts) != 1
+            or type(snapshot.facts[0]) is not AcceptanceFactRecord
+        ):
+            raise ValueError("nomination recovery proof rejected")
+        record = snapshot.facts[0]
+        nomination = record.fact
+        if (
+            record.acceptance_run_id != nomination_set_id
+            or record.kind != "acceptance_nomination"
+            or type(nomination) is not NominationSetV1
+            or nomination.nomination_set_id != nomination_set_id
+            or nomination.nomination_set_digest is None
+            or record.fact_digest != nomination.nomination_set_digest
+            or nomination.query_set_digest != self._config.query_set_digest
+            or nomination.search_run_authority_digest != authority_digest
+            or nomination.created_at != created_at
+            or len(nomination.search_derived_entries) < 5
+            or bool(nomination.user_nominated_entries)
+            or any(
+                entry.selection_source != "search_derived"
+                for entry in nomination.search_derived_entries
+            )
+        ):
+            raise ValueError("nomination recovery proof rejected")
+
     def prepare_acceptance_transition(
         self,
         *,
@@ -1749,9 +1947,13 @@ class _LateStateDurabilityBarrier:
         )
         try:
             barrier = StateBranchDurabilityBarrier(
-                state_store=StateBranchStore(client),
+                state_store=StateBranchStore(
+                    client,
+                    read_cache=self.state_branch_read_cache(),
+                ),
                 query_set_digest=self._config.query_set_digest,
                 budget_policy_digest=(DiscoveryBudgetPolicyV1().budget_policy_digest or ""),
+                lineage_anchor=self._state_lineage_anchor(),
             )
             synchronized = barrier.confirm(**arguments)
             self._advance_acceptance_transition(synchronized)
@@ -1829,23 +2031,55 @@ class _LateStateDurabilityBarrier:
                 budget_policy_digest=(DiscoveryBudgetPolicyV1().budget_policy_digest or ""),
                 created_at=created_at,
             )
-            store = StateBranchStore(client)
+            store = StateBranchStore(
+                client,
+                read_cache=self.state_branch_read_cache(),
+            )
+            lineage_anchor = self._state_lineage_anchor()
             try:
-                synchronized = store.sync(bundle, observed_head)
+                if lineage_anchor is None:
+                    synchronized = store.sync(bundle, observed_head)
+                else:
+                    synchronized = store.sync(
+                        bundle,
+                        observed_head,
+                        lineage_anchor=lineage_anchor,
+                    )
             except StateBranchPostCasUncertain as uncertainty:
-                if transition_phase != "authority_carrier":
+                if transition_phase not in {"authority_carrier", "nomination"}:
                     raise
-                self._verify_authority_carrier_recovery(
-                    operations_store=operations_store,
-                    observed_head=observed_head,
-                    prior_root_digest=prior_root_digest,
-                )
-                synchronized = store.reconcile_post_cas_uncertainty(
-                    uncertainty,
-                    bundle,
-                    observed_head,
-                    expected_prior_root_digest=prior_root_digest,
-                )
+                if transition_phase == "authority_carrier":
+                    self._verify_authority_carrier_recovery(
+                        operations_store=operations_store,
+                        observed_head=observed_head,
+                        prior_root_digest=prior_root_digest,
+                    )
+                else:
+                    self._verify_nomination_recovery(
+                        operations_store=operations_store,
+                        observed_head=observed_head,
+                        prior_root_digest=prior_root_digest,
+                        created_at=created_at,
+                    )
+                # Nomination is the sole other recoverable transition: it is a
+                # Search-only state fact with no semantic, publication, or
+                # protected-lock effect.  The store still proves the complete
+                # immutable child bundle before returning it.
+                if lineage_anchor is None:
+                    synchronized = store.reconcile_post_cas_uncertainty(
+                        uncertainty,
+                        bundle,
+                        observed_head,
+                        expected_prior_root_digest=prior_root_digest,
+                    )
+                else:
+                    synchronized = store.reconcile_post_cas_uncertainty(
+                        uncertainty,
+                        bundle,
+                        observed_head,
+                        expected_prior_root_digest=prior_root_digest,
+                        lineage_anchor=lineage_anchor,
+                    )
             if (
                 type(synchronized) is not StateSyncObservation
                 or synchronized.status != "verified"
@@ -1938,6 +2172,11 @@ def build_discovery_application(
     if type(config) is not DiscoveryRuntimeConfig:
         raise ValueError("discovery runtime configuration rejected")
     source = os.environ if environ is None else environ
+    durability_barrier = _LateStateDurabilityBarrier(
+        config,
+        source,
+        frozen_publication_export=frozen_owner_export,
+    )
 
     def search_factory() -> object:
         from skillscout.adapters.github import GitHubReadClient
@@ -1958,7 +2197,16 @@ def build_discovery_application(
             repository_full_name=config.state_repository_full_name,
         )
         try:
-            observation = StateBranchStore(client).restore()
+            store = StateBranchStore(
+                client,
+                read_cache=durability_barrier.state_branch_read_cache(),
+            )
+            lineage_anchor = _configured_state_lineage_anchor(config)
+            observation = (
+                store.restore()
+                if lineage_anchor is None
+                else store.restore(lineage_anchor=lineage_anchor)
+            )
             bundle = getattr(observation, "bundle", None)
             if bundle is not None:
                 if getattr(bundle, "root", None) is None:
@@ -3002,11 +3250,7 @@ def build_discovery_application(
             search_factory=search_factory,
             operations_store_factory=operations_store_factory,
             state_restore=state_restore,
-            durability_barrier=_LateStateDurabilityBarrier(
-                config,
-                source,
-                frozen_publication_export=frozen_owner_export,
-            ),
+            durability_barrier=durability_barrier,
             phase2_factory=phase2_factory,
             phase3_factory=phase3_factory,
             query_set=config.query_set,  # type: ignore[arg-type]
@@ -4218,6 +4462,9 @@ def _acceptance_discovery_config(
         generator_model_id=config.generator_model_id,
         reviewer_model_id=config.reviewer_model_id,
         initial_state_root_digest=config.state_root_digest,
+        state_lineage_anchor_commit_sha=config.state_lineage_anchor_commit_sha,
+        state_lineage_anchor_root_digest=config.state_lineage_anchor_root_digest,
+        state_lineage_anchor_max_hops=160,
     )
 
 
@@ -4359,6 +4606,7 @@ def build_nomination_application(
     source = os.environ if environ is None else environ
     pipeline_path = Path(_DISCOVERY_DATABASE_LOCATORS[0])
     publication_path = Path(_DISCOVERY_DATABASE_LOCATORS[2])
+    durability_barrier = _LateStateDurabilityBarrier(config, source)
 
     def search_factory() -> object:
         from skillscout.adapters.github import GitHubReadClient
@@ -4382,7 +4630,13 @@ def build_nomination_application(
             repository_full_name=config.state_repository_full_name,
         )
         try:
-            observation = StateBranchStore(client).restore()
+            store = StateBranchStore(
+                client,
+                read_cache=durability_barrier.state_branch_read_cache(),
+            )
+            observation = store.restore(
+                lineage_anchor=_configured_state_lineage_anchor(config)
+            )
             bundle = getattr(observation, "bundle", None)
             if bundle is None or getattr(bundle, "root", None) is None:
                 raise ValueError("nomination initial state rejected")
@@ -4411,7 +4665,7 @@ def build_nomination_application(
             search_factory=search_factory,
             operations_store_factory=operations_store_factory,
             state_restore=state_restore,
-            durability_barrier=_LateStateDurabilityBarrier(config, source),
+            durability_barrier=durability_barrier,
         ),
         query_set=config.query_set,  # type: ignore[arg-type]
         initial_state_root_digest=config.initial_state_root_digest,
@@ -4429,7 +4683,11 @@ def _restore_verified_fresh_campaign_state(
 
     from skillscout.adapters.github import GitHubReadClient
     from skillscout.adapters.operations_state import restore_three_store_bundle
-    from skillscout.adapters.state_branch import StateBranchClient, StateBranchStore
+    from skillscout.adapters.state_branch import (
+        StateBranchClient,
+        StateBranchStore,
+        StateLineageAnchor,
+    )
 
     token = _required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN")
     owner, repository = config.state_repository_full_name.split("/", 1)
@@ -4445,9 +4703,18 @@ def _restore_verified_fresh_campaign_state(
         repository_full_name=config.state_repository_full_name,
     )
     try:
-        observation = StateBranchStore(client).restore()
+        store = StateBranchStore(client)
+        observation = store.restore(
+            lineage_anchor=StateLineageAnchor(
+                commit_sha=config.state_lineage_anchor_commit_sha,
+                root_digest=config.state_lineage_anchor_root_digest,
+                max_hops=config.state_lineage_anchor_max_hops,
+            )
+        )
         bundle = getattr(observation, "bundle", None)
         if bundle is None or getattr(bundle, "root", None) is None:
+            raise ValueError("fresh campaign state rejected")
+        if getattr(observation, "observed_head", None) is None:
             raise ValueError("fresh campaign state rejected")
         restore_three_store_bundle(
             bundle,
@@ -4880,11 +5147,16 @@ def read_exact_discovery_state(
         != _DISCOVERY_DATABASE_LOCATORS
     ):
         raise ValueError("protected discovery state configuration rejected")
+    require_hosted_state_repository(
+        state_repository_id=str(state_repository_id),
+        state_repository_full_name=state_repository_full_name,
+    )
     source = os.environ if environ is None else environ
     from skillscout.adapters.operations_state import restore_three_store_bundle
     from skillscout.adapters.state_branch import (
         StateBranchClient,
         StateBranchStore,
+        StateLineageAnchor,
     )
 
     client = StateBranchClient(
@@ -4893,7 +5165,15 @@ def read_exact_discovery_state(
         repository_full_name=state_repository_full_name,
     )
     try:
-        observation = StateBranchStore(_PinnedStateRemote(client, state_commit_sha)).restore()
+        observation = StateBranchStore(
+            _PinnedStateRemote(client, state_commit_sha)
+        ).restore(
+            lineage_anchor=StateLineageAnchor(
+                commit_sha=_PHASE6_STATE_LINEAGE_ANCHOR_COMMIT_SHA,
+                root_digest=_PHASE6_STATE_LINEAGE_ANCHOR_ROOT_DIGEST,
+                max_hops=_DISCOVERY_STATE_LINEAGE_MAX_HOPS,
+            )
+        )
         if (
             observation.status != "verified"
             or observation.observed_head != state_commit_sha
@@ -4918,6 +5198,8 @@ def read_exact_acceptance_state(
     state_repository_full_name: str,
     pipeline_state: Path,
     operations_state: Path,
+    state_lineage_anchor_commit_sha: str,
+    state_lineage_anchor_root_digest: str,
     environ: Mapping[str, str] | None = None,
 ) -> object:
     """Read exact state while keeping publication as immutable verified bytes."""
@@ -4929,6 +5211,8 @@ def read_exact_acceptance_state(
         or not _github_full_name(state_repository_full_name)
         or tuple(os.fspath(path) for path in (pipeline_state, operations_state))
         != _DISCOVERY_DATABASE_LOCATORS[:2]
+        or not _is_commit_sha(state_lineage_anchor_commit_sha)
+        or not _is_digest(state_lineage_anchor_root_digest)
     ):
         raise ValueError("protected acceptance state configuration rejected")
     source = os.environ if environ is None else environ
@@ -4938,6 +5222,7 @@ def read_exact_acceptance_state(
     from skillscout.adapters.state_branch import (
         StateBranchClient,
         StateBranchStore,
+        StateLineageAnchor,
     )
 
     client = StateBranchClient(
@@ -4946,7 +5231,14 @@ def read_exact_acceptance_state(
         repository_full_name=state_repository_full_name,
     )
     try:
-        observation = StateBranchStore(_PinnedStateRemote(client, state_commit_sha)).restore()
+        store = StateBranchStore(_PinnedStateRemote(client, state_commit_sha))
+        observation = store.restore(
+            lineage_anchor=StateLineageAnchor(
+                commit_sha=state_lineage_anchor_commit_sha,
+                root_digest=state_lineage_anchor_root_digest,
+                max_hops=_ACCEPTANCE_STATE_LINEAGE_MAX_HOPS,
+            )
+        )
         if (
             observation.status != "verified"
             or observation.observed_head != state_commit_sha

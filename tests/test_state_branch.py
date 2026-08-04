@@ -683,14 +683,28 @@ class _StateRemote:
         self.writes: list[str] = []
         self.force_values: list[bool] = []
         self.counter = 10
+        self.initial_root_digest: str | None = None
         if head is not None:
+            seed = _bundle(module, parent="0" * 40)
+            self.initial_root_digest = seed.root.root_digest
+            contents = seed.content_by_path()
+            for content in contents.values():
+                self.blobs[self.module._git_blob_id(content)] = content
             tree_sha = self._sha()
-            self.trees[tree_sha] = ()
+            self.trees[tree_sha] = tuple(
+                self.module.StateTreeEntry(
+                    path=path,
+                    sha=self.module._git_blob_id(content),
+                    mode="100644",
+                    size=len(content),
+                )
+                for path, content in sorted(contents.items())
+            )
             self.commits[head] = self.module.StateCommitObservation(
                 sha=head,
                 tree_sha=tree_sha,
                 parents=(),
-                message="existing parent",
+                message=self.module._state_commit_message(seed.root.root_digest),
             )
 
     def _sha(self) -> str:
@@ -762,11 +776,292 @@ class _StateRemote:
         return self.blobs[sha]
 
 
+def _initial_root(remote: _StateRemote) -> str:
+    """Return the canonical root carried by a synthetic state-branch genesis."""
+
+    assert remote.initial_root_digest is not None
+    return remote.initial_root_digest
+
+
+def _inject_state_bundle(
+    remote: _StateRemote,
+    bundle: object,
+    *,
+    parents: tuple[str, ...],
+) -> str:
+    """Install an adversarial immutable state commit without using the store."""
+
+    files = bundle.content_by_path()
+    entries = [
+        {
+            "path": path,
+            "mode": "100644",
+            "type": "blob",
+            "sha": remote.create_blob(content),
+        }
+        for path, content in sorted(files.items())
+    ]
+    tree_sha = remote.create_tree(entries)
+    return remote.create_commit(
+        remote.module._state_commit_message(bundle.root.root_digest),
+        tree_sha,
+        parents,
+    )
+
+
+def test_sync_rejects_a_noncanonical_immediate_state_parent() -> None:
+    """A foreign Git parent is not an empty state lineage."""
+
+    module = _state_module()
+    observed_head = "4" * 40
+    remote = _StateRemote(module, observed_head)
+    parent = remote.commits[observed_head]
+    remote.commits[observed_head] = module.StateCommitObservation(
+        sha=parent.sha,
+        tree_sha=parent.tree_sha,
+        parents=parent.parents,
+        message="foreign parent",
+    )
+
+    with pytest.raises(module.StateBranchConflict):
+        module.StateBranchStore(remote).sync(
+            _bundle(module, parent=observed_head),
+            observed_head=observed_head,
+        )
+
+    assert remote.writes == []
+
+
+def test_restore_rejects_a_valid_child_above_a_broken_ancestor_link() -> None:
+    """One valid child may not hide a malformed prior state transition."""
+
+    module = _state_module()
+    anchor = "4" * 40
+    remote = _StateRemote(module, anchor)
+    malformed_parent = _bundle(module, parent=anchor, prior_root_digest=None)
+    parent_commit = _inject_state_bundle(
+        remote,
+        malformed_parent,
+        parents=(anchor,),
+    )
+    valid_child = _bundle(
+        module,
+        parent=parent_commit,
+        prior_root_digest=malformed_parent.root.root_digest,
+    )
+    child_commit = _inject_state_bundle(
+        remote,
+        valid_child,
+        parents=(parent_commit,),
+    )
+    remote.update_state_ref(child_commit, force=False)
+
+    with pytest.raises(module.StateIntegrityFailure):
+        module.StateBranchStore(remote).restore()
+
+
+def test_sync_refuses_to_extend_a_broken_older_state_ancestor() -> None:
+    """CAS must not make a valid child durable above a malformed history edge."""
+
+    module = _state_module()
+    anchor = "4" * 40
+    remote = _StateRemote(module, anchor)
+    malformed_parent = _bundle(module, parent=anchor, prior_root_digest=None)
+    parent_commit = _inject_state_bundle(
+        remote,
+        malformed_parent,
+        parents=(anchor,),
+    )
+    remote.update_state_ref(parent_commit, force=False)
+    remote.writes.clear()
+    child = _bundle(
+        module,
+        parent=parent_commit,
+        prior_root_digest=malformed_parent.root.root_digest,
+    )
+
+    with pytest.raises(module.StateBranchConflict):
+        module.StateBranchStore(remote).sync(child, observed_head=parent_commit)
+
+    assert remote.head == parent_commit
+    assert remote.writes == []
+
+
+@pytest.mark.parametrize(
+    ("state_parent_commit_sha", "prior_root_digest"),
+    (
+        ("4" * 40, None),
+        ("0" * 40, "sha256:" + ("a" * 64)),
+    ),
+    ids=("wrong-genesis-parent", "unexpected-prior-root"),
+)
+def test_restore_rejects_a_parentless_commit_that_is_not_canonical_genesis(
+    state_parent_commit_sha: str,
+    prior_root_digest: str | None,
+) -> None:
+    """Only the explicit zero-parent root may terminate a state lineage."""
+
+    module = _state_module()
+    remote = _StateRemote(module, None)
+    malformed = _bundle(
+        module,
+        parent=state_parent_commit_sha,
+        prior_root_digest=prior_root_digest,
+    )
+    commit_sha = _inject_state_bundle(remote, malformed, parents=())
+    remote.create_state_ref(commit_sha)
+
+    with pytest.raises(module.StateIntegrityFailure):
+        module.StateBranchStore(remote).restore()
+
+
+@pytest.mark.parametrize(
+    ("state_parent_commit_sha", "prior_root_digest"),
+    (
+        ("4" * 40, None),
+        ("0" * 40, "sha256:" + ("a" * 64)),
+    ),
+    ids=("wrong-genesis-parent", "unexpected-prior-root"),
+)
+def test_sync_rejects_a_noncanonical_genesis_bundle(
+    state_parent_commit_sha: str,
+    prior_root_digest: str | None,
+) -> None:
+    """The store must not create an invalid initial state ref itself."""
+
+    module = _state_module()
+    remote = _StateRemote(module, None)
+
+    with pytest.raises(module.StateIntegrityFailure):
+        module.StateBranchStore(remote).sync(
+            _bundle(
+                module,
+                parent=state_parent_commit_sha,
+                prior_root_digest=prior_root_digest,
+            ),
+            observed_head=None,
+        )
+
+    assert remote.writes == []
+
+
+def test_restore_keeps_complete_state_history_reachable_beyond_256_links() -> None:
+    """No hidden depth cap may turn the no-pruning state history into an outage."""
+
+    module = _state_module()
+    remote = _StateRemote(module, None)
+    current_bundle = _bundle(module, parent="0" * 40)
+    current_commit = _inject_state_bundle(remote, current_bundle, parents=())
+    remote.create_state_ref(current_commit)
+    for ordinal in range(257):
+        current_bundle = _bundle(
+            module,
+            parent=current_commit,
+            prior_root_digest=current_bundle.root.root_digest,
+            pipeline_bytes=(
+                b"SQLite format 3\x00state-history-" + str(ordinal).encode("ascii")
+            ),
+        )
+        current_commit = _inject_state_bundle(
+            remote,
+            current_bundle,
+            parents=(current_commit,),
+        )
+        remote.update_state_ref(current_commit, force=False)
+
+    restored = module.StateBranchStore(remote).restore()
+
+    assert restored.observed_head == current_commit
+    assert restored.bundle is not None
+    assert restored.bundle.root == current_bundle.root
+
+
+def test_external_anchor_binds_and_bounds_a_state_restore() -> None:
+    """A protected exact anchor may bound a descendant proof, never a bare root."""
+
+    module = _state_module()
+    genesis = "4" * 40
+    remote = _StateRemote(module, genesis)
+    store = module.StateBranchStore(remote)
+    anchor_bundle = _bundle(
+        module,
+        parent=genesis,
+        prior_root_digest=_initial_root(remote),
+    )
+    anchor_sync = store.sync(anchor_bundle, observed_head=genesis)
+    child_bundle = _bundle(
+        module,
+        parent=anchor_sync.commit_sha,
+        prior_root_digest=anchor_bundle.root.root_digest,
+    )
+    child_sync = store.sync(child_bundle, observed_head=anchor_sync.commit_sha)
+    grandchild_bundle = _bundle(
+        module,
+        parent=child_sync.commit_sha,
+        prior_root_digest=child_bundle.root.root_digest,
+    )
+    grandchild_sync = store.sync(
+        grandchild_bundle,
+        observed_head=child_sync.commit_sha,
+    )
+
+    original_genesis = remote.commits[genesis]
+    remote.commits[genesis] = module.StateCommitObservation(
+        sha=original_genesis.sha,
+        tree_sha=original_genesis.tree_sha,
+        parents=original_genesis.parents,
+        message="foreign historical state",
+    )
+    anchor = module.StateLineageAnchor(
+        commit_sha=anchor_sync.commit_sha,
+        root_digest=anchor_bundle.root.root_digest,
+        max_hops=3,
+    )
+
+    successor_bundle = _bundle(
+        module,
+        parent=grandchild_sync.commit_sha,
+        prior_root_digest=grandchild_bundle.root.root_digest,
+    )
+    successor_sync = module.StateBranchStore(remote).sync(
+        successor_bundle,
+        observed_head=grandchild_sync.commit_sha,
+        lineage_anchor=anchor,
+    )
+
+    with pytest.raises(module.StateIntegrityFailure):
+        module.StateBranchStore(remote).restore_commit(successor_sync.commit_sha)
+    restored = module.StateBranchStore(remote).restore_commit(
+        successor_sync.commit_sha,
+        lineage_anchor=anchor,
+    )
+    assert restored.root == successor_bundle.root
+    with pytest.raises(module.StateIntegrityFailure):
+        module.StateBranchStore(remote).restore_commit(
+            successor_sync.commit_sha,
+            lineage_anchor=module.StateLineageAnchor(
+                commit_sha=anchor_sync.commit_sha,
+                root_digest=anchor_bundle.root.root_digest,
+                max_hops=2,
+            ),
+        )
+
+    replacement_bundle = _bundle(module, parent="0" * 40)
+    replacement = _inject_state_bundle(remote, replacement_bundle, parents=())
+    remote.update_state_ref(replacement, force=False)
+    with pytest.raises(module.StateIntegrityFailure):
+        module.StateBranchStore(remote).restore(lineage_anchor=anchor)
+
+
 def test_restore_commit_verifies_exact_immutable_commit_not_current_ref() -> None:
     module = _state_module()
     remote = _StateRemote(module, "4" * 40)
     store = module.StateBranchStore(remote)
-    first_bundle = _bundle(module, parent="4" * 40)
+    first_bundle = _bundle(
+        module,
+        parent="4" * 40,
+        prior_root_digest=_initial_root(remote),
+    )
     first = store.sync(first_bundle, observed_head="4" * 40)
     second_bundle = _bundle(
         module,
@@ -781,6 +1076,82 @@ def test_restore_commit_verifies_exact_immutable_commit_not_current_ref() -> Non
     assert restored.root.root_digest == first_bundle.root.root_digest
     assert restored.root.state_parent_commit_sha == "4" * 40
     assert remote.head != first.commit_sha
+
+
+@pytest.mark.parametrize(
+    "prior_root_digest",
+    (None, "sha256:" + ("f" * 64)),
+    ids=("missing", "wrong"),
+)
+def test_sync_rejects_child_whose_prior_root_does_not_bind_the_state_parent(
+    prior_root_digest: str | None,
+) -> None:
+    """A non-genesis child cannot sever or forge the immutable root chain."""
+
+    module = _state_module()
+    remote = _StateRemote(module, "4" * 40)
+    store = module.StateBranchStore(remote)
+    parent_bundle = _bundle(
+        module,
+        parent="4" * 40,
+        prior_root_digest=_initial_root(remote),
+    )
+    parent = store.sync(parent_bundle, observed_head="4" * 40)
+    malformed_child = _bundle(
+        module,
+        parent=parent.commit_sha,
+        prior_root_digest=prior_root_digest,
+    )
+
+    with pytest.raises(module.StateBranchConflict):
+        store.sync(malformed_child, observed_head=parent.commit_sha)
+
+    assert remote.head == parent.commit_sha
+
+
+@pytest.mark.parametrize(
+    "prior_root_digest",
+    (None, "sha256:" + ("f" * 64)),
+    ids=("missing", "wrong"),
+)
+def test_restore_rejects_injected_child_whose_prior_root_does_not_bind_parent(
+    prior_root_digest: str | None,
+) -> None:
+    """A direct remote ref mutation cannot bypass the state-root lineage check."""
+
+    module = _state_module()
+    remote = _StateRemote(module, "4" * 40)
+    store = module.StateBranchStore(remote)
+    parent_bundle = _bundle(
+        module,
+        parent="4" * 40,
+        prior_root_digest=_initial_root(remote),
+    )
+    parent = store.sync(parent_bundle, observed_head="4" * 40)
+    malformed_child = _bundle(
+        module,
+        parent=parent.commit_sha,
+        prior_root_digest=prior_root_digest,
+    )
+    entries = [
+        {
+            "path": path,
+            "mode": "100644",
+            "type": "blob",
+            "sha": remote.create_blob(content),
+        }
+        for path, content in sorted(malformed_child.content_by_path().items())
+    ]
+    tree_sha = remote.create_tree(entries)
+    child_sha = remote.create_commit(
+        module._state_commit_message(malformed_child.root.root_digest),
+        tree_sha,
+        (parent.commit_sha,),
+    )
+    remote.update_state_ref(child_sha, force=False)
+
+    with pytest.raises(module.StateIntegrityFailure):
+        store.restore()
 
 
 def test_inspect_commit_root_reads_only_bounded_lineage_metadata() -> None:
@@ -803,6 +1174,7 @@ def test_inspect_commit_root_reads_only_bounded_lineage_metadata() -> None:
         module,
         parent="4" * 40,
         object_count=12,
+        prior_root_digest=_initial_root(remote),
     )
     synchronized = store.sync(bundle, observed_head="4" * 40)
     remote.blob_gets.clear()
@@ -827,7 +1199,7 @@ def test_inspect_commit_root_reads_only_bounded_lineage_metadata() -> None:
     "mutation",
     (None, "missing", "extra", "wrong_sha", "duplicate", "wrong_mode"),
 )
-def test_sync_verifies_complete_path_to_blob_sha_without_body_gets(
+def test_sync_reads_only_the_parent_root_metadata_not_owned_payload_bodies(
     mutation: str | None,
 ) -> None:
     module = _state_module()
@@ -836,6 +1208,13 @@ def test_sync_verifies_complete_path_to_blob_sha_without_body_gets(
         def __init__(self) -> None:
             super().__init__(module, "4" * 40)
             self.body_gets = 0
+            parent = self.commits["4" * 40]
+            self.parent_root_blob = next(
+                entry.sha
+                for entry in self.trees[parent.tree_sha]
+                if entry.path == "state/root.json"
+            )
+            self.root_gets = 0
 
         def update_state_ref(self, sha: str, *, force: bool) -> object:
             response = super().update_state_ref(sha, force=force)
@@ -881,15 +1260,22 @@ def test_sync_verifies_complete_path_to_blob_sha_without_body_gets(
             return response
 
         def get_blob(self, sha: str) -> bytes:
-            del sha
+            if sha == self.parent_root_blob:
+                self.root_gets += 1
+                return super().get_blob(sha)
             self.body_gets += 1
             raise AssertionError(
-                "sync verification must use the exact tree, not blob bodies"
+                "sync may read only parent-root metadata, never owned payload bodies"
             )
 
     remote = ExactTreeRemote()
     store = module.StateBranchStore(remote)
-    bundle = _bundle(module, parent="4" * 40, object_count=2)
+    bundle = _bundle(
+        module,
+        parent="4" * 40,
+        object_count=2,
+        prior_root_digest=_initial_root(remote),
+    )
 
     if mutation is None:
         synchronized = store.sync(bundle, observed_head="4" * 40)
@@ -897,6 +1283,7 @@ def test_sync_verifies_complete_path_to_blob_sha_without_body_gets(
     else:
         with pytest.raises(module.StateBranchConflict):
             store.sync(bundle, observed_head="4" * 40)
+    assert remote.root_gets == 1
     assert remote.body_gets == 0
 
 
@@ -950,7 +1337,11 @@ def test_one_hundred_discovery_syncs_have_constant_metadata_request_cost() -> No
 
     remote = CountingRemote()
     store = module.StateBranchStore(remote)
-    bundle = _bundle(module, parent="4" * 40)
+    bundle = _bundle(
+        module,
+        parent="4" * 40,
+        prior_root_digest=_initial_root(remote),
+    )
     synchronized = store.sync(bundle, observed_head="4" * 40)
     remote.calls.clear()
 
@@ -970,12 +1361,101 @@ def test_one_hundred_discovery_syncs_have_constant_metadata_request_cost() -> No
         "get_state_ref": 200,
         "get_commit": 200,
         "get_tree": 200,
+        "get_blob": 100,
         "create_blob": 200,
         "create_tree": 100,
         "create_commit": 100,
         "update_state_ref": 100,
     }
-    assert sum(remote.calls.values()) == 1_100
+    assert sum(remote.calls.values()) == 1_200
+
+
+def test_run_scoped_read_cache_survives_ephemeral_state_stores() -> None:
+    """Production's per-checkpoint clients must not re-walk old state history."""
+
+    module = _state_module()
+
+    class CountingRemote(_StateRemote):
+        def __init__(self) -> None:
+            super().__init__(module, "4" * 40)
+            self.calls: dict[str, int] = {}
+
+        def count(self, name: str) -> None:
+            self.calls[name] = self.calls.get(name, 0) + 1
+
+        def get_state_ref(self) -> object:
+            self.count("get_state_ref")
+            return super().get_state_ref()
+
+        def get_commit(self, sha: str) -> object:
+            self.count("get_commit")
+            return super().get_commit(sha)
+
+        def get_tree(self, sha: str) -> tuple[object, ...]:
+            self.count("get_tree")
+            return super().get_tree(sha)
+
+        def get_blob(self, sha: str) -> bytes:
+            self.count("get_blob")
+            return super().get_blob(sha)
+
+        def create_blob(self, content: bytes) -> str:
+            self.count("create_blob")
+            return super().create_blob(content)
+
+        def create_tree(self, entries: list[dict[str, object]]) -> str:
+            self.count("create_tree")
+            return super().create_tree(entries)
+
+        def create_commit(
+            self,
+            message: str,
+            tree: str,
+            parents: tuple[str, ...],
+        ) -> str:
+            self.count("create_commit")
+            return super().create_commit(message, tree, parents)
+
+        def update_state_ref(self, sha: str, *, force: bool) -> object:
+            self.count("update_state_ref")
+            return super().update_state_ref(sha, force=force)
+
+    remote = CountingRemote()
+    cache = module.StateBranchReadCache()
+    bundle = _bundle(
+        module,
+        parent="4" * 40,
+        prior_root_digest=_initial_root(remote),
+    )
+    synchronized = module.StateBranchStore(remote, read_cache=cache).sync(
+        bundle,
+        observed_head="4" * 40,
+    )
+    remote.calls.clear()
+
+    for object_count in range(1, 101):
+        bundle = _bundle(
+            module,
+            parent=synchronized.commit_sha,
+            object_count=object_count,
+            prior_root_digest=bundle.root.root_digest,
+        )
+        synchronized = module.StateBranchStore(remote, read_cache=cache).sync(
+            bundle,
+            observed_head=synchronized.commit_sha,
+        )
+
+    assert remote.calls == {
+        "get_state_ref": 200,
+        "get_commit": 200,
+        "get_tree": 200,
+        "get_blob": 100,
+        "create_blob": 200,
+        "create_tree": 100,
+        "create_commit": 100,
+        "update_state_ref": 100,
+    }
+    assert sum(remote.calls.values()) == 1_200
 
 
 def test_sync_reuses_unchanged_parent_blobs_below_content_creation_limit() -> None:
@@ -1001,6 +1481,7 @@ def test_sync_reuses_unchanged_parent_blobs_below_content_creation_limit() -> No
         module,
         parent="4" * 40,
         object_count=109,
+        prior_root_digest=_initial_root(remote),
     )
     parent = module.StateBranchStore(remote).sync(
         parent_bundle,
@@ -1044,7 +1525,11 @@ def test_sync_rejects_invalid_parent_tree_before_blob_reuse() -> None:
 
     with pytest.raises(module.StateBranchConflict):
         module.StateBranchStore(remote).sync(
-            _bundle(module, parent=observed_head),
+            _bundle(
+                module,
+                parent=observed_head,
+                prior_root_digest=_initial_root(remote),
+            ),
             observed_head=observed_head,
         )
 
@@ -1057,11 +1542,14 @@ def test_sync_bootstrap_and_fast_forward_reread_exact_state(
 ) -> None:
     module = _state_module()
     observed_head = None if bootstrap else "4" * 40
-    root_parent = observed_head or "0" * 40
     remote = _StateRemote(module, observed_head)
 
     result = module.StateBranchStore(remote).sync(
-        _bundle(module, parent=root_parent),
+        _bundle(
+            module,
+            parent=observed_head or "0" * 40,
+            prior_root_digest=(None if observed_head is None else _initial_root(remote)),
+        ),
         observed_head=observed_head,
     )
 
@@ -1072,6 +1560,21 @@ def test_sync_bootstrap_and_fast_forward_reread_exact_state(
     )
     assert remote.force_values == ([] if bootstrap else [False])
     assert remote.writes[-1] == ("create_ref" if bootstrap else "update_ref")
+
+
+def test_restore_records_whether_the_current_state_is_genesis() -> None:
+    module = _state_module()
+    remote = _StateRemote(module, None)
+    store = module.StateBranchStore(remote)
+    synchronized = store.sync(
+        _bundle(module, parent="0" * 40),
+        observed_head=None,
+    )
+
+    restored = store.restore()
+
+    assert restored.observed_head == synchronized.commit_sha
+    assert restored.is_genesis is True
 
 
 def test_post_cas_uncertainty_reconciles_only_the_exact_successor() -> None:
@@ -1097,7 +1600,12 @@ def test_post_cas_uncertainty_reconciles_only_the_exact_successor() -> None:
             return super().get_state_ref()
 
     remote = LostFirstPostCasReadRemote()
-    bundle = _bundle(module, parent=observed_head, object_count=1)
+    bundle = _bundle(
+        module,
+        parent=observed_head,
+        object_count=1,
+        prior_root_digest=_initial_root(remote),
+    )
     store = module.StateBranchStore(remote)
 
     with pytest.raises(module.StateBranchPostCasUncertain) as raised:
@@ -1142,7 +1650,12 @@ def test_post_cas_reconciliation_rejects_every_nonexact_successor(
             return super().get_state_ref()
 
     remote = LostFirstPostCasReadRemote()
-    bundle = _bundle(module, parent=observed_head, object_count=1)
+    bundle = _bundle(
+        module,
+        parent=observed_head,
+        object_count=1,
+        prior_root_digest=_initial_root(remote),
+    )
     store = module.StateBranchStore(remote)
 
     with pytest.raises(module.StateBranchPostCasUncertain) as raised:
@@ -1160,7 +1673,12 @@ def test_post_cas_reconciliation_rejects_every_nonexact_successor(
             message=commit.message,
         )
     else:
-        alternate = _bundle(module, parent=observed_head, object_count=2)
+        alternate = _bundle(
+            module,
+            parent=observed_head,
+            object_count=2,
+            prior_root_digest=_initial_root(remote),
+        )
         alternate_files = alternate.content_by_path()
         for content in alternate_files.values():
             remote.blobs[module._git_blob_id(content)] = content
@@ -1210,9 +1728,14 @@ def test_post_cas_reconciliation_does_not_wrap_unexpected_programming_errors() -
                 raise RuntimeError("synthetic unexpected post-CAS error")
             return super().get_state_ref()
 
+    remote = UnexpectedPostCasReadRemote()
     with pytest.raises(RuntimeError, match="synthetic unexpected"):
-        module.StateBranchStore(UnexpectedPostCasReadRemote()).sync(
-            _bundle(module, parent=observed_head),
+        module.StateBranchStore(remote).sync(
+            _bundle(
+                module,
+                parent=observed_head,
+                prior_root_digest=_initial_root(remote),
+            ),
             observed_head,
         )
 
@@ -1225,6 +1748,7 @@ def test_sync_secret_canary_fails_before_first_blob_creation() -> None:
         module,
         parent=observed_head,
         pipeline_bytes=b"SQLite format 3\x00github_pat_STATE_BRANCH_CANARY",
+        prior_root_digest=_initial_root(remote),
     )
 
     with pytest.raises(module.StateIntegrityFailure):

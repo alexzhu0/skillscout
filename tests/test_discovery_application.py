@@ -345,6 +345,38 @@ def _runtime_config(module, tmp_path: Path):
     )
 
 
+def test_normal_discovery_config_uses_code_reviewed_bounded_anchor(
+    tmp_path: Path,
+) -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+
+    config = _runtime_config(bootstrap, tmp_path)
+
+    assert config.state_lineage_anchor_commit_sha == (
+        bootstrap._PHASE6_STATE_LINEAGE_ANCHOR_COMMIT_SHA
+    )
+    assert config.state_lineage_anchor_root_digest == (
+        bootstrap._PHASE6_STATE_LINEAGE_ANCHOR_ROOT_DIGEST
+    )
+    assert config.state_lineage_anchor_max_hops == 4096
+
+
+@pytest.mark.parametrize("command", ("_run_discover", "_run_nominate_benchmark"))
+def test_normal_cli_rejects_an_unreviewed_state_repository(
+    command: str,
+) -> None:
+    import skillscout.cli as cli
+
+    arguments = SimpleNamespace(
+        state_repository_id="910001",
+        state_repository_full_name="skillscout/state",
+        initial_state_root_digest="sha256:" + ("1" * 64),
+    )
+
+    with pytest.raises(ValueError, match=r"^hosted state repository rejected$"):
+        getattr(cli, command)(arguments)
+
+
 def test_bootstrap_rejects_invalid_config_before_credentials_or_state(
     tmp_path: Path,
 ) -> None:
@@ -411,10 +443,11 @@ def test_bootstrap_keeps_source_and_state_credentials_lazy(
             events.append("state:close")
 
     class StateStore:
-        def __init__(self, remote: object) -> None:
+        def __init__(self, remote: object, *, read_cache: object) -> None:
             self.remote = remote
 
-        def restore(self) -> object:
+        def restore(self, *, lineage_anchor: object) -> object:
+            assert getattr(lineage_anchor, "max_hops", None) == 4096
             events.append("state:restore")
             return object()
 
@@ -513,10 +546,11 @@ def test_real_bootstrap_and_operations_store_complete_empty_discovery(
             pass
 
     class StateStore:
-        def __init__(self, _remote: object) -> None:
+        def __init__(self, _remote: object, *, read_cache: object) -> None:
             pass
 
-        def restore(self):
+        def restore(self, *, lineage_anchor: object):
+            assert getattr(lineage_anchor, "max_hops", None) == 4096
             return SimpleNamespace(
                 status="verified",
                 observed_head="b" * 40,
@@ -602,13 +636,14 @@ def test_late_discovery_barrier_accepts_strict_sync_receipt_without_second_resto
             pass
 
     class StateStore:
-        def __init__(self, _remote: object) -> None:
+        def __init__(self, _remote: object, *, read_cache: object) -> None:
             self.bundle = None
 
-        def sync(self, bundle, observed_head: str):
+        def sync(self, bundle, observed_head: str, *, lineage_anchor: object):
             nonlocal sync_calls
             sync_calls += 1
             assert observed_head == "a" * 40
+            assert getattr(lineage_anchor, "max_hops", None) == 4096
             self.bundle = bundle
             receipt = state_branch.StateSyncObservation(
                 status="absent" if mutation == "status" else "verified",
@@ -663,6 +698,150 @@ def test_late_discovery_barrier_accepts_strict_sync_receipt_without_second_resto
 
     assert sync_calls == 1
     assert restore_calls == 0
+
+
+def test_discovery_restore_and_sync_share_one_compact_lineage_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Composition must share metadata, never a fresh history walk per write."""
+
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
+    state_branch = importlib.import_module("skillscout.adapters.state_branch")
+    monkeypatch.chdir(tmp_path)
+    config = _runtime_config(bootstrap, tmp_path)
+    caches: list[object] = []
+
+    class StateClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class StateStore:
+        def __init__(self, _remote: object, *, read_cache: object) -> None:
+            caches.append(read_cache)
+
+        def restore(self, *, lineage_anchor: object) -> object:
+            assert getattr(lineage_anchor, "max_hops", None) == 4096
+            return SimpleNamespace(
+                status="verified",
+                observed_head="a" * 40,
+                bundle=SimpleNamespace(
+                    root=SimpleNamespace(
+                        root_digest=config.initial_state_root_digest
+                    )
+                ),
+            )
+
+        def sync(
+            self,
+            bundle: object,
+            observed_head: str,
+            *,
+            lineage_anchor: object,
+        ) -> object:
+            assert getattr(lineage_anchor, "max_hops", None) == 4096
+            return state_branch.StateSyncObservation(
+                "verified",
+                observed_head,
+                "b" * 40,
+                "c" * 40,
+                bundle.root.root_digest,
+            )
+
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchClient", StateClient
+    )
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchStore", StateStore
+    )
+    application = bootstrap.build_discovery_application(
+        config,
+        environ={"SKILLSCOUT_STATE_GITHUB_TOKEN": "state-token"},
+        operations_store_factory=lambda: object(),
+        phase2_factory=lambda **_kwargs: object(),
+        phase3_factory=lambda **_kwargs: object(),
+    )
+    application._dependencies.state_restore()
+    operations = operations_module.OperationsStateStore(config.operations_state)
+    try:
+        application._dependencies.durability_barrier.sync_discovery(
+            operations_store=operations,
+            observed_head="a" * 40,
+            prior_root_digest=config.initial_state_root_digest,
+            created_at="2026-08-03T12:00:00.000000Z",
+            transition_phase="discovery_summary",
+        )
+    finally:
+        operations.close()
+
+    assert len(caches) == 2
+    assert caches[0] is caches[1]
+    assert isinstance(caches[0], state_branch.StateBranchReadCache)
+    assert not hasattr(caches[0], "blob_cache")
+
+
+def test_protected_discovery_read_uses_the_hosted_baseline_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Draft-publication readback cannot fall back to an unbounded genesis walk."""
+
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    operations_state = importlib.import_module("skillscout.adapters.operations_state")
+    state_branch = importlib.import_module("skillscout.adapters.state_branch")
+    anchors: list[object] = []
+
+    class StateClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class StateStore:
+        def __init__(self, _remote: object) -> None:
+            pass
+
+        def restore(self, *, lineage_anchor: object) -> object:
+            anchors.append(lineage_anchor)
+            return SimpleNamespace(
+                status="verified",
+                observed_head="a" * 40,
+                bundle=object(),
+            )
+
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchClient", StateClient
+    )
+    monkeypatch.setattr(
+        "skillscout.adapters.state_branch.StateBranchStore", StateStore
+    )
+    monkeypatch.setattr(
+        operations_state,
+        "restore_three_store_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+
+    restored = bootstrap.read_exact_discovery_state(
+        state_commit_sha="a" * 40,
+        state_repository_id=bootstrap._HOSTED_STATE_REPOSITORY_ID,
+        state_repository_full_name=bootstrap._HOSTED_STATE_REPOSITORY_FULL_NAME,
+        pipeline_state=Path("state/databases/pipeline.sqlite3"),
+        operations_state=Path("state/databases/operations.sqlite3"),
+        publication_state=Path("state/databases/publication.sqlite3"),
+        environ={"SKILLSCOUT_STATE_GITHUB_TOKEN": "state-token"},
+    )
+
+    assert restored.observed_head == "a" * 40
+    assert len(anchors) == 1
+    assert anchors[0] == state_branch.StateLineageAnchor(
+        commit_sha=bootstrap._PHASE6_STATE_LINEAGE_ANCHOR_COMMIT_SHA,
+        root_digest=bootstrap._PHASE6_STATE_LINEAGE_ANCHOR_ROOT_DIGEST,
+        max_hops=4096,
+    )
 
 
 def test_real_operations_resume_advances_from_persisted_search_cursor(
@@ -1492,6 +1671,7 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
             "extractor_model_id": config.extractor_model_id,
         }
     )
+    genesis_head = "c" * 40
     reserved_head = "d" * 40
     started_head = "e" * 40
     reserved_root = "sha256:" + ("3" * 64)
@@ -1582,6 +1762,35 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
     phase2_state = state_module.SQLiteStateStore(config.pipeline_state)
     publication = publication_module.PublicationStateStore(config.publication_state)
     try:
+        # The simulated remote must carry a complete canonical ancestry.  The
+        # first crash deliberately uses synthetic durability receipts, but the
+        # persisted state used by the real recovery probe must still be able to
+        # prove its way back to an actual zero-parent genesis commit.
+        genesis_bundle = operations_module.assemble_three_store_bundle(
+            pipeline_store=phase2_state,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=None,
+            state_parent_commit_sha="0" * 40,
+            query_set_digest=config.query_set_digest,
+            budget_policy_digest=(
+                discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest or ""
+            ),
+            created_at=timestamp,
+        )
+        reserved_bundle = operations_module.assemble_three_store_bundle(
+            pipeline_store=phase2_state,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=genesis_bundle.root.root_digest,
+            state_parent_commit_sha=genesis_head,
+            query_set_digest=config.query_set_digest,
+            budget_policy_digest=(
+                discovery_domain.DiscoveryBudgetPolicyV1().budget_policy_digest or ""
+            ),
+            created_at=timestamp,
+        )
+        reserved_root = reserved_bundle.root.root_digest
         parent_bundle = operations_module.assemble_three_store_bundle(
             pipeline_store=phase2_state,
             operations_store=operations,
@@ -1606,10 +1815,31 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
             self.force_values: list[bool] = []
             self.blobs = {
                 state_branch_module._git_blob_id(item.content): item.content
-                for item in parent_bundle.files
+                for bundle in (genesis_bundle, reserved_bundle, parent_bundle)
+                for item in bundle.files
             }
-            parent_tree_sha = "1" * 40
+            genesis_tree_sha = "1" * 40
+            reserved_tree_sha = "2" * 40
+            parent_tree_sha = "3" * 40
             self.trees = {
+                genesis_tree_sha: tuple(
+                    state_branch_module.StateTreeEntry(
+                        path=item.path,
+                        sha=state_branch_module._git_blob_id(item.content),
+                        mode="100644",
+                        size=len(item.content),
+                    )
+                    for item in genesis_bundle.files
+                ),
+                reserved_tree_sha: tuple(
+                    state_branch_module.StateTreeEntry(
+                        path=item.path,
+                        sha=state_branch_module._git_blob_id(item.content),
+                        mode="100644",
+                        size=len(item.content),
+                    )
+                    for item in reserved_bundle.files
+                ),
                 parent_tree_sha: tuple(
                     state_branch_module.StateTreeEntry(
                         path=item.path,
@@ -1621,6 +1851,22 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
                 )
             }
             self.commits = {
+                genesis_head: state_branch_module.StateCommitObservation(
+                    sha=genesis_head,
+                    tree_sha=genesis_tree_sha,
+                    parents=(),
+                    message=state_branch_module._state_commit_message(
+                        genesis_bundle.root.root_digest
+                    ),
+                ),
+                reserved_head: state_branch_module.StateCommitObservation(
+                    sha=reserved_head,
+                    tree_sha=reserved_tree_sha,
+                    parents=(genesis_head,),
+                    message=state_branch_module._state_commit_message(
+                        reserved_bundle.root.root_digest
+                    ),
+                ),
                 started_head: state_branch_module.StateCommitObservation(
                     sha=started_head,
                     tree_sha=parent_tree_sha,
@@ -1919,7 +2165,10 @@ def test_restart_quarantines_orphan_started_extractor_without_provider_replay(
         for segment in write_segments
     )
     maximum_metadata_reads = (2 * expected_sync_count) + 2
-    maximum_blob_reads = 2 * remote.operations.count("create_blob")
+    # The initial verified restore reads the root manifest for each link in
+    # this three-commit fixture ancestry; subsequent state transitions reuse
+    # those immutable metadata blobs from the store cache.
+    maximum_blob_reads = (2 * remote.operations.count("create_blob")) + 3
     assert remote.operations.count("get_state_ref") <= maximum_metadata_reads
     assert remote.operations.count("get_commit") <= maximum_metadata_reads
     assert remote.operations.count("get_tree") <= maximum_metadata_reads

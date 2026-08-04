@@ -337,6 +337,247 @@ def test_nomination_application_persists_fact_before_exact_state_cas(
     assert recorded == [("nomination-cas", "acceptance_nomination", nomination)]
 
 
+@pytest.mark.parametrize(
+    "root_mutation",
+    (None, "query_set", "created_at"),
+    ids=("exact", "wrong-query-set", "wrong-created-at"),
+)
+def test_fresh_campaign_preparation_reuses_only_exact_durable_nomination_without_search_or_sync(
+    root_mutation: str | None,
+) -> None:
+    """A post-CAS child must bind its fact to the exact root metadata."""
+
+    from skillscout.adapters.operations_state import (
+        AcceptanceFactRecord,
+        AcceptanceRunSnapshot,
+    )
+
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    parent_commit = "a" * 40
+    parent_root = "sha256:" + ("b" * 64)
+    child_commit = "c" * 40
+    child_root = "sha256:" + ("d" * 64)
+    authority = module._fresh_nomination_authority_digest(
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        state_commit_sha=parent_commit,
+        state_root_digest=parent_root,
+        query_set_digest=query_set.query_set_digest,
+    )
+    nomination_set_id = "fresh-nomination-" + authority.removeprefix("sha256:")[:32]
+    entries = tuple(
+        NominationEntryV1(
+            schema_version="nomination-entry-v1",
+            repository_full_name=f"octo-org/recovered-{index}",
+            repository_id=940000 + index,
+            exact_commit_sha=f"{index:040x}",
+            license_spdx="MIT",
+            selection_source="search_derived",
+            selection_evidence_digests=(sha256_digest({"recovered": index}),),
+        )
+        for index in range(1, 6)
+    )
+    nomination = NominationSetV1(
+        schema_version="nomination-set-v1",
+        nomination_set_id=nomination_set_id,
+        query_set_digest=query_set.query_set_digest,
+        search_run_authority_digest=authority,
+        search_derived_entries=tuple(sorted(entries, key=lambda entry: entry.entry_digest or "")),
+        user_nominated_entries=(),
+        created_at=TIMESTAMP,
+    )
+    root_query_set_digest = (
+        query_set.query_set_digest if root_mutation != "query_set" else "sha256:" + ("e" * 64)
+    )
+    root_created_at = TIMESTAMP if root_mutation != "created_at" else "2026-07-31T00:00:00.000000Z"
+    snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id=nomination_set_id,
+        facts=(
+            AcceptanceFactRecord(
+                acceptance_run_id=nomination_set_id,
+                kind="acceptance_nomination",
+                fact_digest=nomination.nomination_set_digest or "",
+                fact=nomination,
+            ),
+        ),
+    )
+    calls: list[str] = []
+
+    class Store:
+        def acceptance_snapshot(self, acceptance_run_id: str) -> AcceptanceRunSnapshot:
+            calls.append(acceptance_run_id)
+            assert acceptance_run_id == nomination_set_id
+            return snapshot
+
+        def close(self) -> None:
+            calls.append("close")
+
+    dependencies = module.FreshCampaignPreparationDependencies(
+        search_factory=lambda: pytest.fail("recovered nomination must not re-run Search"),
+        operations_store_factory=Store,
+        state_restore=lambda: SimpleNamespace(
+            status="verified",
+            observed_head=child_commit,
+            bundle=SimpleNamespace(
+                root=SimpleNamespace(
+                    root_digest=child_root,
+                    state_parent_commit_sha=parent_commit,
+                    prior_root_digest=parent_root,
+                    query_set_digest=root_query_set_digest,
+                    created_at=root_created_at,
+                )
+            ),
+        ),
+        durability_barrier=SimpleNamespace(
+            sync_nomination=lambda **_arguments: pytest.fail(
+                "recovered nomination must not write state"
+            )
+        ),
+    )
+
+    application = module.FreshCampaignPreparationApplication(
+        dependencies,
+        query_set=query_set,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+    )
+    if root_mutation is None:
+        result = application.run(created_at=TIMESTAMP)
+        assert result == module.FreshCampaignPreparationResult(
+            nomination=nomination,
+            state_commit_sha=child_commit,
+            state_root_digest=child_root,
+        )
+    else:
+        with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+            application.run(created_at=TIMESTAMP)
+    assert calls == [nomination_set_id, "close"]
+
+
+def test_fresh_nomination_recovery_ignores_genesis_state_without_prior_root() -> None:
+    """A valid genesis root has no predecessor nomination to recover."""
+
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+
+    result = module._recover_exact_fresh_nomination(
+        restored=SimpleNamespace(
+            is_genesis=True,
+            bundle=SimpleNamespace(
+                root=SimpleNamespace(
+                    prior_root_digest=None,
+                    state_parent_commit_sha="0" * 40,
+                )
+            )
+        ),
+        operations_store_factory=lambda: pytest.fail(
+            "genesis state must not open operations state for recovery"
+        ),
+        query_set_digest=query_set.query_set_digest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        observed_head="b" * 40,
+        state_root_digest="sha256:" + ("c" * 64),
+    )
+
+    assert result is None
+
+
+def test_fresh_nomination_recovery_rejects_missing_prior_root_from_non_genesis() -> None:
+    """A child with no prior root may never fall through to a new Search."""
+
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+
+    with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+        module._recover_exact_fresh_nomination(
+            restored=SimpleNamespace(
+                is_genesis=False,
+                bundle=SimpleNamespace(
+                    root=SimpleNamespace(
+                        prior_root_digest=None,
+                        state_parent_commit_sha="a" * 40,
+                    )
+                ),
+            ),
+            operations_store_factory=lambda: pytest.fail(
+                "unlinked child must not open operations state for recovery"
+            ),
+            query_set_digest=query_set.query_set_digest,
+            state_repository_id=9001,
+            state_repository_full_name="octo-org/skillscout-state",
+            observed_head="b" * 40,
+            state_root_digest="sha256:" + ("c" * 64),
+        )
+
+
+def test_fresh_nomination_recovery_rejects_ambiguous_persisted_fact() -> None:
+    """An apparent recovered run must contain exactly one nomination fact."""
+
+    from skillscout.adapters.operations_state import (
+        AcceptanceFactRecord,
+        AcceptanceRunSnapshot,
+    )
+
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    parent_commit = "a" * 40
+    parent_root = "sha256:" + ("b" * 64)
+    authority = module._fresh_nomination_authority_digest(
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        state_commit_sha=parent_commit,
+        state_root_digest=parent_root,
+        query_set_digest=query_set.query_set_digest,
+    )
+    nomination_set_id = "fresh-nomination-" + authority.removeprefix("sha256:")[:32]
+    record = AcceptanceFactRecord(
+        acceptance_run_id=nomination_set_id,
+        kind="acceptance_nomination",
+        fact_digest="sha256:" + ("d" * 64),
+        fact=object(),  # type: ignore[arg-type]
+    )
+
+    class Store:
+        def acceptance_snapshot(self, acceptance_run_id: str) -> AcceptanceRunSnapshot:
+            assert acceptance_run_id == nomination_set_id
+            return AcceptanceRunSnapshot(nomination_set_id, (record, record))
+
+        def close(self) -> None:
+            pass
+
+    with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+        module._recover_exact_fresh_nomination(
+            restored=SimpleNamespace(
+                bundle=SimpleNamespace(
+                    root=SimpleNamespace(
+                        prior_root_digest=parent_root,
+                        state_parent_commit_sha=parent_commit,
+                    )
+                )
+            ),
+            operations_store_factory=Store,
+            query_set_digest=query_set.query_set_digest,
+            state_repository_id=9001,
+            state_repository_full_name="octo-org/skillscout-state",
+            observed_head="c" * 40,
+            state_root_digest="sha256:" + ("e" * 64),
+        )
+
+
 def test_locked_campaign_signature_cannot_receive_evaluator_answers() -> None:
     fields = _field_names("LockedCampaignDependencies")
     assert {

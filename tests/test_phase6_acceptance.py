@@ -472,6 +472,12 @@ def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
         if "--kind" in action.option_strings
     )
     assert tuple(kind.choices) == ("human-review", "probe-cleanup")
+    acceptance_action = next(
+        action
+        for action in commands["run-acceptance"]._actions
+        if "--action" in action.option_strings
+    )
+    assert tuple(acceptance_action.choices) == ("benchmark", "replay")
 
 
 def _fresh_lock_inputs() -> tuple[object, object, object]:
@@ -906,6 +912,10 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
 ) -> None:
     import skillscout.bootstrap as bootstrap
 
+    original_commit = "d" * 40
+    original_root = "sha256:" + ("e" * 64)
+    carrier_commit = "c" * 40
+    carrier_root = "sha256:" + ("d" * 64)
     commit = "a" * 40
     root = "sha256:" + ("b" * 64)
     authority = "sha256:" + ("c" * 64)
@@ -913,10 +923,10 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
     proof = {
         "acceptance_run_id": "acceptance-proof",
         "authority_digest": authority,
-        "lineage_commit_shas": [commit],
-        "lineage_root_digests": [root],
-        "locator_digest": None,
-        "transition_index": 0,
+        "lineage_commit_shas": [original_commit, carrier_commit, commit],
+        "lineage_root_digests": [original_root, carrier_root, root],
+        "locator_digest": "sha256:" + ("f" * 64),
+        "transition_index": 2,
         "state_commit_sha": commit,
         "state_root_digest": root,
         "status": "acceptance_resume_verified",
@@ -927,6 +937,8 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
     )
     environment = {
         "PHASE6_AUTHORITY_DIGEST": authority,
+        "PHASE6_AUTHORITY_STATE_COMMIT_SHA": carrier_commit,
+        "PHASE6_AUTHORITY_STATE_ROOT_DIGEST": carrier_root,
         "SKILLSCOUT_LLM_PROVIDER": "deepseek",
         "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
     }
@@ -942,9 +954,40 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
         environ=environment,
     )
 
-    assert config.resume_lineage_commit_shas == (commit,)
-    assert config.resume_lineage_root_digests == (root,)
-    assert config.resume_transition_index == 0
+    assert config.resume_lineage_commit_shas == (
+        original_commit,
+        carrier_commit,
+        commit,
+    )
+    assert config.resume_lineage_root_digests == (
+        original_root,
+        carrier_root,
+        root,
+    )
+    assert config.resume_transition_index == 2
+    assert config.state_lineage_anchor_commit_sha == carrier_commit
+    assert config.state_lineage_anchor_root_digest == carrier_root
+    discovery_config = bootstrap._acceptance_discovery_config(
+        config,
+        {
+            "SKILLSCOUT_STATE_REPOSITORY_ID": "123",
+            "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "example/state",
+        },
+    )
+    assert discovery_config.state_lineage_anchor_commit_sha == carrier_commit
+    assert discovery_config.state_lineage_anchor_root_digest == carrier_root
+    with pytest.raises(ValueError, match="runtime configuration"):
+        bootstrap.load_acceptance_runtime_config(
+            manifest_path=config.manifest_path,
+            state_commit_sha=commit,
+            state_root_digest=root,
+            acceptance_run_id="acceptance-proof",
+            resume_proof_path=proof_path,
+            environ={
+                **environment,
+                "PHASE6_AUTHORITY_STATE_COMMIT_SHA": "f" * 40,
+            },
+        )
     proof["state_commit_sha"] = "d" * 40
     proof_path.write_text(
         json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n",
@@ -1867,6 +1910,7 @@ def test_acceptance_cli_exposes_only_exact_resume_lineage_inputs() -> None:
         "-h",
         "--help",
         "--authority-state-root",
+        "--authority-state-commit-sha",
         "--authority-state-root-digest",
         "--campaign-state-root",
         "--acceptance-run-id",
@@ -1903,6 +1947,8 @@ def test_resolve_acceptance_resume_cli_dispatches_verified_locator(
                 "resolve-acceptance-resume",
                 "--authority-state-root",
                 str(tmp_path),
+                "--authority-state-commit-sha",
+                "c" * 40,
                 "--authority-state-root-digest",
                 "sha256:" + ("d" * 64),
                 "--campaign-state-root",
@@ -1937,9 +1983,9 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
     from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
 
     original_commit = "4" * 40
-    anchor_commit = "8" * 40
+    carrier_commit = "8" * 40
     original_root = "sha256:" + ("5" * 64)
-    anchor_root = "sha256:" + ("9" * 64)
+    carrier_root = "sha256:" + ("9" * 64)
     authority_digest = "sha256:" + ("1" * 64)
     events: list[str] = []
     locator = AcceptanceCampaignResumeLocatorV1.model_construct(
@@ -1951,25 +1997,32 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         parent_state_root_digest=original_root,
         transition_index=1,
         previous_locator_digest=None,
-        transition_phase="terminal",
+        transition_phase="authority_carrier",
         locator_digest="sha256:" + ("a" * 64),
     )
     locator_object_digest = "sha256:" + ("b" * 64)
-    terminal_fact = CampaignOwnedFactObservation(
-        kind="candidate_terminal",
+    carrier_fact = CampaignOwnedFactObservation(
+        kind="acceptance_live_authority",
         object_digest="sha256:" + ("c" * 64),
     )
+
+    def bundle(root: object) -> object:
+        return SimpleNamespace(
+            root=root,
+            content_by_path=lambda: {"state/root.json": b"canonical"},
+        )
+
     bundles = {
-        original_commit: state_branch.VerifiedStateBundle(
-            root=SimpleNamespace(
+        original_commit: bundle(
+            SimpleNamespace(
                 root_digest=original_root,
                 state_parent_commit_sha="0" * 40,
                 prior_root_digest="sha256:" + ("0" * 64),
             )
         ),
-        anchor_commit: state_branch.VerifiedStateBundle(
-            root=SimpleNamespace(
-                root_digest=anchor_root,
+        carrier_commit: bundle(
+            SimpleNamespace(
+                root_digest=carrier_root,
                 state_parent_commit_sha=original_commit,
                 prior_root_digest=original_root,
             )
@@ -1986,15 +2039,26 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
 
         def get_state_ref(self, *, read_budget: object) -> object:
             assert read_budget is not None
-            return SimpleNamespace(sha=anchor_commit)
-
-        def get_commit(self, sha: str) -> object:
-            parent = ("0" * 40,) if sha == original_commit else (original_commit,)
-            return SimpleNamespace(sha=sha, parents=parent)
+            return SimpleNamespace(sha=carrier_commit)
 
     class Store:
         def __init__(self, _reader: object) -> None:
             pass
+
+        def verify_lineage_anchor(
+            self,
+            *,
+            commit_sha: str,
+            root_digest: str,
+            anchor: object,
+            read_budget: object,
+        ) -> None:
+            assert read_budget is not None
+            assert commit_sha == carrier_commit
+            assert root_digest == carrier_root
+            assert getattr(anchor, "commit_sha", None) == original_commit
+            assert getattr(anchor, "root_digest", None) == original_root
+            assert getattr(anchor, "max_hops", None) == 1
 
         def inspect_commit_root(
             self,
@@ -2005,13 +2069,10 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             assert read_budget is not None
             parent = ("0" * 40,) if sha == original_commit else (original_commit,)
             root = bundles[sha].root
-            root.model_dump = lambda **_kwargs: {
-                "root_digest": root.root_digest,
-            }
             return SimpleNamespace(
                 commit=SimpleNamespace(sha=sha, parents=parent),
                 root=root,
-                object_digests=((locator_object_digest,) if sha == anchor_commit else ()),
+                object_digests=(locator_object_digest,) if sha == carrier_commit else (),
                 declared_content_bytes=1_024,
             )
 
@@ -2019,9 +2080,18 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             self,
             sha: str,
             *,
+            lineage_anchor: object,
             read_budget: object,
         ) -> object:
             assert read_budget is not None
+            if sha == original_commit:
+                assert getattr(lineage_anchor, "commit_sha", None) == original_commit
+                assert getattr(lineage_anchor, "root_digest", None) == original_root
+                assert getattr(lineage_anchor, "max_hops", None) == 1
+            else:
+                assert getattr(lineage_anchor, "commit_sha", None) == carrier_commit
+                assert getattr(lineage_anchor, "root_digest", None) == carrier_root
+                assert getattr(lineage_anchor, "max_hops", None) == 159
             return bundles[sha]
 
     monkeypatch.setattr(
@@ -2029,13 +2099,16 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
         "_load_verified_live_authority",
         lambda _arguments: (
             events.append("authority")
-            or SimpleNamespace(
-                authority_digest=authority_digest,
-                source_commit_sha="2" * 40,
-                state_commit_sha=original_commit,
-                state_root_digest=original_root,
-                state_repository_id=123,
-                state_repository_full_name="example/state",
+            or (
+                SimpleNamespace(
+                    authority_digest=authority_digest,
+                    source_commit_sha="2" * 40,
+                    state_commit_sha=original_commit,
+                    state_root_digest=original_root,
+                    state_repository_id=123,
+                    state_repository_full_name="example/state",
+                ),
+                bundles[carrier_commit],
             )
         ),
         raising=False,
@@ -2053,9 +2126,9 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
                         object_digest=locator_object_digest,
                     ),
                 ),
-                (terminal_fact,),
+                (carrier_fact,),
             )
-            if bundle is bundles[anchor_commit]
+            if bundle is bundles[carrier_commit]
             else ((), ())
         ),
         raising=False,
@@ -2063,19 +2136,20 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
     monkeypatch.setattr(
         cli,
         "_checked_out_git_commit",
-        lambda _path: anchor_commit,
+        lambda _path: carrier_commit,
     )
     monkeypatch.setattr(
         cli,
         "load_verified_state_checkout",
-        lambda **_kwargs: bundles[anchor_commit],
+        lambda **_kwargs: bundles[carrier_commit],
     )
     monkeypatch.setenv("SKILLSCOUT_STATE_GITHUB_TOKEN", "fixture-token")
 
     result = cli._run_resolve_acceptance_resume(
         SimpleNamespace(
             authority_state_root=tmp_path,
-            authority_state_root_digest=original_root,
+            authority_state_commit_sha=carrier_commit,
+            authority_state_root_digest=carrier_root,
             campaign_state_root=tmp_path,
             acceptance_run_id="acceptance-resume",
             authority_digest=authority_digest,
@@ -2088,32 +2162,227 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
     assert result == {
         "authority_digest": authority_digest,
         "acceptance_run_id": "acceptance-resume",
-        "lineage_commit_shas": [original_commit, anchor_commit],
-        "lineage_root_digests": [original_root, anchor_root],
+        "lineage_commit_shas": [original_commit, carrier_commit],
+        "lineage_root_digests": [original_root, carrier_root],
         "locator_digest": locator.locator_digest,
         "transition_index": 1,
-        "state_commit_sha": anchor_commit,
-        "state_root_digest": anchor_root,
+        "state_commit_sha": carrier_commit,
+        "state_root_digest": carrier_root,
         "status": "acceptance_resume_verified",
     }
     assert events == ["authority", "reader", "closed"]
+
+
+def test_resume_resolver_rejects_wrong_carrier_checkout_before_state_token_access(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The local immutable carrier identity is checked before remote capability use."""
+
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.cli as cli
+    from skillscout.application.ports import SafeFailure
+
+    class Reader:
+        def __init__(self, **_kwargs: object) -> None:
+            pytest.fail("resolver read state before its authority carrier was verified")
+
+    monkeypatch.setattr(state_branch, "StateBranchReadClient", Reader)
+    monkeypatch.setattr(cli, "_checked_out_git_commit", lambda _path: "f" * 40)
+    monkeypatch.delenv("SKILLSCOUT_STATE_GITHUB_TOKEN", raising=False)
+
+    with pytest.raises(SafeFailure):
+        cli._run_resolve_acceptance_resume(
+            SimpleNamespace(
+                authority_state_root=tmp_path,
+                authority_state_commit_sha="c" * 40,
+                authority_state_root_digest="sha256:" + ("d" * 64),
+                campaign_state_root=tmp_path,
+                acceptance_run_id="acceptance-resume",
+                authority_digest="sha256:" + ("a" * 64),
+                source_commit_sha="b" * 40,
+                state_repository_id=123,
+                state_repository_full_name="example/state",
+            )
+        )
+
+
+def test_resume_resolver_rejects_a_branch_that_reaches_predecessor_without_carrier(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A valid old authority state cannot substitute for the required carrier checkpoint."""
+
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.cli as cli
+    from skillscout.application.ports import SafeFailure
+
+    predecessor_commit = "4" * 40
+    predecessor_root = "sha256:" + ("5" * 64)
+    carrier_commit = "8" * 40
+    carrier_root = "sha256:" + ("9" * 64)
+    head_commit = "7" * 40
+    head_root = "sha256:" + ("6" * 64)
+    inspected: list[str] = []
+
+    def bundle(root: object) -> object:
+        return SimpleNamespace(root=root, content_by_path=lambda: {})
+
+    bundles = {
+        predecessor_commit: bundle(
+            SimpleNamespace(
+                root_digest=predecessor_root,
+                prior_root_digest="sha256:" + ("0" * 64),
+            )
+        ),
+        carrier_commit: bundle(
+            SimpleNamespace(
+                root_digest=carrier_root,
+                prior_root_digest=predecessor_root,
+            )
+        ),
+    }
+
+    class Reader:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def get_state_ref(self, *, read_budget: object) -> object:
+            assert read_budget is not None
+            return SimpleNamespace(sha=head_commit)
+
+    class Store:
+        def __init__(self, _reader: object) -> None:
+            pass
+
+        def verify_lineage_anchor(self, **_kwargs: object) -> None:
+            pass
+
+        def inspect_commit_root(
+            self,
+            sha: str,
+            *,
+            read_budget: object,
+        ) -> object:
+            assert read_budget is not None
+            inspected.append(sha)
+            if sha == head_commit:
+                return SimpleNamespace(
+                    commit=SimpleNamespace(sha=sha, parents=(predecessor_commit,)),
+                    root=SimpleNamespace(
+                        root_digest=head_root,
+                        prior_root_digest=predecessor_root,
+                    ),
+                    object_digests=(),
+                    declared_content_bytes=1_024,
+                )
+            if sha == predecessor_commit:
+                return SimpleNamespace(
+                    commit=SimpleNamespace(sha=sha, parents=()),
+                    root=bundles[sha].root,
+                    object_digests=(),
+                    declared_content_bytes=1_024,
+                )
+            raise AssertionError("resolver followed an unexpected parent")
+
+        def restore_commit(
+            self,
+            sha: str,
+            *,
+            lineage_anchor: object,
+            read_budget: object,
+        ) -> object:
+            assert read_budget is not None
+            if sha == carrier_commit:
+                assert getattr(lineage_anchor, "commit_sha", None) == carrier_commit
+            elif sha == predecessor_commit:
+                assert getattr(lineage_anchor, "commit_sha", None) == predecessor_commit
+            else:
+                pytest.fail("resolver restored a campaign branch before carrier membership")
+            return bundles[sha]
+
+    authority = SimpleNamespace(
+        authority_digest="sha256:" + ("1" * 64),
+        source_commit_sha="2" * 40,
+        state_commit_sha=predecessor_commit,
+        state_root_digest=predecessor_root,
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_live_authority",
+        lambda _arguments: (authority, bundles[carrier_commit]),
+    )
+    monkeypatch.setattr(state_branch, "StateBranchReadClient", Reader)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        cli,
+        "_acceptance_resume_projection_from_bundle",
+        lambda _bundle, _run_id: ((), ()),
+    )
+    monkeypatch.setenv("SKILLSCOUT_STATE_GITHUB_TOKEN", "fixture-token")
+
+    with pytest.raises(SafeFailure):
+        cli._run_resolve_acceptance_resume(
+            SimpleNamespace(
+                authority_state_root=tmp_path,
+                authority_state_commit_sha=carrier_commit,
+                authority_state_root_digest=carrier_root,
+                campaign_state_root=tmp_path,
+                acceptance_run_id="acceptance-resume",
+                authority_digest=authority.authority_digest,
+                source_commit_sha=authority.source_commit_sha,
+                state_repository_id=123,
+                state_repository_full_name="example/state",
+            )
+        )
+
+    assert carrier_commit not in inspected
+    assert inspected[-1] == predecessor_commit
 
 
 def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A long remote history is metadata-only and stops at the explicit cap."""
+    """Carrier plus 160 descendants fails before any descendant bundle read."""
 
     import skillscout.adapters.state_branch as state_branch
     import skillscout.cli as cli
     from skillscout.application.ports import ErrorCode, SafeFailure
 
-    authority_commit = "f" * 40
-    authority_root = "sha256:" + ("e" * 64)
-    commits = tuple(f"{index:040x}" for index in range(1, 162))
+    predecessor_commit = "f" * 40
+    predecessor_root = "sha256:" + ("e" * 64)
+    carrier_commit = "e" * 40
+    carrier_root = "sha256:" + ("d" * 64)
+    descendants = tuple(f"{index:040x}" for index in range(1, 161))
+    commits = (predecessor_commit, carrier_commit, *descendants)
     inspected: list[str] = []
     restored: list[str] = []
+
+    def bundle(root: object) -> object:
+        return SimpleNamespace(root=root, content_by_path=lambda: {})
+
+    def root_for(index: int) -> object:
+        root_digest = (
+            predecessor_root
+            if index == 0
+            else carrier_root if index == 1 else "sha256:" + f"{index:064x}"
+        )
+        prior_root = (
+            "sha256:" + ("0" * 64)
+            if index == 0
+            else predecessor_root
+            if index == 1
+            else "sha256:" + f"{index - 1:064x}"
+        )
+        return SimpleNamespace(root_digest=root_digest, prior_root_digest=prior_root)
+
+    bundles = {sha: bundle(root_for(index)) for index, sha in enumerate(commits[:2])}
 
     class Reader:
         def __init__(self, **_kwargs: object) -> None:
@@ -2130,6 +2399,22 @@ def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
         def __init__(self, _reader: object) -> None:
             pass
 
+        def verify_lineage_anchor(
+            self,
+            *,
+            commit_sha: str,
+            root_digest: str,
+            anchor: object,
+            read_budget: object,
+        ) -> None:
+            assert read_budget is not None
+            assert (commit_sha, root_digest) == (carrier_commit, carrier_root)
+            assert (
+                getattr(anchor, "commit_sha", None),
+                getattr(anchor, "root_digest", None),
+                getattr(anchor, "max_hops", None),
+            ) == (predecessor_commit, predecessor_root, 1)
+
         def inspect_commit_root(
             self,
             sha: str,
@@ -2140,16 +2425,7 @@ def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
             inspected.append(sha)
             index = commits.index(sha)
             parent = commits[index - 1] if index > 0 else "0" * 40
-            root_digest = "sha256:" + f"{index + 1:064x}"
-            prior_root = "sha256:" + f"{index:064x}" if index > 0 else "sha256:" + ("0" * 64)
-            root = SimpleNamespace(
-                root_digest=root_digest,
-                prior_root_digest=prior_root,
-                model_dump=lambda **_kwargs: {
-                    "root_digest": root_digest,
-                    "prior_root_digest": prior_root,
-                },
-            )
+            root = root_for(index)
             return SimpleNamespace(
                 commit=SimpleNamespace(sha=sha, parents=(parent,)),
                 root=root,
@@ -2161,33 +2437,58 @@ def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
             self,
             sha: str,
             *,
+            lineage_anchor: object,
             read_budget: object,
         ) -> object:
             assert read_budget is not None
-            restored.append(sha)
-            raise AssertionError("overlong lineage restored a database bundle")
+            if sha == carrier_commit:
+                assert (
+                    getattr(lineage_anchor, "commit_sha", None),
+                    getattr(lineage_anchor, "root_digest", None),
+                    getattr(lineage_anchor, "max_hops", None),
+                ) == (carrier_commit, carrier_root, 159)
+                restored.append(sha)
+                return bundles[sha]
+            if sha == predecessor_commit:
+                assert (
+                    getattr(lineage_anchor, "commit_sha", None),
+                    getattr(lineage_anchor, "root_digest", None),
+                    getattr(lineage_anchor, "max_hops", None),
+                ) == (predecessor_commit, predecessor_root, 1)
+                restored.append(sha)
+                return bundles[sha]
+            raise AssertionError("overlong lineage restored a descendant bundle")
 
     monkeypatch.setattr(
         cli,
         "_load_verified_live_authority",
-        lambda _arguments: SimpleNamespace(
-            authority_digest="sha256:" + ("1" * 64),
-            source_commit_sha="2" * 40,
-            state_commit_sha=authority_commit,
-            state_root_digest=authority_root,
-            state_repository_id=123,
-            state_repository_full_name="example/state",
+        lambda _arguments: (
+            SimpleNamespace(
+                authority_digest="sha256:" + ("1" * 64),
+                source_commit_sha="2" * 40,
+                state_commit_sha=predecessor_commit,
+                state_root_digest=predecessor_root,
+                state_repository_id=123,
+                state_repository_full_name="example/state",
+            ),
+            bundles[carrier_commit],
         ),
     )
     monkeypatch.setattr(state_branch, "StateBranchReadClient", Reader)
     monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        cli,
+        "_acceptance_resume_projection_from_bundle",
+        lambda _bundle, _run_id: ((), ()),
+    )
     monkeypatch.setenv("SKILLSCOUT_STATE_GITHUB_TOKEN", "fixture-token")
 
     with pytest.raises(SafeFailure) as rejected:
         cli._run_resolve_acceptance_resume(
             SimpleNamespace(
                 authority_state_root=tmp_path,
-                authority_state_root_digest=authority_root,
+                authority_state_commit_sha=carrier_commit,
+                authority_state_root_digest=carrier_root,
                 campaign_state_root=tmp_path,
                 acceptance_run_id="acceptance-resume",
                 authority_digest="sha256:" + ("1" * 64),
@@ -2198,8 +2499,258 @@ def test_resume_resolver_counts_and_rejects_overlong_metadata_lineage(
         )
 
     assert rejected.value.code is ErrorCode.STATE_INTEGRITY_ERROR
-    assert len(inspected) == 160
-    assert restored == []
+    assert inspected[0] == predecessor_commit
+    assert len(inspected[1:]) == 160
+    assert carrier_commit not in inspected
+    assert restored == [carrier_commit, predecessor_commit]
+
+
+def test_resume_resolver_visits_authority_at_exact_descendant_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Carrier plus 159 descendants reaches carrier in the exact 160-state cap."""
+
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.cli as cli
+    from skillscout.application.ports import ErrorCode, SafeFailure
+
+    predecessor_commit = "f" * 40
+    predecessor_root = "sha256:" + ("e" * 64)
+    carrier_commit = "e" * 40
+    carrier_root = "sha256:" + ("d" * 64)
+    descendants = tuple(f"{index:040x}" for index in range(1, 160))
+    commits = (predecessor_commit, carrier_commit, *descendants)
+    inspected: list[str] = []
+    restored: list[str] = []
+
+    def bundle(root: object) -> object:
+        return SimpleNamespace(root=root, content_by_path=lambda: {})
+
+    def root_for(index: int) -> object:
+        root_digest = (
+            predecessor_root
+            if index == 0
+            else carrier_root if index == 1 else "sha256:" + f"{index:064x}"
+        )
+        prior_root = (
+            "sha256:" + ("0" * 64)
+            if index == 0
+            else predecessor_root
+            if index == 1
+            else "sha256:" + f"{index - 1:064x}"
+        )
+        return SimpleNamespace(root_digest=root_digest, prior_root_digest=prior_root)
+
+    bundles = {sha: bundle(root_for(index)) for index, sha in enumerate(commits[:2])}
+
+    class Reader:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def get_state_ref(self, *, read_budget: object) -> object:
+            assert read_budget is not None
+            return SimpleNamespace(sha=commits[-1])
+
+    class Store:
+        def __init__(self, _reader: object) -> None:
+            pass
+
+        def verify_lineage_anchor(
+            self,
+            *,
+            commit_sha: str,
+            root_digest: str,
+            anchor: object,
+            read_budget: object,
+        ) -> None:
+            assert read_budget is not None
+            assert (commit_sha, root_digest) == (carrier_commit, carrier_root)
+            assert (
+                getattr(anchor, "commit_sha", None),
+                getattr(anchor, "root_digest", None),
+                getattr(anchor, "max_hops", None),
+            ) == (predecessor_commit, predecessor_root, 1)
+
+        def inspect_commit_root(
+            self,
+            sha: str,
+            *,
+            read_budget: object,
+        ) -> object:
+            assert read_budget is not None
+            inspected.append(sha)
+            index = commits.index(sha)
+            parent = commits[index - 1] if index else "0" * 40
+            root = root_for(index)
+            return SimpleNamespace(
+                commit=SimpleNamespace(sha=sha, parents=(parent,)),
+                root=root,
+                object_digests=(),
+                declared_content_bytes=1_024,
+            )
+
+        def restore_commit(
+            self,
+            sha: str,
+            *,
+            lineage_anchor: object,
+            read_budget: object,
+        ) -> object:
+            assert read_budget is not None
+            if sha == carrier_commit:
+                assert (
+                    getattr(lineage_anchor, "commit_sha", None),
+                    getattr(lineage_anchor, "root_digest", None),
+                    getattr(lineage_anchor, "max_hops", None),
+                ) == (carrier_commit, carrier_root, 159)
+                return bundles[sha]
+            if sha == predecessor_commit:
+                assert (
+                    getattr(lineage_anchor, "commit_sha", None),
+                    getattr(lineage_anchor, "root_digest", None),
+                    getattr(lineage_anchor, "max_hops", None),
+                ) == (predecessor_commit, predecessor_root, 1)
+                return bundles[sha]
+            assert (
+                getattr(lineage_anchor, "commit_sha", None),
+                getattr(lineage_anchor, "root_digest", None),
+                getattr(lineage_anchor, "max_hops", None),
+            ) == (carrier_commit, carrier_root, 159)
+            restored.append(sha)
+            raise AssertionError("boundary test stops after carrier-anchored metadata traversal")
+
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_live_authority",
+        lambda _arguments: (
+            SimpleNamespace(
+                authority_digest="sha256:" + ("1" * 64),
+                source_commit_sha="2" * 40,
+                state_commit_sha=predecessor_commit,
+                state_root_digest=predecessor_root,
+                state_repository_id=123,
+                state_repository_full_name="example/state",
+            ),
+            bundles[carrier_commit],
+        ),
+    )
+    monkeypatch.setattr(state_branch, "StateBranchReadClient", Reader)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        cli,
+        "_acceptance_resume_projection_from_bundle",
+        lambda _bundle, _run_id: ((), ()),
+    )
+    monkeypatch.setenv("SKILLSCOUT_STATE_GITHUB_TOKEN", "fixture-token")
+
+    with pytest.raises(SafeFailure) as rejected:
+        cli._run_resolve_acceptance_resume(
+            SimpleNamespace(
+                authority_state_root=tmp_path,
+                authority_state_commit_sha=carrier_commit,
+                authority_state_root_digest=carrier_root,
+                campaign_state_root=tmp_path,
+                acceptance_run_id="acceptance-resume",
+                authority_digest="sha256:" + ("1" * 64),
+                source_commit_sha="2" * 40,
+                state_repository_id=123,
+                state_repository_full_name="example/state",
+            )
+        )
+
+    assert rejected.value.code is ErrorCode.STATE_INTEGRITY_ERROR
+    assert inspected[0] == predecessor_commit
+    assert len(inspected[1:]) == 160
+    assert inspected[-1] == carrier_commit
+    assert restored == [commits[-1]]
+
+
+def test_fresh_campaign_state_restore_uses_the_discovery_lineage_horizon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh nomination cannot treat a replacement zero-parent state as trusted."""
+
+    import skillscout.bootstrap as bootstrap
+    import skillscout.adapters.github as github
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.adapters.state_branch as state_branch
+    from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+    query_path = ROOT / "config" / "discovery-queries-v1.json"
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        query_path.read_bytes(),
+        strict=True,
+    )
+    config = bootstrap.FreshCampaignPreparationRuntimeConfig(
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        query_set_path=query_path,
+        query_set=query_set,
+        query_set_digest=query_set.query_set_digest or "",
+        operations_state=Path("state/databases/operations.sqlite3"),
+        state_lineage_anchor_commit_sha="a" * 40,
+        state_lineage_anchor_root_digest="sha256:" + ("b" * 64),
+    )
+    anchors: list[object] = []
+    restored: list[dict[str, object]] = []
+
+    class MetadataClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def get_repo_metadata(self, _owner: str, _repository: str) -> object:
+            return SimpleNamespace(id=123, owner="example", name="state")
+
+        def close(self) -> None:
+            pass
+
+    class StateClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    observation = SimpleNamespace(
+        observed_head="c" * 40,
+        bundle=SimpleNamespace(
+            root=SimpleNamespace(root_digest="sha256:" + ("d" * 64))
+        ),
+    )
+
+    class Store:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def restore(self, *, lineage_anchor: object) -> object:
+            anchors.append(lineage_anchor)
+            return observation
+
+    monkeypatch.setattr(github, "GitHubReadClient", MetadataClient)
+    monkeypatch.setattr(state_branch, "StateBranchClient", StateClient)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        operations_state,
+        "restore_three_store_bundle",
+        lambda bundle, **kwargs: restored.append({"bundle": bundle, **kwargs}),
+    )
+
+    assert bootstrap._restore_verified_fresh_campaign_state(
+        config=config,
+        source={"SKILLSCOUT_STATE_GITHUB_TOKEN": "fixture-token"},
+        pipeline_path=Path("state/databases/pipeline.sqlite3"),
+        publication_path=Path("state/databases/publication.sqlite3"),
+    ) is observation
+    assert len(anchors) == 1
+    anchor = anchors[0]
+    assert getattr(anchor, "commit_sha", None) == config.state_lineage_anchor_commit_sha
+    assert getattr(anchor, "root_digest", None) == config.state_lineage_anchor_root_digest
+    assert getattr(anchor, "max_hops", None) == 4096
+    assert len(restored) == 1
 
 
 def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
@@ -2462,7 +3013,7 @@ def test_authority_carrier_post_cas_recovery_requires_exact_authority_and_locato
             pass
 
     class Store:
-        def __init__(self, _client: object) -> None:
+        def __init__(self, _client: object, *, read_cache: object) -> None:
             pass
 
         def sync(self, _bundle: object, _head: str) -> object:
@@ -2539,6 +3090,160 @@ def test_authority_carrier_post_cas_recovery_requires_exact_authority_and_locato
                 transition_phase="authority_carrier",
             )
         assert reconciliations == []
+
+
+def test_nomination_post_cas_recovery_is_exact_and_never_enables_benchmark_lock_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Search-only state child may reconcile; later protected transitions may not."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.bootstrap as bootstrap
+    from skillscout.adapters.operations_state import (
+        AcceptanceFactRecord,
+        AcceptanceRunSnapshot,
+    )
+    from skillscout.application.acceptance import _fresh_nomination_authority_digest
+    from skillscout.domain.acceptance import NominationEntryV1, NominationSetV1
+    from skillscout.domain.canonical import sha256_digest
+
+    parent_commit = "4" * 40
+    parent_root = "sha256:" + ("5" * 64)
+    child_commit = "6" * 40
+    child_tree = "7" * 40
+    child_root = "sha256:" + ("8" * 64)
+    reconciliations: list[tuple[object, object, object, object]] = []
+    query_set_digest = "sha256:" + ("b" * 64)
+    created_at = "2026-08-03T12:00:00.000000Z"
+    authority = _fresh_nomination_authority_digest(
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        state_commit_sha=parent_commit,
+        state_root_digest=parent_root,
+        query_set_digest=query_set_digest,
+    )
+    nomination_set_id = "fresh-nomination-" + authority.removeprefix("sha256:")[:32]
+    entries = tuple(
+        NominationEntryV1(
+            schema_version="nomination-entry-v1",
+            repository_full_name=f"octo-org/recovery-{index}",
+            repository_id=950000 + index,
+            exact_commit_sha=f"{index:040x}",
+            license_spdx="MIT",
+            selection_source="search_derived",
+            selection_evidence_digests=(sha256_digest({"recovery": index}),),
+        )
+        for index in range(1, 6)
+    )
+    nomination = NominationSetV1(
+        schema_version="nomination-set-v1",
+        nomination_set_id=nomination_set_id,
+        query_set_digest=query_set_digest,
+        search_run_authority_digest=authority,
+        search_derived_entries=tuple(sorted(entries, key=lambda entry: entry.entry_digest or "")),
+        user_nominated_entries=(),
+        created_at=created_at,
+    )
+    snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id=nomination_set_id,
+        facts=(
+            AcceptanceFactRecord(
+                acceptance_run_id=nomination_set_id,
+                kind="acceptance_nomination",
+                fact_digest=nomination.nomination_set_digest or "",
+                fact=nomination,
+            ),
+        ),
+    )
+
+    class Operations:
+        def acceptance_snapshot(self, acceptance_run_id: str) -> AcceptanceRunSnapshot:
+            assert acceptance_run_id == nomination_set_id
+            return snapshot
+
+    class Client:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Store:
+        def __init__(self, _client: object, *, read_cache: object) -> None:
+            pass
+
+        def sync(self, _bundle: object, _head: str) -> object:
+            raise state_branch.StateBranchPostCasUncertain(
+                candidate_commit_sha=child_commit,
+                candidate_tree_sha=child_tree,
+                previous_head=parent_commit,
+                expected_root_digest=child_root,
+            )
+
+        def reconcile_post_cas_uncertainty(
+            self,
+            failure: object,
+            bundle: object,
+            observed_head: object,
+            *,
+            expected_prior_root_digest: object,
+        ) -> object:
+            reconciliations.append((failure, bundle, observed_head, expected_prior_root_digest))
+            return state_branch.StateSyncObservation(
+                "verified",
+                parent_commit,
+                child_commit,
+                child_tree,
+                child_root,
+            )
+
+    monkeypatch.setattr(state_branch, "StateBranchClient", Client)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        operations_state,
+        "assemble_three_store_bundle",
+        lambda **_kwargs: SimpleNamespace(root=SimpleNamespace(root_digest=child_root)),
+    )
+
+    def barrier() -> object:
+        return bootstrap._LateStateDurabilityBarrier(
+            SimpleNamespace(
+                state_repository_id=123,
+                state_repository_full_name="example/state",
+                query_set_digest=query_set_digest,
+            ),
+            {"SKILLSCOUT_STATE_GITHUB_TOKEN": "fixture-token"},
+            frozen_publication_export=SimpleNamespace(export_digest="sha256:" + ("c" * 64)),
+        )
+
+    synchronized = barrier().sync_nomination(
+        operations_store=Operations(),
+        observed_head=parent_commit,
+        prior_root_digest=parent_root,
+        created_at=created_at,
+        pipeline_store=object(),
+    )
+
+    assert synchronized == state_branch.StateSyncObservation(
+        "verified",
+        parent_commit,
+        child_commit,
+        child_tree,
+        child_root,
+    )
+    assert len(reconciliations) == 1
+    assert reconciliations[0][2:] == (parent_commit, parent_root)
+
+    with pytest.raises(state_branch.StateBranchPostCasUncertain):
+        barrier().sync_benchmark_lock(
+            operations_store=Operations(),
+            observed_head=parent_commit,
+            prior_root_digest=parent_root,
+            created_at="2026-08-03T12:01:00.000000Z",
+            pipeline_store=object(),
+        )
+    assert len(reconciliations) == 1
 
 
 def test_resume_lineage_requires_an_explicit_locator_for_every_successor() -> None:
@@ -3141,6 +3846,8 @@ def test_run_acceptance_dispatches_exact_action_without_publication_authority(
         manifest_path=Path("06-BENCHMARK-MANIFEST.json"),
         state_commit_sha="a" * 40,
         state_root_digest="sha256:" + ("b" * 64),
+        state_lineage_anchor_commit_sha="c" * 40,
+        state_lineage_anchor_root_digest="sha256:" + ("d" * 64),
     )
     restored = object()
     calls: list[str] = []
@@ -3213,6 +3920,143 @@ def test_acceptance_restore_never_opens_mutable_publication_owner() -> None:
         assert "PublicationStateStore" not in source
     discovery_source = inspect.getsource(bootstrap.build_discovery_application)
     assert "restore_acceptance_state_bundle" in discovery_source
+
+
+def test_exact_acceptance_restore_uses_verified_carrier_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Benchmark/replay state reads stay bounded to the protected carrier."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.bootstrap as bootstrap
+
+    state_commit = "a" * 40
+    state_root = "sha256:" + ("b" * 64)
+    carrier_commit = "c" * 40
+    carrier_root = "sha256:" + ("d" * 64)
+    anchors: list[object] = []
+
+    class Client:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Store:
+        def __init__(self, _remote: object) -> None:
+            pass
+
+        def restore(self, *, lineage_anchor: object) -> object:
+            anchors.append(lineage_anchor)
+            return SimpleNamespace(
+                status="verified",
+                observed_head=state_commit,
+                bundle=SimpleNamespace(root=SimpleNamespace(root_digest=state_root)),
+            )
+
+    monkeypatch.setattr(state_branch, "StateBranchClient", Client)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        operations_state,
+        "restore_acceptance_state_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+
+    restored = bootstrap.read_exact_acceptance_state(
+        state_commit_sha=state_commit,
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        pipeline_state=Path("state/databases/pipeline.sqlite3"),
+        operations_state=Path("state/databases/operations.sqlite3"),
+        state_lineage_anchor_commit_sha=carrier_commit,
+        state_lineage_anchor_root_digest=carrier_root,
+        environ={"SKILLSCOUT_STATE_GITHUB_TOKEN": "fixture-token"},
+    )
+
+    assert restored.observed_head == state_commit
+    assert len(anchors) == 1
+    assert getattr(anchors[0], "commit_sha", None) == carrier_commit
+    assert getattr(anchors[0], "root_digest", None) == carrier_root
+    assert getattr(anchors[0], "max_hops", None) == 160
+
+
+def test_exact_acceptance_restore_rejects_an_unanchored_read() -> None:
+    """No acceptance-state reader may fall back to a genesis walk."""
+
+    import skillscout.bootstrap as bootstrap
+
+    with pytest.raises(ValueError, match="protected acceptance state configuration rejected"):
+        bootstrap.read_exact_acceptance_state(
+            state_commit_sha="a" * 40,
+            state_repository_id=123,
+            state_repository_full_name="example/state",
+            pipeline_state=Path("state/databases/pipeline.sqlite3"),
+            operations_state=Path("state/databases/operations.sqlite3"),
+            state_lineage_anchor_commit_sha=None,  # type: ignore[arg-type]
+            state_lineage_anchor_root_digest=None,  # type: ignore[arg-type]
+            environ={},
+        )
+
+
+@pytest.mark.parametrize("action", ("changed-source", "publication"))
+def test_run_acceptance_rejects_nonsemantic_actions_before_any_state_read(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    """Closed benchmark execution does not reuse the acceptance reader for other actions."""
+
+    from skillscout.application.ports import SafeFailure
+    import skillscout.cli as cli
+
+    monkeypatch.setattr(
+        cli,
+        "load_acceptance_runtime_config",
+        lambda **_kwargs: pytest.fail("unsupported action loaded acceptance state"),
+    )
+
+    with pytest.raises(SafeFailure):
+        cli._run_acceptance(SimpleNamespace(action=action))
+
+
+def test_attestation_and_rebuild_require_the_phase6_carrier_before_state_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Human-only paths retain the same 160-hop carrier requirement as benchmark/replay."""
+
+    from skillscout.application.ports import SafeFailure
+    import skillscout.cli as cli
+
+    monkeypatch.delenv("PHASE6_AUTHORITY_STATE_COMMIT_SHA", raising=False)
+    monkeypatch.delenv("PHASE6_AUTHORITY_STATE_ROOT_DIGEST", raising=False)
+    monkeypatch.setattr(cli, "load_acceptance_attestation", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        cli,
+        "_restore_acceptance_state",
+        lambda **_kwargs: pytest.fail("unanchored acceptance state was restored"),
+    )
+    state_commit = "a" * 40
+    state_root = "sha256:" + ("b" * 64)
+
+    with pytest.raises(SafeFailure):
+        cli._run_record_acceptance_attestation(
+            SimpleNamespace(
+                attestation=Path("human-review.json"),
+                kind="human-review",
+                state_commit_sha=state_commit,
+                state_root_digest=state_root,
+            )
+        )
+    with pytest.raises(SafeFailure):
+        cli._run_rebuild_acceptance(
+            SimpleNamespace(
+                acceptance_run_id="acceptance-five",
+                evidence_root_digest=state_root,
+                state_commit_sha=state_commit,
+                state_root_digest=state_root,
+            )
+        )
 
 
 def test_completed_projector_rejects_unverified_state_locator(
@@ -4076,6 +4920,12 @@ def test_third_attempt_crash_recovers_through_two_production_processes(
         {"command": "run-acceptance", "process": 1},
         {"command": "resolve-acceptance-resume", "process": 2},
         {"command": "run-acceptance", "process": 2},
+    ]
+    assert result["resume_lineage_commit_shas"][:2] == result[
+        "expected_resume_lineage_commit_prefix"
+    ]
+    assert result["resume_lineage_root_digests"][:2] == result[
+        "expected_resume_lineage_root_prefix"
     ]
     target_calls = [item for item in result["provider_calls"] if item["stage"] == stage]
     assert target_calls == [
