@@ -92,79 +92,18 @@ def _replace_first(repository: Path, needle: str, replacement: str) -> None:
     raise AssertionError(f"mutation needle not found: {needle}")
 
 
-def _append_future_live_authority_job(repository: Path) -> Path:
-    """Add the planned state-only authority route to an isolated workflow tree."""
-
+def _replace_live_authority_route(path: Path, old: str, new: str) -> None:
     module = _module()
-    path = repository / Path(".github/workflows/phase6-acceptance.yml")
     source = path.read_text(encoding="utf-8")
-    jobs = module._parse_jobs(source)
-    benchmark_lock = next(job for job in jobs if job.name == "benchmark_lock")
-    cleanup = next(job for job in jobs if job.name == "cleanup_attestation")
-    assert tuple(step.name for step in benchmark_lock.steps[:3]) == (
-        "Check out the dispatched commit",
-        "Materialize the pinned uv binary",
-        "Verify the repository-local locked toolchain",
-    )
-    trusted_prefix = "\n".join(step.source for step in benchmark_lock.steps[:3])
-    live_input_start = source.index("      live_authority_json:\n")
-    live_input_end = source.index("\npermissions:\n", live_input_start)
-    source = source[:live_input_start] + source[live_input_end:]
-    human_start = source.index("  human_attestation:\n")
-    human_end = source.index("  cleanup_attestation:\n", human_start)
-    safe_human = cleanup.source.replace(
-        "  cleanup_attestation:\n",
-        "  human_attestation:\n",
-        1,
-    )
-    source = source[:human_start] + safe_human + "\n" + source[human_end:]
-    future_job = f'''\
-  {LIVE_AUTHORITY_JOB_NAME}:
-    name: {LIVE_AUTHORITY_ENVIRONMENT}
-    if: ${{{{ inputs.phase6_action == 'record-live-authority' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}}}
-    environment: {LIVE_AUTHORITY_ENVIRONMENT}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      actions: read
-    env:
-      UV_LINK_MODE: copy
-      SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{{{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}}}
-      SKILLSCOUT_STATE_REPOSITORY_ID: ${{{{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}}}
-      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{{{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}}}
-    steps:
-{trusted_prefix}
-      - name: Persist one environment-approved V2 live authority
-        env:
-          GITHUB_TOKEN: ${{{{ github.token }}}}
-          SKILLSCOUT_STATE_GITHUB_TOKEN: ${{{{ secrets.{LIVE_AUTHORITY_STATE_SECRET} }}}}
-        run: |
-          set -euo pipefail
-          umask 077
-          {LOCAL_LOCKED} python -m skillscout.cli record-live-authority --acceptance-run-id "${{SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}}"
-'''
-    assert source.endswith("\n")
-    path.write_text(source + "\n" + future_job, encoding="utf-8")
-    return path
-
-
-def _future_live_authority_job(repository: Path) -> object:
-    module = _module()
-    path = _append_future_live_authority_job(repository)
-    return next(
+    job = next(
         job
-        for job in module._parse_jobs(path.read_text(encoding="utf-8"))
+        for job in module._parse_jobs(source)
         if job.name == LIVE_AUTHORITY_JOB_NAME
     )
-
-
-def _replace_future_live_authority_route(path: Path, old: str, new: str) -> None:
-    source = path.read_text(encoding="utf-8")
-    prefix, marker, route = source.rpartition(f"  {LIVE_AUTHORITY_JOB_NAME}:\n")
-    assert marker
-    assert route.count(old) == 1
-    path.write_text(prefix + marker + route.replace(old, new, 1), encoding="utf-8")
+    assert job.source.count(old) == 1
+    replacement = job.source.replace(old, new, 1)
+    assert source.count(job.source) == 1
+    path.write_text(source.replace(job.source, replacement, 1), encoding="utf-8")
 
 
 def _version_guards(repository: Path) -> tuple[str, ...]:
@@ -212,7 +151,7 @@ def _fresh_toolchain_fragment(repository: Path) -> str:
             start = lines.index('venv_root="${repository_root}/.venv"')
             end = lines.index(MANAGED_PYTHON_SYNC, start) + 1
             fragments.append("\n".join(lines[start:end]))
-    assert len(fragments) == 16
+    assert len(fragments) == 17
     assert len(set(fragments)) == 1
     return fragments[0]
 
@@ -412,37 +351,34 @@ def test_source_execution_verifier_requires_repo_managed_cpython_for_every_job(
 ) -> None:
     module = _module()
     result = module.verify_source_execution(_copy_workflows(tmp_path))
-    assert result.managed_python_job_count == 16
+    assert result.managed_python_job_count == 17
     assert result.managed_python_version == MANAGED_PYTHON_VERSION
     assert result.managed_python_root == MANAGED_PYTHON_ROOT
     assert result.network_none_invocation_count == 6
 
 
-def test_source_execution_fixture_accepts_future_protected_live_authority_route(
+def test_source_execution_fixture_accepts_protected_live_authority_route(
     tmp_path: Path,
 ) -> None:
-    """The planned V2 route is a closed state-only checkout-local command."""
+    """The final V2 route is a closed state-only checkout-local command."""
 
     module = _module()
     repository = _copy_workflows(tmp_path)
-    job = _future_live_authority_job(repository)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
 
     module._planned_live_authority_route_is_closed(
-        (repository / Path(".github/workflows/phase6-acceptance.yml")).read_text(
-            encoding="utf-8"
-        ),
-        (job,),
+        path.read_text(encoding="utf-8"),
+        module._parse_jobs(path.read_text(encoding="utf-8")),
     )
 
 
-def test_source_execution_verifier_accepts_future_protected_authority_fixture(
+def test_source_execution_verifier_accepts_protected_authority_route(
     tmp_path: Path,
 ) -> None:
-    """A future route joins the all-workflow source proof before workflow mutation."""
+    """The final route joins the all-workflow source proof."""
 
     module = _module()
     repository = _copy_workflows(tmp_path)
-    _append_future_live_authority_job(repository)
 
     result = module.verify_source_execution(repository)
 
@@ -462,7 +398,7 @@ def test_source_execution_rejects_obfuscated_recorder_outside_dedicated_job(
 
     module = _module()
     repository = _copy_workflows(tmp_path)
-    path = _append_future_live_authority_job(repository)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
     source = path.read_text(encoding="utf-8")
     needle = '          test -s "$result_file"\n      - name: Upload the bounded nomination result\n'
     replacement = (
@@ -530,23 +466,19 @@ def test_source_execution_fixture_rejects_protected_live_authority_mutations(
     old: str,
     new: str,
 ) -> None:
-    """Each mutation broadens or substitutes authority in the planned route."""
+    """Each mutation broadens or substitutes authority in the final route."""
 
     del mutation
     module = _module()
     repository = _copy_workflows(tmp_path)
-    path = _append_future_live_authority_job(repository)
-    _replace_future_live_authority_route(path, old, new)
-    job = next(
-        job
-        for job in module._parse_jobs(path.read_text(encoding="utf-8"))
-        if job.name == LIVE_AUTHORITY_JOB_NAME
-    )
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    _replace_live_authority_route(path, old, new)
+    source = path.read_text(encoding="utf-8")
 
     with pytest.raises(module.SourceExecutionError):
         module._planned_live_authority_route_is_closed(
-            path.read_text(encoding="utf-8"),
-            (job,),
+            source,
+            module._parse_jobs(source),
         )
 
 
@@ -787,7 +719,7 @@ def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_v
     tmp_path: Path,
 ) -> None:
     guards = _version_guards(ROOT)
-    assert len(guards) == 16
+    assert len(guards) == 17
     assert all(_run_guard(ROOT, guard).returncode == 0 for guard in guards)
 
     fake_repository = tmp_path / "repository"
