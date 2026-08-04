@@ -1947,13 +1947,16 @@ def test_live_authority_recording_is_a_closed_state_only_cli_transition() -> Non
     commands = _cli_subcommands()
     parser = commands["record-live-authority"]
     options = {option for action in parser._actions for option in action.option_strings}
-    assert {
-        "--authority",
-        "--acceptance-run-id",
-        "--source-commit-sha",
-    } <= options
+    assert {"--acceptance-run-id"} <= options
     assert (
         not {
+            "--authority",
+            "--source-commit-sha",
+            "--actor",
+            "--comment",
+            "--authority-json",
+            "--approval-receipt",
+            "--approval-endpoint",
             "--state-commit-sha",
             "--state-root-digest",
             "--state-repository-id",
@@ -1972,6 +1975,65 @@ def test_live_authority_recording_is_a_closed_state_only_cli_transition() -> Non
     }
     assert {"--authority", "--source-commit-sha"} <= preflight_options
     assert not {"--token", "--secret", "--publish", "--catalog"} & preflight_options
+
+
+def test_record_live_authority_v2_rejects_historical_authority_before_store_factory() -> None:
+    from skillscout.adapters.operations_state import AcceptanceRunSnapshot
+    from skillscout.application import acceptance as application
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    calls: list[str] = []
+    dependencies = application.LiveAuthorityDependencies(
+        operations_store_factory=lambda: calls.append("store") or object(),
+    )
+    legacy = LiveAcceptanceAuthorityV1.model_construct(
+        schema_version="live-acceptance-authority-v1",
+        authority_digest="sha256:" + ("1" * 64),
+    )
+    with pytest.raises(TypeError, match="live authority recorder"):
+        application.record_live_authority(
+            dependencies,
+            acceptance_run_id="fresh-campaign",
+            fact=legacy,
+        )
+    assert calls == []
+
+
+def test_record_live_authority_v2_records_only_a_v2_fact() -> None:
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+    from skillscout.application import acceptance as application
+
+    _snapshot, authority, _observation = _fresh_live_authority_admission_inputs()
+    recorded: list[object] = []
+
+    class Store:
+        def acceptance_snapshot(self, acceptance_run_id: str) -> AcceptanceRunSnapshot:
+            return AcceptanceRunSnapshot(acceptance_run_id=acceptance_run_id, facts=())
+
+        def record_acceptance_fact(
+            self,
+            acceptance_run_id: str,
+            kind: str,
+            fact: object,
+        ) -> AcceptanceFactRecord:
+            recorded.append((acceptance_run_id, kind, fact))
+            return AcceptanceFactRecord(
+                acceptance_run_id=acceptance_run_id,
+                kind="acceptance_live_authority",
+                fact_digest=authority.authority_digest,
+                fact=authority,
+            )
+
+        def close(self) -> None:
+            pass
+
+    record = application.record_live_authority(
+        application.LiveAuthorityDependencies(operations_store_factory=Store),
+        acceptance_run_id="fresh-campaign",
+        fact=authority,
+    )
+    assert record.fact_digest == authority.authority_digest
+    assert recorded == [("fresh-campaign", "acceptance_live_authority", authority)]
 
 
 def test_live_authority_state_preflight_is_read_only() -> None:
