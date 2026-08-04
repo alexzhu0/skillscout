@@ -45,6 +45,9 @@ CONTAINER_MANAGED_ENV = (
 )
 REPOSITORY_MOUNT = '--volume "${repository_root}:${repository_root}:ro"'
 CONTROL_USER_OPTION = '--user "${host_uid}:${host_gid}"'
+LIVE_AUTHORITY_ENVIRONMENT = "skillscout-phase6-live-authority"
+LIVE_AUTHORITY_STATE_SECRET = "SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN"
+LIVE_AUTHORITY_JOB_NAME = "record_live_authority"
 
 
 def _module(*, skip_if_missing: bool = True) -> Any:
@@ -87,6 +90,68 @@ def _replace_first(repository: Path, needle: str, replacement: str) -> None:
             path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
             return
     raise AssertionError(f"mutation needle not found: {needle}")
+
+
+def _append_future_live_authority_job(repository: Path) -> Path:
+    """Add the planned state-only authority route to an isolated workflow tree."""
+
+    module = _module()
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    source = path.read_text(encoding="utf-8")
+    benchmark_lock = next(job for job in module._parse_jobs(source) if job.name == "benchmark_lock")
+    assert tuple(step.name for step in benchmark_lock.steps[:3]) == (
+        "Check out the dispatched commit",
+        "Materialize the pinned uv binary",
+        "Verify the repository-local locked toolchain",
+    )
+    trusted_prefix = "\n".join(step.source for step in benchmark_lock.steps[:3])
+    future_job = f'''\
+  {LIVE_AUTHORITY_JOB_NAME}:
+    name: {LIVE_AUTHORITY_ENVIRONMENT}
+    if: ${{{{ inputs.phase6_action == 'record-live-authority' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}}}
+    environment: {LIVE_AUTHORITY_ENVIRONMENT}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      UV_LINK_MODE: copy
+      SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{{{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}}}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{{{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}}}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{{{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}}}
+    steps:
+{trusted_prefix}
+      - name: Persist one environment-approved V2 live authority
+        env:
+          GITHUB_TOKEN: ${{{{ github.token }}}}
+          SKILLSCOUT_STATE_GITHUB_TOKEN: ${{{{ secrets.{LIVE_AUTHORITY_STATE_SECRET} }}}}
+        run: |
+          set -euo pipefail
+          umask 077
+          {LOCAL_LOCKED} python -m skillscout.cli record-live-authority --acceptance-run-id "${{SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}}"
+'''
+    assert source.endswith("\n")
+    path.write_text(source + "\n" + future_job, encoding="utf-8")
+    return path
+
+
+def _future_live_authority_job(repository: Path) -> object:
+    module = _module()
+    path = _append_future_live_authority_job(repository)
+    return next(
+        job
+        for job in module._parse_jobs(path.read_text(encoding="utf-8"))
+        if job.name == LIVE_AUTHORITY_JOB_NAME
+    )
+
+
+def _replace_future_live_authority_route(path: Path, old: str, new: str) -> None:
+    source = path.read_text(encoding="utf-8")
+    prefix, marker, route = source.rpartition(f"  {LIVE_AUTHORITY_JOB_NAME}:\n")
+    assert marker
+    assert route.count(old) == 1
+    path.write_text(prefix + marker + route.replace(old, new, 1), encoding="utf-8")
 
 
 def _version_guards(repository: Path) -> tuple[str, ...]:
@@ -338,6 +403,101 @@ def test_source_execution_verifier_requires_repo_managed_cpython_for_every_job(
     assert result.managed_python_version == MANAGED_PYTHON_VERSION
     assert result.managed_python_root == MANAGED_PYTHON_ROOT
     assert result.network_none_invocation_count == 6
+
+
+def test_source_execution_fixture_accepts_future_protected_live_authority_route(
+    tmp_path: Path,
+) -> None:
+    """The planned V2 route is a closed state-only checkout-local command."""
+
+    module = _module()
+    job = _future_live_authority_job(_copy_workflows(tmp_path))
+
+    module._closed_live_authority_job(job)
+
+
+def test_source_execution_verifier_accepts_future_protected_authority_fixture(
+    tmp_path: Path,
+) -> None:
+    """A future route joins the all-workflow source proof before workflow mutation."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    _append_future_live_authority_job(repository)
+
+    result = module.verify_source_execution(repository)
+
+    assert result.managed_python_job_count == 17
+    assert any(step.job_name == LIVE_AUTHORITY_JOB_NAME for step in result.authoritative_steps)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "old", "new"),
+    (
+        (
+            "alternate_command",
+            "skillscout.cli record-live-authority --acceptance-run-id ",
+            "skillscout.cli run-acceptance --action benchmark ",
+        ),
+        (
+            "permission_widening",
+            "      contents: read\n      actions: read",
+            "      contents: write",
+        ),
+        (
+            "actor_gate",
+            "github.ref == 'refs/heads/main' }}",
+            "github.ref == 'refs/heads/main' && github.actor == 'alexzhu0' }}",
+        ),
+        (
+            "free_authority_json",
+            "      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}",
+            "      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}\n"
+            "      PHASE6_LIVE_AUTHORITY_JSON: ${{ inputs.live_authority_json }}",
+        ),
+        (
+            "wrong_environment",
+            f"    environment: {LIVE_AUTHORITY_ENVIRONMENT}",
+            "    environment: phase6-human-benchmark-lock",
+        ),
+        (
+            "approval_reader_drift",
+            "          GITHUB_TOKEN: ${{ github.token }}",
+            "          GITHUB_TOKEN: ${{ vars.UNRELATED_TOKEN }}",
+        ),
+        (
+            "state_secret_drift",
+            f"${{{{ secrets.{LIVE_AUTHORITY_STATE_SECRET} }}}}",
+            "${{ secrets.SKILLSCOUT_STATE_GITHUB_TOKEN }}",
+        ),
+        (
+            "checkout_ref_drift",
+            "          ref: ${{ github.sha }}",
+            "          ref: attacker-ref",
+        ),
+    ),
+)
+def test_source_execution_fixture_rejects_protected_live_authority_mutations(
+    tmp_path: Path,
+    mutation: str,
+    old: str,
+    new: str,
+) -> None:
+    """Each mutation broadens or substitutes authority in the planned route."""
+
+    del mutation
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = _append_future_live_authority_job(repository)
+    _replace_future_live_authority_route(path, old, new)
+    job = next(
+        job
+        for job in module._parse_jobs(path.read_text(encoding="utf-8"))
+        if job.name == LIVE_AUTHORITY_JOB_NAME
+    )
+
+    with pytest.raises(module.SourceExecutionError):
+        module._closed_live_authority_job(job)
 
 
 def test_fresh_locked_toolchain_installs_project_for_phase6_control_runtime(
