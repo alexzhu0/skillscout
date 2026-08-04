@@ -450,8 +450,13 @@ def test_source_execution_verifier_accepts_future_protected_authority_fixture(
     assert any(step.job_name == LIVE_AUTHORITY_JOB_NAME for step in result.authoritative_steps)
 
 
+@pytest.mark.parametrize(
+    "obfuscated_subcommand",
+    ("record-live''-authority", "record-live\\-authority"),
+)
 def test_source_execution_rejects_obfuscated_recorder_outside_dedicated_job(
     tmp_path: Path,
+    obfuscated_subcommand: str,
 ) -> None:
     """A shell-concatenated recorder name cannot bypass the dedicated route."""
 
@@ -462,7 +467,7 @@ def test_source_execution_rejects_obfuscated_recorder_outside_dedicated_job(
     needle = '          test -s "$result_file"\n      - name: Upload the bounded nomination result\n'
     replacement = (
         '          test -s "$result_file"\n'
-        f"          {LOCAL_LOCKED} python -m skillscout.cli record-live''-authority "
+        f"          {LOCAL_LOCKED} python -m skillscout.cli {obfuscated_subcommand} "
         '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"\n'
         "      - name: Upload the bounded nomination result\n"
     )
