@@ -310,7 +310,7 @@ Plans:
 
 **Depends on:** Phase 5  
 **Requirements:** TEST-01, TEST-02, TEST-03, TEST-04  
-**Plans:** 8/18 plans executed
+**Plans:** 9/18 plans executed
 
 - [x] 06-01-PLAN.md
 - [x] 06-02-PLAN.md
@@ -327,8 +327,8 @@ Plans:
 - [ ] 06-13-PLAN.md
 - [ ] 06-14-PLAN.md
 - [x] 06-15-PLAN.md
-- [ ] 06-16-PLAN.md
-- [ ] 06-17-PLAN.md
+- [x] 06-16-PLAN.md
+- [x] 06-17-PLAN.md
 - [ ] 06-18-PLAN.md
 
 - [ ] `06-01-PLAN.md` — Freeze Wave 0 acceptance contracts and exact validation task map.
@@ -347,7 +347,7 @@ Plans:
 - [ ] `06-14-PLAN.md` — Update documentation, rebuild release bytes, and run the full locked chain.
 - [ ] `06-15-PLAN.md` — Finalize pre-Gate-B4 workflow authority zones and locked checked-out-source execution.
 - [ ] `06-16-PLAN.md` — Bind the static V1 benchmark selection to a protected, state-only V2 benchmark lock.
-- [ ] `06-17-PLAN.md` — Build V2 live-authority admission before any credential boundary.
+- [x] `06-17-PLAN.md` — Build V2 live-authority admission before any credential boundary.
 - [ ] `06-18-PLAN.md` — Record distinct protected V2 live authority and perform the final pre-Gate-B4 workflow-byte freeze.
 
 **Success Criteria:**
@@ -380,7 +380,7 @@ Plans:
 | 3. Validated Skill Candidate | 14/14 | Complete   | 2026-07-23 |
 | 4. Controlled Draft PR | 11/11 | Complete    | 2026-07-27 |
 | 5. Automated Discovery Operations | 14/14 | Complete    | 2026-07-28 |
-| 6. Adversarial MVP Acceptance | 8/18 | In Progress|  |
+| 6. Adversarial MVP Acceptance | 10/18 | In Progress|  |
 
 ## Milestone Exit Criteria
 

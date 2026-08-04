@@ -25,7 +25,8 @@ from skillscout.bootstrap import (
     derive_discovery_publication_admissions,
     discovery_run_authority,
     load_acceptance_attestation,
-    record_live_acceptance_authority,
+    load_live_execution_admission_v2,
+    record_live_acceptance_authority_v2,
     verify_live_acceptance_authority_state,
     load_acceptance_runtime_config,
     load_verified_state_checkout,
@@ -170,6 +171,9 @@ def build_parser() -> SafeArgumentParser:
     run_acceptance.add_argument("--resume-proof", type=Path)
     run_acceptance.add_argument("--state-commit-sha", required=True)
     run_acceptance.add_argument("--state-root-digest", required=True)
+    run_acceptance.add_argument("--authority-state-root", required=True, type=Path)
+    run_acceptance.add_argument("--authority-state-commit-sha", required=True)
+    run_acceptance.add_argument("--authority-state-root-digest", required=True)
     verify_live = commands.add_parser("verify-live-authority")
     verify_live.add_argument("--authority-state-root", required=True, type=Path)
     verify_live.add_argument("--authority-state-root-digest", required=True)
@@ -225,9 +229,7 @@ def build_parser() -> SafeArgumentParser:
     record_attestation.add_argument("--state-commit-sha", required=True)
     record_attestation.add_argument("--state-root-digest", required=True)
     record_authority = commands.add_parser("record-live-authority")
-    record_authority.add_argument("--authority", required=True, type=Path)
     record_authority.add_argument("--acceptance-run-id", required=True)
-    record_authority.add_argument("--source-commit-sha", required=True)
     verify_authority_state = commands.add_parser("verify-live-authority-state")
     verify_authority_state.add_argument("--authority", required=True, type=Path)
     verify_authority_state.add_argument("--source-commit-sha", required=True)
@@ -1058,12 +1060,22 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
     try:
         if arguments.action not in {"benchmark", "replay"}:
             raise ValueError
+        repository_id, repository_full_name = _protected_state_repository()
+        admission = load_live_execution_admission_v2(
+            authority_state_root=arguments.authority_state_root,
+            authority_state_commit_sha=arguments.authority_state_commit_sha,
+            authority_state_root_digest=arguments.authority_state_root_digest,
+            acceptance_run_id=arguments.acceptance_run_id,
+            state_repository_id=repository_id,
+            state_repository_full_name=repository_full_name,
+        )
         config = load_acceptance_runtime_config(
             manifest_path=arguments.manifest,
             state_commit_sha=arguments.state_commit_sha,
             state_root_digest=arguments.state_root_digest,
             acceptance_run_id=arguments.acceptance_run_id,
             resume_proof_path=getattr(arguments, "resume_proof", None),
+            live_admission=admission,
         )
         restored = _restore_acceptance_state(
             state_commit_sha=config.state_commit_sha,
@@ -1076,12 +1088,14 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
                 config=config,
                 restored=restored,
                 acceptance_run_id=arguments.acceptance_run_id,
+                live_admission=admission,
             )
         if arguments.action == "replay":
             return _run_live_replay(
                 config=config,
                 restored=restored,
                 acceptance_run_id=arguments.acceptance_run_id,
+                live_admission=admission,
             )
         raise ValueError
     except SafeFailure:
@@ -1095,6 +1109,7 @@ def _run_live_benchmark(
     config: object,
     restored: object,
     acceptance_run_id: str,
+    live_admission: object | None = None,
 ) -> dict[str, object]:
     """Execute the benchmark through the protected production composition."""
 
@@ -1105,6 +1120,7 @@ def _run_live_benchmark(
         restored=restored,
         action="benchmark",
         acceptance_run_id=acceptance_run_id,
+        live_admission=live_admission,
     )
     result = runtime.run()
     if type(result) is not dict or result.get("status") != "benchmark_complete":
@@ -1117,6 +1133,7 @@ def _run_live_replay(
     config: object,
     restored: object,
     acceptance_run_id: str,
+    live_admission: object | None = None,
 ) -> dict[str, object]:
     """Execute replay through a composition with no semantic/publication factory."""
 
@@ -1127,6 +1144,7 @@ def _run_live_replay(
         restored=restored,
         action="replay",
         acceptance_run_id=acceptance_run_id,
+        live_admission=live_admission,
     )
     result = runtime.run()
     if type(result) is not dict or result.get("status") != "replay_complete":
@@ -1646,27 +1664,11 @@ def _run_record_acceptance_attestation(
 
 
 def _run_record_live_authority(arguments: argparse.Namespace) -> dict[str, object]:
-    """Persist an exact human-approved benchmark authority with state-only scope."""
+    """Persist one V2 authority from fixed state and Actions evidence only."""
 
     try:
-        protected_id, protected_name = _protected_state_repository()
-        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
-
-        raw = _read_live_authority_input(arguments.authority)
-        proposed = LiveAcceptanceAuthorityV1.model_validate_json(raw, strict=True)
-        if (
-            proposed.state_repository_id != protected_id
-            or proposed.state_repository_full_name != protected_name
-        ):
-            raise ValueError
-        result = record_live_acceptance_authority(
-            authority_path=arguments.authority,
+        result = record_live_acceptance_authority_v2(
             acceptance_run_id=arguments.acceptance_run_id,
-            source_commit_sha=arguments.source_commit_sha,
-            state_commit_sha=proposed.state_commit_sha,
-            state_root_digest=proposed.state_root_digest,
-            state_repository_id=protected_id,
-            state_repository_full_name=protected_name,
         )
         if type(result) is not dict or result.get("status") != "live_authority_persisted":
             raise ValueError

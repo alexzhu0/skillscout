@@ -721,6 +721,42 @@ class FreshCampaignLockRuntimeConfig:
             raise ValueError("fresh campaign lock configuration rejected")
 
 
+@dataclass(frozen=True)
+class LiveAuthorityRecordingRuntimeConfig:
+    """Closed, non-secret inputs for one V2 live-authority transition."""
+
+    acceptance_run_id: str
+    preparation: FreshCampaignPreparationRuntimeConfig
+    repository_root: Path
+    selection_manifest: object
+    source_repository_id: int
+    source_repository_full_name: str
+    source_commit_sha: str
+    acceptance_workflow_sha256: str
+    workflow_run_id: int
+    workflow_run_attempt: int
+
+    def __post_init__(self) -> None:
+        from skillscout.domain.acceptance import LockedBenchmarkManifestV1
+
+        if (
+            not _closed_identity(self.acceptance_run_id)
+            or type(self.preparation) is not FreshCampaignPreparationRuntimeConfig
+            or not isinstance(self.repository_root, Path)
+            or type(self.selection_manifest) is not LockedBenchmarkManifestV1
+            or type(self.source_repository_id) is not int
+            or self.source_repository_id <= 0
+            or not _github_full_name(self.source_repository_full_name)
+            or not _is_commit_sha(self.source_commit_sha)
+            or not _is_digest(self.acceptance_workflow_sha256)
+            or type(self.workflow_run_id) is not int
+            or self.workflow_run_id <= 0
+            or type(self.workflow_run_attempt) is not int
+            or self.workflow_run_attempt != 1
+        ):
+            raise ValueError("live authority recording configuration rejected")
+
+
 def _is_commit_sha(value: object) -> bool:
     return (
         type(value) is str
@@ -986,6 +1022,143 @@ def load_fresh_campaign_lock_handoff(
         raise ValueError("fresh campaign lock handoff rejected") from None
 
 
+def _required_positive_decimal_environment(
+    source: Mapping[str, str],
+    name: str,
+) -> int:
+    """Read one bounded non-secret Actions identity without exposing its value."""
+
+    try:
+        value = source[name]
+        if (
+            type(value) is not str
+            or not value.isascii()
+            or not value.isdecimal()
+            or value.startswith("0")
+        ):
+            raise ValueError
+        result = int(value)
+        if result <= 0:
+            raise ValueError
+        return result
+    except Exception:
+        raise ValueError("live authority Actions identity rejected") from None
+
+
+def load_live_authority_recording_runtime_config(
+    *,
+    acceptance_run_id: str,
+    environ: Mapping[str, str] | None = None,
+) -> LiveAuthorityRecordingRuntimeConfig:
+    """Read only exact checked-out source and bounded Actions identities.
+
+    This loader intentionally has no authority document, receipt, actor, or
+    endpoint input.  The actor/trigger identity is derived later from the
+    fixed-host Actions attempt response, after the current V2 lock is rebuilt.
+    """
+
+    try:
+        source = os.environ if environ is None else environ
+        if not _closed_identity(acceptance_run_id):
+            raise ValueError
+        source_repository_id = _required_positive_decimal_environment(
+            source,
+            "GITHUB_REPOSITORY_ID",
+        )
+        state_repository_id = _required_positive_decimal_environment(
+            source,
+            "SKILLSCOUT_STATE_REPOSITORY_ID",
+        )
+        source_repository_full_name = source["GITHUB_REPOSITORY"]
+        state_repository_full_name = source["SKILLSCOUT_STATE_REPOSITORY_FULL_NAME"]
+        source_commit_sha = source["GITHUB_SHA"]
+        workflow_run_id = _required_positive_decimal_environment(source, "GITHUB_RUN_ID")
+        workflow_run_attempt = _required_positive_decimal_environment(
+            source,
+            "GITHUB_RUN_ATTEMPT",
+        )
+        if (
+            not _github_full_name(source_repository_full_name)
+            or not _github_full_name(state_repository_full_name)
+            or not _is_commit_sha(source_commit_sha)
+            or workflow_run_attempt != 1
+        ):
+            raise ValueError
+        root = _trusted_repository_root(Path.cwd().resolve(strict=True))
+        if _checked_out_repository_commit(root) != source_commit_sha:
+            raise ValueError
+        manifest_relative = Path(
+            ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+        )
+        workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
+        query_relative = Path("config") / _DISCOVERY_QUERY_SET_NAME
+        manifest_bytes = _read_exact_checked_out_source_file(
+            root,
+            source_commit_sha=source_commit_sha,
+            relative_path=manifest_relative,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+        )
+        workflow_bytes = _read_exact_checked_out_source_file(
+            root,
+            source_commit_sha=source_commit_sha,
+            relative_path=workflow_relative,
+            max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+        )
+        query_bytes = _read_exact_checked_out_source_file(
+            root,
+            source_commit_sha=source_commit_sha,
+            relative_path=query_relative,
+            max_bytes=_DISCOVERY_DIGEST_BYTES,
+        )
+        from skillscout.domain.acceptance import LockedBenchmarkManifestV1
+        from skillscout.domain.canonical import canonical_json_bytes
+        from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+        selection_manifest = LockedBenchmarkManifestV1.model_validate_json(
+            manifest_bytes,
+            strict=True,
+        )
+        query_set = DiscoveryQuerySetV1.model_validate_json(query_bytes, strict=True)
+        if (
+            manifest_bytes not in {
+                canonical_json_bytes(selection_manifest),
+                canonical_json_bytes(selection_manifest) + b"\n",
+            }
+            or query_bytes not in {
+                canonical_json_bytes(query_set),
+                canonical_json_bytes(query_set) + b"\n",
+            }
+            or query_set.query_set_digest is None
+        ):
+            raise ValueError
+        preparation = FreshCampaignPreparationRuntimeConfig(
+            state_repository_id=state_repository_id,
+            state_repository_full_name=state_repository_full_name,
+            query_set_path=query_relative,
+            query_set=query_set,
+            query_set_digest=query_set.query_set_digest,
+            operations_state=Path(_DISCOVERY_DATABASE_LOCATORS[1]),
+            state_lineage_anchor_commit_sha=_PHASE6_STATE_LINEAGE_ANCHOR_COMMIT_SHA,
+            state_lineage_anchor_root_digest=_PHASE6_STATE_LINEAGE_ANCHOR_ROOT_DIGEST,
+        )
+        return LiveAuthorityRecordingRuntimeConfig(
+            acceptance_run_id=acceptance_run_id,
+            preparation=preparation,
+            repository_root=root,
+            selection_manifest=selection_manifest,
+            source_repository_id=source_repository_id,
+            source_repository_full_name=source_repository_full_name,
+            source_commit_sha=source_commit_sha,
+            acceptance_workflow_sha256=(
+                "sha256:" + hashlib.sha256(workflow_bytes).hexdigest()
+            ),
+            workflow_run_id=workflow_run_id,
+            workflow_run_attempt=workflow_run_attempt,
+        )
+    except Exception:
+        raise ValueError("live authority recording configuration rejected") from None
+
+
 def load_acceptance_runtime_config(
     *,
     manifest_path: Path,
@@ -993,9 +1166,10 @@ def load_acceptance_runtime_config(
     state_root_digest: str,
     acceptance_run_id: str | None = None,
     resume_proof_path: Path | None = None,
+    live_admission: object | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> AcceptanceRuntimeConfig:
-    """Re-admit locked facts and provider identity before credential lookup."""
+    """Build runtime configuration after the V2 admission boundary."""
 
     try:
         if (
@@ -1010,7 +1184,6 @@ def load_acceptance_runtime_config(
             manifest_path,
             max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
         )
-        from skillscout.adapters.semantic_provider import resolve_semantic_provider
         from skillscout.domain.acceptance import LockedBenchmarkManifestV1
         from skillscout.domain.canonical import canonical_json_bytes
 
@@ -1023,7 +1196,21 @@ def load_acceptance_runtime_config(
             raise ValueError
 
         source = os.environ if environ is None else environ
-        provider = resolve_semantic_provider(source)
+        from skillscout.application.acceptance import LiveExecutionAdmissionV2
+
+        if (
+            type(live_admission) is not LiveExecutionAdmissionV2
+            or live_admission.authority.authority_digest is None
+            or source["PHASE6_AUTHORITY_DIGEST"]
+            != live_admission.authority.authority_digest
+            or manifest != live_admission.lock.selection_manifest
+        ):
+            raise ValueError
+        semantic_provider = live_admission.authority.semantic_provider
+        extractor_model_id, generator_model_id, reviewer_model_id = (
+            live_admission.authority.stage_models
+        )
+        live_authority_digest = live_admission.authority.authority_digest
         resume_locator_digest: str | None = None
         resume_transition_index = 0
         resume_commits: tuple[str, ...] = ()
@@ -1093,11 +1280,11 @@ def load_acceptance_runtime_config(
             manifest=manifest,
             state_commit_sha=state_commit_sha,
             state_root_digest=state_root_digest,
-            semantic_provider=provider.provider.value,
-            extractor_model_id=provider.extract_model,
-            generator_model_id=provider.generator_model,
-            reviewer_model_id=provider.reviewer_model,
-            live_acceptance_authority_digest=source["PHASE6_AUTHORITY_DIGEST"],
+            semantic_provider=semantic_provider,
+            extractor_model_id=extractor_model_id,
+            generator_model_id=generator_model_id,
+            reviewer_model_id=reviewer_model_id,
+            live_acceptance_authority_digest=live_authority_digest,
             acceptance_run_id=(acceptance_run_id if resume_proof_path is not None else None),
             resume_locator_digest=resume_locator_digest,
             resume_transition_index=resume_transition_index,
@@ -1287,6 +1474,544 @@ def record_live_acceptance_authority(
         "state_repository_full_name": authority.state_repository_full_name,
         "status": "live_authority_persisted",
     }
+
+
+def _restore_current_live_authority_recording_state(
+    *,
+    config: LiveAuthorityRecordingRuntimeConfig,
+    source: Mapping[str, str],
+) -> object:
+    """Restore the current state branch without constructing a publication owner."""
+
+    if type(config) is not LiveAuthorityRecordingRuntimeConfig:
+        raise ValueError("live authority recording configuration rejected")
+    from skillscout.adapters.operations_state import restore_acceptance_state_bundle
+    from skillscout.adapters.state_branch import (
+        StateBranchClient,
+        StateBranchStore,
+        StateLineageAnchor,
+    )
+
+    preparation = config.preparation
+    client = StateBranchClient(
+        token=_required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN"),
+        repository_id=preparation.state_repository_id,
+        repository_full_name=preparation.state_repository_full_name,
+    )
+    try:
+        observation = StateBranchStore(client).restore(
+            lineage_anchor=StateLineageAnchor(
+                commit_sha=preparation.state_lineage_anchor_commit_sha,
+                root_digest=preparation.state_lineage_anchor_root_digest,
+                max_hops=preparation.state_lineage_anchor_max_hops,
+            )
+        )
+        bundle = getattr(observation, "bundle", None)
+        root = getattr(bundle, "root", None)
+        if (
+            bundle is None
+            or root is None
+            or not _is_commit_sha(getattr(observation, "observed_head", None))
+            or not _is_digest(getattr(root, "root_digest", None))
+        ):
+            raise ValueError
+        restore_acceptance_state_bundle(
+            bundle,
+            pipeline_path=Path(_DISCOVERY_DATABASE_LOCATORS[0]),
+            operations_path=preparation.operations_state,
+        )
+        return observation
+    finally:
+        client.close()
+
+
+def _build_live_execution_approval_receipt(
+    *,
+    config: LiveAuthorityRecordingRuntimeConfig,
+    lock: object,
+    source: Mapping[str, str],
+) -> object:
+    """Read one fixed-host, redacted Environment-B receipt after lock rebuild."""
+
+    from skillscout.adapters.github import GitHubReadClient
+    from skillscout.domain.acceptance import (
+        LiveExecutionApprovalReceiptV2,
+        LockedBenchmarkManifestV2,
+    )
+
+    if type(config) is not LiveAuthorityRecordingRuntimeConfig or type(lock) is not LockedBenchmarkManifestV2:
+        raise ValueError("live authority approval receipt rejected")
+    owner, repository = config.source_repository_full_name.split("/", 1)
+    client = GitHubReadClient(token=_required_credential(source, "GITHUB_TOKEN"))
+    try:
+        attempt = client.get_workflow_run_attempt(
+            owner,
+            repository,
+            config.workflow_run_id,
+            config.workflow_run_attempt,
+        )
+        approvals = client.get_workflow_run_approvals(
+            owner,
+            repository,
+            config.workflow_run_id,
+        )
+    finally:
+        client.close()
+    trigger_identity = (
+        f"{attempt.event}:{attempt.actor_id}:{attempt.actor_login}"
+        if getattr(attempt, "event", None) == "workflow_dispatch"
+        else ""
+    )
+    if (
+        config.workflow_run_attempt != 1
+        or attempt.source_commit_sha != config.source_commit_sha
+        or attempt.source_commit_sha != lock.source_commit_sha
+        or attempt.event != "workflow_dispatch"
+        or not _is_fresh_campaign_workflow_path(attempt.workflow_path)
+        or attempt.actor_id != attempt.triggering_actor_id
+        or attempt.actor_login != attempt.triggering_actor_login
+        or not _fresh_campaign_trigger_identity(trigger_identity)
+    ):
+        raise ValueError("live authority Actions attempt rejected")
+    matching = tuple(
+        approval
+        for approval in approvals
+        if (
+            approval.environment == "skillscout-phase6-live-authority"
+            and approval.reviewer_login == "alexzhu0"
+            and approval.workflow_run_id == config.workflow_run_id
+        )
+    )
+    if len(matching) != 1:
+        raise ValueError("live authority approval is missing or ambiguous")
+    approval = matching[0]
+    return LiveExecutionApprovalReceiptV2(
+        schema_version="live-execution-approval-receipt-v2",
+        purpose="live_execution",
+        environment="skillscout-phase6-live-authority",
+        source_repository_id=config.source_repository_id,
+        source_repository_full_name=config.source_repository_full_name,
+        reviewer_login="alexzhu0",
+        reviewer_id=approval.reviewer_id,
+        workflow_run_id=config.workflow_run_id,
+        workflow_run_attempt=config.workflow_run_attempt,
+        source_commit_sha=config.source_commit_sha,
+        workflow_sha256=config.acceptance_workflow_sha256,
+        trigger_identity=trigger_identity,
+        approval_record_digest=approval.approval_record_digest,
+    )
+
+
+def record_live_acceptance_authority_v2(
+    *,
+    acceptance_run_id: str,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Persist one V2 authority from rebuilt state and fixed-host approval facts.
+
+    The public command input is solely the acceptance run identity.  No caller
+    can supply authority JSON, approval prose, actor identity, endpoint, or a
+    receipt.  State is restored once before the Actions-read token is resolved;
+    all later state mutation is the one forward authority-carrier CAS.
+    """
+
+    try:
+        source = os.environ if environ is None else environ
+        config = load_live_authority_recording_runtime_config(
+            acceptance_run_id=acceptance_run_id,
+            environ=source,
+        )
+        restored = _restore_current_live_authority_recording_state(
+            config=config,
+            source=source,
+        )
+        root = getattr(getattr(restored, "bundle", None), "root", None)
+        observed_head = getattr(restored, "observed_head", None)
+        if root is None or not _is_commit_sha(observed_head):
+            raise ValueError
+        from skillscout.adapters.operations_state import OperationsStateStore
+        from skillscout.application.acceptance import (
+            LiveAuthorityDependencies,
+            LiveAuthorityStateObservation,
+            re_admit_fresh_benchmark_lock_v2,
+            re_admit_live_execution_v2,
+            record_live_authority,
+        )
+        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV2
+        from skillscout.domain.discovery import DiscoveryBudgetPolicyV1
+
+        with OperationsStateStore(config.preparation.operations_state) as operations:
+            snapshot = operations.acceptance_snapshot(acceptance_run_id)
+            if any(record.kind == "acceptance_live_authority" for record in snapshot.facts):
+                raise ValueError("live authority already exists")
+            lock_admission = re_admit_fresh_benchmark_lock_v2(snapshot=snapshot)
+        lock = lock_admission.lock
+        budget = DiscoveryBudgetPolicyV1()
+        if (
+            lock.source_repository_id != config.source_repository_id
+            or lock.source_repository_full_name != config.source_repository_full_name
+            or lock.source_commit_sha != config.source_commit_sha
+            or lock.acceptance_workflow_sha256 != config.acceptance_workflow_sha256
+            or lock.state_repository_id != config.preparation.state_repository_id
+            or lock.state_repository_full_name != config.preparation.state_repository_full_name
+            or lock.selection_manifest != config.selection_manifest
+            or getattr(root, "state_parent_commit_sha", None) != lock.parent_state_commit_sha
+            or getattr(root, "prior_root_digest", None) != lock.parent_state_root_digest
+            or getattr(root, "query_set_digest", None) != config.preparation.query_set_digest
+            or getattr(root, "budget_policy_digest", None) != budget.budget_policy_digest
+            or getattr(root, "root_digest", None) == lock.parent_state_root_digest
+            or observed_head == lock.parent_state_commit_sha
+        ):
+            raise ValueError("live authority lock state binding rejected")
+        receipt = _build_live_execution_approval_receipt(
+            config=config,
+            lock=lock,
+            source=source,
+        )
+        from skillscout.adapters.openai_generate import (
+            GENERATOR_POLICY_VERSION,
+            GENERATOR_PROMPT_VERSION,
+        )
+        from skillscout.domain.extraction import (
+            EXTRACT_POLICY_VERSION,
+            EXTRACT_PROMPT_VERSION,
+            WORKFLOW_SPEC_SCHEMA_VERSION,
+        )
+        from skillscout.domain.qualification import QUALIFICATION_POLICY_VERSION
+        from skillscout.domain.reading import READER_POLICY_VERSION
+        from skillscout.domain.review import (
+            REVIEW_OUTPUT_SCHEMA_VERSION,
+            REVIEW_POLICY_VERSION,
+            REVIEW_PROMPT_VERSION,
+        )
+        from skillscout.domain.skill_artifacts import GENERATION_DRAFT_SCHEMA_VERSION
+
+        authority = LiveAcceptanceAuthorityV2(
+            schema_version="live-acceptance-authority-v2",
+            authority_version=2,
+            purpose="live_execution",
+            benchmark_lock_digest=lock.lock_digest or "",
+            benchmark_lock=lock,
+            source_repository_id=lock.source_repository_id,
+            source_repository_full_name=lock.source_repository_full_name,
+            state_repository_id=lock.state_repository_id,
+            state_repository_full_name=lock.state_repository_full_name,
+            parent_state_commit_sha=lock.parent_state_commit_sha,
+            parent_state_root_digest=lock.parent_state_root_digest,
+            state_commit_sha=observed_head,
+            state_root_digest=getattr(root, "root_digest", ""),
+            source_commit_sha=lock.source_commit_sha,
+            acceptance_workflow_sha256=lock.acceptance_workflow_sha256,
+            source_state_binding_digest=lock.source_state_binding_digest,
+            manifest_path=(
+                ".planning/phases/06-adversarial-mvp-acceptance/"
+                "06-BENCHMARK-MANIFEST.json"
+            ),
+            manifest_digest=lock.selection_manifest_digest,
+            selection_manifest_digest=lock.selection_manifest_digest,
+            nomination_set_digest=lock.nomination_set_digest,
+            lock_attestation_digest=(
+                lock.selection_manifest.lock_attestation.attestation_digest
+            ),
+            entries=lock.entries,
+            environment="skillscout-phase6-live-authority",
+            approved_reviewer_login="alexzhu0",
+            approved_reviewer_id=receipt.reviewer_id,
+            workflow_run_id=receipt.workflow_run_id,
+            workflow_run_attempt=receipt.workflow_run_attempt,
+            trigger_identity=receipt.trigger_identity,
+            approval_record_digest=receipt.approval_record_digest,
+            approval_receipt=receipt,
+            approval_receipt_digest=receipt.receipt_digest or "",
+            query_set_digest=config.preparation.query_set_digest,
+            budget_policy_digest=budget.budget_policy_digest or "",
+            semantic_provider="deepseek",
+            provider_base_url="https://api.deepseek.com",
+            stage_models=(
+                "deepseek-v4-flash",
+                "deepseek-v4-flash",
+                "deepseek-v4-pro",
+            ),
+            prompt_versions=(
+                EXTRACT_PROMPT_VERSION,
+                GENERATOR_PROMPT_VERSION,
+                REVIEW_PROMPT_VERSION,
+            ),
+            schema_versions=(
+                WORKFLOW_SPEC_SCHEMA_VERSION,
+                GENERATION_DRAFT_SCHEMA_VERSION,
+                REVIEW_OUTPUT_SCHEMA_VERSION,
+            ),
+            policy_versions=tuple(
+                sorted(
+                    (
+                        budget.budget_policy_version,
+                        EXTRACT_POLICY_VERSION,
+                        GENERATOR_POLICY_VERSION,
+                        QUALIFICATION_POLICY_VERSION,
+                        READER_POLICY_VERSION,
+                        REVIEW_POLICY_VERSION,
+                    )
+                )
+            ),
+            max_candidates=100,
+            max_semantic_candidates=20,
+            max_semantic_requests=20,
+            max_files_per_repository=25,
+            max_source_files_per_repository=5,
+            max_file_bytes=131_072,
+            max_total_bytes_per_repository=524_288,
+            max_tokens_per_repository=40_000,
+            benchmark_scenario_write_count=5,
+            replay_semantic_effect_count=0,
+            replay_publication_effect_count=0,
+            approved_at=_discovery_timestamp(),
+        )
+        record = record_live_authority(
+            LiveAuthorityDependencies(
+                operations_store_factory=lambda: OperationsStateStore(
+                    config.preparation.operations_state
+                )
+            ),
+            acceptance_run_id=acceptance_run_id,
+            fact=authority,
+        )
+        with OperationsStateStore(config.preparation.operations_state) as operations:
+            barrier = _LateStateDurabilityBarrier(config.preparation, source)
+            barrier.configure_acceptance_resume(
+                authority=authority,
+                acceptance_run_id=acceptance_run_id,
+                lineage_commit_shas=(authority.state_commit_sha,),
+                lineage_root_digests=(authority.state_root_digest,),
+            )
+            synchronized = barrier.sync_discovery(
+                operations_store=operations,
+                observed_head=authority.state_commit_sha,
+                prior_root_digest=authority.state_root_digest,
+                created_at=_discovery_timestamp(),
+                transition_phase="authority_carrier",
+            )
+        if (
+            getattr(synchronized, "status", None) != "verified"
+            or not _is_commit_sha(getattr(synchronized, "commit_sha", None))
+            or not _is_digest(getattr(synchronized, "root_digest", None))
+        ):
+            raise ValueError("live authority persistence rejected")
+        rebuilt = read_exact_acceptance_state(
+            state_commit_sha=synchronized.commit_sha,
+            state_repository_id=authority.state_repository_id,
+            state_repository_full_name=authority.state_repository_full_name,
+            pipeline_state=Path(_DISCOVERY_DATABASE_LOCATORS[0]),
+            operations_state=Path(_DISCOVERY_DATABASE_LOCATORS[1]),
+            state_lineage_anchor_commit_sha=authority.state_commit_sha,
+            state_lineage_anchor_root_digest=authority.state_root_digest,
+            environ=source,
+        )
+        rebuilt_root = getattr(getattr(rebuilt, "bundle", None), "root", None)
+        if (
+            getattr(rebuilt, "observed_head", None) != synchronized.commit_sha
+            or rebuilt_root is None
+            or rebuilt_root.root_digest != synchronized.root_digest
+            or not _is_commit_sha(getattr(rebuilt_root, "state_parent_commit_sha", None))
+            or not _is_digest(getattr(rebuilt_root, "prior_root_digest", None))
+        ):
+            raise ValueError("live authority rebuild rejected")
+        with OperationsStateStore(Path(_DISCOVERY_DATABASE_LOCATORS[1])) as operations:
+            rebuilt_snapshot = operations.acceptance_snapshot(acceptance_run_id)
+        re_admit_live_execution_v2(
+            snapshot=rebuilt_snapshot,
+            authority_digest=record.fact_digest,
+            state_observation=LiveAuthorityStateObservation(
+                state_repository_id=authority.state_repository_id,
+                state_repository_full_name=authority.state_repository_full_name,
+                authority_carrier_commit_sha=synchronized.commit_sha,
+                authority_carrier_root_digest=synchronized.root_digest,
+                authority_carrier_parent_commit_sha=rebuilt_root.state_parent_commit_sha,
+                authority_carrier_prior_root_digest=rebuilt_root.prior_root_digest,
+                lock_state_parent_commit_sha=authority.parent_state_commit_sha,
+                lock_state_prior_root_digest=authority.parent_state_root_digest,
+            ),
+        )
+        return {
+            "acceptance_run_id": acceptance_run_id,
+            "authority_digest": record.fact_digest,
+            "authority_state_commit_sha": synchronized.commit_sha,
+            "authority_state_root_digest": synchronized.root_digest,
+            "source_commit_sha": authority.source_commit_sha,
+            "state_commit_sha": authority.state_commit_sha,
+            "state_root_digest": authority.state_root_digest,
+            "state_repository_id": authority.state_repository_id,
+            "state_repository_full_name": authority.state_repository_full_name,
+            "status": "live_authority_persisted",
+        }
+    except Exception:
+        raise ValueError("live acceptance authority recording rejected") from None
+
+
+def _verify_live_execution_admission_source(admission: object) -> None:
+    """Recheck only checked-out source bytes bound into a V2 authority."""
+
+    from skillscout.application.acceptance import LiveExecutionAdmissionV2
+    from skillscout.domain.acceptance import LockedBenchmarkManifestV1
+    from skillscout.domain.canonical import canonical_json_bytes
+    from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+    if type(admission) is not LiveExecutionAdmissionV2:
+        raise ValueError("live execution source admission rejected")
+    authority = admission.authority
+    root = _trusted_repository_root(Path.cwd().resolve(strict=True))
+    if _checked_out_repository_commit(root) != authority.source_commit_sha:
+        raise ValueError("live execution source admission rejected")
+    manifest_relative = Path(
+        ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+    )
+    workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
+    query_relative = Path("config") / _DISCOVERY_QUERY_SET_NAME
+    manifest_bytes = _read_exact_checked_out_source_file(
+        root,
+        source_commit_sha=authority.source_commit_sha,
+        relative_path=manifest_relative,
+        max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+    )
+    workflow_bytes = _read_exact_checked_out_source_file(
+        root,
+        source_commit_sha=authority.source_commit_sha,
+        relative_path=workflow_relative,
+        max_bytes=_ACCEPTANCE_MANIFEST_BYTES,
+    )
+    query_bytes = _read_exact_checked_out_source_file(
+        root,
+        source_commit_sha=authority.source_commit_sha,
+        relative_path=query_relative,
+        max_bytes=_DISCOVERY_DIGEST_BYTES,
+    )
+    manifest = LockedBenchmarkManifestV1.model_validate_json(
+        manifest_bytes,
+        strict=True,
+    )
+    query_set = DiscoveryQuerySetV1.model_validate_json(query_bytes, strict=True)
+    if (
+        manifest_bytes not in {
+            canonical_json_bytes(manifest),
+            canonical_json_bytes(manifest) + b"\n",
+        }
+        or query_bytes not in {
+            canonical_json_bytes(query_set),
+            canonical_json_bytes(query_set) + b"\n",
+        }
+        or manifest != admission.lock.selection_manifest
+        or authority.acceptance_workflow_sha256
+        != "sha256:" + hashlib.sha256(workflow_bytes).hexdigest()
+        or authority.query_set_digest != query_set.query_set_digest
+    ):
+        raise ValueError("live execution source admission rejected")
+
+
+def load_live_execution_admission_v2(
+    *,
+    authority_state_root: Path,
+    authority_state_commit_sha: str,
+    authority_state_root_digest: str,
+    acceptance_run_id: str,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Rebuild V2 authority from a checked-out carrier before credentials.
+
+    The only externally supplied values are canonical immutable checkout and
+    state identities.  The authority digest itself comes from the protected
+    runtime environment; its model, receipt, lock, and nomination are all
+    decoded from operations-owned state before any state/source/provider token
+    or client factory is touched.
+    """
+
+    try:
+        source = os.environ if environ is None else environ
+        authority_digest = source["PHASE6_AUTHORITY_DIGEST"]
+        if (
+            not _closed_identity(acceptance_run_id)
+            or not _is_digest(authority_digest)
+            or type(state_repository_id) is not int
+            or state_repository_id <= 0
+            or not _github_full_name(state_repository_full_name)
+        ):
+            raise ValueError
+        carrier_commit_sha, carrier_root_digest = validate_acceptance_state_authority(
+            state_commit_sha=authority_state_commit_sha,
+            state_root_digest=authority_state_root_digest,
+        )
+        checkout = authority_state_root.resolve(strict=True)
+        if _checked_out_repository_commit(checkout) != carrier_commit_sha:
+            raise ValueError
+        bundle = load_verified_state_checkout(
+            checkout_root=checkout,
+            expected_root_digest=carrier_root_digest,
+        )
+        root = bundle.root
+        if (
+            root.root_digest != carrier_root_digest
+            or not _is_commit_sha(root.state_parent_commit_sha)
+            or not _is_digest(root.prior_root_digest)
+        ):
+            raise ValueError
+        from skillscout.adapters.operations_state import (
+            OperationsStateStore,
+            restore_acceptance_state_bundle,
+        )
+        from skillscout.application.acceptance import (
+            LiveAuthorityStateObservation,
+            LiveExecutionAdmissionV2,
+            re_admit_live_execution_v2,
+        )
+        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV2
+
+        with tempfile.TemporaryDirectory(prefix="skillscout-v2-authority-") as temporary:
+            temporary_root = Path(temporary).resolve(strict=True)
+            operations_path = temporary_root / "operations.sqlite3"
+            restore_acceptance_state_bundle(
+                bundle,
+                pipeline_path=temporary_root / "pipeline.sqlite3",
+                operations_path=operations_path,
+            )
+            with OperationsStateStore(operations_path) as operations:
+                snapshot = operations.acceptance_snapshot(acceptance_run_id)
+        records = tuple(
+            record
+            for record in snapshot.facts
+            if (
+                record.kind == "acceptance_live_authority"
+                and record.fact_digest == authority_digest
+                and type(record.fact) is LiveAcceptanceAuthorityV2
+            )
+        )
+        if len(records) != 1:
+            raise ValueError
+        authority = records[0].fact
+        admission = re_admit_live_execution_v2(
+            snapshot=snapshot,
+            authority_digest=authority_digest,
+            state_observation=LiveAuthorityStateObservation(
+                state_repository_id=state_repository_id,
+                state_repository_full_name=state_repository_full_name,
+                authority_carrier_commit_sha=carrier_commit_sha,
+                authority_carrier_root_digest=carrier_root_digest,
+                authority_carrier_parent_commit_sha=root.state_parent_commit_sha,
+                authority_carrier_prior_root_digest=root.prior_root_digest,
+                lock_state_parent_commit_sha=authority.parent_state_commit_sha,
+                lock_state_prior_root_digest=authority.parent_state_root_digest,
+            ),
+        )
+        if (
+            type(admission) is not LiveExecutionAdmissionV2
+            or admission.authority.state_repository_id != state_repository_id
+            or admission.authority.state_repository_full_name != state_repository_full_name
+        ):
+            raise ValueError
+        _verify_live_execution_admission_source(admission)
+        return admission
+    except Exception:
+        raise ValueError("live execution admission rejected") from None
 
 
 def verify_live_acceptance_authority_state(
@@ -1588,10 +2313,13 @@ class _LateStateDurabilityBarrier:
     ) -> None:
         """Bind locator creation to one immutable authority and verified lineage."""
 
-        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+        from skillscout.domain.acceptance import (
+            LiveAcceptanceAuthorityV1,
+            LiveAcceptanceAuthorityV2,
+        )
 
         if (
-            type(authority) is not LiveAcceptanceAuthorityV1
+            type(authority) not in {LiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV2}
             or authority.authority_digest is None
             or type(acceptance_run_id) is not str
             or not acceptance_run_id
@@ -1666,6 +2394,7 @@ class _LateStateDurabilityBarrier:
         from skillscout.domain.acceptance import (
             AcceptanceCampaignResumeLocatorV1,
             LiveAcceptanceAuthorityV1,
+            LiveAcceptanceAuthorityV2,
         )
 
         resume = self._acceptance_resume
@@ -1676,7 +2405,7 @@ class _LateStateDurabilityBarrier:
         roots = resume["lineage_root_digests"]
         index = resume["transition_index"]
         if (
-            type(authority) is not LiveAcceptanceAuthorityV1
+            type(authority) not in {LiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV2}
             or type(commits) is not tuple
             or type(roots) is not tuple
             or type(index) is not int
@@ -1746,6 +2475,7 @@ class _LateStateDurabilityBarrier:
         from skillscout.domain.acceptance import (
             AcceptanceCampaignResumeLocatorV1,
             LiveAcceptanceAuthorityV1,
+            LiveAcceptanceAuthorityV2,
         )
 
         resume = self._acceptance_resume
@@ -1753,7 +2483,8 @@ class _LateStateDurabilityBarrier:
         if (
             resume is None
             or type(locator) is not AcceptanceCampaignResumeLocatorV1
-            or type(resume.get("authority")) is not LiveAcceptanceAuthorityV1
+            or type(resume.get("authority"))
+            not in {LiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV2}
             or type(resume.get("acceptance_run_id")) is not str
         ):
             raise ValueError("authority carrier recovery proof rejected")
@@ -3692,6 +4423,7 @@ class _FixedRepositoryAcceptanceRunner:
             OperationsStateStore,
             _schema_fingerprint,
         )
+        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV2
         from skillscout.domain.canonical import sha256_digest
         from skillscout.domain.discovery import DiscoveryBudgetPolicyV1, DiscoveryRunAuthorityV1
 
@@ -3717,6 +4449,8 @@ class _FixedRepositoryAcceptanceRunner:
         if len(authority_records) != 1:
             raise ValueError("live acceptance authority is missing")
         self._live_authority = authority_records[0]
+        if type(self._live_authority) is not LiveAcceptanceAuthorityV2:
+            raise ValueError("fresh V2 live acceptance authority is required")
         if (
             self._live_authority.manifest_digest != config.manifest.manifest_digest
             or self._live_authority.semantic_provider != config.semantic_provider
@@ -4474,6 +5208,7 @@ def build_live_acceptance_execution(
     restored: object,
     action: str,
     acceptance_run_id: str,
+    live_admission: object | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> object:
     """Build one benchmark or replay graph from an exact restored authority."""
@@ -4496,12 +5231,33 @@ def build_live_acceptance_execution(
     )
     from skillscout.application.acceptance import (
         LockedCampaignDependencies,
+        LiveExecutionAdmissionV2,
         ReplayUpdateDependencies,
+        re_admit_live_execution_v2,
         run_exact_replay,
         run_locked_benchmark,
     )
 
     source = os.environ if environ is None else environ
+    if (
+        type(live_admission) is not LiveExecutionAdmissionV2
+        or live_admission.authority.authority_digest
+        != config.live_acceptance_authority_digest
+        or live_admission.lock.selection_manifest != config.manifest
+        or live_admission.authority.state_repository_id
+        != live_admission.state_observation.state_repository_id
+        or live_admission.authority.state_repository_full_name
+        != live_admission.state_observation.state_repository_full_name
+    ):
+        raise ValueError("live acceptance execution rejected")
+    with OperationsStateStore(Path(_DISCOVERY_DATABASE_LOCATORS[1])) as operations:
+        rechecked_admission = re_admit_live_execution_v2(
+            snapshot=operations.acceptance_snapshot(acceptance_run_id),
+            authority_digest=config.live_acceptance_authority_digest,
+            state_observation=live_admission.state_observation,
+        )
+    if rechecked_admission != live_admission:
+        raise ValueError("live acceptance execution rejected")
     discovery_config = _acceptance_discovery_config(config, source)
     _, _, frozen_owner_export, _ = _parse_bundle_exports(restored.bundle)
     verified_state_locators = {

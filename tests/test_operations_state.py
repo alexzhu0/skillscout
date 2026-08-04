@@ -34,6 +34,7 @@ from skillscout.domain.acceptance import (
     BenchmarkEntryV1,
     BenchmarkLockAttestationV1,
     HostedIsolationCapabilityV1,
+    LiveAcceptanceAuthorityV1,
     LockedBenchmarkManifestV1,
     NominationEntryV1,
     NominationSetV1,
@@ -471,6 +472,231 @@ def _locked_manifest_v2(nomination: NominationSetV1):
     )
 
 
+def _historical_live_authority(nomination: NominationSetV1) -> LiveAcceptanceAuthorityV1:
+    manifest = _locked_manifest(nomination)
+    return LiveAcceptanceAuthorityV1(
+        schema_version="live-acceptance-authority-v1",
+        authority_version=1,
+        source_commit_sha="a" * 40,
+        acceptance_workflow_sha256=DIGEST_A,
+        manifest_path=(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest_digest=manifest.manifest_digest,
+        nomination_set_digest=nomination.nomination_set_digest,
+        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
+        state_commit_sha="b" * 40,
+        state_root_digest=DIGEST_B,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        query_set_digest=DIGEST_C,
+        budget_policy_digest="sha256:" + ("d" * 64),
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        reviewer_id="alexzhu0",
+        approved_at=TIMESTAMP,
+    )
+
+
+def _live_authority_v2(nomination: NominationSetV1):
+    authority_model = _v2_symbol("LiveAcceptanceAuthorityV2")
+    receipt_model = _v2_symbol("LiveExecutionApprovalReceiptV2")
+    lock = _locked_manifest_v2(nomination)
+    receipt = receipt_model(
+        schema_version="live-execution-approval-receipt-v2",
+        purpose="live_execution",
+        environment="skillscout-phase6-live-authority",
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        reviewer_login="alexzhu0",
+        reviewer_id=202,
+        workflow_run_id=2001,
+        workflow_run_attempt=1,
+        source_commit_sha=lock.source_commit_sha,
+        workflow_sha256=lock.acceptance_workflow_sha256,
+        trigger_identity=lock.trigger_identity,
+        approval_record_digest="sha256:" + ("4" * 64),
+    )
+    return authority_model(
+        schema_version="live-acceptance-authority-v2",
+        authority_version=2,
+        purpose="live_execution",
+        benchmark_lock_digest=lock.lock_digest,
+        benchmark_lock=lock,
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        state_repository_id=lock.state_repository_id,
+        state_repository_full_name=lock.state_repository_full_name,
+        parent_state_commit_sha=lock.parent_state_commit_sha,
+        parent_state_root_digest=lock.parent_state_root_digest,
+        state_commit_sha="c" * 40,
+        state_root_digest="sha256:" + ("5" * 64),
+        source_commit_sha=lock.source_commit_sha,
+        acceptance_workflow_sha256=lock.acceptance_workflow_sha256,
+        source_state_binding_digest=lock.source_state_binding_digest,
+        manifest_path=(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest_digest=lock.selection_manifest_digest,
+        selection_manifest_digest=lock.selection_manifest_digest,
+        nomination_set_digest=lock.nomination_set_digest,
+        lock_attestation_digest=lock.selection_manifest.lock_attestation.attestation_digest,
+        entries=lock.entries,
+        environment="skillscout-phase6-live-authority",
+        approved_reviewer_login=receipt.reviewer_login,
+        approved_reviewer_id=receipt.reviewer_id,
+        workflow_run_id=receipt.workflow_run_id,
+        workflow_run_attempt=receipt.workflow_run_attempt,
+        trigger_identity=receipt.trigger_identity,
+        approval_record_digest=receipt.approval_record_digest,
+        approval_receipt=receipt,
+        approval_receipt_digest=receipt.receipt_digest,
+        query_set_digest="sha256:" + ("6" * 64),
+        budget_policy_digest="sha256:" + ("7" * 64),
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        approved_at=TIMESTAMP,
+    )
+
+
+def test_live_authority_v2_schema_registry_preserves_historical_v1_and_rebuilds(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    v2_model = _v2_symbol("LiveAcceptanceAuthorityV2")
+    registry = module.ACCEPTANCE_FACT_MODELS["acceptance_live_authority"]
+    assert tuple(registry) == (
+        "live-acceptance-authority-v1",
+        "live-acceptance-authority-v2",
+    )
+    assert registry["live-acceptance-authority-v1"] is LiveAcceptanceAuthorityV1
+    assert registry["live-acceptance-authority-v2"] is v2_model
+
+    nomination = _nomination_set()
+    historical_lock = _locked_manifest(nomination)
+    fresh_lock = _locked_manifest_v2(nomination)
+    historical_authority = _historical_live_authority(nomination)
+    fresh_authority = _live_authority_v2(nomination)
+    source = tmp_path / "versioned-live-authority-source.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            historical_lock,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            fresh_lock,
+        )
+        historical = store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_live_authority",
+            historical_authority,
+        )
+        fresh = store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_live_authority",
+            fresh_authority,
+        )
+        assert store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_live_authority",
+            fresh_authority,
+        ) == fresh
+        exported = store.export_owned_state()
+
+    rebuilt = tmp_path / "versioned-live-authority-rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        snapshot = store.acceptance_snapshot(nomination.nomination_set_id)
+        restored = store.export_owned_state()
+
+    assert {type(record.fact) for record in snapshot.facts} >= {
+        LiveAcceptanceAuthorityV1,
+        v2_model,
+    }
+    assert historical.fact == historical_authority
+    assert fresh.fact == fresh_authority
+    assert restored.facts == exported.facts
+    assert restored.projection == exported.projection
+
+
 def test_benchmark_lock_schema_registry_preserves_v1_history_and_restores_v2(
     tmp_path: Path,
 ) -> None:
@@ -707,6 +933,117 @@ def test_fresh_v2_benchmark_lock_is_singleton_per_run_and_rebuild_rejects_confli
         if record.kind == "acceptance_benchmark_lock"
         and record.fact.schema_version == "locked-benchmark-manifest-v2"
     ] == [recorded]
+
+
+def test_fresh_v2_live_authority_is_singleton_and_rebuild_rejects_conflicts(
+    tmp_path: Path,
+) -> None:
+    """A rebuilt export cannot smuggle a second independently valid V2 authority."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    first = _live_authority_v2(nomination)
+    second_values = first.model_dump(mode="json", exclude_none=False)
+    second_values.pop("authority_digest")
+    second_values["state_commit_sha"] = "d" * 40
+    second_values["state_root_digest"] = "sha256:" + ("8" * 64)
+    second = type(first).model_validate(second_values, strict=True)
+    source = tmp_path / "one-v2-live-authority.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            first.benchmark_lock,
+        )
+        recorded = store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_live_authority",
+            first,
+        )
+        assert (
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_live_authority",
+                first,
+            )
+            == recorded
+        )
+        with pytest.raises(module.OperationsIntegrityError, match="fresh live authority"):
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_live_authority",
+                second,
+            )
+        exported = store.export_owned_state()
+
+    owned = next(
+        fact
+        for fact in exported.facts
+        if fact.kind == "acceptance_live_authority"
+        and module._fact_payload(fact)["value"]["schema_version"]
+        == "live-acceptance-authority-v2"
+    )
+    payload = module._fact_payload(owned)
+    columns = payload["columns"]
+    assert isinstance(columns, dict)
+    columns["fact_digest"] = second.authority_digest
+    columns["recorded_identity"] = module._acceptance_recorded_identity(
+        nomination.nomination_set_id,
+        "acceptance_live_authority",
+        second,
+    )
+    columns["schema_version"] = second.schema_version
+    payload["value"] = second.model_dump(mode="json", exclude_none=False)
+    payload_json = module._json_text(payload)
+    duplicate = owned.model_copy(
+        update={
+            "payload_json": payload_json,
+            "object_digest": sha256_digest(payload_json.encode("utf-8")),
+        }
+    )
+
+    def export_order(fact: object) -> tuple[str, str, str]:
+        row = module._fact_payload(fact)
+        row_columns = row["columns"]
+        assert isinstance(row_columns, dict)
+        return (
+            str(row_columns.get("acceptance_run_id", "")),
+            str(row_columns.get("fact_kind", "")),
+            str(row_columns.get("fact_digest", "")),
+        )
+
+    ordered = sorted((*exported.facts, duplicate), key=export_order)
+    facts = tuple(
+        fact.model_copy(update={"sequence": index})
+        for index, fact in enumerate(ordered)
+    )
+    projection = module._projection_from_facts(facts)
+    invalid_database = b"not-a-sqlite-database"
+    tampered = exported.model_copy(
+        update={
+            "database_bytes": invalid_database,
+            "database_digest": sha256_digest(invalid_database),
+            "facts": facts,
+            "projection": projection,
+            "projection_digest": projection.projection_digest,
+            "export_digest": module._export_digest(
+                schema_fingerprint=exported.schema_fingerprint,
+                facts=facts,
+                projection=projection,
+            ),
+        }
+    )
+
+    with pytest.raises(module.OperationsIntegrityError, match="fresh live authority cardinality"):
+        module.OperationsStateStore.rebuild_owned_state(
+            tmp_path / "two-v2-live-authorities-rejected.sqlite3",
+            tampered,
+        )
 
 
 def test_acceptance_fact_registry_is_exact_and_immutable() -> None:

@@ -1118,6 +1118,156 @@ def test_live_authority_contract_binds_human_approval_and_every_effect_identity(
         contract(**{**values, "max_semantic_requests": 21})
 
 
+def _v2_live_authority_payload() -> dict[str, object]:
+    """Return one complete fresh authority without using caller approval prose."""
+
+    lock_model = _symbol("LockedBenchmarkManifestV2", skip_if_missing=False)
+    receipt_model = _symbol("LiveExecutionApprovalReceiptV2", skip_if_missing=False)
+    lock = lock_model.model_validate(_v2_benchmark_lock_payload(), strict=True)
+    receipt = receipt_model(
+        schema_version="live-execution-approval-receipt-v2",
+        purpose="live_execution",
+        environment="skillscout-phase6-live-authority",
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        reviewer_login="alexzhu0",
+        reviewer_id=202,
+        workflow_run_id=2001,
+        workflow_run_attempt=1,
+        source_commit_sha=lock.source_commit_sha,
+        workflow_sha256=lock.acceptance_workflow_sha256,
+        trigger_identity=lock.trigger_identity,
+        approval_record_digest="sha256:" + ("4" * 64),
+    )
+    return {
+        "schema_version": "live-acceptance-authority-v2",
+        "authority_version": 2,
+        "purpose": "live_execution",
+        "benchmark_lock_digest": lock.lock_digest,
+        "benchmark_lock": lock,
+        "source_repository_id": lock.source_repository_id,
+        "source_repository_full_name": lock.source_repository_full_name,
+        "state_repository_id": lock.state_repository_id,
+        "state_repository_full_name": lock.state_repository_full_name,
+        "parent_state_commit_sha": lock.parent_state_commit_sha,
+        "parent_state_root_digest": lock.parent_state_root_digest,
+        "state_commit_sha": "c" * 40,
+        "state_root_digest": "sha256:" + ("5" * 64),
+        "source_commit_sha": lock.source_commit_sha,
+        "acceptance_workflow_sha256": lock.acceptance_workflow_sha256,
+        "source_state_binding_digest": lock.source_state_binding_digest,
+        "manifest_path": (
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        "manifest_digest": lock.selection_manifest_digest,
+        "selection_manifest_digest": lock.selection_manifest_digest,
+        "nomination_set_digest": lock.nomination_set_digest,
+        "lock_attestation_digest": lock.selection_manifest.lock_attestation.attestation_digest,
+        "entries": lock.entries,
+        "environment": "skillscout-phase6-live-authority",
+        "approved_reviewer_login": receipt.reviewer_login,
+        "approved_reviewer_id": receipt.reviewer_id,
+        "workflow_run_id": receipt.workflow_run_id,
+        "workflow_run_attempt": receipt.workflow_run_attempt,
+        "trigger_identity": receipt.trigger_identity,
+        "approval_record_digest": receipt.approval_record_digest,
+        "approval_receipt": receipt,
+        "approval_receipt_digest": receipt.receipt_digest,
+        "query_set_digest": "sha256:" + ("6" * 64),
+        "budget_policy_digest": "sha256:" + ("7" * 64),
+        "semantic_provider": "deepseek",
+        "provider_base_url": "https://api.deepseek.com",
+        "stage_models": (
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        "prompt_versions": (
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        "schema_versions": (
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        "policy_versions": (
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        "max_candidates": 100,
+        "max_semantic_candidates": 20,
+        "max_semantic_requests": 20,
+        "max_files_per_repository": 25,
+        "max_source_files_per_repository": 5,
+        "max_file_bytes": 131_072,
+        "max_total_bytes_per_repository": 524_288,
+        "max_tokens_per_repository": 40_000,
+        "benchmark_scenario_write_count": 5,
+        "replay_semantic_effect_count": 0,
+        "replay_publication_effect_count": 0,
+        "approved_at": TIMESTAMP_B,
+    }
+
+
+def test_live_authority_v2_binds_complete_fresh_lock_chain_and_distinct_receipt() -> None:
+    model = _symbol("LiveAcceptanceAuthorityV2", skip_if_missing=False)
+    receipt_model = _symbol("LiveExecutionApprovalReceiptV2", skip_if_missing=False)
+    authority = model.model_validate(_v2_live_authority_payload(), strict=True)
+
+    assert authority.authority_digest is not None
+    assert authority.benchmark_lock_digest == authority.benchmark_lock.lock_digest
+    assert authority.entries == authority.benchmark_lock.entries
+    assert authority.manifest_digest == authority.benchmark_lock.selection_manifest_digest
+    assert authority.nomination_set_digest == authority.benchmark_lock.nomination_set_digest
+    assert authority.approval_receipt_digest == authority.approval_receipt.receipt_digest
+    assert authority.approval_receipt.purpose == "live_execution"
+    assert authority.approval_receipt.environment == "skillscout-phase6-live-authority"
+    assert {
+        "actor",
+        "comment",
+        "authority_json",
+        "token",
+        "authorization",
+    }.isdisjoint(receipt_model.model_fields)
+
+    payload = authority.model_dump(mode="json", exclude_none=False)
+    payload["approval_receipt"] = _v2_benchmark_lock_payload()["approval_receipt"]
+    payload["approval_receipt_digest"] = _v2_benchmark_lock_payload()[
+        "approval_receipt_digest"
+    ]
+    payload.pop("authority_digest")
+    with pytest.raises(ValidationError):
+        model.model_validate(payload, strict=True)
+
+    payload = authority.model_dump(mode="json", exclude_none=False)
+    entries = payload["entries"]
+    assert isinstance(entries, list)
+    payload["entries"] = list(reversed(entries))
+    payload.pop("authority_digest")
+    with pytest.raises(ValueError, match="selected-entry"):
+        model.model_validate(payload, strict=True)
+
+    payload = authority.model_dump(mode="json", exclude_none=False)
+    payload["benchmark_lock_digest"] = DIGEST_A
+    payload.pop("authority_digest")
+    with pytest.raises(ValueError, match="benchmark lock"):
+        model.model_validate(payload, strict=True)
+
+    for forbidden_key in ("actor", "comment", "authority_json"):
+        payload = authority.model_dump(mode="json", exclude_none=False)
+        payload[forbidden_key] = "caller-asserted"
+        payload.pop("authority_digest")
+        with pytest.raises(ValidationError):
+            model.model_validate(payload, strict=True)
+
+
 def test_semantic_telemetry_is_bound_to_live_authority_and_exact_stage_matrix() -> None:
     module = _acceptance_module(skip_if_missing=False)
     telemetry = module.AcceptanceSemanticTelemetryV1(

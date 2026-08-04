@@ -160,6 +160,49 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
     assert all(isinstance(child, cli.SafeArgumentParser) for child in subparsers.choices.values())
 
 
+@pytest.mark.parametrize(
+    "option",
+    (
+        "--authority",
+        "--source-commit-sha",
+        "--actor",
+        "--comment",
+        "--authority-json",
+        "--approval-receipt",
+        "--approval-endpoint",
+    ),
+)
+def test_record_live_authority_has_no_caller_supplied_authority_channel(
+    option: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = cli.build_parser()
+    subcommands = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    command = subcommands.choices["record-live-authority"]
+    option_strings = {
+        option
+        for action in command._actions
+        for option in action.option_strings
+    }
+    assert option not in option_strings
+    with pytest.raises(SystemExit) as failure:
+        parser.parse_args(
+            [
+                "record-live-authority",
+                "--acceptance-run-id",
+                "fresh-campaign",
+                option,
+                "DO_NOT_ECHO_CALLER_AUTHORITY",
+            ]
+        )
+    captured = capsys.readouterr()
+    assert failure.value.code == 2
+    assert captured.out == ""
+    assert "DO_NOT_ECHO_CALLER_AUTHORITY" not in captured.err
+
+
 def test_help_remains_a_successful_stdout_only_boundary(tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "skillscout.cli", "--help"],
