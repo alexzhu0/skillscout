@@ -466,6 +466,27 @@ class LockedBenchmarkManifestV2(_SelfDigestedModel):
         return self
 
 
+class LiveExecutionApprovalReceiptV2(_SelfDigestedModel):
+    """Redacted, purpose-bound evidence from the protected live-execution gate."""
+
+    _digest_field = "receipt_digest"
+
+    schema_version: Literal["live-execution-approval-receipt-v2"]
+    purpose: Literal["live_execution"]
+    environment: Literal["skillscout-phase6-live-authority"]
+    source_repository_id: _Positive
+    source_repository_full_name: _FullName
+    reviewer_login: Literal["alexzhu0"]
+    reviewer_id: _Positive
+    workflow_run_id: _Positive
+    workflow_run_attempt: _Positive
+    source_commit_sha: _Sha
+    workflow_sha256: Digest
+    trigger_identity: _Identifier
+    approval_record_digest: Digest
+    receipt_digest: Digest | None = None
+
+
 class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
     """Human-approved immutable authority consumed by protected live execution."""
 
@@ -539,6 +560,184 @@ class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
 
     @model_validator(mode="after")
     def validate_complete_authority(self) -> Self:
+        required_policies = {
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        }
+        if (
+            self.policy_versions != tuple(sorted(self.policy_versions))
+            or len(set(self.policy_versions)) != len(self.policy_versions)
+            or not required_policies.issubset(self.policy_versions)
+        ):
+            raise ValueError("live acceptance policies are incomplete or noncanonical")
+        return self
+
+
+class LiveAcceptanceAuthorityV2(_SelfDigestedModel):
+    """Fresh, lock-rebuilt authority for one protected live execution path.
+
+    V2 deliberately repeats every security-relevant lock identity at the
+    authority boundary.  The duplicated fields make a canonical state export
+    independently auditable while the validator rejects any reinterpreted or
+    stale lock chain.  It is not a migration of V1: V1 remains historical
+    evidence only.
+    """
+
+    _digest_field = "authority_digest"
+
+    schema_version: Literal["live-acceptance-authority-v2"]
+    authority_version: Literal[2]
+    purpose: Literal["live_execution"]
+    benchmark_lock_digest: Digest
+    benchmark_lock: LockedBenchmarkManifestV2
+    source_repository_id: _Positive
+    source_repository_full_name: _FullName
+    state_repository_id: _Positive
+    state_repository_full_name: _FullName
+    parent_state_commit_sha: _Sha
+    parent_state_root_digest: Digest
+    state_commit_sha: _Sha
+    state_root_digest: Digest
+    source_commit_sha: _Sha
+    acceptance_workflow_sha256: Digest
+    source_state_binding_digest: Digest
+    manifest_path: Literal[
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    ]
+    manifest_digest: Digest
+    selection_manifest_digest: Digest
+    nomination_set_digest: Digest
+    lock_attestation_digest: Digest
+    entries: Annotated[tuple[BenchmarkEntryV1, ...], Field(min_length=5, max_length=5)]
+    environment: Literal["skillscout-phase6-live-authority"]
+    approved_reviewer_login: Literal["alexzhu0"]
+    approved_reviewer_id: _Positive
+    workflow_run_id: _Positive
+    workflow_run_attempt: _Positive
+    trigger_identity: _Identifier
+    approval_record_digest: Digest
+    approval_receipt: LiveExecutionApprovalReceiptV2
+    approval_receipt_digest: Digest
+    query_set_digest: Digest
+    budget_policy_digest: Digest
+    semantic_provider: Literal["deepseek"]
+    provider_base_url: Literal["https://api.deepseek.com"]
+    stage_models: tuple[
+        Literal["deepseek-v4-flash"],
+        Literal["deepseek-v4-flash"],
+        Literal["deepseek-v4-pro"],
+    ]
+    prompt_versions: tuple[
+        Literal["extract-prompt-v1"],
+        Literal["generator-prompt-v1"],
+        Literal["reviewer-prompt-v1"],
+    ]
+    schema_versions: tuple[
+        Literal["workflow-spec-v1"],
+        Literal["generation-draft-v1"],
+        Literal["reviewer-judgment-v1"],
+    ]
+    policy_versions: Annotated[tuple[_Version, ...], Field(min_length=5, max_length=16)]
+    max_candidates: Literal[100]
+    max_semantic_candidates: Literal[20]
+    max_semantic_requests: Literal[20]
+    max_files_per_repository: Literal[25]
+    max_source_files_per_repository: Literal[5]
+    max_file_bytes: Literal[131_072]
+    max_total_bytes_per_repository: Literal[524_288]
+    max_tokens_per_repository: Literal[40_000]
+    benchmark_scenario_write_count: Literal[5]
+    replay_semantic_effect_count: Literal[0]
+    replay_publication_effect_count: Literal[0]
+    approved_at: _Timestamp
+    authority_digest: Digest | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_sequences(cls, value: object) -> object:
+        if isinstance(value, dict):
+            payload = dict(value)
+            for field in (
+                "entries",
+                "stage_models",
+                "prompt_versions",
+                "schema_versions",
+                "policy_versions",
+            ):
+                if isinstance(payload.get(field), list):
+                    payload[field] = tuple(payload[field])
+            return payload
+        return value
+
+    @model_validator(mode="after")
+    def validate_fresh_authority(self) -> Self:
+        lock = self.benchmark_lock
+        receipt = self.approval_receipt
+        if self.benchmark_lock_digest != lock.lock_digest:
+            raise ValueError("live authority benchmark lock binding mismatch")
+        if self.entries != lock.entries:
+            raise ValueError("live authority selected-entry chain mismatch")
+        if (
+            self.state_commit_sha == self.parent_state_commit_sha
+            or self.state_root_digest == self.parent_state_root_digest
+        ):
+            raise ValueError("live authority recovery state is stale")
+        if (
+            self.source_repository_id,
+            self.source_repository_full_name,
+            self.state_repository_id,
+            self.state_repository_full_name,
+            self.parent_state_commit_sha,
+            self.parent_state_root_digest,
+            self.source_commit_sha,
+            self.acceptance_workflow_sha256,
+            self.source_state_binding_digest,
+            self.selection_manifest_digest,
+            self.nomination_set_digest,
+        ) != (
+            lock.source_repository_id,
+            lock.source_repository_full_name,
+            lock.state_repository_id,
+            lock.state_repository_full_name,
+            lock.parent_state_commit_sha,
+            lock.parent_state_root_digest,
+            lock.source_commit_sha,
+            lock.acceptance_workflow_sha256,
+            lock.source_state_binding_digest,
+            lock.selection_manifest_digest,
+            lock.nomination_set_digest,
+        ):
+            raise ValueError("live authority lock recovery chain mismatch")
+        if (
+            self.manifest_digest != lock.selection_manifest_digest
+            or self.selection_manifest_digest != lock.selection_manifest.manifest_digest
+            or self.nomination_set_digest != lock.selection_manifest.nomination_set_digest
+            or self.lock_attestation_digest
+            != lock.selection_manifest.lock_attestation.attestation_digest
+        ):
+            raise ValueError("live authority V1 selection binding mismatch")
+        if (
+            self.workflow_run_attempt != 1
+            or receipt.purpose != self.purpose
+            or receipt.environment != self.environment
+            or receipt.source_repository_id != self.source_repository_id
+            or receipt.source_repository_full_name != self.source_repository_full_name
+            or receipt.reviewer_login != self.approved_reviewer_login
+            or receipt.reviewer_id != self.approved_reviewer_id
+            or receipt.workflow_run_id != self.workflow_run_id
+            or receipt.workflow_run_attempt != self.workflow_run_attempt
+            or receipt.source_commit_sha != self.source_commit_sha
+            or receipt.workflow_sha256 != self.acceptance_workflow_sha256
+            or receipt.trigger_identity != self.trigger_identity
+            or receipt.approval_record_digest != self.approval_record_digest
+            or receipt.receipt_digest != self.approval_receipt_digest
+        ):
+            raise ValueError("live authority approval receipt binding mismatch")
         required_policies = {
             "discovery-budget-policy-v1",
             "extract-policy-v1",
