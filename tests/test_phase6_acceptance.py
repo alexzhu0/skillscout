@@ -432,6 +432,9 @@ def test_acceptance_cli_parser_has_only_closed_authority_options() -> None:
             "--resume-proof",
             "--state-commit-sha",
             "--state-root-digest",
+            "--authority-state-root",
+            "--authority-state-commit-sha",
+            "--authority-state-root-digest",
         },
         "record-acceptance-attestation": {
             "--attestation",
@@ -1978,7 +1981,6 @@ def test_live_authority_recording_is_a_closed_state_only_cli_transition() -> Non
 
 
 def test_record_live_authority_v2_rejects_historical_authority_before_store_factory() -> None:
-    from skillscout.adapters.operations_state import AcceptanceRunSnapshot
     from skillscout.application import acceptance as application
     from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
 
@@ -2034,6 +2036,68 @@ def test_record_live_authority_v2_records_only_a_v2_fact() -> None:
     )
     assert record.fact_digest == authority.authority_digest
     assert recorded == [("fresh-campaign", "acceptance_live_authority", authority)]
+
+
+def test_closed_v2_recorder_rejects_missing_lock_before_actions_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No approval client/token boundary opens when rebuilt V2 lock is absent."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.bootstrap as bootstrap
+    from skillscout.adapters.operations_state import AcceptanceRunSnapshot
+
+    events: list[str] = []
+    configuration = SimpleNamespace(
+        preparation=SimpleNamespace(operations_state=tmp_path / "operations.sqlite3"),
+    )
+    root = SimpleNamespace(
+        root_digest="sha256:" + ("c" * 64),
+        state_parent_commit_sha="a" * 40,
+        prior_root_digest="sha256:" + ("b" * 64),
+    )
+
+    class Store:
+        def __init__(self, _path: Path) -> None:
+            events.append("state-open")
+
+        def __enter__(self) -> Store:
+            return self
+
+        def __exit__(self, *_arguments: object) -> None:
+            return None
+
+        def acceptance_snapshot(self, acceptance_run_id: str) -> AcceptanceRunSnapshot:
+            return AcceptanceRunSnapshot(acceptance_run_id=acceptance_run_id, facts=())
+
+    monkeypatch.setattr(
+        bootstrap,
+        "load_live_authority_recording_runtime_config",
+        lambda **_: configuration,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_restore_current_live_authority_recording_state",
+        lambda **_: SimpleNamespace(
+            observed_head="d" * 40,
+            bundle=SimpleNamespace(root=root),
+        ),
+    )
+    monkeypatch.setattr(operations_state, "OperationsStateStore", Store)
+    monkeypatch.setattr(
+        bootstrap,
+        "_build_live_execution_approval_receipt",
+        lambda **_: pytest.fail("Actions approval client opened before lock admission"),
+    )
+
+    with pytest.raises(ValueError, match="live acceptance authority recording rejected"):
+        bootstrap.record_live_acceptance_authority_v2(
+            acceptance_run_id="fresh-campaign",
+            environ={},
+        )
+
+    assert events == ["state-open"]
 
 
 def test_live_authority_state_preflight_is_read_only() -> None:
@@ -4189,7 +4253,14 @@ def test_run_acceptance_dispatches_exact_action_without_publication_authority(
         state_lineage_anchor_root_digest="sha256:" + ("d" * 64),
     )
     restored = object()
+    admission = object()
     calls: list[str] = []
+    monkeypatch.setattr(cli, "_protected_state_repository", lambda: (123, "example/state"))
+    monkeypatch.setattr(
+        cli,
+        "load_live_execution_admission_v2",
+        lambda **_: calls.append("admission") or admission,
+    )
     monkeypatch.setattr(cli, "load_acceptance_runtime_config", lambda **_: config)
     monkeypatch.setattr(cli, "_restore_acceptance_state", lambda **_: restored)
     monkeypatch.setattr(
@@ -4215,13 +4286,61 @@ def test_run_acceptance_dispatches_exact_action_without_publication_authority(
             action=action,
             manifest=config.manifest_path,
             acceptance_run_id="acceptance-live-five",
-            state_commit_sha=config.state_commit_sha,
-            state_root_digest=config.state_root_digest,
+                state_commit_sha=config.state_commit_sha,
+                state_root_digest=config.state_root_digest,
+                authority_state_root=Path("authority-state"),
+                authority_state_commit_sha="e" * 40,
+                authority_state_root_digest="sha256:" + ("f" * 64),
+            )
         )
+
+    assert calls == ["admission", expected_handler]
+    assert result["status"] == f"{expected_handler}_complete"
+
+
+@pytest.mark.parametrize("action", ("benchmark", "replay"))
+def test_run_acceptance_rejects_before_runtime_or_state_when_v2_admission_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    """A missing/stale V2 carrier cannot reach provider or state composition."""
+
+    from skillscout.application.ports import SafeFailure
+    import skillscout.cli as cli
+
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_protected_state_repository", lambda: (123, "example/state"))
+    monkeypatch.setattr(
+        cli,
+        "load_live_execution_admission_v2",
+        lambda **_: calls.append("admission")
+        or (_ for _ in ()).throw(ValueError("rejected carrier")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_acceptance_runtime_config",
+        lambda **_: pytest.fail("runtime config opened after V2 admission failure"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_restore_acceptance_state",
+        lambda **_: pytest.fail("state credential path opened after V2 admission failure"),
     )
 
-    assert calls == [expected_handler]
-    assert result["status"] == f"{expected_handler}_complete"
+    with pytest.raises(SafeFailure):
+        cli._run_acceptance(
+            SimpleNamespace(
+                action=action,
+                manifest=Path("06-BENCHMARK-MANIFEST.json"),
+                acceptance_run_id="acceptance-live-five",
+                state_commit_sha="a" * 40,
+                state_root_digest="sha256:" + ("b" * 64),
+                authority_state_root=Path("authority-state"),
+                authority_state_commit_sha="c" * 40,
+                authority_state_root_digest="sha256:" + ("d" * 64),
+            )
+        )
+    assert calls == ["admission"]
 
 
 def test_live_execution_builder_has_no_publication_state_or_configuration() -> None:

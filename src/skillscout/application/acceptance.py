@@ -133,6 +133,14 @@ class LiveExecutionAdmissionV2:
     state_observation: LiveAuthorityStateObservation
 
 
+@dataclass(frozen=True)
+class FreshBenchmarkLockAdmissionV2:
+    """Inert rebuilt V2 lock chain used before creating live authority."""
+
+    lock: LockedBenchmarkManifestV2
+    nomination: NominationSetV1
+
+
 def resolve_campaign_resume_lineage(
     *,
     authority_digest: str,
@@ -1651,24 +1659,49 @@ def run_locked_benchmark(
     semantic_requests = 0
     try:
         snapshot = _snapshot(store, acceptance_run_id)
-        locks = tuple(
+        fresh_locks = tuple(
             record.fact
             for record in snapshot.facts
             if record.kind == "acceptance_benchmark_lock"
-            and record.fact_digest == manifest.manifest_digest
+            and type(record.fact) is LockedBenchmarkManifestV2
+            and record.fact.selection_manifest == manifest
         )
-        if len(locks) != 1 or locks[0] != manifest or len(manifest.entries) != 5:
-            raise AcceptanceApplicationError("evidence_missing")
-        live_authorities = tuple(
+        fresh_authorities = tuple(
             record.fact
             for record in snapshot.facts
             if record.kind == "acceptance_live_authority"
-            and isinstance(record.fact, LiveAcceptanceAuthorityV1)
+            and type(record.fact) is LiveAcceptanceAuthorityV2
             and record.fact.manifest_digest == manifest.manifest_digest
         )
-        if len(live_authorities) != 1:
+        if len(fresh_locks) == 1 and len(fresh_authorities) == 1:
+            live_authority = fresh_authorities[0]
+            if (
+                live_authority.benchmark_lock_digest != fresh_locks[0].lock_digest
+                or live_authority.benchmark_lock != fresh_locks[0]
+                or len(manifest.entries) != 5
+            ):
+                raise AcceptanceApplicationError("evidence_missing")
+        elif not fresh_locks and not fresh_authorities:
+            locks = tuple(
+                record.fact
+                for record in snapshot.facts
+                if record.kind == "acceptance_benchmark_lock"
+                and record.fact_digest == manifest.manifest_digest
+            )
+            live_authorities = tuple(
+                record.fact
+                for record in snapshot.facts
+                if record.kind == "acceptance_live_authority"
+                and isinstance(record.fact, LiveAcceptanceAuthorityV1)
+                and record.fact.manifest_digest == manifest.manifest_digest
+            )
+            if len(locks) != 1 or locks[0] != manifest or len(manifest.entries) != 5:
+                raise AcceptanceApplicationError("evidence_missing")
+            if len(live_authorities) != 1:
+                raise AcceptanceApplicationError("evidence_missing")
+            live_authority = live_authorities[0]
+        else:
             raise AcceptanceApplicationError("evidence_missing")
-        live_authority = live_authorities[0]
         existing_scenarios = {
             scenario.benchmark_entry_digest: scenario
             for scenario in (
@@ -2326,44 +2359,12 @@ def re_admit_live_execution_v2(
         if authority.authority_digest != authority_digest:
             raise ValueError
 
-        lock_records = tuple(
-            record
-            for record in snapshot.facts
-            if (
-                type(record) is AcceptanceFactRecord
-                and record.acceptance_run_id == snapshot.acceptance_run_id
-                and record.kind == "acceptance_benchmark_lock"
-                and record.fact_digest == authority.benchmark_lock_digest
-            )
+        lock_admission = re_admit_fresh_benchmark_lock_v2(
+            snapshot=snapshot,
+            lock_digest=authority.benchmark_lock_digest,
         )
-        if len(lock_records) != 1 or type(lock_records[0].fact) is not LockedBenchmarkManifestV2:
-            raise ValueError
-        lock = LockedBenchmarkManifestV2.model_validate_json(
-            canonical_json_bytes(lock_records[0].fact),
-            strict=True,
-        )
-        if lock.lock_digest != authority.benchmark_lock_digest or lock != authority.benchmark_lock:
-            raise ValueError
-
-        nomination_records = tuple(
-            record
-            for record in snapshot.facts
-            if (
-                type(record) is AcceptanceFactRecord
-                and record.acceptance_run_id == snapshot.acceptance_run_id
-                and record.kind == "acceptance_nomination"
-                and record.fact_digest == authority.nomination_set_digest
-            )
-        )
-        if len(nomination_records) != 1 or type(nomination_records[0].fact) is not NominationSetV1:
-            raise ValueError
-        nomination_bytes = canonical_json_bytes(nomination_records[0].fact)
-        nomination = NominationSetV1.model_validate_json(
-            nomination_bytes,
-            strict=False,
-        )
-        if canonical_json_bytes(nomination) != nomination_bytes:
-            raise ValueError
+        lock = lock_admission.lock
+        nomination = lock_admission.nomination
         if (
             nomination.nomination_set_digest != authority.nomination_set_digest
             or nomination.user_nominated_entries
@@ -2404,6 +2405,79 @@ def re_admit_live_execution_v2(
         nomination=nomination,
         state_observation=state_observation,
     )
+
+
+def re_admit_fresh_benchmark_lock_v2(
+    *,
+    snapshot: AcceptanceRunSnapshot,
+    lock_digest: str | None = None,
+) -> FreshBenchmarkLockAdmissionV2:
+    """Rebuild one current V2 lock and its Search-only selection chain.
+
+    The recorder deliberately receives no lock document or caller-selected
+    receipt.  It can name at most the sole V2 lock already reconstructed from
+    an operations-owned snapshot.  Passing ``None`` therefore requires exact
+    V2 cardinality rather than choosing an arbitrary historical V1 lock.
+    """
+
+    if (
+        type(snapshot) is not AcceptanceRunSnapshot
+        or (
+            lock_digest is not None
+            and (
+                type(lock_digest) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", lock_digest) is None
+            )
+        )
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    try:
+        lock_records = tuple(
+            record
+            for record in snapshot.facts
+            if (
+                type(record) is AcceptanceFactRecord
+                and record.acceptance_run_id == snapshot.acceptance_run_id
+                and record.kind == "acceptance_benchmark_lock"
+                and type(record.fact) is LockedBenchmarkManifestV2
+                and (lock_digest is None or record.fact_digest == lock_digest)
+            )
+        )
+        if len(lock_records) != 1:
+            raise ValueError
+        lock = LockedBenchmarkManifestV2.model_validate_json(
+            canonical_json_bytes(lock_records[0].fact),
+            strict=True,
+        )
+        if lock.lock_digest != lock_records[0].fact_digest:
+            raise ValueError
+        nomination_records = tuple(
+            record
+            for record in snapshot.facts
+            if (
+                type(record) is AcceptanceFactRecord
+                and record.acceptance_run_id == snapshot.acceptance_run_id
+                and record.kind == "acceptance_nomination"
+                and record.fact_digest == lock.nomination_set_digest
+                and type(record.fact) is NominationSetV1
+            )
+        )
+        if len(nomination_records) != 1:
+            raise ValueError
+        nomination_bytes = canonical_json_bytes(nomination_records[0].fact)
+        nomination = NominationSetV1.model_validate_json(
+            nomination_bytes,
+            strict=False,
+        )
+        if canonical_json_bytes(nomination) != nomination_bytes:
+            raise ValueError
+        if nomination.user_nominated_entries:
+            raise ValueError
+        re_admit_locked_manifest(snapshot, lock.selection_manifest)
+        _verify_fresh_lock_v2_selected_entries(lock=lock, nomination=nomination)
+    except Exception:
+        raise AcceptanceApplicationError("evidence_missing") from None
+    return FreshBenchmarkLockAdmissionV2(lock=lock, nomination=nomination)
 
 
 def admit_live_execution_v2(
@@ -2465,14 +2539,26 @@ def _verify_live_authority_v2_selected_entries(
 ) -> None:
     """Recheck every selected numeric identity and immutable source property."""
 
+    _verify_fresh_lock_v2_selected_entries(lock=lock, nomination=nomination)
+    if len(authority.entries) != 5 or authority.entries != lock.entries:
+        raise ValueError("fresh selected entry chain is invalid")
+
+
+def _verify_fresh_lock_v2_selected_entries(
+    *,
+    lock: LockedBenchmarkManifestV2,
+    nomination: NominationSetV1,
+) -> None:
+    """Recheck the V2 lock's five fixed source identities without authority input."""
+
     nominated = {
         entry.entry_digest: entry for entry in nomination.search_derived_entries
     }
     if len(nominated) != len(nomination.search_derived_entries):
         raise ValueError("fresh nomination entries are not unique")
-    if len(authority.entries) != 5 or authority.entries != lock.entries:
+    if len(lock.entries) != 5:
         raise ValueError("fresh selected entry chain is invalid")
-    for selected in authority.entries:
+    for selected in lock.entries:
         source = nominated.get(selected.nomination_entry_digest)
         if source is None or (
             selected.repository_id,
@@ -2758,7 +2844,7 @@ def record_live_authority(
     dependencies: LiveAuthorityDependencies,
     *,
     acceptance_run_id: str,
-    fact: LiveAcceptanceAuthorityV1,
+    fact: LiveAcceptanceAuthorityV2,
 ) -> AcceptanceFactRecord:
     """Persist the single authority that can unlock one live benchmark run.
 
@@ -2771,7 +2857,7 @@ def record_live_authority(
         type(dependencies) is not LiveAuthorityDependencies
         or type(acceptance_run_id) is not str
         or not acceptance_run_id
-        or type(fact) is not LiveAcceptanceAuthorityV1
+        or type(fact) is not LiveAcceptanceAuthorityV2
         or fact.authority_digest is None
     ):
         raise TypeError("invalid live authority recorder")

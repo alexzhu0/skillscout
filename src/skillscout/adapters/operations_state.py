@@ -1102,6 +1102,72 @@ def _acceptance_fact_by_digest(
     return _acceptance_row_fact(row)
 
 
+def _selection_manifest_for_acceptance_run(
+    connection: sqlite3.Connection,
+    *,
+    acceptance_run_id: str,
+    manifest_digest: str,
+) -> LockedBenchmarkManifestV1:
+    """Resolve the immutable V1 selection preimage across historical/V2 locks.
+
+    A fresh V2 lock deliberately has its own digest, while downstream scenario
+    facts retain the static V1 selection-manifest digest.  Never infer a lock
+    from a caller-provided model: select it only from the rebuilt run rows and
+    reject any ambiguous historical/fresh mix.
+    """
+
+    rows = connection.execute(
+        """SELECT * FROM operations_acceptance_facts
+           WHERE acceptance_run_id = ? AND fact_kind = 'acceptance_benchmark_lock'
+           ORDER BY fact_digest""",
+        (acceptance_run_id,),
+    ).fetchall()
+    manifests: list[LockedBenchmarkManifestV1] = []
+    for row in rows:
+        lock = _acceptance_row_fact(row)
+        if type(lock) is LockedBenchmarkManifestV1 and lock.manifest_digest == manifest_digest:
+            manifests.append(lock)
+        elif (
+            type(lock) is LockedBenchmarkManifestV2
+            and lock.selection_manifest.manifest_digest == manifest_digest
+        ):
+            manifests.append(lock.selection_manifest)
+    if len(manifests) != 1:
+        raise OperationsIntegrityError("required benchmark selection lock is missing")
+    return manifests[0]
+
+
+def _selection_manifest_for_live_authority(
+    connection: sqlite3.Connection,
+    *,
+    acceptance_run_id: str,
+    authority: LiveAcceptanceAuthorityV1 | LiveAcceptanceAuthorityV2,
+) -> LockedBenchmarkManifestV1:
+    """Bind a live authority to its sole immutable V1 selection preimage."""
+
+    if type(authority) is LiveAcceptanceAuthorityV1:
+        lock = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_benchmark_lock",
+            digest=authority.manifest_digest,
+        )
+        if type(lock) is not LockedBenchmarkManifestV1:
+            raise OperationsIntegrityError("historical live authority requires V1 lock")
+        return lock
+    if type(authority) is LiveAcceptanceAuthorityV2:
+        lock = _acceptance_fact_by_digest(
+            connection,
+            acceptance_run_id=acceptance_run_id,
+            kind="acceptance_benchmark_lock",
+            digest=authority.benchmark_lock_digest,
+        )
+        if type(lock) is not LockedBenchmarkManifestV2 or lock != authority.benchmark_lock:
+            raise OperationsIntegrityError("fresh live authority requires V2 lock")
+        return lock.selection_manifest
+    raise OperationsIntegrityError("live authority model is invalid")
+
+
 def _validate_v2_benchmark_lock_selection(
     lock: LockedBenchmarkManifestV2,
     nomination: NominationSetV1,
@@ -1198,19 +1264,17 @@ def _validate_acceptance_references(
             raise OperationsIntegrityError(
                 "scenario live authority is missing"
             ) from None
-        assert isinstance(authority, LiveAcceptanceAuthorityV1)
+        if type(authority) not in {LiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV2}:
+            raise OperationsIntegrityError("scenario live authority is invalid")
         if authority.manifest_digest != fact.benchmark_manifest_digest:
             raise OperationsIntegrityError(
                 "scenario live authority manifest binding mismatch"
             )
-        manifest = _acceptance_fact_by_digest(
+        manifest = _selection_manifest_for_live_authority(
             connection,
             acceptance_run_id=acceptance_run_id,
-            kind="acceptance_benchmark_lock",
-            digest=fact.benchmark_manifest_digest,
+            authority=authority,
         )
-        if not isinstance(manifest, LockedBenchmarkManifestV1):
-            raise OperationsIntegrityError("scenario requires historical benchmark lock")
         entries = tuple(
             entry
             for entry in manifest.entries
@@ -1637,7 +1701,8 @@ def _validate_acceptance_references(
             kind="acceptance_live_authority",
             digest=fact.live_acceptance_authority_digest,
         )
-        assert isinstance(authority, LiveAcceptanceAuthorityV1)
+        if type(authority) not in {LiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV2}:
+            raise OperationsIntegrityError("campaign resume authority is invalid")
         if (
             fact.source_commit_sha != authority.source_commit_sha
             or fact.manifest_digest != authority.manifest_digest
@@ -1668,14 +1733,11 @@ def _validate_acceptance_references(
             )
     elif kind == "acceptance_budget_reservation":
         assert isinstance(fact, AcceptanceBudgetReservationV1)
-        manifest = _acceptance_fact_by_digest(
+        manifest = _selection_manifest_for_acceptance_run(
             connection,
             acceptance_run_id=acceptance_run_id,
-            kind="acceptance_benchmark_lock",
-            digest=fact.benchmark_manifest_digest,
+            manifest_digest=fact.benchmark_manifest_digest,
         )
-        if not isinstance(manifest, LockedBenchmarkManifestV1):
-            raise OperationsIntegrityError("budget reservation requires historical benchmark lock")
         entries = tuple(
             entry
             for entry in manifest.entries
@@ -1693,14 +1755,11 @@ def _validate_acceptance_references(
             )
     elif kind == "acceptance_fixed_candidate_admission":
         assert isinstance(fact, AcceptanceFixedCandidateAdmissionV1)
-        manifest = _acceptance_fact_by_digest(
+        manifest = _selection_manifest_for_acceptance_run(
             connection,
             acceptance_run_id=acceptance_run_id,
-            kind="acceptance_benchmark_lock",
-            digest=fact.benchmark_manifest_digest,
+            manifest_digest=fact.benchmark_manifest_digest,
         )
-        if not isinstance(manifest, LockedBenchmarkManifestV1):
-            raise OperationsIntegrityError("fixed admission requires historical benchmark lock")
         entries = tuple(
             entry
             for entry in manifest.entries
