@@ -363,6 +363,7 @@ def _assert_isolation_workflow(source: str) -> None:
         "live_benchmark",
         "live_replay",
         "human_attestation",
+        "record_live_authority",
         "cleanup_attestation",
         "rebuild_report",
     }
