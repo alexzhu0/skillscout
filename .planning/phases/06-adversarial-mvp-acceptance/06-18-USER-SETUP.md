@@ -1,7 +1,7 @@
 # Phase 6 Plan 18: User Setup Required
 
-**Generated:** 2026-08-04  
-**Phase:** adversarial-mvp-acceptance  
+**Generated:** 2026-08-04
+**Phase:** adversarial-mvp-acceptance
 **Status:** Incomplete
 
 These are the only remaining browser-only steps before the protected, state-only
