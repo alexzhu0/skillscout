@@ -419,6 +419,65 @@ def test_source_execution_verifier_requires_final_live_authority_job(
 
 
 @pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        ("shell: bash", "shell: bash -e {0}"),
+        (
+            "defaults:\n  run:\n    shell: bash",
+            "env:\n"
+            "  SKILLSCOUT_STATE_GITHUB_TOKEN: "
+            "${{ secrets.SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN }}\n"
+            "defaults:\n  run:\n    shell: bash",
+        ),
+    ),
+    ids=("root-shell", "root-state-env"),
+)
+def test_source_execution_verifier_binds_non_phase6_workflow_root_bytes(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    """Unparsed root context cannot add shell or credential authority."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/discover.yml")
+    source = path.read_text(encoding="utf-8")
+    assert source.count(needle) == 1
+    path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+def test_source_execution_verifier_rejects_unparsed_quoted_live_recorder_job(
+    tmp_path: Path,
+) -> None:
+    """A quoted YAML job ID cannot evade the exclusive recorder closure."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    source = path.read_text(encoding="utf-8")
+    hidden_job = """  \"side_recorder\":
+    runs-on: ubuntu-24.04
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN }}
+    steps:
+      - name: Run an unparsed recorder
+        run: |
+          .venv/bin/py''thon -m skillscout.cli record-live''-authority --acceptance-run-id \"${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}\"
+
+"""
+    assert source.count("jobs:\n") == 1
+    path.write_text(source.replace("jobs:\n", "jobs:\n" + hidden_job, 1), encoding="utf-8")
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
     "obfuscated_subcommand",
     ("record-live''-authority", "record-live\\-authority"),
 )
