@@ -1191,6 +1191,7 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
     tmp_path: Path,
 ) -> None:
     import skillscout.bootstrap as bootstrap
+    from skillscout.application import acceptance as acceptance_application
 
     original_commit = "d" * 40
     original_root = "sha256:" + ("e" * 64)
@@ -1222,15 +1223,32 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
         "SKILLSCOUT_LLM_PROVIDER": "deepseek",
         "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
     }
+    manifest_path = (
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+    )
+    manifest = acceptance_application.load_locked_benchmark_manifest(manifest_path)
+    live_admission = acceptance_application.LiveExecutionAdmissionV2(
+        authority=SimpleNamespace(
+            authority_digest=authority,
+            semantic_provider="deepseek",
+            stage_models=(
+                "deepseek-v4-flash",
+                "deepseek-v4-flash",
+                "deepseek-v4-pro",
+            ),
+        ),
+        lock=SimpleNamespace(selection_manifest=manifest),
+        nomination=SimpleNamespace(),
+        state_observation=SimpleNamespace(),
+    )
 
     config = bootstrap.load_acceptance_runtime_config(
-        manifest_path=(
-            ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
-        ),
+        manifest_path=manifest_path,
         state_commit_sha=commit,
         state_root_digest=root,
         acceptance_run_id="acceptance-proof",
         resume_proof_path=proof_path,
+        live_admission=live_admission,
         environ=environment,
     )
 
@@ -1263,6 +1281,7 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
             state_root_digest=root,
             acceptance_run_id="acceptance-proof",
             resume_proof_path=proof_path,
+            live_admission=live_admission,
             environ={
                 **environment,
                 "PHASE6_AUTHORITY_STATE_COMMIT_SHA": "f" * 40,
@@ -1280,6 +1299,7 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
             state_root_digest=root,
             acceptance_run_id="acceptance-proof",
             resume_proof_path=proof_path,
+            live_admission=live_admission,
             environ=environment,
         )
 
@@ -4545,6 +4565,90 @@ def test_completed_projector_rejects_unverified_state_locator(
         )
 
 
+def test_acceptance_runtime_rejects_missing_v2_admission_before_provider_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No legacy provider configuration path survives without V2 admission."""
+
+    import skillscout.adapters.semantic_provider as semantic_provider
+    import skillscout.bootstrap as bootstrap
+
+    calls: list[str] = []
+
+    def resolved_provider(_source: object) -> object:
+        calls.append("provider")
+        return SimpleNamespace(
+            provider=SimpleNamespace(value="deepseek"),
+            extract_model="deepseek-v4-flash",
+            generator_model="deepseek-v4-flash",
+            reviewer_model="deepseek-v4-pro",
+        )
+
+    monkeypatch.setattr(semantic_provider, "resolve_semantic_provider", resolved_provider)
+
+    with pytest.raises(ValueError, match="acceptance runtime configuration rejected"):
+        bootstrap.load_acceptance_runtime_config(
+            manifest_path=(
+                ROOT
+                / ".planning/phases/06-adversarial-mvp-acceptance"
+                / "06-BENCHMARK-MANIFEST.json"
+            ),
+            state_commit_sha="a" * 40,
+            state_root_digest="sha256:" + ("b" * 64),
+            environ={"PHASE6_AUTHORITY_DIGEST": "sha256:" + ("c" * 64)},
+        )
+
+    assert calls == []
+
+
+def test_live_execution_builder_rejects_missing_v2_admission_before_discovery_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-process caller cannot skip admission and reach capability composition."""
+
+    import skillscout.bootstrap as bootstrap
+    from skillscout.application import acceptance
+
+    manifest_path = (
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+    )
+    manifest = acceptance.load_locked_benchmark_manifest(manifest_path)
+    config = bootstrap.AcceptanceRuntimeConfig(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        state_commit_sha="a" * 40,
+        state_root_digest="sha256:" + ("b" * 64),
+        semantic_provider="deepseek",
+        extractor_model_id="deepseek-v4-flash",
+        generator_model_id="deepseek-v4-flash",
+        reviewer_model_id="deepseek-v4-pro",
+        live_acceptance_authority_digest="sha256:" + ("9" * 64),
+    )
+    restored = SimpleNamespace(
+        status="verified",
+        observed_head=config.state_commit_sha,
+        bundle=SimpleNamespace(root=SimpleNamespace(root_digest=config.state_root_digest)),
+    )
+    calls: list[str] = []
+
+    def forbidden_discovery_factory(*_args: object, **_kwargs: object) -> object:
+        calls.append("discovery")
+        raise AssertionError("missing V2 admission reached discovery composition")
+
+    monkeypatch.setattr(bootstrap, "_acceptance_discovery_config", forbidden_discovery_factory)
+
+    with pytest.raises(ValueError, match="live acceptance execution rejected"):
+        bootstrap.build_live_acceptance_execution(
+            config=config,
+            restored=restored,
+            action="benchmark",
+            acceptance_run_id="acceptance-live-five",
+            environ={},
+        )
+
+    assert calls == []
+
+
 def test_live_replay_builder_dispatches_state_only_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4601,12 +4705,46 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
             calls.append("replay") or SimpleNamespace(replay_digest="sha256:" + ("c" * 64))
         ),
     )
+    live_admission = acceptance.LiveExecutionAdmissionV2(
+        authority=SimpleNamespace(
+            authority_digest=config.live_acceptance_authority_digest,
+            state_repository_id=9001,
+            state_repository_full_name="octo-org/skillscout-state",
+        ),
+        lock=SimpleNamespace(selection_manifest=manifest),
+        nomination=SimpleNamespace(),
+        state_observation=SimpleNamespace(
+            state_repository_id=9001,
+            state_repository_full_name="octo-org/skillscout-state",
+        ),
+    )
+
+    class AdmissionStore:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> AdmissionStore:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def acceptance_snapshot(self, _acceptance_run_id: str) -> object:
+            return object()
+
+    monkeypatch.setattr(operations_state, "OperationsStateStore", AdmissionStore)
+    monkeypatch.setattr(
+        acceptance,
+        "re_admit_live_execution_v2",
+        lambda **_kwargs: live_admission,
+    )
 
     execution = bootstrap.build_live_acceptance_execution(
         config=config,
         restored=restored,
         action="replay",
         acceptance_run_id="acceptance-live-five",
+        live_admission=live_admission,
         environ={},
     )
 
@@ -4618,11 +4756,11 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
     assert calls == ["replay"]
 
 
-def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
+def test_production_replay_rejects_historical_authority_before_terminal_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Run the real replay builder/projector/stores with only remote CAS faked."""
+    """Historical authority cannot reach the replay graph or any live adapter."""
 
     import skillscout.adapters.github as github_adapter
     import skillscout.adapters.openai_extract as extract_adapter
@@ -5035,22 +5173,21 @@ def test_production_replay_rejects_synthetic_scenarios_without_terminal_graph(
     monkeypatch.setattr(publication_state, "PublicationStateStore", forbidden)
     monkeypatch.setattr(operations_state, "PublicationStateStore", forbidden)
 
-    execution = bootstrap.build_live_acceptance_execution(
-        config=config,
-        restored=SimpleNamespace(
-            status="verified",
-            observed_head=config.state_commit_sha,
-            bundle=bundle,
-        ),
-        action="replay",
-        acceptance_run_id=run_id,
-        environ={
-            "SKILLSCOUT_STATE_REPOSITORY_ID": "123",
-            "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "example/state",
-        },
-    )
-    with pytest.raises(ValueError, match="typed Phase 3"):
-        execution.run()
+    with pytest.raises(ValueError, match="live acceptance execution rejected"):
+        bootstrap.build_live_acceptance_execution(
+            config=config,
+            restored=SimpleNamespace(
+                status="verified",
+                observed_head=config.state_commit_sha,
+                bundle=bundle,
+            ),
+            action="replay",
+            acceptance_run_id=run_id,
+            environ={
+                "SKILLSCOUT_STATE_REPOSITORY_ID": "123",
+                "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "example/state",
+            },
+        )
 
 
 def test_live_runner_persists_read_and_semantic_budget_before_remote_read() -> None:
@@ -5672,28 +5809,101 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         publication.close()
         pipeline.close()
 
-    authority = acceptance_domain.LiveAcceptanceAuthorityV1(
-        schema_version="live-acceptance-authority-v1",
-        authority_version=1,
+    budget_policy = (
+        __import__(
+            "skillscout.domain.discovery",
+            fromlist=["DiscoveryBudgetPolicyV1"],
+        )
+        .DiscoveryBudgetPolicyV1()
+    )
+    lock_receipt = acceptance_domain.BenchmarkLockApprovalReceiptV2(
+        schema_version="benchmark-lock-approval-receipt-v2",
+        purpose="benchmark_lock",
+        environment="phase6-human-benchmark-lock",
+        source_repository_id=1_310_897_029,
+        source_repository_full_name="alexzhu0/skillscout",
+        reviewer_login="alexzhu0",
+        reviewer_id=101,
+        workflow_run_id=1001,
+        workflow_run_attempt=1,
         source_commit_sha="c" * 40,
-        acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
-        manifest_digest=manifest.manifest_digest,
-        nomination_set_digest=manifest.nomination_set_digest,
-        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
-        state_commit_sha="e" * 40,
-        state_root_digest="sha256:" + ("f" * 64),
+        workflow_sha256="sha256:" + ("d" * 64),
+        trigger_identity="workflow_dispatch:42:alexzhu0",
+        approval_record_digest="sha256:" + ("1" * 64),
+    )
+    lock_snapshot = operations_state.AcceptanceRunSnapshot(
+        acceptance_run_id="acceptance-production-fixed-runner",
+        facts=(
+            operations_state.AcceptanceFactRecord(
+                acceptance_run_id="acceptance-production-fixed-runner",
+                kind="acceptance_nomination",
+                fact_digest=nomination.nomination_set_digest,
+                fact=nomination,
+            ),
+        ),
+    )
+    fresh_lock = acceptance_application.bind_fresh_benchmark_lock(
+        snapshot=lock_snapshot,
+        selection_manifest=manifest,
         state_repository_id=123,
         state_repository_full_name="example/state",
-        query_set_digest=query_set.query_set_digest,
-        budget_policy_digest=(
-            __import__(
-                "skillscout.domain.discovery",
-                fromlist=["DiscoveryBudgetPolicyV1"],
-            )
-            .DiscoveryBudgetPolicyV1()
-            .budget_policy_digest
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("c" * 64),
+        expected_nomination_authority_digest=nomination.search_run_authority_digest,
+        approval_receipt=lock_receipt,
+    )
+    approval = acceptance_domain.LiveExecutionApprovalReceiptV2(
+        schema_version="live-execution-approval-receipt-v2",
+        purpose="live_execution",
+        environment="skillscout-phase6-live-authority",
+        source_repository_id=fresh_lock.source_repository_id,
+        source_repository_full_name=fresh_lock.source_repository_full_name,
+        reviewer_login="alexzhu0",
+        reviewer_id=202,
+        workflow_run_id=2001,
+        workflow_run_attempt=1,
+        source_commit_sha=fresh_lock.source_commit_sha,
+        workflow_sha256=fresh_lock.acceptance_workflow_sha256,
+        trigger_identity=fresh_lock.trigger_identity,
+        approval_record_digest="sha256:" + ("2" * 64),
+    )
+    authority = acceptance_domain.LiveAcceptanceAuthorityV2(
+        schema_version="live-acceptance-authority-v2",
+        authority_version=2,
+        purpose="live_execution",
+        benchmark_lock_digest=fresh_lock.lock_digest,
+        benchmark_lock=fresh_lock,
+        source_repository_id=fresh_lock.source_repository_id,
+        source_repository_full_name=fresh_lock.source_repository_full_name,
+        state_repository_id=fresh_lock.state_repository_id,
+        state_repository_full_name=fresh_lock.state_repository_full_name,
+        parent_state_commit_sha=fresh_lock.parent_state_commit_sha,
+        parent_state_root_digest=fresh_lock.parent_state_root_digest,
+        state_commit_sha="e" * 40,
+        state_root_digest="sha256:" + ("f" * 64),
+        source_commit_sha=fresh_lock.source_commit_sha,
+        acceptance_workflow_sha256=fresh_lock.acceptance_workflow_sha256,
+        source_state_binding_digest=fresh_lock.source_state_binding_digest,
+        manifest_path=(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
         ),
+        manifest_digest=fresh_lock.selection_manifest_digest,
+        selection_manifest_digest=fresh_lock.selection_manifest_digest,
+        nomination_set_digest=fresh_lock.nomination_set_digest,
+        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
+        entries=fresh_lock.entries,
+        environment="skillscout-phase6-live-authority",
+        approved_reviewer_login=approval.reviewer_login,
+        approved_reviewer_id=approval.reviewer_id,
+        workflow_run_id=approval.workflow_run_id,
+        workflow_run_attempt=approval.workflow_run_attempt,
+        trigger_identity=approval.trigger_identity,
+        approval_record_digest=approval.approval_record_digest,
+        approval_receipt=approval,
+        approval_receipt_digest=approval.receipt_digest,
+        query_set_digest=query_set.query_set_digest,
+        budget_policy_digest=budget_policy.budget_policy_digest,
         semantic_provider="deepseek",
         provider_base_url="https://api.deepseek.com",
         stage_models=(
@@ -5730,13 +5940,12 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         benchmark_scenario_write_count=5,
         replay_semantic_effect_count=0,
         replay_publication_effect_count=0,
-        reviewer_id="acceptance-reviewer",
         approved_at=timestamp,
     )
     run_id = "acceptance-production-fixed-runner"
     with operations_state.OperationsStateStore(operations_path) as operations:
         operations.record_acceptance_fact(run_id, "acceptance_nomination", nomination)
-        operations.record_acceptance_fact(run_id, "acceptance_benchmark_lock", manifest)
+        operations.record_acceptance_fact(run_id, "acceptance_benchmark_lock", fresh_lock)
         operations.record_acceptance_fact(run_id, "acceptance_live_authority", authority)
 
     readme_sha = "aa01aa01aa01aa01aa01aa01aa01aa01aa01aa01"

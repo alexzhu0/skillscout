@@ -15,11 +15,12 @@ from skillscout.adapters.github import LicenseResponse, RateLimitFacts, RepoMeta
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.acceptance import (
     LiveAcceptanceAuthorityV1,
+    LiveAcceptanceAuthorityV2,
+    LockedBenchmarkManifestV2,
     NominationEntryV1,
     NominationSetV1,
 )
 from skillscout.domain.discovery import (
-    DiscoveryBudgetPolicyV1,
     DiscoveryQuerySetV1,
     SearchPageObservationV1,
     SearchRateLimitFactsV1,
@@ -66,6 +67,26 @@ def _application_module(*, skip_if_missing: bool) -> Any:
             pytest.skip("phase6-application-contracts-not-yet-implemented")
         return None
     return importlib.import_module("skillscout.application.acceptance")
+
+
+def _fresh_live_evidence_for_manifest(manifest: Any) -> tuple[Any, Any]:
+    """Minimal typed V2 evidence for application-only benchmark behavior tests."""
+
+    lock_digest = sha256_digest({"fresh-lock": manifest.manifest_digest})
+    lock = LockedBenchmarkManifestV2.model_construct(
+        schema_version="locked-benchmark-manifest-v2",
+        selection_manifest=manifest,
+        entries=manifest.entries,
+        lock_digest=lock_digest,
+    )
+    authority = LiveAcceptanceAuthorityV2.model_construct(
+        schema_version="live-acceptance-authority-v2",
+        manifest_digest=manifest.manifest_digest,
+        benchmark_lock_digest=lock_digest,
+        benchmark_lock=lock,
+        authority_digest=sha256_digest({"fresh-authority": lock_digest}),
+    )
+    return lock, authority
 
 
 def _symbol(name: str, *, skip_if_missing: bool = True) -> type[Any]:
@@ -681,60 +702,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
     manifest = module.load_locked_benchmark_manifest(
         ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
     )
-    live_authority = LiveAcceptanceAuthorityV1(
-        schema_version="live-acceptance-authority-v1",
-        authority_version=1,
-        source_commit_sha="c" * 40,
-        acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
-        manifest_digest=manifest.manifest_digest,
-        nomination_set_digest=manifest.nomination_set_digest,
-        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
-        state_commit_sha="e" * 40,
-        state_root_digest="sha256:" + ("f" * 64),
-        state_repository_id=123,
-        state_repository_full_name="example/state",
-        query_set_digest="sha256:" + ("1" * 64),
-        budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
-        semantic_provider="deepseek",
-        provider_base_url="https://api.deepseek.com",
-        stage_models=(
-            "deepseek-v4-flash",
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-        ),
-        prompt_versions=(
-            "extract-prompt-v1",
-            "generator-prompt-v1",
-            "reviewer-prompt-v1",
-        ),
-        schema_versions=(
-            "workflow-spec-v1",
-            "generation-draft-v1",
-            "reviewer-judgment-v1",
-        ),
-        policy_versions=(
-            "discovery-budget-policy-v1",
-            "extract-policy-v1",
-            "generator-policy-v1",
-            "qualification-policy-v1",
-            "reader-policy-v1",
-            "reviewer-policy-v1",
-        ),
-        max_candidates=100,
-        max_semantic_candidates=20,
-        max_semantic_requests=20,
-        max_files_per_repository=25,
-        max_source_files_per_repository=5,
-        max_file_bytes=131_072,
-        max_total_bytes_per_repository=524_288,
-        max_tokens_per_repository=40_000,
-        benchmark_scenario_write_count=5,
-        replay_semantic_effect_count=0,
-        replay_publication_effect_count=0,
-        reviewer_id="acceptance-reviewer",
-        approved_at=TIMESTAMP,
-    )
+    fresh_lock, live_authority = _fresh_live_evidence_for_manifest(manifest)
     observed: list[object] = []
     persisted: list[object] = []
 
@@ -802,8 +770,8 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
                     module.AcceptanceFactRecord(
                         acceptance_run_id=acceptance_run_id,
                         kind="acceptance_benchmark_lock",
-                        fact_digest=manifest.manifest_digest,
-                        fact=manifest,
+                        fact_digest=fresh_lock.lock_digest,
+                        fact=fresh_lock,
                     ),
                     module.AcceptanceFactRecord(
                         acceptance_run_id=acceptance_run_id,
@@ -901,61 +869,65 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
     assert resumed.state_root_digest == result.state_root_digest
 
 
-def _live_authority_for_manifest(manifest: Any) -> LiveAcceptanceAuthorityV1:
-    return LiveAcceptanceAuthorityV1(
+def test_locked_benchmark_rejects_historical_v1_before_discovery_factory() -> None:
+    """Historical facts stay inspectable but cannot start semantic benchmark work."""
+
+    module = _application_module(skip_if_missing=False)
+    manifest = module.load_locked_benchmark_manifest(
+        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+    )
+    historical = LiveAcceptanceAuthorityV1.model_construct(
         schema_version="live-acceptance-authority-v1",
         authority_version=1,
-        source_commit_sha="c" * 40,
-        acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
         manifest_digest=manifest.manifest_digest,
-        nomination_set_digest=manifest.nomination_set_digest,
-        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
-        state_commit_sha="e" * 40,
-        state_root_digest="sha256:" + ("f" * 64),
-        state_repository_id=123,
-        state_repository_full_name="example/state",
-        query_set_digest="sha256:" + ("1" * 64),
-        budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
-        semantic_provider="deepseek",
-        provider_base_url="https://api.deepseek.com",
-        stage_models=(
-            "deepseek-v4-flash",
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-        ),
-        prompt_versions=(
-            "extract-prompt-v1",
-            "generator-prompt-v1",
-            "reviewer-prompt-v1",
-        ),
-        schema_versions=(
-            "workflow-spec-v1",
-            "generation-draft-v1",
-            "reviewer-judgment-v1",
-        ),
-        policy_versions=(
-            "discovery-budget-policy-v1",
-            "extract-policy-v1",
-            "generator-policy-v1",
-            "qualification-policy-v1",
-            "reader-policy-v1",
-            "reviewer-policy-v1",
-        ),
-        max_candidates=100,
-        max_semantic_candidates=20,
-        max_semantic_requests=20,
-        max_files_per_repository=25,
-        max_source_files_per_repository=5,
-        max_file_bytes=131_072,
-        max_total_bytes_per_repository=524_288,
-        max_tokens_per_repository=40_000,
-        benchmark_scenario_write_count=5,
-        replay_semantic_effect_count=0,
-        replay_publication_effect_count=0,
-        reviewer_id="acceptance-reviewer",
-        approved_at=TIMESTAMP,
+        authority_digest="sha256:" + ("f" * 64),
     )
+    calls: list[str] = []
+
+    class Store:
+        def acceptance_snapshot(self, acceptance_run_id: str) -> Any:
+            return module.AcceptanceRunSnapshot(
+                acceptance_run_id=acceptance_run_id,
+                facts=(
+                    module.AcceptanceFactRecord(
+                        acceptance_run_id=acceptance_run_id,
+                        kind="acceptance_benchmark_lock",
+                        fact_digest=manifest.manifest_digest,
+                        fact=manifest,
+                    ),
+                    module.AcceptanceFactRecord(
+                        acceptance_run_id=acceptance_run_id,
+                        kind="acceptance_live_authority",
+                        fact_digest=historical.authority_digest,
+                        fact=historical,
+                    ),
+                ),
+            )
+
+        def close(self) -> None:
+            return None
+
+    dependencies = module.LockedCampaignDependencies(
+        discovery_factory=lambda *_args: calls.append("discovery") or object(),
+        operations_store_factory=Store,
+        state_sync=lambda **_kwargs: object(),
+    )
+
+    with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+        module.run_locked_benchmark(
+            dependencies,
+            manifest=manifest,
+            acceptance_run_id="historical-v1-rejected",
+            observed_head="a" * 40,
+            prior_root_digest="sha256:" + ("b" * 64),
+            recorded_at=TIMESTAMP,
+        )
+
+    assert calls == []
+
+
+def _live_authority_for_manifest(manifest: Any) -> LiveAcceptanceAuthorityV2:
+    return _fresh_live_evidence_for_manifest(manifest)[1]
 
 
 def test_live_authority_recorder_allows_one_exact_authority_only() -> None:
@@ -1036,6 +1008,7 @@ def _run_attempt_boundary_benchmark(
         ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
     )
     live_authority = _live_authority_for_manifest(manifest)
+    fresh_lock = live_authority.benchmark_lock
     persisted: list[Any] = []
 
     class Runner:
@@ -1118,8 +1091,8 @@ def _run_attempt_boundary_benchmark(
                     module.AcceptanceFactRecord(
                         acceptance_run_id=acceptance_run_id,
                         kind="acceptance_benchmark_lock",
-                        fact_digest=manifest.manifest_digest,
-                        fact=manifest,
+                        fact_digest=fresh_lock.lock_digest,
+                        fact=fresh_lock,
                     ),
                     module.AcceptanceFactRecord(
                         acceptance_run_id=acceptance_run_id,

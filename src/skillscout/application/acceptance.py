@@ -30,7 +30,6 @@ from skillscout.domain.acceptance import (
     ChangedSourceEvidenceV1,
     FreshBenchmarkLockHandoffV1,
     HumanSkillReviewAttestationV1,
-    LiveAcceptanceAuthorityV1,
     LiveAcceptanceAuthorityV2,
     LiveExecutionApprovalReceiptV2,
     LockedBenchmarkManifestV1,
@@ -1673,34 +1672,14 @@ def run_locked_benchmark(
             and type(record.fact) is LiveAcceptanceAuthorityV2
             and record.fact.manifest_digest == manifest.manifest_digest
         )
-        if len(fresh_locks) == 1 and len(fresh_authorities) == 1:
-            live_authority = fresh_authorities[0]
-            if (
-                live_authority.benchmark_lock_digest != fresh_locks[0].lock_digest
-                or live_authority.benchmark_lock != fresh_locks[0]
-                or len(manifest.entries) != 5
-            ):
-                raise AcceptanceApplicationError("evidence_missing")
-        elif not fresh_locks and not fresh_authorities:
-            locks = tuple(
-                record.fact
-                for record in snapshot.facts
-                if record.kind == "acceptance_benchmark_lock"
-                and record.fact_digest == manifest.manifest_digest
-            )
-            live_authorities = tuple(
-                record.fact
-                for record in snapshot.facts
-                if record.kind == "acceptance_live_authority"
-                and isinstance(record.fact, LiveAcceptanceAuthorityV1)
-                and record.fact.manifest_digest == manifest.manifest_digest
-            )
-            if len(locks) != 1 or locks[0] != manifest or len(manifest.entries) != 5:
-                raise AcceptanceApplicationError("evidence_missing")
-            if len(live_authorities) != 1:
-                raise AcceptanceApplicationError("evidence_missing")
-            live_authority = live_authorities[0]
-        else:
+        if len(fresh_locks) != 1 or len(fresh_authorities) != 1:
+            raise AcceptanceApplicationError("evidence_missing")
+        live_authority = fresh_authorities[0]
+        if (
+            live_authority.benchmark_lock_digest != fresh_locks[0].lock_digest
+            or live_authority.benchmark_lock != fresh_locks[0]
+            or len(manifest.entries) != 5
+        ):
             raise AcceptanceApplicationError("evidence_missing")
         existing_scenarios = {
             scenario.benchmark_entry_digest: scenario

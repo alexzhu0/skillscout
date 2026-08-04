@@ -1196,31 +1196,21 @@ def load_acceptance_runtime_config(
             raise ValueError
 
         source = os.environ if environ is None else environ
-        if live_admission is not None:
-            from skillscout.application.acceptance import LiveExecutionAdmissionV2
+        from skillscout.application.acceptance import LiveExecutionAdmissionV2
 
-            if (
-                type(live_admission) is not LiveExecutionAdmissionV2
-                or live_admission.authority.authority_digest is None
-                or source["PHASE6_AUTHORITY_DIGEST"]
-                != live_admission.authority.authority_digest
-                or manifest != live_admission.lock.selection_manifest
-            ):
-                raise ValueError
-            semantic_provider = live_admission.authority.semantic_provider
-            extractor_model_id, generator_model_id, reviewer_model_id = (
-                live_admission.authority.stage_models
-            )
-            live_authority_digest = live_admission.authority.authority_digest
-        else:
-            from skillscout.adapters.semantic_provider import resolve_semantic_provider
-
-            provider = resolve_semantic_provider(source)
-            semantic_provider = provider.provider.value
-            extractor_model_id = provider.extract_model
-            generator_model_id = provider.generator_model
-            reviewer_model_id = provider.reviewer_model
-            live_authority_digest = source["PHASE6_AUTHORITY_DIGEST"]
+        if (
+            type(live_admission) is not LiveExecutionAdmissionV2
+            or live_admission.authority.authority_digest is None
+            or source["PHASE6_AUTHORITY_DIGEST"]
+            != live_admission.authority.authority_digest
+            or manifest != live_admission.lock.selection_manifest
+        ):
+            raise ValueError
+        semantic_provider = live_admission.authority.semantic_provider
+        extractor_model_id, generator_model_id, reviewer_model_id = (
+            live_admission.authority.stage_models
+        )
+        live_authority_digest = live_admission.authority.authority_digest
         resume_locator_digest: str | None = None
         resume_transition_index = 0
         resume_commits: tuple[str, ...] = ()
@@ -4433,6 +4423,7 @@ class _FixedRepositoryAcceptanceRunner:
             OperationsStateStore,
             _schema_fingerprint,
         )
+        from skillscout.domain.acceptance import LiveAcceptanceAuthorityV2
         from skillscout.domain.canonical import sha256_digest
         from skillscout.domain.discovery import DiscoveryBudgetPolicyV1, DiscoveryRunAuthorityV1
 
@@ -4458,6 +4449,8 @@ class _FixedRepositoryAcceptanceRunner:
         if len(authority_records) != 1:
             raise ValueError("live acceptance authority is missing")
         self._live_authority = authority_records[0]
+        if type(self._live_authority) is not LiveAcceptanceAuthorityV2:
+            raise ValueError("fresh V2 live acceptance authority is required")
         if (
             self._live_authority.manifest_digest != config.manifest.manifest_digest
             or self._live_authority.semantic_provider != config.semantic_provider
@@ -5246,26 +5239,25 @@ def build_live_acceptance_execution(
     )
 
     source = os.environ if environ is None else environ
-    if live_admission is not None:
-        if (
-            type(live_admission) is not LiveExecutionAdmissionV2
-            or live_admission.authority.authority_digest
-            != config.live_acceptance_authority_digest
-            or live_admission.lock.selection_manifest != config.manifest
-            or live_admission.authority.state_repository_id
-            != live_admission.state_observation.state_repository_id
-            or live_admission.authority.state_repository_full_name
-            != live_admission.state_observation.state_repository_full_name
-        ):
-            raise ValueError("live acceptance execution rejected")
-        with OperationsStateStore(Path(_DISCOVERY_DATABASE_LOCATORS[1])) as operations:
-            rechecked_admission = re_admit_live_execution_v2(
-                snapshot=operations.acceptance_snapshot(acceptance_run_id),
-                authority_digest=config.live_acceptance_authority_digest,
-                state_observation=live_admission.state_observation,
-            )
-        if rechecked_admission != live_admission:
-            raise ValueError("live acceptance execution rejected")
+    if (
+        type(live_admission) is not LiveExecutionAdmissionV2
+        or live_admission.authority.authority_digest
+        != config.live_acceptance_authority_digest
+        or live_admission.lock.selection_manifest != config.manifest
+        or live_admission.authority.state_repository_id
+        != live_admission.state_observation.state_repository_id
+        or live_admission.authority.state_repository_full_name
+        != live_admission.state_observation.state_repository_full_name
+    ):
+        raise ValueError("live acceptance execution rejected")
+    with OperationsStateStore(Path(_DISCOVERY_DATABASE_LOCATORS[1])) as operations:
+        rechecked_admission = re_admit_live_execution_v2(
+            snapshot=operations.acceptance_snapshot(acceptance_run_id),
+            authority_digest=config.live_acceptance_authority_digest,
+            state_observation=live_admission.state_observation,
+        )
+    if rechecked_admission != live_admission:
+        raise ValueError("live acceptance execution rejected")
     discovery_config = _acceptance_discovery_config(config, source)
     _, _, frozen_owner_export, _ = _parse_bundle_exports(restored.bundle)
     verified_state_locators = {

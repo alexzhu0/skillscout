@@ -935,6 +935,117 @@ def test_fresh_v2_benchmark_lock_is_singleton_per_run_and_rebuild_rejects_confli
     ] == [recorded]
 
 
+def test_fresh_v2_live_authority_is_singleton_and_rebuild_rejects_conflicts(
+    tmp_path: Path,
+) -> None:
+    """A rebuilt export cannot smuggle a second independently valid V2 authority."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    first = _live_authority_v2(nomination)
+    second_values = first.model_dump(mode="json", exclude_none=False)
+    second_values.pop("authority_digest")
+    second_values["state_commit_sha"] = "d" * 40
+    second_values["state_root_digest"] = "sha256:" + ("8" * 64)
+    second = type(first).model_validate(second_values, strict=True)
+    source = tmp_path / "one-v2-live-authority.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            first.benchmark_lock,
+        )
+        recorded = store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_live_authority",
+            first,
+        )
+        assert (
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_live_authority",
+                first,
+            )
+            == recorded
+        )
+        with pytest.raises(module.OperationsIntegrityError, match="fresh live authority"):
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_live_authority",
+                second,
+            )
+        exported = store.export_owned_state()
+
+    owned = next(
+        fact
+        for fact in exported.facts
+        if fact.kind == "acceptance_live_authority"
+        and module._fact_payload(fact)["value"]["schema_version"]
+        == "live-acceptance-authority-v2"
+    )
+    payload = module._fact_payload(owned)
+    columns = payload["columns"]
+    assert isinstance(columns, dict)
+    columns["fact_digest"] = second.authority_digest
+    columns["recorded_identity"] = module._acceptance_recorded_identity(
+        nomination.nomination_set_id,
+        "acceptance_live_authority",
+        second,
+    )
+    columns["schema_version"] = second.schema_version
+    payload["value"] = second.model_dump(mode="json", exclude_none=False)
+    payload_json = module._json_text(payload)
+    duplicate = owned.model_copy(
+        update={
+            "payload_json": payload_json,
+            "object_digest": sha256_digest(payload_json.encode("utf-8")),
+        }
+    )
+
+    def export_order(fact: object) -> tuple[str, str, str]:
+        row = module._fact_payload(fact)
+        row_columns = row["columns"]
+        assert isinstance(row_columns, dict)
+        return (
+            str(row_columns.get("acceptance_run_id", "")),
+            str(row_columns.get("fact_kind", "")),
+            str(row_columns.get("fact_digest", "")),
+        )
+
+    ordered = sorted((*exported.facts, duplicate), key=export_order)
+    facts = tuple(
+        fact.model_copy(update={"sequence": index})
+        for index, fact in enumerate(ordered)
+    )
+    projection = module._projection_from_facts(facts)
+    invalid_database = b"not-a-sqlite-database"
+    tampered = exported.model_copy(
+        update={
+            "database_bytes": invalid_database,
+            "database_digest": sha256_digest(invalid_database),
+            "facts": facts,
+            "projection": projection,
+            "projection_digest": projection.projection_digest,
+            "export_digest": module._export_digest(
+                schema_fingerprint=exported.schema_fingerprint,
+                facts=facts,
+                projection=projection,
+            ),
+        }
+    )
+
+    with pytest.raises(module.OperationsIntegrityError, match="fresh live authority cardinality"):
+        module.OperationsStateStore.rebuild_owned_state(
+            tmp_path / "two-v2-live-authorities-rejected.sqlite3",
+            tampered,
+        )
+
+
 def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     module = _operations_module()
     assert tuple(module.ACCEPTANCE_FACT_MODELS) == (

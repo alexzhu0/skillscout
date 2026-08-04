@@ -53,6 +53,8 @@ status: complete
 - Removed caller-controlled record flags.  `record-live-authority` takes only `--acceptance-run-id`; no actor, approval comment, authority JSON, endpoint, or free-form receipt channel exists.
 - Added the V2 carrier-checkout gate to `run-acceptance` before runtime configuration and state restoration.  The execution builder re-runs the closed V2 admission against the restored local operations snapshot before it builds discovery/provider composition.
 - Extended downstream scenario, budget, fixed-candidate, and resume validation to resolve a V2 lock through its immutable V1 selection preimage without reclassifying V1 history as fresh authority.
+- Post-review hardening made V2 admission mandatory for both runtime configuration and public live-execution composition.  The fixed repository runner and application benchmark path now reject historical V1 authority facts before discovery, provider, source, or state capability composition.
+- Rebuild validation now invokes V2 live-authority cardinality checks, so a self-consistent export containing two different V2 authority facts is rejected rather than allowing a caller-selected digest.
 
 ## Task Commits
 
@@ -65,9 +67,11 @@ status: complete
 - Contract/state filter: `8 passed, 133 deselected`.
 - V2 admission filter: `9 passed, 134 deselected`.
 - Recorder/CLI/admission narrowed filter: `22 passed, 173 deselected`.
+- Post-review V2 contract/state filter: `9 passed, 133 deselected`.
+- Post-review V2 admission/production filter: `12 passed, 134 deselected`; full application suite: `28 passed`; full CLI security suite: `51 passed`.
 - Ruff passed for all modified implementation and test files.
 
-The plan's literal Task 3 keyword filter was also run. It reached nine passing tests and then encountered the pre-existing Phase 6 process-harness defect: the harness tries to persist a historical V1 live authority without its required V1 benchmark-lock fact. The same strict historical reference check existed before this plan; this work intentionally did not weaken it. No provider, source, state-branch, GitHub, or workflow action was performed during this implementation or verification.
+The plan's literal Task 3 keyword filter was also run. It reached ten passing tests and then encountered the pre-existing Phase 6 process-harness defect: the harness tries to persist a historical V1 live authority without its required V1 benchmark-lock fact. The same strict historical reference check existed before this plan; this work intentionally did not weaken it. No provider, source, state-branch, GitHub, or workflow action was performed during this implementation or verification.
 
 ## Deviations
 

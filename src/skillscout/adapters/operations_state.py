@@ -1670,6 +1670,10 @@ def _validate_acceptance_references(
             ):
                 raise OperationsIntegrityError("live authority manifest binding mismatch")
         elif type(fact) is LiveAcceptanceAuthorityV2:
+            _validate_v2_live_authority_cardinality(
+                connection,
+                acceptance_run_id=acceptance_run_id,
+            )
             lock = _acceptance_fact_by_digest(
                 connection,
                 acceptance_run_id=acceptance_run_id,
