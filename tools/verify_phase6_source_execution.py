@@ -166,6 +166,10 @@ _SKILLSCOUT_ENTRY = re.compile(
     r"^\s*(?:from|import)\s+skillscout(?:\.|\s|$))",
     re.MULTILINE,
 )
+_SKILLSCOUT_CLI_MARKER = re.compile(r"python\s+-m\s+skillscout\.cli\b")
+_SKILLSCOUT_CLI_SUBCOMMAND = re.compile(
+    r"python\s+-m\s+skillscout\.cli[ \t]+([a-z][a-z0-9-]*)(?=$|[ \t);])"
+)
 _TOOL_ENTRY = re.compile(r"\btools/[A-Za-z0-9_./-]+\.py\b")
 
 
@@ -495,6 +499,21 @@ def _recognized_entry(run: str) -> bool:
         if heredoc_active and stripped == "PY":
             heredoc_active = False
     return found and not heredoc_active
+
+
+def _static_skillscout_cli_subcommands(run: str) -> tuple[str, ...]:
+    """Return only literal CLI subcommands, rejecting shell-built command words.
+
+    The planned live recorder must be the sole route to a state write.  A quote,
+    escape, or expansion in the subcommand word could execute the same command
+    while evading a substring proof, so every visible ``skillscout.cli`` call is
+    required to carry one plain static subcommand token.
+    """
+
+    markers = tuple(_SKILLSCOUT_CLI_MARKER.finditer(run))
+    subcommands = tuple(_SKILLSCOUT_CLI_SUBCOMMAND.finditer(run))
+    _require(len(markers) == len(subcommands))
+    return tuple(match.group(1) for match in subcommands)
 
 
 def _closed_action_step(
@@ -1106,12 +1125,16 @@ def _planned_live_authority_route_is_closed(source: str, jobs: tuple[_Job, ...])
         return False
     _require(len(planned) == 1)
     _require("live_authority_json" not in source.casefold())
-    recorder_steps = tuple(
-        (job, step)
-        for job in jobs
-        for step in job.steps
-        if step.run is not None and "record-live-authority" in step.run
-    )
+    recorder_steps: list[tuple[_Job, _Step]] = []
+    for job in jobs:
+        for step in job.steps:
+            if step.run is None:
+                continue
+            subcommands = _static_skillscout_cli_subcommands(step.run)
+            if job != planned[0]:
+                _require("record-live-authority" not in subcommands)
+            if "record-live-authority" in subcommands:
+                recorder_steps.append((job, step))
     _require(len(recorder_steps) == 1 and recorder_steps[0][0] == planned[0])
     _closed_live_authority_job(planned[0])
     return True
