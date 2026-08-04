@@ -39,6 +39,7 @@ _Timestamp = Annotated[
 _NonNegative = Annotated[int, Field(ge=0, le=9_223_372_036_854_775_807)]
 _Positive = Annotated[int, Field(ge=1, le=9_223_372_036_854_775_807)]
 _Spdx = Literal["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"]
+_Zero = Literal[0]
 
 
 def _self_digest(model: StrictFrozenModel, field: str) -> str:
@@ -652,8 +653,8 @@ class LiveAcceptanceAuthorityV2(_SelfDigestedModel):
     max_total_bytes_per_repository: Literal[524_288]
     max_tokens_per_repository: Literal[40_000]
     benchmark_scenario_write_count: Literal[5]
-    replay_semantic_effect_count: Literal[0]
-    replay_publication_effect_count: Literal[0]
+    replay_semantic_effect_count: _Zero
+    replay_publication_effect_count: _Zero
     approved_at: _Timestamp
     authority_digest: Digest | None = None
 
