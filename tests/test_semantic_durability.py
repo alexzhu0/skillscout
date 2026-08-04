@@ -315,7 +315,7 @@ class _Remote:
         self.commits[head] = module.StateCommitObservation(
             sha=head,
             tree_sha=prior_tree,
-            parents=("c" * 40,),
+            parents=(),
             message=module._state_commit_message(prior_bundle.root.root_digest),
         )
 
@@ -423,8 +423,8 @@ def _owned_stores(
         pipeline=pipeline.export_owned_state(),
         operations=operations.export_owned_state(),
         publication=publication.export_owned_state(),
-        prior_root_digest=DIGEST_B,
-        state_parent_commit_sha="c" * 40,
+        prior_root_digest=None,
+        state_parent_commit_sha="0" * 40,
         query_set_digest="sha256:" + ("7" * 64),
         budget_policy_digest="sha256:" + ("8" * 64),
         created_at="2026-07-27T11:59:59.000000Z",
@@ -553,7 +553,9 @@ def test_idempotent_confirmation_reuses_verified_immutable_blob_bodies(
             publication_store=publication,
         )
         committed_tree = remote.commits[receipt.verified_state_head].tree_sha
-        expected_body_reads = len(remote.trees[committed_tree])
+        # The restored child reads its own complete bundle plus the immediate
+        # parent root that proves the prior-root linkage.
+        expected_body_reads = len(remote.trees[committed_tree]) + 1
         assert remote.blob_reads == expected_body_reads
 
         barrier.confirm(
@@ -650,7 +652,7 @@ def test_every_export_cas_reread_and_verification_failure_blocks_guarded_effect(
 def test_semantic_durability_never_recovers_a_post_cas_uncertainty(
     tmp_path: Path,
 ) -> None:
-    """Only the authority-carrier path may run the stricter recovery proof."""
+    """The generic semantic durability barrier remains fail-closed."""
 
     module = _state_branch()
     pipeline, operations, publication, request, prior_bundle = _owned_stores(
@@ -685,10 +687,10 @@ def test_semantic_durability_never_recovers_a_post_cas_uncertainty(
                 publication_store=publication,
             )
         assert failure.value.code is _ports().ErrorCode.STATE_OPERATION_FAILED
-        # A generic semantic barrier must not fall through to a full-bundle
-        # restore after an uncertain write; only authority-carrier has the
-        # extra exact authority/locator proof needed for that recovery.
-        assert remote.blob_reads == 0
+        # The pre-CAS parent-root metadata read is permitted, but a generic
+        # semantic barrier must not fall through to full-bundle recovery after
+        # an uncertain write; explicit state-only callers own narrower proofs.
+        assert remote.blob_reads == 1
     finally:
         publication.close()
         operations.close()

@@ -362,9 +362,6 @@ def _assert_isolation_workflow(source: str) -> None:
         "live_authority_preflight",
         "live_benchmark",
         "live_replay",
-        "changed_source",
-        "fresh_gate_b4",
-        "value_publication",
         "human_attestation",
         "cleanup_attestation",
         "rebuild_report",
@@ -843,8 +840,6 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
         "offline-adversarial",
         "run-benchmark",
         "run-replay",
-        "run-changed-source",
-        "gate-b4-and-publish",
         "record-live-authority",
         "record-human-review",
         "record-probe-cleanup",
@@ -858,9 +853,6 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     preflight = _job(source, "live_authority_preflight")
     benchmark = _job(source, "live_benchmark")
     replay = _job(source, "live_replay")
-    changed = _job(source, "changed_source")
-    fresh_gate = _job(source, "fresh_gate_b4")
-    publication = _job(source, "value_publication")
     human = _job(source, "human_attestation")
     cleanup = _job(source, "cleanup_attestation")
     rebuild = _job(source, "rebuild_report")
@@ -944,7 +936,7 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert "${{ secrets." not in offline
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in offline
 
-    for semantic_job in (benchmark, changed):
+    for semantic_job in (benchmark,):
         assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in semantic_job
         assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in semantic_job
         assert "SKILLSCOUT_CATALOG" not in semantic_job
@@ -952,27 +944,26 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
         assert "--state-commit-sha" in semantic_job
         assert "--state-root-digest" in semantic_job
 
-    assert "${{ secrets." not in fresh_gate
-    assert "SKILLSCOUT_CATALOG" not in fresh_gate
-    assert re.search(r"^    needs: fresh_gate_b4$", publication, re.MULTILINE)
-    assert "environment: skillscout-catalog-publish" in publication
-    assert "SKILLSCOUT_CATALOG_FULL_NAME: alexzhu0/skillscout-catalog-test" in publication
-    assert publication.index("run-acceptance") < publication.index(
-        "actions/create-github-app-token"
-    )
-    assert "permission-contents: write" in publication
-    assert "permission-pull-requests: write" in publication
-
-    non_publication = source.replace(publication, "", 1)
-    assert "actions/create-github-app-token" not in non_publication
-    assert "SKILLSCOUT_GITHUB_APP_PRIVATE_KEY" not in non_publication
-    assert "alexzhu0/skillscout-catalog-test" not in non_publication
+    for removed_job in ("changed_source", "fresh_gate_b4", "value_publication"):
+        assert f"\n  {removed_job}:\n" not in source
+    for removed_action in ("run-changed-source", "gate-b4-and-publish"):
+        assert removed_action not in source
+    for forbidden_publication_capability in (
+        "actions/create-github-app-token",
+        "SKILLSCOUT_GITHUB_APP_PRIVATE_KEY",
+        "SKILLSCOUT_CATALOG_FULL_NAME",
+        "skillscout-catalog-test",
+        "permission-pull-requests: write",
+    ):
+        assert forbidden_publication_capability not in source
 
     for attestation in (human, cleanup):
         assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in attestation
         assert "DEEPSEEK_API_KEY" not in attestation
         assert "SKILLSCOUT_CATALOG" not in attestation
         assert "record-acceptance-attestation" in attestation
+        assert "PHASE6_AUTHORITY_STATE_COMMIT_SHA" in attestation
+        assert "PHASE6_AUTHORITY_STATE_ROOT_DIGEST" in attestation
     assert "record-live-authority" in human
     assert human.index("verify-live-authority-state") < human.rindex(
         "record-live-authority"
@@ -989,6 +980,9 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert "contents: read" in rebuild
     assert "contents: write" not in rebuild
     assert "${{ secrets." not in rebuild
+    assert "PHASE6_AUTHORITY_STATE_COMMIT_SHA" in rebuild
+    assert "PHASE6_AUTHORITY_STATE_ROOT_DIGEST" in rebuild
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in rebuild
     assert "rebuild-acceptance" in rebuild
 
     upload_blocks = re.findall(
@@ -1024,12 +1018,30 @@ def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:
     assert "verify-live-authority" in preflight
     assert "resolve-acceptance-resume" in preflight
     assert "--authority-state-root" in preflight
+    assert '--authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA"' in preflight
     assert "--authority-operations-state" not in preflight
     assert "git -C .phase6-authority-state rev-parse HEAD" in preflight
     assert re.search(r"^    needs: live_authority_preflight$", live, re.MULTILINE)
     assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in live
     assert "SKILLSCOUT_CATALOG" not in live
     assert "actions/create-github-app-token" not in live
+
+
+def test_live_preflight_checks_out_authority_from_configured_state_repository() -> None:
+    """The approved authority must not silently resolve against the workflow repo."""
+
+    preflight = _job(_source(required=False), "live_authority_preflight")
+    authority_checkout, separator, _ = preflight.partition(
+        "      - name: Verify the immutable original live authority"
+    )
+
+    assert separator
+    assert "Check out the exact independently approved authority state" in authority_checkout
+    assert "repository: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}" in authority_checkout
+    assert "ref: ${{ env.PHASE6_AUTHORITY_STATE_COMMIT_SHA }}" in authority_checkout
+    assert "path: .phase6-authority-state" in authority_checkout
+    assert "persist-credentials: false" in authority_checkout
+    assert "token: ${{ github.token }}" in authority_checkout
 
 
 def test_deepseek_only_exact_manifest_jobs_are_distinct_and_bounded() -> None:
@@ -1066,6 +1078,10 @@ def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
     assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in benchmark_prefix
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in benchmark_prefix
     assert "resolve-acceptance-resume" in benchmark_prefix
+    assert (
+        '--authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA"'
+        in benchmark_prefix
+    )
     assert "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}" in benchmark_execution
     assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}" in benchmark_execution
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in benchmark_execution
@@ -1077,6 +1093,10 @@ def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
     assert "SKILLSCOUT_CATALOG" not in replay
     assert "actions/create-github-app-token" not in replay
     assert "resolve-acceptance-resume" in replay
+    assert (
+        '--authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA"'
+        in replay
+    )
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in replay
     assert "--action replay" in replay
 

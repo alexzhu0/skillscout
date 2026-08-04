@@ -9,7 +9,7 @@ tree before granting state authority.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import re
@@ -40,6 +40,7 @@ _MAX_OBJECT_BYTES = 1_048_576
 _MAX_DATABASE_BYTES = 1_073_741_824
 _MAX_TREE_ENTRIES = 4_100
 _MAX_REQUEST_ID_CHARS = 128
+_GENESIS_STATE_PARENT_COMMIT_SHA = "0" * 40
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
 _GITHUB_REQUEST_ID = re.compile(r"(?:[A-Za-z0-9._-]+|[0-9A-F]+(?::[0-9A-F]+)+)")
@@ -60,6 +61,11 @@ _SECRET_CANARIES = (
 _RESOLVER_MAX_REQUESTS = 1_024
 _RESOLVER_MAX_RESPONSE_BYTES = 268_435_456
 _RESOLVER_MAX_ELAPSED_SECONDS = 45.0
+# A regular discovery run can persist several hundred small checkpoints.  Its
+# immutable baseline is code-reviewed, so it may cover a wider history than a
+# live acceptance recovery anchor, while still refusing an unbounded walk.
+_MAX_STATE_LINEAGE_ANCHOR_HOPS = 4_096
+_MAX_SHARED_LINEAGE_CACHE_ENTRIES = _MAX_STATE_LINEAGE_ANCHOR_HOPS + 1
 
 
 class StateIntegrityFailure(Exception):
@@ -190,6 +196,7 @@ class StateRestoreObservation:
     status: Literal["absent", "verified"]
     observed_head: str | None
     bundle: VerifiedStateBundle | None
+    is_genesis: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +216,43 @@ class StateCommitRootObservation:
     root: DiscoveryStateRootV1
     object_digests: tuple[str, ...]
     declared_content_bytes: int
+
+
+@dataclass(frozen=True)
+class StateLineageAnchor:
+    """An externally verified immutable state point allowed to terminate a proof."""
+
+    commit_sha: str
+    root_digest: str
+    max_hops: int = 160
+
+
+@dataclass(frozen=True)
+class _StateLineageNode:
+    """The small immutable subset needed to prove one parent/root edge."""
+
+    commit: StateCommitObservation
+    root_digest: str
+    prior_root_digest: str | None
+    state_parent_commit_sha: str
+
+
+@dataclass
+class StateBranchReadCache:
+    """Run-scoped bounded immutable lineage cache.
+
+    A state commit SHA is immutable.  Sharing only compact commit/root-edge
+    metadata between stores bound to the same configured state repository
+    avoids re-reading every older parent for each checkpoint, without keeping
+    SQLite snapshots or other owned payload blobs alive.  Lineage entries are
+    keyed by their exact terminating anchor, so a proof to one anchor cannot
+    satisfy a proof to another.
+    """
+
+    lineage_nodes: dict[str, _StateLineageNode] = field(default_factory=dict)
+    verified_lineage_hops: dict[
+        tuple[str, str, str | None, str | None], int
+    ] = field(default_factory=dict)
 
 
 def _safe_failure(code: ErrorCode = ErrorCode.STAGE_PERMANENT_FAILURE) -> None:
@@ -241,6 +285,20 @@ def _git_blob_id(value: bytes) -> str:
 def _state_commit_message(root_digest: str) -> str:
     _require_digest(root_digest)
     return f"skillscout: persist state\n\nSkillScout-State: v1\nRoot-Digest: {root_digest}"
+
+
+def _state_commit_root_digest(message: object) -> str | None:
+    """Return a root only from the exact canonical state commit message."""
+
+    if type(message) is not str:
+        return None
+    prefix = "skillscout: persist state\n\nSkillScout-State: v1\nRoot-Digest: "
+    if not message.startswith(prefix):
+        return None
+    digest = message.removeprefix(prefix)
+    if _DIGEST.fullmatch(digest) is None or message != _state_commit_message(digest):
+        return None
+    return digest
 
 
 def _contains_canary(value: bytes) -> bool:
@@ -674,101 +732,110 @@ class StateBranchClient(_StateBranchReadClientBase):
 class StateBranchStore:
     """Verify complete state bundles and advance only the exact fixed ref."""
 
-    def __init__(self, remote: object) -> None:
+    def __init__(
+        self,
+        remote: object,
+        *,
+        read_cache: StateBranchReadCache | None = None,
+    ) -> None:
         self._remote = remote
+        if read_cache is not None and type(read_cache) is not StateBranchReadCache:
+            raise ValueError("invalid state-branch read cache")
+        cache = read_cache if read_cache is not None else StateBranchReadCache()
+        self._read_cache = cache
+        # Full trees and owned blobs include SQLite snapshots.  They remain
+        # store-local so a long-lived discovery controller cannot retain a
+        # growing sequence of database images in memory.
         self._commit_cache: dict[str, object] = {}
         self._tree_cache: dict[str, object] = {}
         self._blob_cache: dict[str, bytes] = {}
 
-    def restore(
-        self,
-        *,
-        read_budget: ResolverReadBudget | None = None,
-    ) -> StateRestoreObservation:
-        try:
-            ref = (
-                self._remote.get_state_ref(read_budget=read_budget)
-                if read_budget is not None
-                else self._remote.get_state_ref()
-            )
-        except StateRefNotFound:
-            return StateRestoreObservation("absent", None, None)
-        return StateRestoreObservation(
-            "verified",
-            ref.sha,
-            self.restore_commit(ref.sha, read_budget=read_budget),
-        )
+    @staticmethod
+    def _lineage_terminal(
+        anchor: StateLineageAnchor | None,
+    ) -> tuple[str | None, str | None]:
+        if anchor is None:
+            return None, None
+        return anchor.commit_sha, anchor.root_digest
 
-    def restore_commit(
+    def _cache_verified_lineage(
         self,
-        commit_sha: str,
+        nodes: list[_StateLineageNode],
         *,
-        read_budget: ResolverReadBudget | None = None,
-    ) -> VerifiedStateBundle:
-        expected_commit_sha = _sha(commit_sha)
-        commit = self._cached_read(
-            self._commit_cache,
-            "get_commit",
-            expected_commit_sha,
-            read_budget=read_budget,
-        )
-        if commit.sha != expected_commit_sha or len(commit.parents) > 1:
-            raise StateIntegrityFailure
-        entries = self._cached_read(
-            self._tree_cache,
-            "get_tree",
-            commit.tree_sha,
-            read_budget=read_budget,
-        )
-        entry_map = _validate_tree_shape(entries)
-        root_entry = entry_map.get("state/root.json")
-        if root_entry is None:
-            raise StateIntegrityFailure
-        root_bytes = self._cached_read(
-            self._blob_cache,
-            "get_blob",
-            root_entry.sha,
-            read_budget=read_budget,
-        )
-        if root_entry.size is not None and root_entry.size != len(root_bytes):
-            raise StateIntegrityFailure
-        root = _parse_root(root_bytes)
-        if commit.message != _state_commit_message(root.root_digest):
-            raise StateIntegrityFailure
-        if commit.parents and root.state_parent_commit_sha != commit.parents[0]:
-            raise StateIntegrityFailure
-        expected_paths = _expected_paths(root)
-        if set(entry_map) != expected_paths:
-            raise StateIntegrityFailure
-        files: list[StateOwnedFile] = [StateOwnedFile("state/root.json", root_bytes)]
-        object_digests = {item.locator: item.object_digest for item in root.objects}
-        database_digests = {item.locator: item.content_digest for item in root.databases}
-        for path in sorted(expected_paths - {"state/root.json"}):
-            content = self._cached_read(
-                self._blob_cache,
-                "get_blob",
-                entry_map[path].sha,
-                read_budget=read_budget,
-            )
-            _validate_content(
-                path,
-                content,
-                object_digests.get(path) or database_digests.get(path),
-            )
-            if entry_map[path].size is not None and entry_map[path].size != len(content):
+        terminal: tuple[str | None, str | None],
+        total_hops: int,
+    ) -> None:
+        """Memoize only a fully proven suffix to its exact terminal point."""
+
+        for index, node in enumerate(nodes):
+            key = (node.commit.sha, node.root_digest, *terminal)
+            remaining_hops = total_hops - index
+            existing = self._read_cache.verified_lineage_hops.get(key)
+            if existing is not None and existing != remaining_hops:
+                # Immutable commits have exactly one parent/root path.  A
+                # conflicting cache entry is an invariant failure, not a
+                # reason to fall back to a less precise proof.
                 raise StateIntegrityFailure
-            files.append(StateOwnedFile(path, content))
-        bundle = VerifiedStateBundle(root, tuple(files))
-        _validate_bundle(bundle, expected_parent=commit.parents[0] if commit.parents else None)
-        return bundle
+            if existing is None:
+                while (
+                    len(self._read_cache.verified_lineage_hops)
+                    >= _MAX_SHARED_LINEAGE_CACHE_ENTRIES
+                ):
+                    self._read_cache.verified_lineage_hops.pop(
+                        next(iter(self._read_cache.verified_lineage_hops))
+                    )
+                self._read_cache.verified_lineage_hops[key] = remaining_hops
 
-    def inspect_commit_root(
+    def _remember_lineage_node(
+        self,
+        commit: StateCommitObservation,
+        root: DiscoveryStateRootV1,
+    ) -> _StateLineageNode:
+        """Retain one compact, already-verified parent/root observation."""
+
+        node = _StateLineageNode(
+            commit=commit,
+            root_digest=root.root_digest,
+            prior_root_digest=root.prior_root_digest,
+            state_parent_commit_sha=root.state_parent_commit_sha,
+        )
+        existing = self._read_cache.lineage_nodes.get(commit.sha)
+        if existing is not None:
+            if existing != node:
+                raise StateIntegrityFailure
+            return existing
+        while len(self._read_cache.lineage_nodes) >= _MAX_SHARED_LINEAGE_CACHE_ENTRIES:
+            self._read_cache.lineage_nodes.pop(
+                next(iter(self._read_cache.lineage_nodes))
+            )
+        self._read_cache.lineage_nodes[commit.sha] = node
+        return node
+
+    def _inspect_lineage_node(
         self,
         commit_sha: str,
         *,
-        read_budget: ResolverReadBudget | None = None,
+        read_budget: ResolverReadBudget | None,
+    ) -> _StateLineageNode:
+        """Return compact state metadata only after a full first inspection."""
+
+        expected_commit_sha = _sha(commit_sha)
+        cached = self._read_cache.lineage_nodes.get(expected_commit_sha)
+        if cached is not None:
+            return cached
+        observed = self._inspect_commit_root_unlinked(
+            expected_commit_sha,
+            read_budget=read_budget,
+        )
+        return self._remember_lineage_node(observed.commit, observed.root)
+
+    def _inspect_commit_root_unlinked(
+        self,
+        commit_sha: str,
+        *,
+        read_budget: ResolverReadBudget | None,
     ) -> StateCommitRootObservation:
-        """Verify one immutable commit manifest without reading owned payload blobs."""
+        """Verify one commit manifest without relying on its ancestry."""
 
         expected_commit_sha = _sha(commit_sha)
         commit = self._cached_read(
@@ -777,7 +844,11 @@ class StateBranchStore:
             expected_commit_sha,
             read_budget=read_budget,
         )
-        if commit.sha != expected_commit_sha or len(commit.parents) > 1:
+        if (
+            type(commit) is not StateCommitObservation
+            or commit.sha != expected_commit_sha
+            or len(commit.parents) > 1
+        ):
             raise StateIntegrityFailure
         entries = self._cached_read(
             self._tree_cache,
@@ -821,6 +892,272 @@ class StateBranchStore:
             root=root,
             object_digests=tuple(item.object_digest for item in root.objects),
             declared_content_bytes=(len(root_bytes) + sum(declared_sizes.values())),
+        )
+
+    def _verified_parent_lineage_node(
+        self,
+        node: _StateLineageNode,
+        *,
+        read_budget: ResolverReadBudget | None,
+    ) -> _StateLineageNode | None:
+        """Return the immediate parent, never treating a foreign parent as genesis."""
+
+        if not node.commit.parents:
+            if (
+                node.prior_root_digest is not None
+                or node.state_parent_commit_sha != _GENESIS_STATE_PARENT_COMMIT_SHA
+            ):
+                raise StateIntegrityFailure
+            return None
+        parent_sha = node.commit.parents[0]
+        parent = self._inspect_lineage_node(
+            parent_sha,
+            read_budget=read_budget,
+        )
+        declared_root_digest = _state_commit_root_digest(parent.commit.message)
+        if (
+            declared_root_digest is None
+            or parent.root_digest != declared_root_digest
+            or node.prior_root_digest != declared_root_digest
+        ):
+            raise StateIntegrityFailure
+        return parent
+
+    def _verify_root_lineage(
+        self,
+        commit: StateCommitObservation,
+        root: DiscoveryStateRootV1,
+        *,
+        anchor: StateLineageAnchor | None = None,
+        read_budget: ResolverReadBudget | None,
+    ) -> None:
+        """Prove exact state edges back to genesis or one external immutable anchor."""
+
+        if anchor is not None and type(anchor) is not StateLineageAnchor:
+            raise StateIntegrityFailure
+        if anchor is not None and (
+            _SHA.fullmatch(anchor.commit_sha) is None
+            or _DIGEST.fullmatch(anchor.root_digest) is None
+            or type(anchor.max_hops) is not int
+            or not 0 <= anchor.max_hops <= _MAX_STATE_LINEAGE_ANCHOR_HOPS
+        ):
+            raise StateIntegrityFailure
+
+        current_node = self._remember_lineage_node(commit, root)
+        seen_commits = {current_node.commit.sha}
+        hops = 0
+        terminal = self._lineage_terminal(anchor)
+        nodes: list[_StateLineageNode] = []
+        while True:
+            cache_key = (
+                current_node.commit.sha,
+                current_node.root_digest,
+                *terminal,
+            )
+            cached_hops = self._read_cache.verified_lineage_hops.get(cache_key)
+            if cached_hops is not None:
+                if anchor is not None and hops + cached_hops > anchor.max_hops:
+                    raise StateIntegrityFailure
+                self._cache_verified_lineage(
+                    nodes,
+                    terminal=terminal,
+                    total_hops=hops + cached_hops,
+                )
+                return
+            nodes.append(current_node)
+            if anchor is not None and current_node.commit.sha == anchor.commit_sha:
+                if current_node.root_digest != anchor.root_digest:
+                    raise StateIntegrityFailure
+                self._cache_verified_lineage(
+                    nodes,
+                    terminal=terminal,
+                    total_hops=hops,
+                )
+                return
+            if anchor is not None and hops >= anchor.max_hops:
+                raise StateIntegrityFailure
+            parent = self._verified_parent_lineage_node(
+                current_node,
+                read_budget=read_budget,
+            )
+            if parent is None:
+                if anchor is not None:
+                    raise StateIntegrityFailure
+                self._cache_verified_lineage(
+                    nodes,
+                    terminal=terminal,
+                    total_hops=hops,
+                )
+                return
+            if parent.commit.sha in seen_commits:
+                raise StateIntegrityFailure
+            seen_commits.add(parent.commit.sha)
+            current_node = parent
+            hops += 1
+
+    def _verify_complete_root_lineage(
+        self,
+        commit: StateCommitObservation,
+        root: DiscoveryStateRootV1,
+        *,
+        read_budget: ResolverReadBudget | None,
+    ) -> None:
+        """Walk the complete immutable state chain back to an actual genesis commit."""
+
+        self._verify_root_lineage(
+            commit,
+            root,
+            read_budget=read_budget,
+        )
+
+    def verify_lineage_anchor(
+        self,
+        *,
+        commit_sha: str,
+        root_digest: str,
+        anchor: StateLineageAnchor,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> None:
+        """Prove a state commit descends from one independently verified anchor."""
+
+        if type(anchor) is not StateLineageAnchor:
+            raise StateIntegrityFailure
+        expected_commit_sha = _sha(commit_sha)
+        expected_root_digest = _require_digest(root_digest)
+        anchored_commit_sha = _sha(anchor.commit_sha)
+        anchored_root_digest = _require_digest(anchor.root_digest)
+        observed = self._inspect_commit_root_unlinked(
+            expected_commit_sha,
+            read_budget=read_budget,
+        )
+        if observed.root.root_digest != expected_root_digest:
+            raise StateIntegrityFailure
+        self._verify_root_lineage(
+            observed.commit,
+            observed.root,
+            anchor=StateLineageAnchor(
+                commit_sha=anchored_commit_sha,
+                root_digest=anchored_root_digest,
+                max_hops=anchor.max_hops,
+            ),
+            read_budget=read_budget,
+        )
+
+    def restore(
+        self,
+        *,
+        lineage_anchor: StateLineageAnchor | None = None,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> StateRestoreObservation:
+        try:
+            ref = (
+                self._remote.get_state_ref(read_budget=read_budget)
+                if read_budget is not None
+                else self._remote.get_state_ref()
+            )
+        except StateRefNotFound:
+            return StateRestoreObservation("absent", None, None)
+        bundle = self.restore_commit(
+            ref.sha,
+            lineage_anchor=lineage_anchor,
+            read_budget=read_budget,
+        )
+        commit = self._commit_cache.get(ref.sha)
+        if type(commit) is not StateCommitObservation or commit.sha != ref.sha:
+            raise StateIntegrityFailure
+        return StateRestoreObservation(
+            "verified",
+            ref.sha,
+            bundle,
+            not commit.parents,
+        )
+
+    def restore_commit(
+        self,
+        commit_sha: str,
+        *,
+        lineage_anchor: StateLineageAnchor | None = None,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> VerifiedStateBundle:
+        expected_commit_sha = _sha(commit_sha)
+        commit = self._cached_read(
+            self._commit_cache,
+            "get_commit",
+            expected_commit_sha,
+            read_budget=read_budget,
+        )
+        if commit.sha != expected_commit_sha or len(commit.parents) > 1:
+            raise StateIntegrityFailure
+        entries = self._cached_read(
+            self._tree_cache,
+            "get_tree",
+            commit.tree_sha,
+            read_budget=read_budget,
+        )
+        entry_map = _validate_tree_shape(entries)
+        root_entry = entry_map.get("state/root.json")
+        if root_entry is None:
+            raise StateIntegrityFailure
+        root_bytes = self._cached_read(
+            self._blob_cache,
+            "get_blob",
+            root_entry.sha,
+            read_budget=read_budget,
+        )
+        if root_entry.size is not None and root_entry.size != len(root_bytes):
+            raise StateIntegrityFailure
+        root = _parse_root(root_bytes)
+        if commit.message != _state_commit_message(root.root_digest):
+            raise StateIntegrityFailure
+        if commit.parents and root.state_parent_commit_sha != commit.parents[0]:
+            raise StateIntegrityFailure
+        self._verify_root_lineage(
+            commit,
+            root,
+            anchor=lineage_anchor,
+            read_budget=read_budget,
+        )
+        expected_paths = _expected_paths(root)
+        if set(entry_map) != expected_paths:
+            raise StateIntegrityFailure
+        files: list[StateOwnedFile] = [StateOwnedFile("state/root.json", root_bytes)]
+        object_digests = {item.locator: item.object_digest for item in root.objects}
+        database_digests = {item.locator: item.content_digest for item in root.databases}
+        for path in sorted(expected_paths - {"state/root.json"}):
+            content = self._cached_read(
+                self._blob_cache,
+                "get_blob",
+                entry_map[path].sha,
+                read_budget=read_budget,
+            )
+            _validate_content(
+                path,
+                content,
+                object_digests.get(path) or database_digests.get(path),
+            )
+            if entry_map[path].size is not None and entry_map[path].size != len(content):
+                raise StateIntegrityFailure
+            files.append(StateOwnedFile(path, content))
+        bundle = VerifiedStateBundle(root, tuple(files))
+        _validate_bundle(bundle, expected_parent=commit.parents[0] if commit.parents else None)
+        return bundle
+
+    def inspect_commit_root(
+        self,
+        commit_sha: str,
+        *,
+        read_budget: ResolverReadBudget | None = None,
+    ) -> StateCommitRootObservation:
+        """Verify one immutable commit manifest without reading owned payload blobs.
+
+        This bounded inspection is intentionally not a state-authority grant:
+        ``restore`` and ``restore_commit`` additionally prove the complete
+        ancestry back to a real genesis commit.
+        """
+
+        return self._inspect_commit_root_unlinked(
+            commit_sha,
+            read_budget=read_budget,
         )
 
     def _read(
@@ -903,9 +1240,25 @@ class StateBranchStore:
         observed_head: str | None,
         *,
         expected_prior_root_digest: str | None = None,
+        lineage_anchor: StateLineageAnchor | None = None,
     ) -> StateSyncObservation:
         expected_parent = None if observed_head is None else _sha(observed_head)
         files = _validate_bundle(bundle, expected_parent=expected_parent)
+        if lineage_anchor is not None and (
+            type(lineage_anchor) is not StateLineageAnchor
+            or _SHA.fullmatch(lineage_anchor.commit_sha) is None
+            or _DIGEST.fullmatch(lineage_anchor.root_digest) is None
+            or type(lineage_anchor.max_hops) is not int
+            or not 0 <= lineage_anchor.max_hops <= _MAX_STATE_LINEAGE_ANCHOR_HOPS
+        ):
+            raise StateIntegrityFailure
+        if expected_parent is None and lineage_anchor is not None:
+            raise StateIntegrityFailure
+        if expected_parent is None and (
+            bundle.root.prior_root_digest is not None
+            or bundle.root.state_parent_commit_sha != _GENESIS_STATE_PARENT_COMMIT_SHA
+        ):
+            raise StateIntegrityFailure
         if (
             expected_prior_root_digest is not None
             and bundle.root.prior_root_digest != _require_digest(expected_prior_root_digest)
@@ -922,18 +1275,62 @@ class StateBranchStore:
 
         parent_entries: dict[str, StateTreeEntry] = {}
         if current is not None:
-            parent_commit = self._remote.get_commit(current.sha)
+            parent_commit = self._cached_read(
+                self._commit_cache,
+                "get_commit",
+                current.sha,
+                read_budget=None,
+            )
             if (
-                parent_commit.sha != current.sha
+                type(parent_commit) is not StateCommitObservation
+                or parent_commit.sha != current.sha
                 or len(parent_commit.parents) > 1
+            ):
+                raise StateBranchConflict
+            parent_root_digest = _state_commit_root_digest(parent_commit.message)
+            if (
+                parent_root_digest is None
+                or bundle.root.prior_root_digest != parent_root_digest
                 or (
                     expected_prior_root_digest is not None
-                    and parent_commit.message != _state_commit_message(expected_prior_root_digest)
+                    and parent_root_digest != expected_prior_root_digest
                 )
             ):
                 raise StateBranchConflict
             try:
-                parent_entries = _validate_tree_shape(self._remote.get_tree(parent_commit.tree_sha))
+                parent_root = self._inspect_commit_root_unlinked(
+                    current.sha,
+                    read_budget=None,
+                ).root
+                if parent_root.root_digest != parent_root_digest:
+                    raise StateIntegrityFailure
+                # ``sync`` is itself an authority boundary.  Do not create a
+                # new durable child merely because its immediate parent looks
+                # canonical: an older malformed edge must fail before any
+                # blob, tree, commit, or ref mutation is attempted.
+                parent_anchor = lineage_anchor
+                if lineage_anchor is not None:
+                    if lineage_anchor.max_hops <= 0:
+                        raise StateIntegrityFailure
+                    parent_anchor = StateLineageAnchor(
+                        commit_sha=lineage_anchor.commit_sha,
+                        root_digest=lineage_anchor.root_digest,
+                        max_hops=lineage_anchor.max_hops - 1,
+                    )
+                self._verify_root_lineage(
+                    parent_commit,
+                    parent_root,
+                    anchor=parent_anchor,
+                    read_budget=None,
+                )
+                parent_entries = _validate_tree_shape(
+                    self._cached_read(
+                        self._tree_cache,
+                        "get_tree",
+                        parent_commit.tree_sha,
+                        read_budget=None,
+                    )
+                )
             except StateIntegrityFailure:
                 raise StateBranchConflict from None
 
@@ -1000,6 +1397,7 @@ class StateBranchStore:
         observed_head: str | None,
         *,
         expected_prior_root_digest: str | None = None,
+        lineage_anchor: StateLineageAnchor | None = None,
     ) -> StateSyncObservation:
         """Recover only a fully proven exact child after a post-CAS read loss."""
 
@@ -1021,7 +1419,7 @@ class StateBranchStore:
         ):
             raise StateBranchConflict
 
-        restored = self.restore()
+        restored = self.restore(lineage_anchor=lineage_anchor)
         if (
             restored.status != "verified"
             or restored.observed_head != failure.candidate_commit_sha
@@ -1117,14 +1515,22 @@ class StateBranchDurabilityBarrier:
         state_store: StateBranchStore,
         query_set_digest: str,
         budget_policy_digest: str,
+        lineage_anchor: StateLineageAnchor | None = None,
     ) -> None:
-        if type(state_store) is not StateBranchStore:
+        if (
+            type(state_store) is not StateBranchStore
+            or (
+                lineage_anchor is not None
+                and type(lineage_anchor) is not StateLineageAnchor
+            )
+        ):
             raise ValueError("invalid state-branch durability store")
         _require_digest(query_set_digest)
         _require_digest(budget_policy_digest)
         self._state_store = state_store
         self._query_set_digest = query_set_digest
         self._budget_policy_digest = budget_policy_digest
+        self._lineage_anchor = lineage_anchor
 
     def confirm(
         self,
@@ -1192,20 +1598,31 @@ class StateBranchDurabilityBarrier:
 
         reread = None
         try:
-            synchronized = self._state_store.sync(
-                bundle,
-                transition.expected_prior_state_head,
-                expected_prior_root_digest=(transition.expected_prior_root_digest),
-            )
+            if self._lineage_anchor is None:
+                synchronized = self._state_store.sync(
+                    bundle,
+                    transition.expected_prior_state_head,
+                    expected_prior_root_digest=(transition.expected_prior_root_digest),
+                )
+            else:
+                synchronized = self._state_store.sync(
+                    bundle,
+                    transition.expected_prior_state_head,
+                    expected_prior_root_digest=(transition.expected_prior_root_digest),
+                    lineage_anchor=self._lineage_anchor,
+                )
             verified_head = synchronized.commit_sha
         except StateBranchPostCasUncertain:
-            # This narrow uncertainty is recoverable only by the
-            # authority-carrier path, which additionally proves its exact
-            # authority and resume-locator fact delta before a full-bundle
-            # reconciliation.  Semantic durability stays fail-closed here.
+            # This generic semantic barrier never recovers an uncertain write.
+            # Explicit state-only callers perform their own narrower proofs
+            # before asking the state store to reconcile a full bundle.
             raise
         except StateBranchConflict:
-            reread = self._state_store.restore()
+            reread = (
+                self._state_store.restore()
+                if self._lineage_anchor is None
+                else self._state_store.restore(lineage_anchor=self._lineage_anchor)
+            )
             if (
                 reread.status != "verified"
                 or reread.observed_head is None
@@ -1217,7 +1634,11 @@ class StateBranchDurabilityBarrier:
             # only by fully restoring the already-present exact state.
             verified_head = reread.observed_head
         if reread is None:
-            reread = self._state_store.restore()
+            reread = (
+                self._state_store.restore()
+                if self._lineage_anchor is None
+                else self._state_store.restore(lineage_anchor=self._lineage_anchor)
+            )
         if (
             reread.status != "verified"
             or reread.observed_head != verified_head

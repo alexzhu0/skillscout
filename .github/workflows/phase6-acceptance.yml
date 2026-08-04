@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       phase6_action:
-        description: Select one closed Phase 6 authority transition
+        description: Select one currently implemented closed Phase 6 authority transition
         required: true
         type: choice
         options:
@@ -15,8 +15,6 @@ on:
           - offline-adversarial
           - run-benchmark
           - run-replay
-          - run-changed-source
-          - gate-b4-and-publish
           - record-live-authority
           - record-human-review
           - record-probe-cleanup
@@ -1216,9 +1214,11 @@ jobs:
       - name: Check out the exact independently approved authority state
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          repository: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
           ref: ${{ env.PHASE6_AUTHORITY_STATE_COMMIT_SHA }}
           path: .phase6-authority-state
           persist-credentials: false
+          token: ${{ github.token }}
       - name: Verify the immutable original live authority
         run: |
           set -euo pipefail
@@ -1252,6 +1252,7 @@ jobs:
           resume_file="${RUNNER_TEMP}/phase6-live-resume.json"
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli resolve-acceptance-resume \
             --authority-state-root ".phase6-authority-state" \
+            --authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA" \
             --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
             --campaign-state-root ".phase6-campaign-state" \
             --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
@@ -1435,6 +1436,7 @@ jobs:
             > "${RUNNER_TEMP}/phase6-live-authority-repeat.json"
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli resolve-acceptance-resume \
             --authority-state-root ".phase6-authority-state" \
+            --authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA" \
             --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
             --campaign-state-root ".phase6-campaign-state" \
             --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
@@ -1613,6 +1615,7 @@ jobs:
             > "${RUNNER_TEMP}/phase6-replay-authority.json"
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli resolve-acceptance-resume \
             --authority-state-root ".phase6-authority-state" \
+            --authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA" \
             --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST" \
             --campaign-state-root ".phase6-campaign-state" \
             --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" \
@@ -1647,326 +1650,6 @@ jobs:
           test -f "$PHASE6_MANIFEST"
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action replay --manifest "$PHASE6_MANIFEST" --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --resume-proof "${RUNNER_TEMP}/phase6-replay-resume.json" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
 
-  changed_source:
-    if: ${{ inputs.phase6_action == 'run-changed-source' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    permissions:
-      contents: write
-    env:
-      SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
-      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
-      SKILLSCOUT_LLM_PROVIDER: deepseek
-      DEEPSEEK_BASE_URL: https://api.deepseek.com
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      PHASE6_MANIFEST: evidence/phase6/changed-source.json
-      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
-      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
-    steps:
-      - name: Check out the dispatched commit
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Materialize the pinned uv binary
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
-        with:
-          version: 0.11.29
-          enable-cache: false
-      - name: Verify the repository-local locked toolchain
-        run: |
-          set -euo pipefail
-          mkdir -p .tools/uv-0.11.29/bin
-          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
-          test -x .tools/uv-0.11.29/bin/uv
-          uv_version_output="$(.tools/uv-0.11.29/bin/uv --version)"
-          if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
-            exit 1
-          fi
-          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
-          test "${repository_root}" = "${GITHUB_WORKSPACE}"
-          test "${repository_root}" = "$(pwd -P)"
-          tools_root="${repository_root}/.tools"
-          test ! -L "${tools_root}"
-          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
-          managed_python_root="${tools_root}/python"
-          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
-          if [[ -L "${managed_python_root}" ]]; then
-            exit 1
-          fi
-          if [[ -e "${managed_python_root}" ]]; then
-            test -d "${managed_python_root}"
-            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
-          else
-            mkdir -m 0755 "${managed_python_root}"
-          fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
-          managed_python_executable="$(
-            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
-              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
-          )"
-          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
-          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
-          case "${managed_python_executable}" in
-            "${managed_python_root}"/*/bin/python*) ;;
-            *) exit 1 ;;
-          esac
-          test -x "${managed_python_executable}"
-          venv_root="${repository_root}/.venv"
-          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
-          if [[ -L "${venv_root}" ]]; then
-            exit 1
-          fi
-          if [[ -e "${venv_root}" ]]; then
-            test -d "${venv_root}"
-            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
-            rm -rf -- "${venv_root}"
-          fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
-          python_executable="$(realpath -e -- .venv/bin/python)"
-          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
-          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
-          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
-          case "${python_base_prefix}" in
-            "${managed_python_root}"/*) ;;
-            *) exit 1 ;;
-          esac
-          case "${python_executable}" in
-            "${python_base_prefix}"/bin/python*) ;;
-            *) exit 1 ;;
-          esac
-          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
-          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
-          test -d "${python_base_prefix}/lib/python3.13"
-          test -f "${python_base_prefix}/lib/python3.13/os.py"
-          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
-          {
-            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
-            printf 'UV_MANAGED_PYTHON=1\n'
-            printf 'UV_PYTHON_DOWNLOADS=never\n'
-          } >> "${GITHUB_ENV}"
-      - name: Run the one approved changed-source pair
-        run: |
-          set -euo pipefail
-          test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action changed-source --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
-
-  fresh_gate_b4:
-    if: ${{ inputs.phase6_action == 'gate-b4-and-publish' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - name: Check out the dispatched commit
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Materialize the pinned uv binary
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
-        with:
-          version: 0.11.29
-          enable-cache: false
-      - name: Verify the repository-local locked toolchain
-        run: |
-          set -euo pipefail
-          mkdir -p .tools/uv-0.11.29/bin
-          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
-          test -x .tools/uv-0.11.29/bin/uv
-          uv_version_output="$(.tools/uv-0.11.29/bin/uv --version)"
-          if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
-            exit 1
-          fi
-          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
-          test "${repository_root}" = "${GITHUB_WORKSPACE}"
-          test "${repository_root}" = "$(pwd -P)"
-          tools_root="${repository_root}/.tools"
-          test ! -L "${tools_root}"
-          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
-          managed_python_root="${tools_root}/python"
-          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
-          if [[ -L "${managed_python_root}" ]]; then
-            exit 1
-          fi
-          if [[ -e "${managed_python_root}" ]]; then
-            test -d "${managed_python_root}"
-            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
-          else
-            mkdir -m 0755 "${managed_python_root}"
-          fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
-          managed_python_executable="$(
-            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
-              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
-          )"
-          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
-          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
-          case "${managed_python_executable}" in
-            "${managed_python_root}"/*/bin/python*) ;;
-            *) exit 1 ;;
-          esac
-          test -x "${managed_python_executable}"
-          venv_root="${repository_root}/.venv"
-          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
-          if [[ -L "${venv_root}" ]]; then
-            exit 1
-          fi
-          if [[ -e "${venv_root}" ]]; then
-            test -d "${venv_root}"
-            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
-            rm -rf -- "${venv_root}"
-          fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
-          python_executable="$(realpath -e -- .venv/bin/python)"
-          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
-          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
-          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
-          case "${python_base_prefix}" in
-            "${managed_python_root}"/*) ;;
-            *) exit 1 ;;
-          esac
-          case "${python_executable}" in
-            "${python_base_prefix}"/bin/python*) ;;
-            *) exit 1 ;;
-          esac
-          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
-          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
-          test -d "${python_base_prefix}/lib/python3.13"
-          test -f "${python_base_prefix}/lib/python3.13/os.py"
-          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
-          {
-            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
-            printf 'UV_MANAGED_PYTHON=1\n'
-            printf 'UV_PYTHON_DOWNLOADS=never\n'
-          } >> "${GITHUB_ENV}"
-      - name: Verify exact frozen source bytes before protected authority
-        run: |
-          set -euo pipefail
-          .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_source_execution.py
-
-  value_publication:
-    if: ${{ inputs.phase6_action == 'gate-b4-and-publish' }}
-    needs: fresh_gate_b4
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    environment: skillscout-catalog-publish
-    permissions:
-      contents: read
-    env:
-      PHASE6_MANIFEST: evidence/phase6/gate-b4-and-publish.json
-      PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
-      PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
-      SKILLSCOUT_CATALOG_REPOSITORY_ID: ${{ vars.SKILLSCOUT_CATALOG_REPOSITORY_ID }}
-      SKILLSCOUT_CATALOG_FULL_NAME: alexzhu0/skillscout-catalog-test
-      SKILLSCOUT_CATALOG_BASE_BRANCH: ${{ vars.SKILLSCOUT_CATALOG_BASE_BRANCH }}
-      SKILLSCOUT_CATALOG_REVIEWERS: ${{ vars.SKILLSCOUT_CATALOG_REVIEWERS }}
-      SKILLSCOUT_PUBLICATION_POLICY_VERSION: ${{ vars.SKILLSCOUT_PUBLICATION_POLICY_VERSION }}
-    steps:
-      - name: Check out the dispatched commit
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Materialize the pinned uv binary
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
-        with:
-          version: 0.11.29
-          enable-cache: false
-      - name: Verify the repository-local locked toolchain
-        run: |
-          set -euo pipefail
-          mkdir -p .tools/uv-0.11.29/bin
-          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
-          test -x .tools/uv-0.11.29/bin/uv
-          uv_version_output="$(.tools/uv-0.11.29/bin/uv --version)"
-          if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
-            exit 1
-          fi
-          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
-          test "${repository_root}" = "${GITHUB_WORKSPACE}"
-          test "${repository_root}" = "$(pwd -P)"
-          tools_root="${repository_root}/.tools"
-          test ! -L "${tools_root}"
-          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
-          managed_python_root="${tools_root}/python"
-          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
-          if [[ -L "${managed_python_root}" ]]; then
-            exit 1
-          fi
-          if [[ -e "${managed_python_root}" ]]; then
-            test -d "${managed_python_root}"
-            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
-          else
-            mkdir -m 0755 "${managed_python_root}"
-          fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
-          managed_python_executable="$(
-            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
-              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
-          )"
-          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
-          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
-          case "${managed_python_executable}" in
-            "${managed_python_root}"/*/bin/python*) ;;
-            *) exit 1 ;;
-          esac
-          test -x "${managed_python_executable}"
-          venv_root="${repository_root}/.venv"
-          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
-          if [[ -L "${venv_root}" ]]; then
-            exit 1
-          fi
-          if [[ -e "${venv_root}" ]]; then
-            test -d "${venv_root}"
-            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
-            rm -rf -- "${venv_root}"
-          fi
-          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
-          python_executable="$(realpath -e -- .venv/bin/python)"
-          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
-          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
-          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
-          case "${python_base_prefix}" in
-            "${managed_python_root}"/*) ;;
-            *) exit 1 ;;
-          esac
-          case "${python_executable}" in
-            "${python_base_prefix}"/bin/python*) ;;
-            *) exit 1 ;;
-          esac
-          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
-          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
-          test -d "${python_base_prefix}/lib/python3.13"
-          test -f "${python_base_prefix}/lib/python3.13/os.py"
-          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
-          {
-            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
-            printf 'UV_MANAGED_PYTHON=1\n'
-            printf 'UV_PYTHON_DOWNLOADS=never\n'
-          } >> "${GITHUB_ENV}"
-      - name: Revalidate the fixed publication authority before token minting
-        run: |
-          set -euo pipefail
-          test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action publication --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
-      - name: Mint the fixed-catalog token after fresh source admission
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-        with:
-          app-id: ${{ secrets.SKILLSCOUT_GITHUB_APP_ID }}
-          private-key: ${{ secrets.SKILLSCOUT_GITHUB_APP_PRIVATE_KEY }}
-          owner: alexzhu0
-          repositories: skillscout-catalog-test
-          permission-contents: write
-          permission-pull-requests: write
-      - name: Publish only the re-admitted value Draft
-        env:
-          SKILLSCOUT_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action publication --manifest "$PHASE6_MANIFEST" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
-
   human_attestation:
     if: ${{ inputs.phase6_action == 'record-human-review' || (inputs.phase6_action == 'record-live-authority' && github.actor == 'alexzhu0') }}
     runs-on: ubuntu-24.04
@@ -1984,6 +1667,8 @@ jobs:
       SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
       SKILLSCOUT_PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
       SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      PHASE6_AUTHORITY_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_COMMIT_SHA }}
+      PHASE6_AUTHORITY_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_ROOT_DIGEST }}
       SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
       SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
       SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
@@ -2108,6 +1793,10 @@ jobs:
       PHASE6_ATTESTATION: evidence/phase6/probe-cleanup.json
       PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
       PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      PHASE6_AUTHORITY_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_COMMIT_SHA }}
+      PHASE6_AUTHORITY_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_ROOT_DIGEST }}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
       SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Check out the dispatched commit
@@ -2209,6 +1898,11 @@ jobs:
       PHASE6_EVIDENCE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_EVIDENCE_ROOT_DIGEST }}
       PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
       PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
+      PHASE6_AUTHORITY_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_COMMIT_SHA }}
+      PHASE6_AUTHORITY_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_ROOT_DIGEST }}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
+      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Check out the dispatched commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

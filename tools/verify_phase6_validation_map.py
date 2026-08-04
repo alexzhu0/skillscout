@@ -22,12 +22,13 @@ CHECKPOINTS = {
     "06-02-03": ("checkpoint:human-verify", "06-02-02", "06-03-01"),
     "06-06-03": ("checkpoint:human-verify", "06-06-02", "06-07-01"),
     "06-07-01": ("checkpoint:decision", "06-06-03", "06-07-02"),
-    "06-07-03": ("checkpoint:human-verify", "06-07-02", "06-08-01"),
-    "06-08-01": ("checkpoint:decision", "06-07-03", "06-08-02"),
+    "06-07-03": ("checkpoint:human-verify", "06-07-02", "06-16-01"),
     "06-09-01": ("checkpoint:decision", "06-08-03", "06-09-02"),
     "06-10-01": ("checkpoint:decision", "06-09-02", "06-10-02"),
     "06-11-01": ("checkpoint:human-verify", "06-10-03", "06-11-02"),
     "06-12-01": ("checkpoint:human-action", "06-11-03", "06-12-02"),
+    "06-16-03": ("checkpoint:human-verify", "06-16-02", "06-17-01"),
+    "06-18-03": ("checkpoint:human-verify", "06-18-02", "06-08-01"),
 }
 
 WAVE_ZERO_FILES = {
@@ -54,6 +55,11 @@ OWNERS = {
     "NominationSetV1": "06-04-01",
     "BenchmarkLockAttestationV1": "06-04-01",
     "LockedBenchmarkManifestV1": "06-04-01",
+    "BenchmarkLockApprovalReceiptV2": "06-16-01",
+    "LockedBenchmarkManifestV2": "06-16-01",
+    "LiveAcceptanceAuthorityV1": "06-04-01",
+    "LiveAuthorityApprovalReceiptV2": "06-17-01",
+    "LiveAcceptanceAuthorityV2": "06-17-01",
     "AcceptanceScenarioResultV1": "06-04-01",
     "HostedIsolationCapabilityV1": "06-04-01",
     "OfflineAdversarialRunV1": "06-04-01",
@@ -69,7 +75,10 @@ OWNERS = {
     "AcceptanceEvidenceRootV1": "06-04-01",
     "AcceptanceReleaseVerdictV1": "06-04-01",
     "acceptance_nomination": "06-04-02",
-    "acceptance_benchmark_lock": "06-04-02",
+    "acceptance_benchmark_lock/v1": "06-04-02",
+    "acceptance_benchmark_lock/v2": "06-16-01",
+    "acceptance_live_authority/v1": "06-04-02",
+    "acceptance_live_authority/v2": "06-17-01",
     "acceptance_scenario": "06-04-02",
     "acceptance_hosted_isolation_capability": "06-04-02",
     "acceptance_offline_adversarial_run": "06-04-02",
@@ -99,14 +108,20 @@ OWNERS = {
     "run-acceptance": "06-05-02",
     "record-acceptance-attestation": "06-05-02",
     "rebuild-acceptance": "06-05-02",
+    "prepare-fresh-campaign": "06-16-02",
+    "lock-fresh-campaign": "06-16-02",
+    "record-live-authority": "06-17-03",
     "phase6_action": "06-15-01",
+    "phase6_action/protected-authority-variants": "06-18-02",
     "isolation-probe": "06-02-02",
     "nominate": "06-15-01",
+    "prepare_fresh_campaign": "06-16-02",
+    "lock_fresh_campaign": "06-16-02",
+    "skillscout-phase6-benchmark-lock": "06-16-02",
+    "record_live_authority": "06-18-02",
+    "skillscout-phase6-live-authority": "06-18-02",
     "offline_adversarial": "06-06-02",
     "live_benchmark": "06-15-01",
-    "changed_source": "06-15-01",
-    "fresh_gate_b4": "06-15-01",
-    "value_publication": "06-15-01",
     "human_attestation": "06-15-01",
     "cleanup_attestation": "06-15-01",
     "rebuild_report": "06-15-01",
@@ -114,6 +129,8 @@ OWNERS = {
     "verify_phase6_validation_map.py": "06-01-03",
     "verify_phase6_acceptance.py": "06-01-03",
     "verify_phase6_source_execution.py": "06-15-01",
+    "tests/test_phase6_validation_map.py": "06-18-01",
+    "dependency-topology validation extension": "06-18-01",
     "06-ACCEPTANCE-REPORT.md": "06-13-02",
     "06-RELEASE-REQUIREMENTS.json": "06-13-02",
 }
@@ -175,7 +192,7 @@ def parse_plans() -> tuple[dict[str, Plan], dict[str, Task]]:
     plans: dict[str, Plan] = {}
     tasks: dict[str, Task] = {}
     paths = tuple(sorted(PHASE.glob("06-??-PLAN.md")))
-    require(len(paths) == 15)
+    require(len(paths) == 18)
     for path in paths:
         source = read(path)
         plan_number = re.search(r'^plan:\s*"(\d{2})"$', source, re.MULTILINE)
@@ -222,7 +239,7 @@ def parse_plans() -> tuple[dict[str, Plan], dict[str, Task]]:
             )
             require(task_id.startswith(plan_id + "-") and task_id not in tasks)
             tasks[task_id] = Task(task_id, plan_id, task_type, files, command)
-    require(len(tasks) == 38)
+    require(len(tasks) == 47)
     return plans, tasks
 
 
@@ -304,8 +321,49 @@ def reachable(owner: str, consumer: str, plans: dict[str, Plan]) -> bool:
     return False
 
 
+def verify_dependency_topology(plans: dict[str, Plan]) -> None:
+    for plan in plans.values():
+        require(all(dependency in plans for dependency in plan.dependencies))
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(plan_id: str) -> None:
+        require(plan_id not in visiting)
+        if plan_id in visited:
+            return
+        visiting.add(plan_id)
+        for dependency in plans[plan_id].dependencies:
+            visit(dependency)
+        visiting.remove(plan_id)
+        visited.add(plan_id)
+
+    for plan_id in plans:
+        visit(plan_id)
+
+    for plan in plans.values():
+        if not plan.dependencies:
+            require(plan.wave == 0)
+            continue
+        predecessor_waves = tuple(plans[dependency].wave for dependency in plan.dependencies)
+        require(all(wave < plan.wave for wave in predecessor_waves))
+        require(plan.wave == max(predecessor_waves) + 1)
+
+
+def verify_checkpoint_topology() -> None:
+    require(
+        {
+            task_id
+            for task_id, (_, _, post_ingest) in CHECKPOINTS.items()
+            if post_ingest == "06-08-01"
+        }
+        == {"06-18-03"}
+    )
+
+
 def verify(*, wave_zero_complete: bool) -> None:
     plans, tasks = parse_plans()
+    verify_dependency_topology(plans)
     source = read(VALIDATION)
     rows = parse_rows(source)
     require(set(rows) == set(tasks))
@@ -352,6 +410,7 @@ def verify(*, wave_zero_complete: bool) -> None:
             and f"predecessor {predecessor}" in feedback
             and f"post-ingest verifier {post_ingest}" in feedback
         )
+    verify_checkpoint_topology()
     registry, wave_files = parse_registry(source)
     require(set(registry) == set(OWNERS))
     for surface, expected_owner in OWNERS.items():

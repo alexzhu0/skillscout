@@ -37,6 +37,7 @@ from skillscout.bootstrap import (
     load_publication_authority_config,
     read_exact_acceptance_state,
     read_exact_discovery_state,
+    require_hosted_state_repository,
     require_phase3_gate_b3,
     run_protected_discovery_publication,
     validate_acceptance_state_authority,
@@ -162,7 +163,7 @@ def build_parser() -> SafeArgumentParser:
     run_acceptance.add_argument(
         "--action",
         required=True,
-        choices=("benchmark", "replay", "changed-source", "publication"),
+        choices=("benchmark", "replay"),
     )
     run_acceptance.add_argument("--manifest", required=True, type=Path)
     run_acceptance.add_argument("--acceptance-run-id", required=True)
@@ -188,6 +189,10 @@ def build_parser() -> SafeArgumentParser:
         "--authority-state-root",
         required=True,
         type=Path,
+    )
+    resolve_resume.add_argument(
+        "--authority-state-commit-sha",
+        required=True,
     )
     resolve_resume.add_argument(
         "--authority-state-root-digest",
@@ -697,6 +702,10 @@ _MAX_DISCOVERY_HANDOFF_BYTES = 65_536
 def _run_discover(arguments: argparse.Namespace) -> dict[str, object]:
     """Run only the unprotected Phase 2/3 discovery graph."""
 
+    require_hosted_state_repository(
+        state_repository_id=arguments.state_repository_id,
+        state_repository_full_name=arguments.state_repository_full_name,
+    )
     provider = resolve_semantic_provider()
     config = load_discovery_runtime_config(
         state_repository_id=arguments.state_repository_id,
@@ -732,6 +741,10 @@ def _run_discover(arguments: argparse.Namespace) -> dict[str, object]:
 def _run_nominate_benchmark(arguments: argparse.Namespace) -> dict[str, object]:
     """Run and persist the bounded role-neutral Search nomination."""
 
+    require_hosted_state_repository(
+        state_repository_id=arguments.state_repository_id,
+        state_repository_full_name=arguments.state_repository_full_name,
+    )
     config = load_nomination_runtime_config(
         state_repository_id=arguments.state_repository_id,
         state_repository_full_name=arguments.state_repository_full_name,
@@ -941,12 +954,18 @@ def _restore_acceptance_state(
     *,
     state_commit_sha: str,
     state_root_digest: str,
+    state_lineage_anchor_commit_sha: str,
+    state_lineage_anchor_root_digest: str,
 ) -> object:
     """Restore one exact state commit only after all caller facts are closed."""
 
     validate_acceptance_state_authority(
         state_commit_sha=state_commit_sha,
         state_root_digest=state_root_digest,
+    )
+    validate_acceptance_state_authority(
+        state_commit_sha=state_lineage_anchor_commit_sha,
+        state_root_digest=state_lineage_anchor_root_digest,
     )
     repository_id, repository_full_name = _protected_state_repository()
     observation = read_exact_acceptance_state(
@@ -955,6 +974,8 @@ def _restore_acceptance_state(
         state_repository_full_name=repository_full_name,
         pipeline_state=_DISCOVERY_PIPELINE_STATE,
         operations_state=_DISCOVERY_OPERATIONS_STATE,
+        state_lineage_anchor_commit_sha=state_lineage_anchor_commit_sha,
+        state_lineage_anchor_root_digest=state_lineage_anchor_root_digest,
     )
     restored_root = getattr(
         getattr(getattr(observation, "bundle", None), "root", None),
@@ -964,6 +985,18 @@ def _restore_acceptance_state(
     if restored_root != state_root_digest:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
     return observation
+
+
+def _phase6_authority_state_lineage_anchor() -> tuple[str, str]:
+    """Read the non-secret, independently recorded Phase 6 carrier anchor."""
+
+    try:
+        return validate_acceptance_state_authority(
+            state_commit_sha=os.environ["PHASE6_AUTHORITY_STATE_COMMIT_SHA"],
+            state_root_digest=os.environ["PHASE6_AUTHORITY_STATE_ROOT_DIGEST"],
+        )
+    except Exception:
+        raise ValueError("Phase 6 authority state anchor rejected") from None
 
 
 def _run_verify_acceptance_state(arguments: argparse.Namespace) -> dict[str, object]:
@@ -1023,6 +1056,8 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
     """Dispatch one closed acceptance action after immutable state readmission."""
 
     try:
+        if arguments.action not in {"benchmark", "replay"}:
+            raise ValueError
         config = load_acceptance_runtime_config(
             manifest_path=arguments.manifest,
             state_commit_sha=arguments.state_commit_sha,
@@ -1033,6 +1068,8 @@ def _run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         restored = _restore_acceptance_state(
             state_commit_sha=config.state_commit_sha,
             state_root_digest=config.state_root_digest,
+            state_lineage_anchor_commit_sha=config.state_lineage_anchor_commit_sha,
+            state_lineage_anchor_root_digest=config.state_lineage_anchor_root_digest,
         )
         if arguments.action == "benchmark":
             return _run_live_benchmark(
@@ -1097,8 +1134,8 @@ def _run_live_replay(
     return result
 
 
-def _load_verified_live_authority(arguments: argparse.Namespace) -> object:
-    """Load the immutable authority fact and reverify every bound identity."""
+def _load_verified_live_authority(arguments: argparse.Namespace) -> tuple[object, object]:
+    """Load an exact carrier checkout and its immutable authority fact."""
 
     from skillscout.adapters.operations_state import (
         OperationsStateStore,
@@ -1106,9 +1143,16 @@ def _load_verified_live_authority(arguments: argparse.Namespace) -> object:
     )
     from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
 
+    carrier_commit_sha, carrier_root_digest = validate_acceptance_state_authority(
+        state_commit_sha=arguments.authority_state_commit_sha,
+        state_root_digest=arguments.authority_state_root_digest,
+    )
+    checkout = arguments.authority_state_root.resolve(strict=True)
+    if _checked_out_git_commit(checkout) != carrier_commit_sha:
+        raise ValueError
     bundle = load_verified_state_checkout(
-        checkout_root=arguments.authority_state_root.resolve(strict=True),
-        expected_root_digest=arguments.authority_state_root_digest,
+        checkout_root=checkout,
+        expected_root_digest=carrier_root_digest,
     )
     with TemporaryDirectory(prefix="skillscout-authority-state-") as temporary:
         temporary_root = Path(temporary).resolve(strict=True)
@@ -1130,14 +1174,17 @@ def _load_verified_live_authority(arguments: argparse.Namespace) -> object:
     if len(records) != 1:
         raise ValueError
     recorded = records[0].fact
-    return verify_live_acceptance_authority(
-        repository_root=Path.cwd().resolve(strict=True),
-        authority_bytes=canonical_json_bytes(recorded) + b"\n",
-        observed_source_commit_sha=arguments.source_commit_sha,
-        observed_state_commit_sha=recorded.state_commit_sha,
-        observed_state_root_digest=recorded.state_root_digest,
-        observed_state_repository_id=arguments.state_repository_id,
-        observed_state_repository_full_name=arguments.state_repository_full_name,
+    return (
+        verify_live_acceptance_authority(
+            repository_root=Path.cwd().resolve(strict=True),
+            authority_bytes=canonical_json_bytes(recorded) + b"\n",
+            observed_source_commit_sha=arguments.source_commit_sha,
+            observed_state_commit_sha=recorded.state_commit_sha,
+            observed_state_root_digest=recorded.state_root_digest,
+            observed_state_repository_id=arguments.state_repository_id,
+            observed_state_repository_full_name=arguments.state_repository_full_name,
+        ),
+        bundle,
     )
 
 
@@ -1268,19 +1315,26 @@ def _run_resolve_acceptance_resume(
             ResolverReadBudget,
             StateBranchReadClient,
             StateBranchStore,
+            StateLineageAnchor,
         )
         from skillscout.application.acceptance import (
             CampaignStateLineageObservation,
             resolve_campaign_resume_lineage,
         )
 
-        authority = _load_verified_live_authority(arguments)
+        authority, carrier_bundle = _load_verified_live_authority(arguments)
         if (
             authority.authority_digest != arguments.authority_digest
             or authority.source_commit_sha != arguments.source_commit_sha
             or authority.state_repository_id != arguments.state_repository_id
             or authority.state_repository_full_name != arguments.state_repository_full_name
         ):
+            raise ValueError
+        carrier_commit_sha, carrier_root_digest = validate_acceptance_state_authority(
+            state_commit_sha=arguments.authority_state_commit_sha,
+            state_root_digest=arguments.authority_state_root_digest,
+        )
+        if carrier_commit_sha == authority.state_commit_sha:
             raise ValueError
         token = os.environ["SKILLSCOUT_STATE_GITHUB_TOKEN"]
         reader = StateBranchReadClient(
@@ -1289,14 +1343,82 @@ def _run_resolve_acceptance_resume(
             repository_full_name=arguments.state_repository_full_name,
         )
         try:
-            max_commits = 160
+            max_campaign_transitions = 160
+            # The carrier itself is campaign transition #1, leaving at most
+            # 159 descendant edges below it.  Counting the carrier gives an
+            # exact 160-commit metadata walk.  The authority's original state
+            # is verified only as the carrier's single direct predecessor.
+            max_carrier_descendant_hops = max_campaign_transitions - 1
+            max_lineage_visits = max_campaign_transitions
             read_budget = ResolverReadBudget()
             head = reader.get_state_ref(read_budget=read_budget).sha
             store = StateBranchStore(reader)
             descending: list[CampaignStateLineageObservation] = []
             restored_bundles: dict[str, object] = {}
+            predecessor_anchor = StateLineageAnchor(
+                commit_sha=authority.state_commit_sha,
+                root_digest=authority.state_root_digest,
+                max_hops=1,
+            )
+            carrier_anchor = StateLineageAnchor(
+                commit_sha=carrier_commit_sha,
+                root_digest=carrier_root_digest,
+                max_hops=max_carrier_descendant_hops,
+            )
+            # A carrier must be the immediate, typed successor of the
+            # human-approved predecessor, and its remote bytes must equal the
+            # independently checked-out carrier.  It is deliberately not a
+            # mutable descendant of the predecessor anchor.
+            store.verify_lineage_anchor(
+                commit_sha=carrier_commit_sha,
+                root_digest=carrier_root_digest,
+                anchor=predecessor_anchor,
+                read_budget=read_budget,
+            )
+            remote_carrier_bundle = store.restore_commit(
+                carrier_commit_sha,
+                lineage_anchor=carrier_anchor,
+                read_budget=read_budget,
+            )
+            if (
+                remote_carrier_bundle.root != carrier_bundle.root
+                or remote_carrier_bundle.content_by_path()
+                != carrier_bundle.content_by_path()
+            ):
+                raise ValueError
+            predecessor_inspected = store.inspect_commit_root(
+                authority.state_commit_sha,
+                read_budget=read_budget,
+            )
+            if predecessor_inspected.root.root_digest != authority.state_root_digest:
+                raise ValueError
+            predecessor_bundle = store.restore_commit(
+                authority.state_commit_sha,
+                lineage_anchor=predecessor_anchor,
+                read_budget=read_budget,
+            )
+            predecessor_locators, predecessor_owned_facts = (
+                _acceptance_resume_projection_from_bundle(
+                    predecessor_bundle,
+                    arguments.acceptance_run_id,
+                )
+            )
+            predecessor_observation = CampaignStateLineageObservation(
+                commit_sha=authority.state_commit_sha,
+                root_digest=predecessor_inspected.root.root_digest,
+                parent_commit_sha=(
+                    predecessor_inspected.commit.parents[0]
+                    if predecessor_inspected.commit.parents
+                    else None
+                ),
+                prior_root_digest=predecessor_inspected.root.prior_root_digest,
+                object_digests=predecessor_inspected.object_digests,
+                declared_content_bytes=predecessor_inspected.declared_content_bytes,
+                resume_locators=predecessor_locators,
+                owned_facts=predecessor_owned_facts,
+            )
             current = head
-            for _index in range(max_commits):
+            for _index in range(max_lineage_visits):
                 inspected = store.inspect_commit_root(
                     current,
                     read_budget=read_budget,
@@ -1313,8 +1435,8 @@ def _run_resolve_acceptance_resume(
                         declared_content_bytes=inspected.declared_content_bytes,
                     )
                 )
-                if current == authority.state_commit_sha:
-                    if inspected.root.root_digest != authority.state_root_digest:
+                if current == carrier_commit_sha:
+                    if inspected.root.root_digest != carrier_root_digest:
                         raise ValueError
                     break
                 if len(inspected.commit.parents) != 1:
@@ -1325,6 +1447,7 @@ def _run_resolve_acceptance_resume(
             for index, observation in enumerate(descending):
                 restored = store.restore_commit(
                     observation.commit_sha,
+                    lineage_anchor=carrier_anchor,
                     read_budget=read_budget,
                 )
                 locators, owned_facts = _acceptance_resume_projection_from_bundle(
@@ -1361,7 +1484,7 @@ def _run_resolve_acceptance_resume(
             original_state_commit_sha=authority.state_commit_sha,
             original_state_root_digest=authority.state_root_digest,
             campaign_head_commit_sha=head,
-            observations=tuple(reversed(descending)),
+            observations=(predecessor_observation, *reversed(descending)),
         )
         return {
             "authority_digest": authority.authority_digest,
@@ -1392,9 +1515,25 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
             restore_acceptance_state_bundle,
         )
 
+        authority_commit_sha, authority_root_digest = validate_acceptance_state_authority(
+            state_commit_sha=arguments.runtime_state_commit_sha,
+            state_root_digest=arguments.authority_state_root_digest,
+        )
+        runtime_commit_sha, runtime_root_digest = validate_acceptance_state_authority(
+            state_commit_sha=arguments.runtime_state_commit_sha,
+            state_root_digest=arguments.runtime_state_root_digest,
+        )
+        if (authority_commit_sha, authority_root_digest) != (
+            runtime_commit_sha,
+            runtime_root_digest,
+        ):
+            raise ValueError
+        checkout = arguments.authority_state_root.resolve(strict=True)
+        if _checked_out_git_commit(checkout) != runtime_commit_sha:
+            raise ValueError
         bundle = load_verified_state_checkout(
-            checkout_root=arguments.authority_state_root.resolve(strict=True),
-            expected_root_digest=arguments.authority_state_root_digest,
+            checkout_root=checkout,
+            expected_root_digest=runtime_root_digest,
         )
         with TemporaryDirectory(prefix="skillscout-authority-state-") as temporary:
             temporary_root = Path(temporary).resolve(strict=True)
@@ -1454,9 +1593,12 @@ def _run_record_acceptance_attestation(
             attestation_path=arguments.attestation,
             kind=arguments.kind,
         )
+        anchor_commit_sha, anchor_root_digest = _phase6_authority_state_lineage_anchor()
         observation = _restore_acceptance_state(
             state_commit_sha=arguments.state_commit_sha,
             state_root_digest=arguments.state_root_digest,
+            state_lineage_anchor_commit_sha=anchor_commit_sha,
+            state_lineage_anchor_root_digest=anchor_root_digest,
         )
         from skillscout.adapters.operations_state import OperationsStateStore
         from skillscout.application.acceptance import (
@@ -1584,9 +1726,12 @@ def _run_rebuild_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             state_commit_sha=arguments.state_commit_sha,
             state_root_digest=arguments.evidence_root_digest,
         )
+        anchor_commit_sha, anchor_root_digest = _phase6_authority_state_lineage_anchor()
         _restore_acceptance_state(
             state_commit_sha=arguments.state_commit_sha,
             state_root_digest=arguments.state_root_digest,
+            state_lineage_anchor_commit_sha=anchor_commit_sha,
+            state_lineage_anchor_root_digest=anchor_root_digest,
         )
         from skillscout.adapters.operations_state import OperationsStateStore
         from skillscout.application.acceptance import (

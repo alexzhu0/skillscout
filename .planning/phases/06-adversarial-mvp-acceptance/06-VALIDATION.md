@@ -60,10 +60,10 @@ All 47 Phase 6 tasks appear exactly once below as primary rows. Checkpoint depen
 | 06-06-03 | 06-06 | 4 | TEST-02, TEST-03, TEST-04 | checkpoint:human-verify; predecessor 06-06-02; post-ingest verifier 06-07-01; exact hosted/offline typed persistence/export/rebuild required | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_workflow.py tests/test_phase6_adversarial.py tests/test_phase6_acceptance.py -k 'offline_adversarial or hosted_campaign or canonical_state or rebuild' -x && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_acceptance.py --offline-only` | ⬜ pending |
 | 06-07-01 | 06-07 | 5 | TEST-01, TEST-02 | checkpoint:decision; predecessor 06-06-03; post-ingest verifier 06-07-02; exact canonical hosted/offline pair required | `.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_acceptance.py --offline-only && .tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_workflow.py tests/test_phase6_acceptance.py -k 'nominate or search_credential or no_semantic or no_publication' -x` | ⬜ pending |
 | 06-07-02 | 06-07 | 5 | TEST-01, TEST-02 | Search-derived canonical nomination facts | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_acceptance.py tests/test_phase6_workflow.py -k 'nomination or search_derived or user_nominated or state_fact' -x` | ⬜ pending |
-| 06-07-03 | 06-07 | 5 | TEST-01, TEST-02 | checkpoint:human-verify; predecessor 06-07-02; historical terminal benchmark lock only, never a fresh-authority predecessor | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_acceptance_domain.py tests/test_phase6_acceptance.py -k 'locked_manifest or distribution or search_provenance' -x` | ⬜ pending |
+| 06-07-03 | 06-07 | 5 | TEST-01, TEST-02 | checkpoint:human-verify; predecessor 06-07-02; post-ingest verifier 06-16-01; historical terminal benchmark lock only, never a fresh-authority predecessor | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_acceptance_domain.py tests/test_phase6_acceptance.py -k 'locked_manifest or distribution or search_provenance' -x` | ⬜ pending |
 | 06-16-01 | 06-16 | 6 | TEST-01, TEST-02 | Schema-discriminated V2 benchmark lock preserves V1 history and binds source repository identity, state repository/parent, source/workflow, nomination, selection, and receipt recovery chain | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_acceptance_domain.py tests/test_operations_state.py -k 'benchmark_lock or manifest_v2 or schema_version or approval_receipt or canonical or rebuild' -x` | ⬜ pending |
 | 06-16-02 | 06-16 | 6 | TEST-01, TEST-02 | Two branch-restricted, environment-only state routes prove fresh manifest-to-nomination entry equality and fixed-host environment-A approval before one lock persistence | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_acceptance.py tests/test_phase6_workflow.py tests/test_phase6_source_execution.py tests/test_cli_security.py -k 'fresh_campaign or benchmark_lock or manifest_v2 or protected_environment or approval_receipt or source_execution or state_only' -x && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_source_execution.py` | ⬜ pending |
-| 06-16-03 | 06-16 | 6 | TEST-01, TEST-02 | checkpoint:human-verify; predecessor 06-16-02; two branch-restricted environment secrets and benchmark-only environment-A lock, never a live-authority gateway | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_acceptance.py tests/test_phase6_workflow.py tests/test_phase6_source_execution.py -k 'benchmark_lock or manifest_v2 or approval_receipt or protected_environment or state_only' -x && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_source_execution.py` | ⬜ pending |
+| 06-16-03 | 06-16 | 6 | TEST-01, TEST-02 | checkpoint:human-verify; predecessor 06-16-02; post-ingest verifier 06-17-01; two branch-restricted environment secrets and benchmark-only environment-A lock, never a live-authority gateway | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_acceptance.py tests/test_phase6_workflow.py tests/test_phase6_source_execution.py -k 'benchmark_lock or manifest_v2 or approval_receipt or protected_environment or state_only' -x && .tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_source_execution.py` | ⬜ pending |
 | 06-17-01 | 06-17 | 7 | TEST-01, TEST-02, TEST-03 | Distinct V2 live-authority schema/registry preserves V1 history and requires a V2 lock plus a purpose-distinct `live_execution` receipt | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_acceptance_domain.py tests/test_operations_state.py -k 'live_authority_v2 or approval_receipt or schema_version or historical or recovery or selection_chain or rebuild' -x` | ⬜ pending |
 | 06-17-02 | 06-17 | 7 | TEST-01, TEST-02, TEST-03 | Rebuilt V2 live-admission guard rechecks every recovery/selection/receipt binding before capability construction | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_acceptance.py -k 'live_admission or live_authority_v2 or recovery_chain or selection_chain or zero_credential or zero_http or zero_state_write' -x` | ⬜ pending |
 | 06-17-03 | 06-17 | 7 | TEST-01, TEST-02, TEST-03 | Fixed-host state-only authority recorder creates/rebuilds exactly one V2 authority, then benchmark/replay CLI/bootstrap ordering rejects V1, actor, comment, caller JSON, and stale evidence before any credential/provider/source/state effect | `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_acceptance.py tests/test_cli_security.py -k 'record_live_authority or run_benchmark or run_replay or live_admission or credential_order or approval_history or authority_json or actor or comment or zero_effect' -x` | ⬜ pending |
@@ -139,10 +139,10 @@ task/plan or from a plan that transitively depends on the owner plan.
 | `AcceptanceEvidenceRootV1` | report authority root | 06-04-01 | 06-13-02 |
 | `AcceptanceReleaseVerdictV1` | deterministic report projection | 06-04-01 | 06-13-02 |
 | `acceptance_nomination` | `NominationSetV1` historical fact mapping | 06-04-02 | 06-07-02 only |
-| `acceptance_benchmark_lock` | `locked-benchmark-manifest-v1` historical schema mapping | 06-04-02 | 06-07-03 only |
-| `acceptance_benchmark_lock` | `locked-benchmark-manifest-v2` schema mapping through `ACCEPTANCE_FACT_MODELS` | 06-16-01 | 06-16-02, 06-16-03, 06-17-01, 06-17-02, 06-17-03, 06-18-02, 06-08-01 |
-| `acceptance_live_authority` | `live-acceptance-authority-v1` historical schema mapping | 06-04-02 | 06-17-01 historical restore only |
-| `acceptance_live_authority` | `live-acceptance-authority-v2` schema mapping through `ACCEPTANCE_FACT_MODELS` | 06-17-01 | 06-17-02, 06-17-03, 06-18-02, 06-18-03, 06-08-01 |
+| `acceptance_benchmark_lock/v1` | `locked-benchmark-manifest-v1` historical schema mapping | 06-04-02 | 06-07-03 only |
+| `acceptance_benchmark_lock/v2` | `locked-benchmark-manifest-v2` schema mapping through `ACCEPTANCE_FACT_MODELS` | 06-16-01 | 06-16-02, 06-16-03, 06-17-01, 06-17-02, 06-17-03, 06-18-02, 06-08-01 |
+| `acceptance_live_authority/v1` | `live-acceptance-authority-v1` historical schema mapping | 06-04-02 | 06-17-01 historical restore only |
+| `acceptance_live_authority/v2` | `live-acceptance-authority-v2` schema mapping through `ACCEPTANCE_FACT_MODELS` | 06-17-01 | 06-17-02, 06-17-03, 06-18-02, 06-18-03, 06-08-01 |
 | `acceptance_scenario` | `AcceptanceScenarioResultV1` fact mapping | 06-04-02 | 06-06-01, 06-08-02 |
 | `acceptance_hosted_isolation_capability` | `HostedIsolationCapabilityV1` fact mapping | 06-04-02 | 06-06-03, 06-07-01 |
 | `acceptance_offline_adversarial_run` | `OfflineAdversarialRunV1` fact mapping | 06-04-02 | 06-06-03, 06-07-01 |
@@ -176,7 +176,7 @@ task/plan or from a plan that transitively depends on the owner plan.
 | `lock-fresh-campaign` | state-only CLI command | 06-16-02 | 06-16-03, 06-17-01 |
 | `record-live-authority` | state-only CLI command | 06-17-03 | 06-18-02, 06-18-03, 06-08-01 |
 | `phase6_action` | closed baseline workflow input | 06-15-01 | 06-06-02, 06-07-02, 06-16-02 |
-| `phase6_action` protected-authority variants | final closed workflow input variants | 06-18-02 | 06-18-03, 06-08-01 |
+| `phase6_action/protected-authority-variants` | final closed workflow input variants | 06-18-02 | 06-18-03, 06-08-01 |
 | `isolation-probe` | workflow action | 06-02-02 | 06-02-03 |
 | `nominate` | workflow job/action | 06-15-01 | 06-07-02 |
 | `prepare_fresh_campaign` | workflow job/action | 06-16-02 | 06-16-03 |
@@ -186,16 +186,13 @@ task/plan or from a plan that transitively depends on the owner plan.
 | `skillscout-phase6-live-authority` | protected workflow job | 06-18-02 | 06-18-03 |
 | `offline_adversarial` | workflow job/action | 06-06-02 | 06-06-03 |
 | `live_benchmark` | workflow job/action | 06-15-01 | 06-08-02 |
-| `changed_source` | workflow job/action | 06-15-01 | 06-09-02 |
-| `fresh_gate_b4` | workflow job/action | 06-15-01 | 06-10-02 |
-| `value_publication` | workflow job/action | 06-15-01 | 06-10-03 |
 | `human_attestation` | workflow job/action | 06-15-01 | 06-11-02 |
 | `cleanup_attestation` | workflow job/action | 06-15-01 | 06-12-02 |
 | `rebuild_report` | workflow job/action | 06-15-01 | 06-13-02 |
 | `verify_phase6_red_contracts.py` | expected-RED verifier | 06-01-01 | 06-01-02 |
 | `verify_phase6_validation_map.py` | task/ownership and dependency-topology verifier | 06-01-03 | 06-03-01, 06-16-02, 06-18-01, 06-13-01 |
 | `tests/test_phase6_validation_map.py` | isolated dependency-topology mutation suite | 06-18-01 | 06-13-01 |
-| dependency-topology validation extension | missing/cyclic/wave-order/derived-wave mutation coverage | 06-18-01 | 06-13-01 |
+| `dependency-topology validation extension` | missing/cyclic/wave-order/derived-wave mutation coverage | 06-18-01 | 06-13-01 |
 | `verify_phase6_acceptance.py` | hard-gate/report verifier | 06-01-03 | 06-06-03, 06-13-01 |
 | `verify_phase6_source_execution.py` | all-authoritative-route source verifier | 06-15-01 | 06-16-02, 06-18-01, 06-18-02, 06-10-01, 06-14-03 |
 | `06-ACCEPTANCE-REPORT.md` | deterministic report | 06-13-02 | 06-14-02 |
@@ -259,7 +256,7 @@ task/plan or from a plan that transitively depends on the owner plan.
 
 ## Validation Sign-Off
 
-- [ ] All 44 finalized tasks appear exactly once as primary rows and each has an automated command; all checkpoint prerequisites and post-ingest checks are explicit.
+- [ ] All 47 planned tasks appear exactly once as primary rows and each has an automated command; all checkpoint prerequisites and post-ingest checks are explicit.
 - [ ] Exact cross-plan ownership is complete, including `HostedIsolationCapabilityV1` → `acceptance_hosted_isolation_capability`, `OfflineAdversarialRunV1` → `acceptance_offline_adversarial_run`, `PublicationReplayCompletionV1` → `acceptance_publication_replay_completion`, `ChangedSourceDraftUpdateCompletionV1` → `acceptance_changed_source_draft_update_completion`, `ReviewerCalibrationV1` → `acceptance_reviewer_calibration`, schema-discriminated `acceptance_benchmark_lock` V1/V2 mappings, and `acceptance_live_authority` V1/V2 mappings before their consumer plans.
 - [ ] Sampling continuity: no three consecutive implementation tasks lack automated feedback.
 - [ ] Wave 0 creates every listed test, verifier, fixture, map, and hosted capability probe before Wave 1; `verify_phase6_validation_map.py --wave-zero-complete` passes.

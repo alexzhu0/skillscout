@@ -541,6 +541,17 @@ def _authority_checkout_is_closed(step: _Step) -> bool:
             "persist-credentials": "false",
         },
     )
+    configured_preflight_authority = _closed_action_step(
+        step,
+        action=CHECKOUT,
+        with_values={
+            "repository": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}",
+            "ref": "${{ env.PHASE6_AUTHORITY_STATE_COMMIT_SHA }}",
+            "path": ".phase6-authority-state",
+            "persist-credentials": "false",
+            "token": "${{ github.token }}",
+        },
+    )
     verified_handoff = any(
         _closed_action_step(
             step,
@@ -564,7 +575,7 @@ def _authority_checkout_is_closed(step: _Step) -> bool:
             },
         )
     )
-    return legacy_authority or verified_handoff
+    return legacy_authority or configured_preflight_authority or verified_handoff
 
 
 def _campaign_candidate_checkout_is_closed(step: _Step) -> bool:
@@ -1089,7 +1100,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                     )
                 )
     _require(bool(findings))
-    _require(managed_python_job_count == 19)
+    _require(managed_python_job_count == 16)
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     _require(control_user_mapping_count == EXPECTED_CONTROL_USER_MAPPINGS)
     _require(diagnostic_upload_count == 1)
