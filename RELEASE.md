@@ -5,7 +5,7 @@
 
 SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turns bounded, read-only evidence from public GitHub repositories into validated Agent Skill candidates and, through a separately controlled publication boundary, human-reviewable Draft Pull Requests.
 
-This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including a fresh exact-byte **Gate B4** for the reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration; only Phase 6 adversarial MVP acceptance remains before whole-product production readiness.
+This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including a fresh exact-byte **Gate B4** for the reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. The V2 five-repository benchmark lock has been successfully persisted, but it is not Phase 6 adversarial MVP acceptance: live authority, a real benchmark, replay, and Draft PR acceptance remain pending before whole-product production readiness.
 
 ## Implemented preview scope
 
@@ -49,6 +49,17 @@ The current observed baseline, recorded on **2026-07-28**, includes a focused Ph
 
 This count is a dated observation, not a permanent compatibility or pass-count contract. Test counts will change as coverage and release gates evolve. See [Testing](docs/TESTING.md) for the commands, suite organization, and current quality-check caveats.
 
+### V2 five-repository benchmark lock
+
+The V2 five-repository benchmark lock was successfully persisted for source commit `7bab6abcb89b5287e8d32077333fd4383331d6e5` by the [acceptance workflow run](https://github.com/alexzhu0/skillscout/actions/runs/30878463167).
+
+- Acceptance workflow SHA-256: `164cfd4eb25af493f4fad42ff25b6175d8f56a277e5539a121e021822fda1894`
+- Selection digest: `sha256:09aa2df9686f3094f361510fd2923edb6097df801c658d39e641f9207ffdb1f4`
+- Nomination digest: `sha256:46535e6ce499a710c2ecf5b9cd0db8134682dbac2429b8e3d7af4035130297ea`
+- Lock digest: `sha256:3c1a9b2737ee79c58696e5e601b61e49b35549630f5826ac9fef3c694feaffa6`
+
+Persisting this lock is not a live-authority grant or an adversarial acceptance result. A real benchmark execution, replay, and Draft PR acceptance are still pending; SkillScout remains not production-ready.
+
 ## Security posture
 
 - Public GitHub repositories are the only supported source. Private-repository ingestion is outside the preview scope.
@@ -79,7 +90,7 @@ Do not enable `publish-candidate` from an ordinary developer shell. Follow [Conf
 
 - Gate B4 evidence is identity- and byte-bound; any workflow, App scope, catalog, ruleset, reviewer, or installation change requires a fresh canary before publication is credited.
 - Phase 5 implements and verifies versioned GitHub Search, daily and manual triggers, hard limits of 100 candidates and 20 semantic reservations per run, three-store state-branch recovery with non-force CAS, and credential-zone isolation. The fresh Gate B4 evidence is bound to the current workflow SHA-256 digests: discover `8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd`, publish `96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0`, and canary `9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d`; changing any bound workflow or control-plane identity invalidates that evidence.
-- The adversarial MVP acceptance run across five pinned real repositories has not been completed.
+- The V2 five-repository benchmark lock is persisted, but the adversarial MVP acceptance run across those pinned real repositories has not been completed. Live authority, a real benchmark execution, replay, and Draft PR acceptance remain pending.
 - Publication supports configured individual reviewers only. Team reviewer targets fail closed to manual handling.
 - Live canary cleanup is intentionally not automated and must use separate human or administrator authority.
 - The normal test suite is offline. Passing recorded-transport tests does not prove current third-party service availability or real catalog control-plane configuration.
@@ -109,7 +120,7 @@ Do not enable `publish-candidate` from an ordinary developer shell. Follow [Conf
 
 The following gates remain before SkillScout can make a production-ready release claim:
 
-1. **Phase 6 operational acceptance:** adversarially exercise the implemented discovery budgets, serialized three-store recovery, credential isolation, and exact Gate B4 binding across the pinned-repository MVP matrix; no additional implementation phase remains before that acceptance work.
+1. **Phase 6 operational acceptance:** the V2 five-repository benchmark lock is persisted, but the V2 live-authority gate must be completed before the pinned-repository MVP matrix can adversarially exercise discovery budgets, serialized three-store recovery, credential isolation, and exact Gate B4 binding.
 2. **Adversarial MVP acceptance:** five public repositories pinned to exact commits must exercise successful and rejected paths, prompt-injection samples, end-to-end idempotency, at least one real human-reviewed Draft PR, repeated platform canary evidence, secret scanning, and evidence for every release requirement.
 
 ## Production-ready release checklist
