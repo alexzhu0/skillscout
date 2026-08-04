@@ -769,12 +769,12 @@ def _fresh_campaign_trigger_actor(value: str) -> tuple[int, str]:
 
 
 def _is_fresh_campaign_workflow_path(value: object) -> bool:
-    """Require Actions metadata to name this exact workflow file at a bounded ref."""
+    """Require Actions metadata to name this exact workflow file, optionally at a bounded ref."""
 
     return (
         type(value) is str
         and re.fullmatch(
-            r"\.github/workflows/phase6-acceptance\.yml@[A-Za-z0-9._/-]{1,200}",
+            r"\.github/workflows/phase6-acceptance\.yml(?:@[A-Za-z0-9._/-]{1,200})?",
             value,
         )
         is not None
