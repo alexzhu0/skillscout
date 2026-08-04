@@ -907,6 +907,31 @@ def test_fixed_host_run_attempt_reader_retains_only_needed_identity_facts() -> N
     assert {"display_title", "raw_response", "endpoint"}.isdisjoint(type(metadata).model_fields)
 
 
+@pytest.mark.parametrize(
+    ("workflow_path", "expected"),
+    (
+        (".github/workflows/phase6-acceptance.yml", True),
+        (".github/workflows/phase6-acceptance.yml@main", True),
+        (".github/workflows/phase6-acceptance.yml@refs/heads/main", True),
+        (".github/workflows/phase6-acceptance.yml@" + ("a" * 200), True),
+        (".github/workflows/phase6-acceptance.yml@", False),
+        (".github/workflows/phase6-acceptance.yml@" + ("a" * 201), False),
+        (".github/workflows/phase6-acceptance.yml@main?override", False),
+        (".github/workflows/phase6-acceptance.yml/other", False),
+        (".github/workflows/other.yml", False),
+        ("phase6-acceptance.yml", False),
+        (None, False),
+    ),
+)
+def test_fresh_campaign_workflow_path_allows_only_exact_path_with_optional_ref(
+    workflow_path: object,
+    expected: bool,
+) -> None:
+    from skillscout.bootstrap import _is_fresh_campaign_workflow_path
+
+    assert _is_fresh_campaign_workflow_path(workflow_path) is expected
+
+
 def test_acceptance_runtime_loads_only_exact_resolver_proof(
     tmp_path: Path,
 ) -> None:
