@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -605,6 +606,257 @@ def _fresh_lock_handoff(*, manifest: object, receipt: object) -> object:
         trigger_identity=getattr(receipt, "trigger_identity"),
         selection_manifest=manifest,
         approval_receipt=receipt,
+    )
+
+
+def _fresh_live_authority_admission_inputs() -> tuple[object, object, object]:
+    """Build a rebuilt V2 lock/authority snapshot and its exact carrier lineage."""
+
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+    from skillscout.application import acceptance as application
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV2, LiveExecutionApprovalReceiptV2
+
+    nomination, manifest, snapshot = _fresh_lock_inputs()
+    receipt = _fresh_lock_receipt()
+    lock = application.bind_fresh_benchmark_lock(
+        snapshot=snapshot,
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="b" * 40,
+        parent_state_root_digest="sha256:" + ("c" * 64),
+        expected_nomination_authority_digest=nomination.search_run_authority_digest,
+        approval_receipt=receipt,
+    )
+    approval = LiveExecutionApprovalReceiptV2(
+        schema_version="live-execution-approval-receipt-v2",
+        purpose="live_execution",
+        environment="skillscout-phase6-live-authority",
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        reviewer_login="alexzhu0",
+        reviewer_id=202,
+        workflow_run_id=2001,
+        workflow_run_attempt=1,
+        source_commit_sha=lock.source_commit_sha,
+        workflow_sha256=lock.acceptance_workflow_sha256,
+        trigger_identity=lock.trigger_identity,
+        approval_record_digest="sha256:" + ("4" * 64),
+    )
+    authority = LiveAcceptanceAuthorityV2(
+        schema_version="live-acceptance-authority-v2",
+        authority_version=2,
+        purpose="live_execution",
+        benchmark_lock_digest=lock.lock_digest,
+        benchmark_lock=lock,
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        state_repository_id=lock.state_repository_id,
+        state_repository_full_name=lock.state_repository_full_name,
+        parent_state_commit_sha=lock.parent_state_commit_sha,
+        parent_state_root_digest=lock.parent_state_root_digest,
+        state_commit_sha="c" * 40,
+        state_root_digest="sha256:" + ("d" * 64),
+        source_commit_sha=lock.source_commit_sha,
+        acceptance_workflow_sha256=lock.acceptance_workflow_sha256,
+        source_state_binding_digest=lock.source_state_binding_digest,
+        manifest_path=(
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        manifest_digest=lock.selection_manifest_digest,
+        selection_manifest_digest=lock.selection_manifest_digest,
+        nomination_set_digest=lock.nomination_set_digest,
+        lock_attestation_digest=lock.selection_manifest.lock_attestation.attestation_digest,
+        entries=lock.entries,
+        environment="skillscout-phase6-live-authority",
+        approved_reviewer_login=approval.reviewer_login,
+        approved_reviewer_id=approval.reviewer_id,
+        workflow_run_id=approval.workflow_run_id,
+        workflow_run_attempt=approval.workflow_run_attempt,
+        trigger_identity=approval.trigger_identity,
+        approval_record_digest=approval.approval_record_digest,
+        approval_receipt=approval,
+        approval_receipt_digest=approval.receipt_digest,
+        query_set_digest="sha256:" + ("6" * 64),
+        budget_policy_digest="sha256:" + ("7" * 64),
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=(
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        prompt_versions=(
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        schema_versions=(
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        approved_at="2026-08-02T00:30:00.000000Z",
+    )
+    rebuilt = AcceptanceRunSnapshot(
+        acceptance_run_id=nomination.nomination_set_id,
+        facts=(
+            *snapshot.facts,
+            AcceptanceFactRecord(
+                acceptance_run_id=nomination.nomination_set_id,
+                kind="acceptance_benchmark_lock",
+                fact_digest=lock.lock_digest,
+                fact=lock,
+            ),
+            AcceptanceFactRecord(
+                acceptance_run_id=nomination.nomination_set_id,
+                kind="acceptance_live_authority",
+                fact_digest=authority.authority_digest,
+                fact=authority,
+            ),
+        ),
+    )
+    observation = application.LiveAuthorityStateObservation(
+        state_repository_id=lock.state_repository_id,
+        state_repository_full_name=lock.state_repository_full_name,
+        authority_carrier_commit_sha="d" * 40,
+        authority_carrier_root_digest="sha256:" + ("e" * 64),
+        authority_carrier_parent_commit_sha=authority.state_commit_sha,
+        authority_carrier_prior_root_digest=authority.state_root_digest,
+        lock_state_parent_commit_sha=lock.parent_state_commit_sha,
+        lock_state_prior_root_digest=lock.parent_state_root_digest,
+    )
+    return rebuilt, authority, observation
+
+
+def test_live_admission_v2_rebuilds_complete_chain_before_capability_factory() -> None:
+    from skillscout.application import acceptance as application
+
+    snapshot, authority, observation = _fresh_live_authority_admission_inputs()
+    constructed: list[object] = []
+
+    admission = application.admit_live_execution_v2(
+        snapshot=snapshot,
+        authority_digest=authority.authority_digest,
+        state_observation=observation,
+        capability_factory=lambda value: constructed.append(value) or value,
+    )
+
+    assert admission.authority == authority
+    assert admission.lock == authority.benchmark_lock
+    assert admission.nomination.nomination_set_digest == authority.nomination_set_digest
+    assert constructed == [admission]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "legacy_authority",
+        "stale_carrier_parent",
+        "stale_lock_parent",
+        "selection_chain",
+        "receipt_reuse",
+    ),
+)
+def test_live_admission_v2_rejects_invalid_chain_with_zero_credential_effect(
+    mutation: str,
+) -> None:
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+    from skillscout.application import acceptance as application
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+
+    snapshot, authority, observation = _fresh_live_authority_admission_inputs()
+    if mutation == "legacy_authority":
+        legacy = LiveAcceptanceAuthorityV1.model_construct(
+            schema_version="live-acceptance-authority-v1",
+            authority_digest=authority.authority_digest,
+        )
+        snapshot = AcceptanceRunSnapshot(
+            acceptance_run_id=snapshot.acceptance_run_id,
+            facts=tuple(
+                AcceptanceFactRecord(
+                    acceptance_run_id=record.acceptance_run_id,
+                    kind=record.kind,
+                    fact_digest=record.fact_digest,
+                    fact=(legacy if record.kind == "acceptance_live_authority" else record.fact),
+                )
+                for record in snapshot.facts
+            ),
+        )
+    elif mutation == "stale_carrier_parent":
+        observation = replace(observation, authority_carrier_parent_commit_sha="f" * 40)
+    elif mutation == "stale_lock_parent":
+        observation = replace(observation, lock_state_parent_commit_sha="f" * 40)
+    elif mutation == "selection_chain":
+        forged = authority.model_copy(update={"entries": tuple(reversed(authority.entries))})
+        snapshot = AcceptanceRunSnapshot(
+            acceptance_run_id=snapshot.acceptance_run_id,
+            facts=tuple(
+                AcceptanceFactRecord(
+                    acceptance_run_id=record.acceptance_run_id,
+                    kind=record.kind,
+                    fact_digest=record.fact_digest,
+                    fact=(forged if record.kind == "acceptance_live_authority" else record.fact),
+                )
+                for record in snapshot.facts
+            ),
+        )
+    elif mutation == "receipt_reuse":
+        forged = authority.model_copy(
+            update={"approval_receipt": authority.benchmark_lock.approval_receipt}
+        )
+        snapshot = AcceptanceRunSnapshot(
+            acceptance_run_id=snapshot.acceptance_run_id,
+            facts=tuple(
+                AcceptanceFactRecord(
+                    acceptance_run_id=record.acceptance_run_id,
+                    kind=record.kind,
+                    fact_digest=record.fact_digest,
+                    fact=(forged if record.kind == "acceptance_live_authority" else record.fact),
+                )
+                for record in snapshot.facts
+            ),
+        )
+    else:
+        raise AssertionError(mutation)
+
+    effects: list[object] = []
+    with pytest.raises(application.AcceptanceApplicationError, match="evidence_missing"):
+        application.admit_live_execution_v2(
+            snapshot=snapshot,
+            authority_digest=authority.authority_digest,
+            state_observation=observation,
+            capability_factory=lambda value: effects.append(value),
+        )
+    assert effects == []
+
+
+def test_live_admission_v2_has_no_actor_comment_or_caller_authority_channel() -> None:
+    from skillscout.application import acceptance as application
+
+    signature = inspect.signature(application.admit_live_execution_v2)
+    assert {"actor", "comment", "authority_json", "approval_receipt"}.isdisjoint(
+        signature.parameters
     )
 
 
