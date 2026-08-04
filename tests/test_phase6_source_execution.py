@@ -459,19 +459,24 @@ def test_source_execution_verifier_rejects_unparsed_quoted_live_recorder_job(
     repository = _copy_workflows(tmp_path)
     path = repository / Path(".github/workflows/phase6-acceptance.yml")
     source = path.read_text(encoding="utf-8")
-    hidden_job = """  \"side_recorder\":
-    runs-on: ubuntu-24.04
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-      SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN }}
-    steps:
-      - name: Run an unparsed recorder
-        run: |
-          .venv/bin/py''thon -m skillscout.cli record-live''-authority --acceptance-run-id \"${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}\"
-
-"""
+    final = next(
+        job for job in module._parse_jobs(source) if job.name == LIVE_AUTHORITY_JOB_NAME
+    )
+    hidden_job = final.source.replace(
+        f"  {LIVE_AUTHORITY_JOB_NAME}:\n",
+        '  "shadow_live_authority":\n',
+        1,
+    ).replace(
+        f"{LOCAL_LOCKED} python -m skillscout.cli record-live-authority ",
+        f"{LOCAL_LOCKED} .venv/bin/py''thon -m skillscout.cli record-live''-authority ",
+        1,
+    )
+    assert hidden_job != final.source
     assert source.count("jobs:\n") == 1
-    path.write_text(source.replace("jobs:\n", "jobs:\n" + hidden_job, 1), encoding="utf-8")
+    path.write_text(
+        source.replace("jobs:\n", "jobs:\n" + hidden_job + "\n\n", 1),
+        encoding="utf-8",
+    )
 
     with pytest.raises(module.SourceExecutionError):
         module.verify_source_execution(repository)
