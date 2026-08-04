@@ -310,7 +310,7 @@ Plans:
 
 **Depends on:** Phase 5  
 **Requirements:** TEST-01, TEST-02, TEST-03, TEST-04  
-**Plans:** 8/18 plans executed
+**Plans:** 9/18 plans executed
 
 - [x] 06-01-PLAN.md
 - [x] 06-02-PLAN.md
@@ -327,7 +327,7 @@ Plans:
 - [ ] 06-13-PLAN.md
 - [ ] 06-14-PLAN.md
 - [x] 06-15-PLAN.md
-- [ ] 06-16-PLAN.md
+- [x] 06-16-PLAN.md
 - [ ] 06-17-PLAN.md
 - [ ] 06-18-PLAN.md
 
@@ -380,7 +380,7 @@ Plans:
 | 3. Validated Skill Candidate | 14/14 | Complete   | 2026-07-23 |
 | 4. Controlled Draft PR | 11/11 | Complete    | 2026-07-27 |
 | 5. Automated Discovery Operations | 14/14 | Complete    | 2026-07-28 |
-| 6. Adversarial MVP Acceptance | 8/18 | In Progress|  |
+| 6. Adversarial MVP Acceptance | 9/18 | In Progress|  |
 
 ## Milestone Exit Criteria
 
