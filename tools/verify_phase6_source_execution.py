@@ -34,6 +34,107 @@ FRESH_MATERIALIZATION_RUN_SHA256 = (
 LIVE_AUTHORITY_JOB = "record_live_authority"
 LIVE_AUTHORITY_ENVIRONMENT = "skillscout-phase6-live-authority"
 LIVE_AUTHORITY_STATE_SECRET = "SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN"
+EXPECTED_AUTHORITATIVE_JOB_ORDER = (
+    (".github/workflows/discover.yml", "discovery"),
+    (".github/workflows/discover.yml", "protected_publication"),
+    (".github/workflows/publish-candidate.yml", "admit"),
+    (".github/workflows/publish-candidate.yml", "publish"),
+    (".github/workflows/gate-b4-canary.yml", "controlled_canary"),
+    (".github/workflows/phase6-acceptance.yml", "isolation_probe"),
+    (".github/workflows/phase6-acceptance.yml", "nominate"),
+    (".github/workflows/phase6-acceptance.yml", "prepare_fresh_campaign"),
+    (".github/workflows/phase6-acceptance.yml", "benchmark_lock"),
+    (".github/workflows/phase6-acceptance.yml", "offline_adversarial"),
+    (".github/workflows/phase6-acceptance.yml", "live_authority_preflight"),
+    (".github/workflows/phase6-acceptance.yml", "live_benchmark"),
+    (".github/workflows/phase6-acceptance.yml", "live_replay"),
+    (".github/workflows/phase6-acceptance.yml", "human_attestation"),
+    (".github/workflows/phase6-acceptance.yml", LIVE_AUTHORITY_JOB),
+    (".github/workflows/phase6-acceptance.yml", "cleanup_attestation"),
+    (".github/workflows/phase6-acceptance.yml", "rebuild_report"),
+)
+EXPECTED_NON_FINAL_JOB_SOURCE_DIGESTS = (
+    (
+        ".github/workflows/discover.yml",
+        "discovery",
+        "2146946ae4f575713ab47256539d60fdcb146c92e2470518ee723ea593447ce8",
+    ),
+    (
+        ".github/workflows/discover.yml",
+        "protected_publication",
+        "6c07246fd14a990c8dfff59d14998b67625a65c0132223e4af48f3ce33ae10cb",
+    ),
+    (
+        ".github/workflows/publish-candidate.yml",
+        "admit",
+        "8ee998c5d297a0df918fb3619b25648887fe82d8a080eba4fcd175e823f7ea7c",
+    ),
+    (
+        ".github/workflows/publish-candidate.yml",
+        "publish",
+        "a67730e3f3f62c5f4fb7476c33ab85acd91146a6a8f817c2989b10154538faed",
+    ),
+    (
+        ".github/workflows/gate-b4-canary.yml",
+        "controlled_canary",
+        "8d7abb8044c23e75e665456e85d974d40a0f8e93d0d792d851ee5db9cd1e51a8",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "isolation_probe",
+        "8798540fa5b4c9182ef6495aa260f1fb1d6abcd6b1024ca292d416acc5aac125",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "nominate",
+        "3e1681dc0fedcb3e9cbe7fe160ed1eca513d2b17eb0e79a1f144305e4b18022d",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "prepare_fresh_campaign",
+        "9a128106c039508fe152579b4b59383c85d457b03e4323c1335cf8acd6c141d1",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "benchmark_lock",
+        "3eebf311a43733d3ea2b76539d7ba2832200d2fc6cdd8e12e3e05fb9c12a6abc",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "offline_adversarial",
+        "56fd7b65fee28351f8958b503d2f0a2042f99034baba795a0afa304552fdcbdd",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "live_authority_preflight",
+        "f0807405a460ab7cb83793f6c4675a73661ee4a947cf68ea0cc8915a6f8d2a6d",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "live_benchmark",
+        "1261b86a8d6c3daa490035701dc70b425cf7d4180e5e3a8d94c05e405d75a999",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "live_replay",
+        "6bb016ea0d833807e706b7bac8a0e4310258956bfcab82b6ff1a0c9029b66aa3",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "human_attestation",
+        "7a5a352589daa48260a989785a733eaa059f904363dfc00bbe7d5fd0dc28849a",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "cleanup_attestation",
+        "134828daa0fb0d4b012f25846e6e06ee07ae9a70c97171213c46118f373c1b5b",
+    ),
+    (
+        ".github/workflows/phase6-acceptance.yml",
+        "rebuild_report",
+        "0c7f4c859284870bb29d5d3933e877da2c8945a3c55e38f97989040f49ee0b2f",
+    ),
+)
 MANAGED_PYTHON_INSTALL = (
     'UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 '
     f"{LOCAL_UV} python install {MANAGED_PYTHON_VERSION} "
@@ -382,6 +483,36 @@ def _parse_jobs(source: str) -> tuple[_Job, ...]:
         end = job_starts[offset + 1][0] if offset + 1 < len(job_starts) else len(lines)
         jobs.append(_job_from_lines(name, lines[start:end]))
     return tuple(jobs)
+
+
+def _closed_post_task2_job_sources(
+    workflow_jobs: tuple[tuple[Path, _Job], ...],
+) -> None:
+    """Freeze every non-final authoritative job before parsing shell semantics.
+
+    The Environment-B recorder is the only mutable authority route after Task2.
+    Rather than trying to recognize arbitrary Bash constructions in the other
+    jobs, bind their ordered workflow path, job name, and complete source bytes
+    to the reviewed post-Task2 artifact.  Any added command, environment,
+    action, condition, comment, rename, deletion, duplication, or reordering
+    fails before it can become a rival recorder route.
+    """
+
+    job_order = tuple((relative.as_posix(), job.name) for relative, job in workflow_jobs)
+    _require(job_order == EXPECTED_AUTHORITATIVE_JOB_ORDER)
+    non_final_sources = tuple(
+        (
+            relative.as_posix(),
+            job.name,
+            hashlib.sha256(job.source.encode("utf-8")).hexdigest(),
+        )
+        for relative, job in workflow_jobs
+        if not (
+            relative == Path(".github/workflows/phase6-acceptance.yml")
+            and job.name == LIVE_AUTHORITY_JOB
+        )
+    )
+    _require(non_final_sources == EXPECTED_NON_FINAL_JOB_SOURCE_DIGESTS)
 
 
 def _closed_phase6_root_context(source: str) -> None:
@@ -1118,11 +1249,9 @@ def _closed_live_authority_job(job: _Job) -> None:
 
 
 def _planned_live_authority_route_is_closed(source: str, jobs: tuple[_Job, ...]) -> bool:
-    """Validate the final route when it is present, without requiring its prior bytes."""
+    """Validate the required final Environment-B recorder route."""
 
     planned = tuple(job for job in jobs if job.name == LIVE_AUTHORITY_JOB)
-    if not planned:
-        return False
     _require(len(planned) == 1)
     _require("live_authority_json" not in source.casefold())
     recorder_steps: list[tuple[_Job, _Step]] = []
@@ -1149,9 +1278,11 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     control_user_mapping_count = 0
     diagnostic_upload_count = 0
     planned_live_authority = False
+    workflow_jobs: list[tuple[Path, _Job]] = []
     for relative in WORKFLOW_PATHS:
         source = _read(root, relative)
         jobs = _parse_jobs(source)
+        workflow_jobs.extend((relative, job) for job in jobs)
         _reject_forbidden_sources(source, jobs)
         if relative == Path(".github/workflows/phase6-acceptance.yml"):
             _closed_phase6_root_context(source)
@@ -1253,8 +1384,10 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
                         invocation_digest=hashlib.sha256(step.run.encode("utf-8")).hexdigest(),
                     )
                 )
+    _closed_post_task2_job_sources(tuple(workflow_jobs))
     _require(bool(findings))
-    _require(managed_python_job_count == 16 + int(planned_live_authority))
+    _require(planned_live_authority)
+    _require(managed_python_job_count == 17)
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     _require(control_user_mapping_count == EXPECTED_CONTROL_USER_MAPPINGS)
     _require(diagnostic_upload_count == 1)
