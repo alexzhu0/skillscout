@@ -784,6 +784,49 @@ def test_discovery_restore_and_sync_share_one_compact_lineage_cache(
     assert not hasattr(caches[0], "blob_cache")
 
 
+def test_fresh_campaign_restore_passes_lineage_cache_to_later_cas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh nomination must not walk the full state history twice."""
+
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    operations_module = importlib.import_module("skillscout.adapters.operations_state")
+    marker = object()
+    seen: list[object] = []
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_read_fresh_campaign_state_metadata",
+        lambda **_kwargs: SimpleNamespace(id=1, owner="octo", name="state"),
+    )
+
+    def restore(**kwargs: object) -> object:
+        seen.append(kwargs.get("read_cache"))
+        return SimpleNamespace(
+            status="verified",
+            observed_head="a" * 40,
+            bundle=SimpleNamespace(root=SimpleNamespace(root_digest="sha256:" + "b" * 64)),
+        )
+
+    monkeypatch.setattr(bootstrap, "_restore_fresh_campaign_state_read_only", restore)
+    monkeypatch.setattr(
+        operations_module,
+        "restore_three_store_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+
+    bootstrap._restore_verified_fresh_campaign_state(
+        config=SimpleNamespace(operations_state=tmp_path / "operations.sqlite3"),
+        source={},
+        pipeline_path=tmp_path / "pipeline.sqlite3",
+        publication_path=tmp_path / "publication.sqlite3",
+        read_cache=marker,
+    )
+
+    assert seen == [marker]
+
+
 def test_protected_discovery_read_uses_the_hosted_baseline_anchor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -5434,12 +5434,16 @@ def _restore_verified_fresh_campaign_state(
     source: Mapping[str, str],
     pipeline_path: Path,
     publication_path: Path,
+    read_cache: object | None = None,
 ) -> object:
     """Read-verify the configured state repository identity before restoring it."""
     from skillscout.adapters.operations_state import restore_three_store_bundle
     _read_fresh_campaign_state_metadata(config=config, source=source)
     observation = _restore_fresh_campaign_state_read_only(
-        config=config, source=source, bounded=False
+        config=config,
+        source=source,
+        bounded=False,
+        read_cache=read_cache,
     )
     bundle = getattr(observation, "bundle", None)
     if bundle is None or getattr(bundle, "root", None) is None:
@@ -5480,15 +5484,20 @@ def _restore_fresh_campaign_state_read_only(
     config: FreshCampaignPreparationRuntimeConfig,
     source: Mapping[str, str],
     bounded: bool = True,
+    read_cache: object | None = None,
 ) -> object:
     """Verify the immutable state branch without restoring or mutating local stores."""
 
     from skillscout.adapters.state_branch import (
         ResolverReadBudget,
         StateBranchClient,
+        StateBranchReadCache,
         StateBranchStore,
         StateLineageAnchor,
     )
+
+    if read_cache is not None and type(read_cache) is not StateBranchReadCache:
+        raise ValueError("fresh campaign state read cache rejected")
 
     token = _required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN")
     client = StateBranchClient(
@@ -5497,7 +5506,11 @@ def _restore_fresh_campaign_state_read_only(
         repository_full_name=config.state_repository_full_name,
     )
     try:
-        store = StateBranchStore(client)
+        store = (
+            StateBranchStore(client)
+            if read_cache is None
+            else StateBranchStore(client, read_cache=read_cache)
+        )
         anchor = StateLineageAnchor(
             commit_sha=config.state_lineage_anchor_commit_sha,
             root_digest=config.state_lineage_anchor_root_digest,
@@ -5551,6 +5564,7 @@ def build_fresh_campaign_preparation_application(
     source = os.environ if environ is None else environ
     pipeline_path = Path(_DISCOVERY_DATABASE_LOCATORS[0])
     publication_path = Path(_DISCOVERY_DATABASE_LOCATORS[2])
+    durability_barrier = _LateStateDurabilityBarrier(config, source)
 
     def search_factory() -> object:
         from skillscout.adapters.github import GitHubReadClient
@@ -5565,6 +5579,7 @@ def build_fresh_campaign_preparation_application(
             source=source,
             pipeline_path=pipeline_path,
             publication_path=publication_path,
+            read_cache=durability_barrier.state_branch_read_cache(),
         )
 
     def operations_store_factory() -> object:
@@ -5582,7 +5597,7 @@ def build_fresh_campaign_preparation_application(
             search_factory=search_factory,
             operations_store_factory=operations_store_factory,
             state_restore=state_restore,
-            durability_barrier=_LateStateDurabilityBarrier(config, source),
+            durability_barrier=durability_barrier,
         ),
         query_set=config.query_set,  # type: ignore[arg-type]
         state_repository_id=config.state_repository_id,
