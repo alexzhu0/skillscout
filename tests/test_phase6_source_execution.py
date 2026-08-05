@@ -975,7 +975,7 @@ def test_source_execution_mutations_fail_closed(
             "if: ${{ inputs.phase6_action == 'lock-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }} # trusted",
         ),
         (
-            "if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}",
+            "if: ${{ (inputs.phase6_action == 'prepare-fresh-campaign' || inputs.phase6_action == 'preflight-fresh-campaign') && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}",
             "if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' && github.ref == 'refs/heads/main' }}",
         ),
         (

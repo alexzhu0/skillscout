@@ -10,6 +10,7 @@ on:
         options:
           - isolation-probe
           - nominate
+          - preflight-fresh-campaign
           - prepare-fresh-campaign
           - lock-fresh-campaign
           - offline-adversarial
@@ -470,7 +471,7 @@ jobs:
 
   prepare_fresh_campaign:
     name: skillscout-phase6-prepare-fresh-campaign
-    if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}
+    if: ${{ (inputs.phase6_action == 'prepare-fresh-campaign' || inputs.phase6_action == 'preflight-fresh-campaign') && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}
     environment: phase6-fresh-nomination
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -563,7 +564,18 @@ jobs:
             printf 'UV_MANAGED_PYTHON=1\n'
             printf 'UV_PYTHON_DOWNLOADS=never\n'
           } >> "${GITHUB_ENV}"
+      - name: Run read-only fresh campaign preflight
+        if: ${{ inputs.phase6_action == 'preflight-fresh-campaign' }}
+        env:
+          SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
+          SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli preflight-fresh-campaign
+
       - name: Prepare one bounded fresh Search nomination
+        if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' }}
         env:
           SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
           SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN }}

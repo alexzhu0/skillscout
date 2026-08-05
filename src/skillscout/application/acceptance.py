@@ -13,6 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import time
 from typing import Callable, Final, Literal, Mapping
 
 from skillscout.adapters.operations_state import (
@@ -743,6 +744,213 @@ class FreshCampaignPreparationResult:
     nomination: NominationSetV1
     state_commit_sha: str
     state_root_digest: str
+
+
+PreflightStageName = Literal["state_metadata", "state_restore", "search_page"]
+
+
+@dataclass(frozen=True)
+class FreshCampaignPreflightStage:
+    """One bounded, JSON-safe diagnostic stage with no provider payloads."""
+
+    stage: PreflightStageName
+    status: Literal["passed", "failed"]
+    elapsed_ms: int
+    error_code: str | None = None
+    facts: tuple[tuple[str, str | int | bool | None], ...] = ()
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "status": self.status,
+            "elapsed_ms": self.elapsed_ms,
+            "error_code": self.error_code,
+            "facts": dict(self.facts),
+        }
+
+
+@dataclass(frozen=True)
+class FreshCampaignPreflightResult:
+    """Read-only fresh-campaign diagnostic, safe to print in workflow logs."""
+
+    status: Literal["verified", "failed"]
+    stages: tuple[FreshCampaignPreflightStage, ...]
+    failed_stage: PreflightStageName | None = None
+    error_code: str | None = None
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "failed_stage": self.failed_stage,
+            "error_code": self.error_code,
+            "stages": [stage.to_json() for stage in self.stages],
+        }
+
+
+@dataclass(frozen=True)
+class FreshCampaignPreflightDependencies:
+    """Only remote-read probes; no state store, CAS, model, or publication capability."""
+
+    state_metadata_factory: Callable[[], object]
+    state_restore_factory: Callable[[], object]
+    search_factory: Callable[[], object]
+
+
+def _preflight_error_code(error: BaseException) -> str:
+    """Map arbitrary provider failures to a small, non-disclosing diagnostic code."""
+
+    if isinstance(error, AcceptanceApplicationError):
+        return error.code
+    if type(error).__name__ == "StateIntegrityFailure":
+        return "state_integrity_failure"
+    if type(error).__name__ == "StateRefNotFound":
+        return "state_ref_not_found"
+    candidate = getattr(error, "code", None)
+    if hasattr(candidate, "value"):
+        candidate = getattr(candidate, "value")
+    if type(candidate) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", candidate):
+        return candidate
+    return "unexpected_failure"
+
+
+class FreshCampaignPreflightApplication:
+    """Probe state identity, immutable restore, and one Search page per query only."""
+
+    def __init__(
+        self,
+        dependencies: FreshCampaignPreflightDependencies,
+        *,
+        query_set: DiscoveryQuerySetV1,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if (
+            type(dependencies) is not FreshCampaignPreflightDependencies
+            or type(query_set) is not DiscoveryQuerySetV1
+            or not callable(clock)
+        ):
+            raise TypeError("invalid fresh campaign preflight")
+        self._dependencies = dependencies
+        self._query_set = query_set
+        self._clock = clock
+
+    def _stage(
+        self,
+        stage: PreflightStageName,
+        start: float,
+        *,
+        error_code: str | None = None,
+        facts: tuple[tuple[str, str | int | bool | None], ...] = (),
+    ) -> FreshCampaignPreflightStage:
+        elapsed_ms = max(0, int(round((self._clock() - start) * 1000)))
+        return FreshCampaignPreflightStage(
+            stage=stage,
+            status="failed" if error_code is not None else "passed",
+            elapsed_ms=elapsed_ms,
+            error_code=error_code,
+            facts=facts,
+        )
+
+    def run(self) -> FreshCampaignPreflightResult:
+        stages: list[FreshCampaignPreflightStage] = []
+        start = self._clock()
+        try:
+            metadata = self._dependencies.state_metadata_factory()
+            if getattr(metadata, "id", None) is None:
+                raise AcceptanceApplicationError("evidence_missing")
+            stages.append(
+                self._stage(
+                    "state_metadata",
+                    start,
+                    facts=(
+                        ("repository_id", getattr(metadata, "id")),
+                        ("owner", getattr(metadata, "owner", None)),
+                        ("name", getattr(metadata, "name", None)),
+                    ),
+                )
+            )
+        except Exception as error:
+            code = _preflight_error_code(error)
+            stages.append(self._stage("state_metadata", start, error_code=code))
+            return FreshCampaignPreflightResult(
+                status="failed", stages=tuple(stages), failed_stage="state_metadata", error_code=code
+            )
+
+        start = self._clock()
+        try:
+            restored = self._dependencies.state_restore_factory()
+            observed_head = getattr(restored, "observed_head", None)
+            root_digest = getattr(getattr(getattr(restored, "bundle", None), "root", None), "root_digest", None)
+            if (
+                getattr(restored, "status", None) != "verified"
+                or type(observed_head) is not str
+                or re.fullmatch(r"[0-9a-f]{40}", observed_head) is None
+                or type(root_digest) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", root_digest) is None
+            ):
+                raise AcceptanceApplicationError("evidence_missing")
+            stages.append(
+                self._stage(
+                    "state_restore",
+                    start,
+                    facts=(("observed_head", observed_head), ("root_digest", root_digest)),
+                )
+            )
+        except Exception as error:
+            code = _preflight_error_code(error)
+            stages.append(self._stage("state_restore", start, error_code=code))
+            return FreshCampaignPreflightResult(
+                status="failed", stages=tuple(stages), failed_stage="state_restore", error_code=code
+            )
+
+        search: object | None = None
+        try:
+            search = self._dependencies.search_factory()
+            authority = sha256_digest(
+                {"purpose": "fresh-campaign-preflight", "query_set_digest": self._query_set.query_set_digest}
+            )
+            for query_ordinal in range(1, len(self._query_set.queries) + 1):
+                start = self._clock()
+                try:
+                    page, repositories = search.search_repositories(
+                        query_set=self._query_set,
+                        discovery_run_authority_digest=authority,
+                        query_ordinal=query_ordinal,
+                        page=1,
+                    )
+                    if (
+                        type(page) is not SearchPageObservationV1
+                        or page.query_ordinal != query_ordinal
+                        or page.page != 1
+                        or type(repositories) is not tuple
+                    ):
+                        raise AcceptanceApplicationError("evidence_missing")
+                    rate = page.rate_limit
+                    stages.append(
+                        self._stage(
+                            "search_page",
+                            start,
+                            facts=(
+                                ("query_ordinal", query_ordinal),
+                                ("page", 1),
+                                ("request_id", page.request_id),
+                                ("item_count", page.item_count),
+                                ("total_count", page.total_count),
+                                ("incomplete_results", page.incomplete_results),
+                                ("rate_limit", rate.resource),
+                                ("rate_remaining", rate.remaining),
+                                ("rate_reset_epoch", rate.reset_epoch),
+                            ),
+                        )
+                    )
+                except Exception as error:
+                    code = _preflight_error_code(error)
+                    stages.append(self._stage("search_page", start, error_code=code, facts=(("query_ordinal", query_ordinal), ("page", 1))))
+                    return FreshCampaignPreflightResult(
+                        status="failed", stages=tuple(stages), failed_stage="search_page", error_code=code
+                    )
+            return FreshCampaignPreflightResult(status="verified", stages=tuple(stages))
+        finally:
+            _close(search)
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -261,6 +262,151 @@ def test_nomination_search_filters_and_pins_role_neutral_entries() -> None:
         "coverage_role" not in entry.model_dump(mode="json")
         for entry in nomination.search_derived_entries
     )
+
+
+def _preflight_page(
+    query_set: DiscoveryQuerySetV1,
+    authority_digest: str,
+    query_ordinal: int,
+) -> SearchPageObservationV1:
+    query = query_set.queries[query_ordinal - 1]
+    values = {
+        "schema_version": "search-page-observation-v1",
+        "discovery_run_authority_digest": authority_digest,
+        "query_set_version": query_set.query_set_version,
+        "query_set_digest": query_set.query_set_digest,
+        "query_id": query.query_id,
+        "query_ordinal": query_ordinal,
+        "query_text": query.query_text,
+        "sort": query_set.sort,
+        "order": query_set.order,
+        "page": 1,
+        "per_page": query_set.per_page,
+        "next_page": None,
+        "total_count": 0,
+        "incomplete_results": False,
+        "item_count": 0,
+        "request_id": f"preflight-{query_ordinal}",
+        "rate_limit": SearchRateLimitFactsV1(
+            limit=30,
+            remaining=29,
+            used=1,
+            reset_epoch=1,
+            resource="search",
+        ),
+    }
+    return SearchPageObservationV1(
+        **values,
+        observation_digest=sha256_digest(
+            {
+                **values,
+                "rate_limit": values["rate_limit"].model_dump(
+                    mode="json", exclude_none=False
+                ),
+            }
+        ),
+    )
+
+
+def test_fresh_preflight_is_read_only_and_reports_bounded_stage_facts() -> None:
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    calls: list[str] = []
+
+    class Search:
+        def search_repositories(
+            self,
+            *,
+            query_set: DiscoveryQuerySetV1,
+            discovery_run_authority_digest: str,
+            query_ordinal: int,
+            page: int,
+        ) -> tuple[SearchPageObservationV1, tuple[SearchRepositoryObservationV1, ...]]:
+            calls.append(f"search:{query_ordinal}:{page}")
+            assert page == 1
+            return (
+                _preflight_page(query_set, discovery_run_authority_digest, query_ordinal),
+                (),
+            )
+
+        def get_repo_metadata(self, *_args: object, **_kwargs: object) -> object:
+            pytest.fail("preflight must not read candidate metadata")
+
+        def resolve_commit(self, *_args: object, **_kwargs: object) -> object:
+            pytest.fail("preflight must not resolve candidate commits")
+
+        def get_license(self, *_args: object, **_kwargs: object) -> object:
+            pytest.fail("preflight must not read candidate licenses")
+
+        def close(self) -> None:
+            calls.append("search:close")
+
+    application = module.FreshCampaignPreflightApplication(
+        module.FreshCampaignPreflightDependencies(
+            state_metadata_factory=lambda: calls.append("state:metadata")
+            or SimpleNamespace(id=9001, owner="octo-org", name="skillscout-state"),
+            state_restore_factory=lambda: calls.append("state:restore")
+            or SimpleNamespace(
+                status="verified",
+                observed_head="a" * 40,
+                bundle=SimpleNamespace(
+                    root=SimpleNamespace(root_digest="sha256:" + ("b" * 64))
+                ),
+            ),
+            search_factory=Search,
+        ),
+        query_set=query_set,
+        clock=iter(range(100)).__next__,
+    )
+
+    result = application.run()
+
+    assert result.status == "verified"
+    assert result.failed_stage is None
+    assert tuple(stage.stage for stage in result.stages) == (
+        "state_metadata",
+        "state_restore",
+        *("search_page",) * len(query_set.queries),
+    )
+    assert all(stage.status == "passed" for stage in result.stages)
+    assert calls[:2] == ["state:metadata", "state:restore"]
+    assert calls[-1] == "search:close"
+    assert len([call for call in calls if call.startswith("search:") and call != "search:close"]) == len(query_set.queries)
+
+
+def test_fresh_preflight_failure_is_stage_labeled_and_does_not_echo_exception() -> None:
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    secret = "GITHUB_TOKEN_PRELIGHT_SECRET_DO_NOT_DISCLOSE"
+    private_path = "/private/selected/preflight/path"
+
+    application = module.FreshCampaignPreflightApplication(
+        module.FreshCampaignPreflightDependencies(
+            state_metadata_factory=lambda: SimpleNamespace(
+                id=9001, owner="octo-org", name="skillscout-state"
+            ),
+            state_restore_factory=lambda: (_ for _ in ()).throw(
+                RuntimeError(secret, private_path)
+            ),
+            search_factory=lambda: pytest.fail("Search must not run after restore failure"),
+        ),
+        query_set=query_set,
+    )
+
+    result = application.run()
+
+    assert result.status == "failed"
+    assert result.failed_stage == "state_restore"
+    assert result.error_code == "unexpected_failure"
+    serialized = json.dumps(result.to_json(), sort_keys=True)
+    assert secret not in serialized
+    assert private_path not in serialized
 
 
 def test_nomination_application_persists_fact_before_exact_state_cas(

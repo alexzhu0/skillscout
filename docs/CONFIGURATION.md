@@ -156,6 +156,19 @@ For this MVP, the scheduled `discover` and `nominate-benchmark` commands accept 
 
 <!-- VERIFY: Confirm the actual state repository ID, full name, initial root digest, and repository-variable scoping in GitHub Actions settings. -->
 
+### Phase 6 fresh-campaign preflight
+
+The `preflight-fresh-campaign` choice in `.github/workflows/phase6-acceptance.yml` is a read-only diagnostic route for a failed or uncertain fresh nomination. It uses the protected `phase6-fresh-nomination` environment and only the source/state read credentials already required by that environment:
+
+| Secret | Scope |
+|---|---|
+| `SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN` | Read the fixed `skillscout-state` repository and immutable state branch. |
+| `github.token` (mapped to `SKILLSCOUT_SOURCE_GITHUB_TOKEN`) | Read the reviewed public GitHub Search endpoint. |
+
+The command performs, in order, state-repository identity verification, bounded immutable state restore, and exactly one Search page for each reviewed query. It does not call candidate `get_repo_metadata`, resolve candidate commits, read candidate licenses, open a state store/CAS, call a semantic provider, run candidate code, or access catalog/publication credentials. Its JSON output contains only closed stage labels, durations, validated request identifiers and rate facts, counts, and immutable state digests. A failure is returned with a stage label and non-sensitive error code; raw URLs, headers, response bodies, exception text, and credentials are never emitted.
+
+Because this route reads current remote state, its result is diagnostic evidence only. It does not authorize a nomination, benchmark lock, live authority, model call, or publication. Any workflow-byte change invalidates previously recorded Phase 6 source/workflow approvals and requires a new exact approval before a fresh nomination.
+
 ### Phase 6 live-acceptance authority
 
 The `record-live-authority` Phase 6 dispatch action accepts only a canonical, non-secret `LiveAcceptanceAuthorityV1` JSON object. It is restricted to the configured reviewer identity and verifies the exact source commit, workflow bytes, locked five-repository manifest, state root, provider policy, prompt/schema versions, and 100/20 budgets before it opens the state credential. It writes one immutable `acceptance_live_authority` fact through the state-branch compare-and-swap boundary; it cannot call a model, read source repositories, create a catalog branch, open a Pull Request, approve, merge, or mark a Pull Request ready.
