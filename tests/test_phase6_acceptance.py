@@ -1457,6 +1457,55 @@ def test_exact_manifest_live_authority_is_validated_without_secret_lookup() -> N
         )
 
 
+def test_live_authority_config_accepts_formatted_query_json_without_secret_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The checked-in query may be formatted while its typed digest stays exact."""
+
+    import skillscout.bootstrap as bootstrap
+
+    source_sha = "a" * 40
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        bootstrap,
+        "_checked_out_repository_commit",
+        lambda _root: source_sha,
+    )
+
+    def read_source(
+        root: Path,
+        *,
+        source_commit_sha: str,
+        relative_path: Path,
+        max_bytes: int,
+    ) -> bytes:
+        assert source_commit_sha == source_sha
+        payload = (root / relative_path).read_bytes()
+        assert len(payload) <= max_bytes
+        return payload
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_read_exact_checked_out_source_file",
+        read_source,
+    )
+    config = bootstrap.load_live_authority_recording_runtime_config(
+        acceptance_run_id="fresh-nomination-formatted-query",
+        environ={
+            "GITHUB_REPOSITORY_ID": "1310897029",
+            "SKILLSCOUT_STATE_REPOSITORY_ID": "1310897029",
+            "GITHUB_REPOSITORY": "alexzhu0/skillscout",
+            "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "alexzhu0/skillscout",
+            "GITHUB_SHA": source_sha,
+            "GITHUB_RUN_ID": "31010953545",
+            "GITHUB_RUN_ATTEMPT": "1",
+        },
+    )
+
+    assert config.preparation.query_set_path.name == "discovery-queries-v1.json"
+    assert config.preparation.query_set_digest == config.preparation.query_set.query_set_digest
+
+
 def test_live_authority_recording_rejects_before_opening_state_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
