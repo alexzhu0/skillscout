@@ -1124,10 +1124,6 @@ def load_live_authority_recording_runtime_config(
                 canonical_json_bytes(selection_manifest),
                 canonical_json_bytes(selection_manifest) + b"\n",
             }
-            or query_bytes not in {
-                canonical_json_bytes(query_set),
-                canonical_json_bytes(query_set) + b"\n",
-            }
             or query_set.query_set_digest is None
         ):
             raise ValueError
