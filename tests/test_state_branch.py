@@ -711,7 +711,9 @@ class _StateRemote:
         self.counter += 1
         return f"{self.counter:040x}"
 
-    def get_state_ref(self) -> object:
+    def get_state_ref(self, *, read_budget: object | None = None) -> object:
+        if read_budget is not None:
+            read_budget.begin_request()
         if self.head is None:
             raise self.module.StateRefNotFound
         return self.module.StateRefObservation(
@@ -766,13 +768,24 @@ class _StateRemote:
         self.writes.append("update_ref")
         return self.module.StateRefObservation(self.module.STATE_REF, sha)
 
-    def get_commit(self, sha: str) -> object:
+    def get_commit(self, sha: str, *, read_budget: object | None = None) -> object:
+        if read_budget is not None:
+            read_budget.begin_request()
         return self.commits[sha]
 
-    def get_tree(self, sha: str) -> tuple[object, ...]:
+    def get_tree(
+        self,
+        sha: str,
+        *,
+        read_budget: object | None = None,
+    ) -> tuple[object, ...]:
+        if read_budget is not None:
+            read_budget.begin_request()
         return self.trees[sha]
 
-    def get_blob(self, sha: str) -> bytes:
+    def get_blob(self, sha: str, *, read_budget: object | None = None) -> bytes:
+        if read_budget is not None:
+            read_budget.begin_request()
         return self.blobs[sha]
 
 
@@ -1193,6 +1206,61 @@ def test_inspect_commit_root_reads_only_bounded_lineage_metadata() -> None:
             )
         )
     ]
+
+
+def test_split_restore_uses_separate_budgets_for_lineage_and_payload() -> None:
+    """The acceptance preflight keeps each immutable-read phase bounded."""
+
+    module = _state_module()
+    remote = _StateRemote(module, "4" * 40)
+    store = module.StateBranchStore(remote)
+    bundle = _bundle(
+        module,
+        parent="4" * 40,
+        object_count=2,
+        prior_root_digest=_initial_root(remote),
+    )
+    synchronized = store.sync(bundle, observed_head="4" * 40)
+    lineage_budget = module.ResolverReadBudget()
+    payload_budget = module.ResolverReadBudget()
+
+    restored = store.restore_with_split_budgets(
+        lineage_read_budget=lineage_budget,
+        payload_read_budget=payload_budget,
+    )
+
+    assert restored.status == "verified"
+    assert restored.observed_head == synchronized.commit_sha
+    assert restored.bundle is not None
+    assert restored.bundle.root == bundle.root
+    assert lineage_budget.request_count > 0
+    assert payload_budget.request_count > 0
+
+
+def test_split_restore_labels_payload_budget_failure_without_details() -> None:
+    """A bounded payload failure is classified without exposing remote text."""
+
+    module = _state_module()
+    remote = _StateRemote(module, "4" * 40)
+    store = module.StateBranchStore(remote)
+    bundle = _bundle(
+        module,
+        parent="4" * 40,
+        object_count=2,
+        prior_root_digest=_initial_root(remote),
+    )
+    store.sync(bundle, observed_head="4" * 40)
+
+    with pytest.raises(module.StateRestorePhaseFailure) as caught:
+        store.restore_with_split_budgets(
+            lineage_read_budget=module.ResolverReadBudget(),
+            payload_read_budget=module.ResolverReadBudget(max_requests=1),
+        )
+
+    assert caught.value.phase == "payload"
+    assert caught.value.code == "state_integrity_failure"
+    assert "payload" in str(caught.value)
+    assert "github" not in repr(caught.value).lower()
 
 
 @pytest.mark.parametrize(

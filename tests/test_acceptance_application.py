@@ -409,6 +409,35 @@ def test_fresh_preflight_failure_is_stage_labeled_and_does_not_echo_exception() 
     assert private_path not in serialized
 
 
+def test_fresh_preflight_reports_safe_state_restore_subphase() -> None:
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    state_branch = importlib.import_module("skillscout.adapters.state_branch")
+
+    application = module.FreshCampaignPreflightApplication(
+        module.FreshCampaignPreflightDependencies(
+            state_metadata_factory=lambda: SimpleNamespace(
+                id=9001, owner="octo-org", name="skillscout-state"
+            ),
+            state_restore_factory=lambda: (_ for _ in ()).throw(
+                state_branch.StateRestorePhaseFailure("payload")
+            ),
+            search_factory=lambda: pytest.fail("Search must not run after restore failure"),
+        ),
+        query_set=query_set,
+    )
+
+    result = application.run()
+
+    assert result.status == "failed"
+    assert result.failed_stage == "state_restore"
+    assert result.error_code == "state_integrity_failure"
+    assert result.stages[-1].facts == (("restore_phase", "payload"),)
+
+
 def test_nomination_application_persists_fact_before_exact_state_cas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
