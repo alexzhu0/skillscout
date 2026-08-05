@@ -5519,8 +5519,8 @@ def _restore_fresh_campaign_state_read_only(
         if bounded:
             observation = store.restore_with_split_budgets(
                 lineage_anchor=anchor,
-                lineage_read_budget=ResolverReadBudget(),
-                payload_read_budget=ResolverReadBudget(),
+                lineage_read_budget=ResolverReadBudget(phase="lineage"),
+                payload_read_budget=ResolverReadBudget.payload_phase(),
             )
         else:
             observation = store.restore(lineage_anchor=anchor)
