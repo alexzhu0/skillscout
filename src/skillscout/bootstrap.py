@@ -5436,23 +5436,61 @@ def _restore_verified_fresh_campaign_state(
     publication_path: Path,
 ) -> object:
     """Read-verify the configured state repository identity before restoring it."""
+    from skillscout.adapters.operations_state import restore_three_store_bundle
+    _read_fresh_campaign_state_metadata(config=config, source=source)
+    observation = _restore_fresh_campaign_state_read_only(
+        config=config, source=source, bounded=False
+    )
+    bundle = getattr(observation, "bundle", None)
+    if bundle is None or getattr(bundle, "root", None) is None:
+        raise ValueError("fresh campaign state rejected")
+    if getattr(observation, "observed_head", None) is None:
+        raise ValueError("fresh campaign state rejected")
+    restore_three_store_bundle(
+        bundle,
+        pipeline_path=pipeline_path,
+        operations_path=config.operations_state,
+        publication_path=publication_path,
+    )
+    return observation
+
+
+def _read_fresh_campaign_state_metadata(
+    *,
+    config: FreshCampaignPreparationRuntimeConfig,
+    source: Mapping[str, str],
+) -> object:
+    """Read and verify only the configured state repository identity."""
 
     from skillscout.adapters.github import GitHubReadClient
-    from skillscout.adapters.operations_state import restore_three_store_bundle
+
+    token = _required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN")
+    owner, repository = config.state_repository_full_name.split("/", 1)
+    client = GitHubReadClient(token=token)
+    try:
+        metadata = client.get_repo_metadata(owner, repository)
+    finally:
+        client.close()
+    _verify_fresh_campaign_state_repository_identity(metadata=metadata, config=config)
+    return metadata
+
+
+def _restore_fresh_campaign_state_read_only(
+    *,
+    config: FreshCampaignPreparationRuntimeConfig,
+    source: Mapping[str, str],
+    bounded: bool = True,
+) -> object:
+    """Verify the immutable state branch without restoring or mutating local stores."""
+
     from skillscout.adapters.state_branch import (
+        ResolverReadBudget,
         StateBranchClient,
         StateBranchStore,
         StateLineageAnchor,
     )
 
     token = _required_credential(source, "SKILLSCOUT_STATE_GITHUB_TOKEN")
-    owner, repository = config.state_repository_full_name.split("/", 1)
-    metadata_client = GitHubReadClient(token=token)
-    try:
-        metadata = metadata_client.get_repo_metadata(owner, repository)
-    finally:
-        metadata_client.close()
-    _verify_fresh_campaign_state_repository_identity(metadata=metadata, config=config)
     client = StateBranchClient(
         token=token,
         repository_id=config.state_repository_id,
@@ -5460,24 +5498,23 @@ def _restore_verified_fresh_campaign_state(
     )
     try:
         store = StateBranchStore(client)
-        observation = store.restore(
-            lineage_anchor=StateLineageAnchor(
-                commit_sha=config.state_lineage_anchor_commit_sha,
-                root_digest=config.state_lineage_anchor_root_digest,
-                max_hops=config.state_lineage_anchor_max_hops,
-            )
+        anchor = StateLineageAnchor(
+            commit_sha=config.state_lineage_anchor_commit_sha,
+            root_digest=config.state_lineage_anchor_root_digest,
+            max_hops=config.state_lineage_anchor_max_hops,
         )
+        if bounded:
+            observation = store.restore(
+                lineage_anchor=anchor,
+                read_budget=ResolverReadBudget(),
+            )
+        else:
+            observation = store.restore(lineage_anchor=anchor)
         bundle = getattr(observation, "bundle", None)
         if bundle is None or getattr(bundle, "root", None) is None:
             raise ValueError("fresh campaign state rejected")
         if getattr(observation, "observed_head", None) is None:
             raise ValueError("fresh campaign state rejected")
-        restore_three_store_bundle(
-            bundle,
-            pipeline_path=pipeline_path,
-            operations_path=config.operations_state,
-            publication_path=publication_path,
-        )
         return observation
     finally:
         client.close()
@@ -5549,6 +5586,45 @@ def build_fresh_campaign_preparation_application(
         query_set=config.query_set,  # type: ignore[arg-type]
         state_repository_id=config.state_repository_id,
         state_repository_full_name=config.state_repository_full_name,
+    )
+
+
+def build_fresh_campaign_preflight_application(
+    config: FreshCampaignPreparationRuntimeConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Compose only read-only state identity, immutable restore, and bounded Search probes."""
+
+    if type(config) is not FreshCampaignPreparationRuntimeConfig:
+        raise ValueError("fresh campaign preflight configuration rejected")
+    source = os.environ if environ is None else environ
+
+    def state_metadata_factory() -> object:
+        return _read_fresh_campaign_state_metadata(config=config, source=source)
+
+    def state_restore_factory() -> object:
+        return _restore_fresh_campaign_state_read_only(config=config, source=source)
+
+    def search_factory() -> object:
+        from skillscout.adapters.github import GitHubReadClient
+
+        return GitHubReadClient(
+            token=_required_credential(source, "SKILLSCOUT_SOURCE_GITHUB_TOKEN")
+        )
+
+    from skillscout.application.acceptance import (
+        FreshCampaignPreflightApplication,
+        FreshCampaignPreflightDependencies,
+    )
+
+    return FreshCampaignPreflightApplication(
+        FreshCampaignPreflightDependencies(
+            state_metadata_factory=state_metadata_factory,
+            state_restore_factory=state_restore_factory,
+            search_factory=search_factory,
+        ),
+        query_set=config.query_set,  # type: ignore[arg-type]
     )
 
 

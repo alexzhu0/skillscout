@@ -19,6 +19,7 @@ from skillscout.bootstrap import (
     build_discovery_application,
     build_fresh_campaign_lock_application,
     build_fresh_campaign_lock_handoff_application,
+    build_fresh_campaign_preflight_application,
     build_fresh_campaign_preparation_application,
     build_nomination_application,
     build_publication_application,
@@ -158,6 +159,7 @@ def build_parser() -> SafeArgumentParser:
     nominate_benchmark.add_argument("--state-repository-full-name", required=True)
     nominate_benchmark.add_argument("--initial-state-root-digest", required=True)
     commands.add_parser("prepare-fresh-campaign")
+    commands.add_parser("preflight-fresh-campaign")
     commands.add_parser("prepare-fresh-lock-handoff")
     commands.add_parser("lock-fresh-campaign")
     run_acceptance = commands.add_parser("run-acceptance")
@@ -866,6 +868,19 @@ def _run_prepare_fresh_campaign() -> dict[str, object]:
             ],
             "status": "fresh_campaign_prepared",
         }
+    except SafeFailure:
+        raise
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
+def _run_preflight_fresh_campaign() -> dict[str, object]:
+    """Run bounded read-only state and Search probes and print only safe facts."""
+
+    try:
+        config = _fresh_campaign_preparation_config()
+        result = build_fresh_campaign_preflight_application(config).run()
+        return result.to_json()
     except SafeFailure:
         raise
     except Exception:
@@ -1898,6 +1913,7 @@ def _run_publish_discovered(arguments: argparse.Namespace) -> dict[str, object]:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     state: SQLiteStateStore | None = None
+    command_status = 0
     try:
         if arguments.command == "inspect-run":
             state = SQLiteStateStore(arguments.state)
@@ -1914,6 +1930,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_nominate_benchmark(arguments)
         elif arguments.command == "prepare-fresh-campaign":
             payload = _run_prepare_fresh_campaign()
+        elif arguments.command == "preflight-fresh-campaign":
+            payload = _run_preflight_fresh_campaign()
+            command_status = 0 if payload.get("status") == "verified" else 1
         elif arguments.command == "prepare-fresh-lock-handoff":
             payload = _run_prepare_fresh_lock_handoff()
         elif arguments.command == "lock-fresh-campaign":
@@ -1970,7 +1989,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fail_after=arguments.fail_after,
             ).as_dict()
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-        return 0
+        return command_status
     except SafeFailure as failure:
         print(
             json.dumps({"error": failure.as_dict()}, sort_keys=True, separators=(",", ":")),

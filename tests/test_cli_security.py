@@ -143,6 +143,7 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "inspect-run",
         "lock-fresh-campaign",
         "nominate-benchmark",
+        "preflight-fresh-campaign",
         "prepare-fresh-campaign",
         "prepare-fresh-lock-handoff",
         "publish-discovered",
@@ -158,6 +159,40 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "verify-publication-admission",
     }
     assert all(isinstance(child, cli.SafeArgumentParser) for child in subparsers.choices.values())
+
+
+def test_fresh_preflight_prints_sanitized_failure_and_returns_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_fresh_campaign_preparation_config", lambda: object())
+    monkeypatch.setattr(
+        cli,
+        "build_fresh_campaign_preflight_application",
+        lambda _config: SimpleNamespace(
+            run=lambda: SimpleNamespace(
+                to_json=lambda: {
+                    "status": "failed",
+                    "failed_stage": "state_restore",
+                    "error_code": "state_integrity_failure",
+                    "stages": [
+                        {
+                            "stage": "state_restore",
+                            "status": "failed",
+                            "error_code": "state_integrity_failure",
+                        }
+                    ],
+                }
+            )
+        ),
+    )
+
+    status = cli.main(["preflight-fresh-campaign"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.err == ""
+    assert json.loads(captured.out)["status"] == "failed"
 
 
 @pytest.mark.parametrize(

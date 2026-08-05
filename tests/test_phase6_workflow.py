@@ -836,6 +836,7 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     ) == (
         "isolation-probe",
         "nominate",
+        "preflight-fresh-campaign",
         "prepare-fresh-campaign",
         "lock-fresh-campaign",
         "offline-adversarial",
@@ -869,18 +870,33 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert "SKILLSCOUT_CATALOG" not in fresh_prepare
     assert "run-acceptance" not in fresh_prepare
     assert "prepare-fresh-campaign" in fresh_prepare
+    assert "preflight-fresh-campaign" in fresh_prepare
     assert "environment: phase6-fresh-nomination" in fresh_prepare
     assert (
-        "if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' && "
+        "if: ${{ (inputs.phase6_action == 'prepare-fresh-campaign' || "
+        "inputs.phase6_action == 'preflight-fresh-campaign') && "
         "github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}"
         in fresh_prepare
     )
+    preflight_prefix, _, preflight_operation = fresh_prepare.partition(
+        "      - name: Run read-only fresh campaign preflight"
+    )
+    assert preflight_operation
+    assert "if: ${{ inputs.phase6_action == 'preflight-fresh-campaign' }}" in preflight_operation
+    assert "python -m skillscout.cli preflight-fresh-campaign" in preflight_operation
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}" in preflight_operation
+    assert (
+        "SKILLSCOUT_STATE_GITHUB_TOKEN: "
+        "${{ secrets.SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN }}"
+        in preflight_operation
+    )
+    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in preflight_prefix
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in preflight_prefix
     prepare_prefix, _, prepare_operation = fresh_prepare.partition(
         "      - name: Prepare one bounded fresh Search nomination"
     )
     assert prepare_operation
-    assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in prepare_prefix
-    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in prepare_prefix
+    assert "if: ${{ inputs.phase6_action == 'prepare-fresh-campaign' }}" in prepare_operation
     assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}" in prepare_operation
     assert (
         "SKILLSCOUT_STATE_GITHUB_TOKEN: "

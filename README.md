@@ -104,6 +104,7 @@ The installed `skillscout` command exposes these bounded workflows:
 | `publish-candidate` | Reconcile one admitted candidate into its controlled Draft PR. |
 | `discover` | Run the bounded, unprotected discovery graph and emit a non-authorizing metadata handoff. |
 | `publish-discovered` | Re-read exact persisted state, re-admit the discovery handoff, and publish eligible candidates as Draft PRs from the protected boundary. |
+| `preflight-fresh-campaign` | Read-only, bounded diagnosis of state identity, state restore, and one Search page per reviewed query. |
 
 Run the parser help for the exact arguments:
 
@@ -114,6 +115,8 @@ Run the parser help for the exact arguments:
 ```
 
 Publication is intentionally separate from extraction and generation. Do not run `publish-candidate` or `publish-discovered` from an ordinary developer shell; the reviewed production path introduces catalog authority only inside the protected environment.
+
+`preflight-fresh-campaign` is a diagnostic command for the protected Phase 6 workflow. It never writes the state branch, calls a model, reads candidate metadata or licenses, executes repository code, or creates a Pull Request. It prints only stage names, durations, immutable state digests, Search counts/rate facts, and a closed error code; a failed probe exits non-zero after printing that report.
 
 ## Daily and manual discovery
 

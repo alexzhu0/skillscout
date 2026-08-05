@@ -50,7 +50,7 @@ EXPECTED_CLOSED_WORKFLOW_SOURCE_DIGESTS = (
     ),
     (
         ".github/workflows/phase6-acceptance.yml",
-        "fa8bfe71f252c5dc25abc456da03842d563a28701e4d0ddd9dfd42b934f152e9",
+        "ef01aa17bbebb47e2c43e62de7574431cfe18fdb9de01d0eb5ade314ccbe7cf0",
     ),
 )
 MANAGED_PYTHON_INSTALL = (
@@ -937,7 +937,7 @@ def _fresh_campaign_jobs_are_closed(jobs: tuple[_Job, ...]) -> None:
     )
     _require(
         _direct_scalar(prepare.source, indent=4, name="if")
-        == "${{ inputs.phase6_action == 'prepare-fresh-campaign' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}"
+        == "${{ (inputs.phase6_action == 'prepare-fresh-campaign' || inputs.phase6_action == 'preflight-fresh-campaign') && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}"
     )
     _require(
         _direct_scalar(prepare.source, indent=4, name="environment")
@@ -965,7 +965,14 @@ def _fresh_campaign_jobs_are_closed(jobs: tuple[_Job, ...]) -> None:
         "Materialize the pinned uv binary",
         "Verify the repository-local locked toolchain",
     )
-    _require(tuple(step.name for step in prepare.steps) == (*expected_prefix, "Prepare one bounded fresh Search nomination"))
+    _require(
+        tuple(step.name for step in prepare.steps)
+        == (
+            *expected_prefix,
+            "Run read-only fresh campaign preflight",
+            "Prepare one bounded fresh Search nomination",
+        )
+    )
     _require(
         tuple(step.name for step in approval.steps)
         == (
@@ -983,18 +990,43 @@ def _fresh_campaign_jobs_are_closed(jobs: tuple[_Job, ...]) -> None:
         _require(_setup_is_closed(job.steps[1]))
         _require(_fresh_materialization_is_exact(job.steps[2]))
 
+    preflight_step = prepare.steps[-2]
     prepare_step = prepare.steps[-1]
     approval_step = approval.steps[-2]
     persist_step = approval.steps[-1]
-    _require(set(_step_direct_keys(prepare_step)) == {"name", "env", "run"})
+    _require(set(_step_direct_keys(preflight_step)) == {"name", "if", "env", "run"})
+    _require(set(_step_direct_keys(prepare_step)) == {"name", "if", "env", "run"})
     _require(set(_step_direct_keys(approval_step)) == {"name", "id", "env", "run"})
     _require(set(_step_direct_keys(persist_step)) == {"name", "env", "run"})
+    _require(
+        _direct_mapping(preflight_step.source, indent=8, name="env")
+        == {
+            "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "${{ github.token }}",
+            "SKILLSCOUT_STATE_GITHUB_TOKEN": "${{ secrets.SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN }}",
+        }
+    )
+    _require(
+        _direct_scalar(preflight_step.source, indent=8, name="if")
+        == "${{ inputs.phase6_action == 'preflight-fresh-campaign' }}"
+    )
     _require(
         _direct_mapping(prepare_step.source, indent=8, name="env")
         == {
             "SKILLSCOUT_SOURCE_GITHUB_TOKEN": "${{ github.token }}",
             "SKILLSCOUT_STATE_GITHUB_TOKEN": "${{ secrets.SKILLSCOUT_FRESH_NOMINATION_STATE_GITHUB_TOKEN }}",
         }
+    )
+    _require(
+        _direct_scalar(prepare_step.source, indent=8, name="if")
+        == "${{ inputs.phase6_action == 'prepare-fresh-campaign' }}"
+    )
+    _require(
+        tuple(preflight_step.run.splitlines())
+        == (
+            "set -euo pipefail",
+            "umask 077",
+            f"{LOCAL_LOCKED} python -m skillscout.cli preflight-fresh-campaign",
+        )
     )
     _require(
         _direct_mapping(approval_step.source, indent=8, name="env")
