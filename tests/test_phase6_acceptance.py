@@ -3176,6 +3176,87 @@ def test_fresh_campaign_state_restore_uses_the_discovery_lineage_horizon(
     assert len(restored) == 1
 
 
+def test_bounded_fresh_campaign_restore_uses_phase_scoped_read_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import skillscout.adapters.github as github
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.bootstrap as bootstrap
+    from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+    query_path = ROOT / "config" / "discovery-queries-v1.json"
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        query_path.read_bytes(),
+        strict=True,
+    )
+    config = bootstrap.FreshCampaignPreparationRuntimeConfig(
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+        query_set_path=query_path,
+        query_set=query_set,
+        query_set_digest=query_set.query_set_digest or "",
+        operations_state=Path("state/databases/operations.sqlite3"),
+        state_lineage_anchor_commit_sha="a" * 40,
+        state_lineage_anchor_root_digest="sha256:" + ("b" * 64),
+    )
+    observation = SimpleNamespace(
+        observed_head="c" * 40,
+        bundle=SimpleNamespace(
+            root=SimpleNamespace(root_digest="sha256:" + ("d" * 64))
+        ),
+    )
+    budgets: dict[str, object] = {}
+    anchors: list[object] = []
+
+    class MetadataClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def get_repo_metadata(self, _owner: str, _repository: str) -> object:
+            return SimpleNamespace(id=123, owner="example", name="state")
+
+        def close(self) -> None:
+            pass
+
+    class StateClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Store:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def restore_with_split_budgets(
+            self,
+            *,
+            lineage_anchor: object,
+            lineage_read_budget: object,
+            payload_read_budget: object,
+        ) -> object:
+            anchors.append(lineage_anchor)
+            budgets["lineage"] = lineage_read_budget
+            budgets["payload"] = payload_read_budget
+            return observation
+
+    monkeypatch.setattr(github, "GitHubReadClient", MetadataClient)
+    monkeypatch.setattr(state_branch, "StateBranchClient", StateClient)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+
+    restored = bootstrap._restore_fresh_campaign_state_read_only(
+        config=config,
+        source={"SKILLSCOUT_STATE_GITHUB_TOKEN": "fixture-token"},
+        bounded=True,
+    )
+
+    assert restored is observation
+    assert getattr(budgets["lineage"], "phase", None) == "lineage"
+    assert getattr(budgets["payload"], "phase", None) == "payload"
+    assert getattr(anchors[0], "max_hops", None) == 4096
+
+
 def test_resume_locator_is_recorded_before_cas_and_advances_exact_lineage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

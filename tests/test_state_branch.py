@@ -122,6 +122,52 @@ def test_resume_read_budget_sets_remaining_timeout_and_rejects_blocking_call() -
     assert budget.response_bytes == 0
 
 
+def test_resolver_read_budget_allows_90_seconds_only_for_payload_phase() -> None:
+    module = _state_module()
+    now = [100.0]
+
+    lineage_budget = module.ResolverReadBudget(
+        clock=lambda: now[0],
+        phase="lineage",
+    )
+    assert lineage_budget.phase == "lineage"
+    now[0] += 45.0
+    with pytest.raises(module.StateIntegrityFailure):
+        lineage_budget.begin_request()
+
+    now[0] = 200.0
+    payload_budget = module.ResolverReadBudget.payload_phase(clock=lambda: now[0])
+    assert payload_budget.phase == "payload"
+    now[0] += 89.0
+    assert payload_budget.begin_request() > 0
+    now[0] += 1.0
+    with pytest.raises(module.StateIntegrityFailure):
+        payload_budget.begin_request()
+
+    for kwargs in (
+        {"max_elapsed_seconds": 90.0},
+        {"max_elapsed_seconds": 90.0, "phase": "ref"},
+        {"max_elapsed_seconds": 45.0, "phase": "payload"},
+    ):
+        with pytest.raises(module.StateIntegrityFailure):
+            module.ResolverReadBudget(**kwargs)
+
+
+def test_payload_phase_budget_keeps_request_and_response_limits() -> None:
+    module = _state_module()
+    payload_budget = module.ResolverReadBudget.payload_phase(
+        max_requests=1,
+        max_response_bytes=2,
+    )
+
+    assert payload_budget.begin_request() > 0
+    with pytest.raises(module.StateIntegrityFailure):
+        payload_budget.begin_request()
+    payload_budget.charge_response_bytes(2)
+    with pytest.raises(module.StateIntegrityFailure):
+        payload_budget.charge_response_bytes(1)
+
+
 def test_valid_state_fixture_parses_strict_root_and_exact_paths() -> None:
     fixture = json.loads((FIXTURES / "valid_state.json").read_bytes())
     root = DiscoveryStateRootV1.model_validate(fixture["root"], strict=True)
@@ -1222,7 +1268,7 @@ def test_split_restore_uses_separate_budgets_for_lineage_and_payload() -> None:
     )
     synchronized = store.sync(bundle, observed_head="4" * 40)
     lineage_budget = module.ResolverReadBudget()
-    payload_budget = module.ResolverReadBudget()
+    payload_budget = module.ResolverReadBudget.payload_phase()
 
     restored = store.restore_with_split_budgets(
         lineage_read_budget=lineage_budget,
@@ -1235,6 +1281,32 @@ def test_split_restore_uses_separate_budgets_for_lineage_and_payload() -> None:
     assert restored.bundle.root == bundle.root
     assert lineage_budget.request_count > 0
     assert payload_budget.request_count > 0
+
+
+def test_split_restore_rejects_budgets_in_the_wrong_phase_slot() -> None:
+    module = _state_module()
+    remote = _StateRemote(module, "4" * 40)
+    store = module.StateBranchStore(remote)
+
+    with pytest.raises(module.StateIntegrityFailure):
+        store.restore_with_split_budgets(
+            lineage_read_budget=module.ResolverReadBudget.payload_phase(),
+            payload_read_budget=module.ResolverReadBudget.payload_phase(),
+        )
+    with pytest.raises(module.StateIntegrityFailure):
+        store.restore_with_split_budgets(
+            lineage_read_budget=module.ResolverReadBudget(phase="lineage"),
+            payload_read_budget=module.ResolverReadBudget(),
+        )
+
+
+def test_ordinary_restore_rejects_the_payload_phase_budget() -> None:
+    module = _state_module()
+    remote = _StateRemote(module, "4" * 40)
+    store = module.StateBranchStore(remote)
+
+    with pytest.raises(module.StateIntegrityFailure):
+        store.restore(read_budget=module.ResolverReadBudget.payload_phase())
 
 
 def test_split_restore_labels_payload_budget_failure_without_details() -> None:
@@ -1254,7 +1326,7 @@ def test_split_restore_labels_payload_budget_failure_without_details() -> None:
     with pytest.raises(module.StateRestorePhaseFailure) as caught:
         store.restore_with_split_budgets(
             lineage_read_budget=module.ResolverReadBudget(),
-            payload_read_budget=module.ResolverReadBudget(max_requests=1),
+            payload_read_budget=module.ResolverReadBudget.payload_phase(max_requests=1),
         )
 
     assert caught.value.phase == "payload"
