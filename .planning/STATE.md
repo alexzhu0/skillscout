@@ -6,8 +6,8 @@ current_phase: 06
 current_phase_name: adversarial-mvp-acceptance
 status: executing
 stopped_at: Completed hardened 06-17-PLAN.md V2 live-authority admission
-last_updated: "2026-08-04T07:18:28Z"
-last_activity: 2026-08-04
+last_updated: "2026-08-05T10:20:00Z"
+last_activity: 2026-08-05
 progress:
   total_phases: 6
   completed_phases: 5
@@ -145,12 +145,13 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 | # | Description | Date | Commit | Status | Directory |
 |---|-------------|------|--------|--------|-----------|
 | 260727-mfm | Add a safe DeepSeek V4 Flash provider path and retire the verified local App PEM | 2026-07-27 | ab4a34d | Verified | [260727-mfm-add-a-safe-deepseek-v4-flash-provider-pa](./quick/260727-mfm-add-a-safe-deepseek-v4-flash-provider-pa/) |
+| 260805-orr | Fix Phase 6 preflight payload read budget | 2026-08-05 | e875ab0 | Complete | [260805-orr-fix-phase-6-preflight-payload-read-budge](./quick/260805-orr-fix-phase-6-preflight-payload-read-budge/) |
 
 ## Session Continuity
 
-**Last activity:** 2026-08-04
-**Last session:** 2026-08-04T07:18:28Z
-**Stopped at:** Completed hardened 06-17-PLAN.md V2 live-authority admission
+**Last activity:** 2026-08-05
+**Last session:** 2026-08-05T10:20:00Z
+**Stopped at:** Completed quick fix 260805-orr: payload-only 90-second preflight budget
 **Resume file:** None
 
 ### Next
