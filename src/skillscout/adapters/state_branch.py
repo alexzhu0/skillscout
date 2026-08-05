@@ -61,6 +61,7 @@ _SECRET_CANARIES = (
 _RESOLVER_MAX_REQUESTS = 1_024
 _RESOLVER_MAX_RESPONSE_BYTES = 268_435_456
 _RESOLVER_MAX_ELAPSED_SECONDS = 45.0
+_RESOLVER_PAYLOAD_MAX_ELAPSED_SECONDS = 90.0
 # A regular discovery run can persist several hundred small checkpoints.  Its
 # immutable baseline is code-reviewed, so it may cover a wider history than a
 # live acceptance recovery anchor, while still refusing an unbounded walk.
@@ -115,8 +116,16 @@ class StateRestorePhaseFailure(StateIntegrityFailure):
         super().__init__(f"state restore {phase} phase failed")
 
 
+ResolverReadPhase = Literal["default", "ref", "lineage", "payload"]
+
+
 class ResolverReadBudget:
-    """One hard budget shared by every immutable Git read in one phase."""
+    """One hard budget shared by every immutable Git read in one phase.
+
+    The ordinary resolver budget is capped at 45 seconds.  Only the explicit
+    ``payload`` phase may use the 90-second allowance needed to verify larger
+    owned payloads; ref and lineage reads remain on the ordinary cap.
+    """
 
     def __init__(
         self,
@@ -124,8 +133,24 @@ class ResolverReadBudget:
         clock: Callable[[], float] = time.monotonic,
         max_requests: int = _RESOLVER_MAX_REQUESTS,
         max_response_bytes: int = _RESOLVER_MAX_RESPONSE_BYTES,
-        max_elapsed_seconds: float = _RESOLVER_MAX_ELAPSED_SECONDS,
+        max_elapsed_seconds: float | None = None,
+        phase: ResolverReadPhase = "default",
     ) -> None:
+        if phase == "payload":
+            elapsed_limit = _RESOLVER_PAYLOAD_MAX_ELAPSED_SECONDS
+            if max_elapsed_seconds is None:
+                max_elapsed_seconds = elapsed_limit
+            elif (
+                type(max_elapsed_seconds) not in {int, float}
+                or float(max_elapsed_seconds) != elapsed_limit
+            ):
+                raise StateIntegrityFailure
+        elif phase in {"default", "ref", "lineage"}:
+            elapsed_limit = _RESOLVER_MAX_ELAPSED_SECONDS
+            if max_elapsed_seconds is None:
+                max_elapsed_seconds = elapsed_limit
+        else:
+            raise StateIntegrityFailure
         if (
             not callable(clock)
             or type(max_requests) is not int
@@ -133,15 +158,37 @@ class ResolverReadBudget:
             or type(max_response_bytes) is not int
             or not 1 <= max_response_bytes <= _RESOLVER_MAX_RESPONSE_BYTES
             or type(max_elapsed_seconds) not in {int, float}
-            or not 0 < float(max_elapsed_seconds) <= _RESOLVER_MAX_ELAPSED_SECONDS
+            or not 0 < float(max_elapsed_seconds) <= elapsed_limit
         ):
             raise StateIntegrityFailure
         self._clock = clock
+        self._phase = phase
         self._max_requests = max_requests
         self._max_response_bytes = max_response_bytes
         self._deadline = clock() + float(max_elapsed_seconds)
         self.request_count = 0
         self.response_bytes = 0
+
+    @classmethod
+    def payload_phase(
+        cls,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        max_requests: int = _RESOLVER_MAX_REQUESTS,
+        max_response_bytes: int = _RESOLVER_MAX_RESPONSE_BYTES,
+    ) -> ResolverReadBudget:
+        """Construct the sole budget allowed to use the 90-second cap."""
+
+        return cls(
+            clock=clock,
+            max_requests=max_requests,
+            max_response_bytes=max_response_bytes,
+            phase="payload",
+        )
+
+    @property
+    def phase(self) -> ResolverReadPhase:
+        return self._phase
 
     def begin_request(self) -> float:
         remaining = self._deadline - self._clock()
@@ -1060,6 +1107,11 @@ class StateBranchStore:
         lineage_anchor: StateLineageAnchor | None = None,
         read_budget: ResolverReadBudget | None = None,
     ) -> StateRestoreObservation:
+        if read_budget is not None and (
+            type(read_budget) is not ResolverReadBudget
+            or read_budget.phase == "payload"
+        ):
+            raise StateIntegrityFailure
         try:
             ref = (
                 self._remote.get_state_ref(read_budget=read_budget)
@@ -1102,6 +1154,8 @@ class StateBranchStore:
         if (
             type(lineage_read_budget) is not ResolverReadBudget
             or type(payload_read_budget) is not ResolverReadBudget
+            or lineage_read_budget.phase == "payload"
+            or payload_read_budget.phase != "payload"
         ):
             raise StateIntegrityFailure
 
