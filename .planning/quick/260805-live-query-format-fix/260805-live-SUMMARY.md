@@ -58,7 +58,7 @@ Run 31010953545 failed before remote state restore because the loader required `
 
 ## Next step
 
-After human merge of PR #13, rerun the protected fresh live-authority workflow once. The previous failed run did not mutate the state branch.
+After human merge of PR #13, start a new fresh nomination and benchmark lock because the lock is bound to the pre-fix source commit. Then run a new protected live-authority workflow. The previous failed run did not mutate the state branch.
 
 ---
 *Plan: quick-260805-live-01*
