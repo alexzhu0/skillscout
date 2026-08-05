@@ -19,11 +19,6 @@ on:
           - record-human-review
           - record-probe-cleanup
           - rebuild-report
-      live_authority_json:
-        description: Canonical non-secret LiveAcceptanceAuthorityV1 JSON for one approved benchmark
-        required: false
-        type: string
-
 permissions:
   contents: read
 
@@ -1651,7 +1646,7 @@ jobs:
           .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action replay --manifest "$PHASE6_MANIFEST" --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --resume-proof "${RUNNER_TEMP}/phase6-replay-resume.json" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
 
   human_attestation:
-    if: ${{ inputs.phase6_action == 'record-human-review' || (inputs.phase6_action == 'record-live-authority' && github.actor == 'alexzhu0') }}
+    if: ${{ inputs.phase6_action == 'record-human-review' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -1660,10 +1655,7 @@ jobs:
       UV_LINK_MODE: copy
       SKILLSCOUT_LLM_PROVIDER: deepseek
       DEEPSEEK_BASE_URL: https://api.deepseek.com
-      PHASE6_ACTION: ${{ inputs.phase6_action }}
       PHASE6_ATTESTATION: evidence/phase6/human-review.json
-      PHASE6_LIVE_AUTHORITY_JSON: ${{ inputs.live_authority_json }}
-      PHASE6_SOURCE_COMMIT_SHA: ${{ github.sha }}
       SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
       SKILLSCOUT_PHASE6_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_STATE_COMMIT_SHA }}
       SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST }}
@@ -1758,30 +1750,114 @@ jobs:
       - name: Record only the selected bounded human authority fact
         run: |
           set -euo pipefail
-          if [[ "$PHASE6_ACTION" == "record-human-review" ]]; then
-            test -f "$PHASE6_ATTESTATION"
-            .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-acceptance-attestation --attestation "$PHASE6_ATTESTATION" --kind human-review --state-commit-sha "${SKILLSCOUT_PHASE6_STATE_COMMIT_SHA:?}" --state-root-digest "${SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST:?}"
-            exit 0
-          fi
-          test "$PHASE6_ACTION" = "record-live-authority"
-          authority_path="${RUNNER_TEMP}/phase6-live-authority.json"
-          umask 077
-          PHASE6_AUTHORITY_PATH="$authority_path" .venv/bin/python -I - <<'PY'
-          import json
-          import os
-          from pathlib import Path
+          test -f "$PHASE6_ATTESTATION"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-acceptance-attestation --attestation "$PHASE6_ATTESTATION" --kind human-review --state-commit-sha "${SKILLSCOUT_PHASE6_STATE_COMMIT_SHA:?}" --state-root-digest "${SKILLSCOUT_PHASE6_STATE_ROOT_DIGEST:?}"
 
-          raw = os.environ["PHASE6_LIVE_AUTHORITY_JSON"]
-          if not 1 <= len(raw.encode("utf-8")) <= 1_048_576:
-              raise SystemExit("invalid live authority input size")
-          if type(json.loads(raw)) is not dict:
-              raise SystemExit("live authority input must be an object")
-          destination = Path(os.environ["PHASE6_AUTHORITY_PATH"])
-          destination.write_text(raw, encoding="utf-8")
-          destination.chmod(0o600)
-          PY
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli verify-live-authority-state --authority "$authority_path" --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-live-authority --authority "$authority_path" --acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}" --source-commit-sha "$PHASE6_SOURCE_COMMIT_SHA"
+  record_live_authority:
+    name: skillscout-phase6-live-authority
+    if: ${{ inputs.phase6_action == 'record-live-authority' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' }}
+    environment: skillscout-phase6-live-authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      UV_LINK_MODE: copy
+      SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
+      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Materialize the pinned uv binary
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: 0.11.29
+          enable-cache: false
+      - name: Verify the repository-local locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/uv-0.11.29/bin
+          install -m 0755 "$(command -v uv)" .tools/uv-0.11.29/bin/uv
+          test -x .tools/uv-0.11.29/bin/uv
+          uv_version_output="$(.tools/uv-0.11.29/bin/uv --version)"
+          if [[ "$uv_version_output" != "uv 0.11.29" && ! "$uv_version_output" =~ ^uv\ 0\.11\.29\ \([^()]+\)$ ]]; then
+            exit 1
+          fi
+          repository_root="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          test "${repository_root}" = "${GITHUB_WORKSPACE}"
+          test "${repository_root}" = "$(pwd -P)"
+          tools_root="${repository_root}/.tools"
+          test ! -L "${tools_root}"
+          test "$(realpath -e -- "${tools_root}")" = "${tools_root}"
+          managed_python_root="${tools_root}/python"
+          test "${managed_python_root}" = "${GITHUB_WORKSPACE}/.tools/python"
+          if [[ -L "${managed_python_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${managed_python_root}" ]]; then
+            test -d "${managed_python_root}"
+            test "$(realpath -e -- "${managed_python_root}")" = "${managed_python_root}"
+          else
+            mkdir -m 0755 "${managed_python_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 .tools/uv-0.11.29/bin/uv python install 3.13.14 --install-dir "${managed_python_root}" --no-bin
+          managed_python_executable="$(
+            UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never \
+              .tools/uv-0.11.29/bin/uv python find --managed-python 3.13.14
+          )"
+          [[ -n "$managed_python_executable" && "$managed_python_executable" != *$'\n'* && "$managed_python_executable" == /* ]]
+          managed_python_executable="$(realpath -e -- "${managed_python_executable}")"
+          case "${managed_python_executable}" in
+            "${managed_python_root}"/*/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test -x "${managed_python_executable}"
+          venv_root="${repository_root}/.venv"
+          test "${venv_root}" = "${GITHUB_WORKSPACE}/.venv"
+          if [[ -L "${venv_root}" ]]; then
+            exit 1
+          fi
+          if [[ -e "${venv_root}" ]]; then
+            test -d "${venv_root}"
+            test "$(realpath -e -- "${venv_root}")" = "${venv_root}"
+            rm -rf -- "${venv_root}"
+          fi
+          UV_PYTHON_INSTALL_DIR="${managed_python_root}" UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=never .tools/uv-0.11.29/bin/uv sync --locked --python "${managed_python_executable}" --managed-python --no-python-downloads
+          python_executable="$(realpath -e -- .venv/bin/python)"
+          python_base_prefix="$(.venv/bin/python -I -c 'import sys; print(sys.base_prefix)')"
+          [[ -n "$python_base_prefix" && "$python_base_prefix" != *$'\n'* && "$python_base_prefix" == /* ]]
+          python_base_prefix="$(realpath -e -- "${python_base_prefix}")"
+          case "${python_base_prefix}" in
+            "${managed_python_root}"/*) ;;
+            *) exit 1 ;;
+          esac
+          case "${python_executable}" in
+            "${python_base_prefix}"/bin/python*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(.venv/bin/python -I -c 'import sys; print(sys.implementation.name)')" = "cpython"
+          test "$(.venv/bin/python -I -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" = "3.13.14"
+          test -d "${python_base_prefix}/lib/python3.13"
+          test -f "${python_base_prefix}/lib/python3.13/os.py"
+          test -f "${python_base_prefix}/lib/python3.13/encodings/__init__.py"
+          {
+            printf 'UV_PYTHON_INSTALL_DIR=%s\n' "${managed_python_root}"
+            printf 'UV_MANAGED_PYTHON=1\n'
+            printf 'UV_PYTHON_DOWNLOADS=never\n'
+          } >> "${GITHUB_ENV}"
+      - name: Persist one environment-approved V2 live authority
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli record-live-authority --acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"
 
   cleanup_attestation:
     if: ${{ inputs.phase6_action == 'record-probe-cleanup' }}

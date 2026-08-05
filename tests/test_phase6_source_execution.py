@@ -45,6 +45,9 @@ CONTAINER_MANAGED_ENV = (
 )
 REPOSITORY_MOUNT = '--volume "${repository_root}:${repository_root}:ro"'
 CONTROL_USER_OPTION = '--user "${host_uid}:${host_gid}"'
+LIVE_AUTHORITY_ENVIRONMENT = "skillscout-phase6-live-authority"
+LIVE_AUTHORITY_STATE_SECRET = "SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN"
+LIVE_AUTHORITY_JOB_NAME = "record_live_authority"
 
 
 def _module(*, skip_if_missing: bool = True) -> Any:
@@ -87,6 +90,38 @@ def _replace_first(repository: Path, needle: str, replacement: str) -> None:
             path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
             return
     raise AssertionError(f"mutation needle not found: {needle}")
+
+
+def _replace_live_authority_route(path: Path, old: str, new: str) -> None:
+    module = _module()
+    source = path.read_text(encoding="utf-8")
+    job = next(
+        job
+        for job in module._parse_jobs(source)
+        if job.name == LIVE_AUTHORITY_JOB_NAME
+    )
+    assert job.source.count(old) == 1
+    replacement = job.source.replace(old, new, 1)
+    assert source.count(job.source) == 1
+    path.write_text(source.replace(job.source, replacement, 1), encoding="utf-8")
+
+
+def _replace_phase6_job(path: Path, name: str, old: str, new: str) -> None:
+    module = _module()
+    source = path.read_text(encoding="utf-8")
+    job = next(job for job in module._parse_jobs(source) if job.name == name)
+    assert job.source.count(old) == 1
+    replacement = job.source.replace(old, new, 1)
+    assert source.count(job.source) == 1
+    path.write_text(source.replace(job.source, replacement, 1), encoding="utf-8")
+
+
+def _remove_phase6_job(path: Path, name: str) -> None:
+    module = _module()
+    source = path.read_text(encoding="utf-8")
+    job = next(job for job in module._parse_jobs(source) if job.name == name)
+    assert source.count(job.source) == 1
+    path.write_text(source.replace(job.source, "", 1), encoding="utf-8")
 
 
 def _version_guards(repository: Path) -> tuple[str, ...]:
@@ -134,7 +169,7 @@ def _fresh_toolchain_fragment(repository: Path) -> str:
             start = lines.index('venv_root="${repository_root}/.venv"')
             end = lines.index(MANAGED_PYTHON_SYNC, start) + 1
             fragments.append("\n".join(lines[start:end]))
-    assert len(fragments) == 16
+    assert len(fragments) == 17
     assert len(set(fragments)) == 1
     return fragments[0]
 
@@ -334,10 +369,273 @@ def test_source_execution_verifier_requires_repo_managed_cpython_for_every_job(
 ) -> None:
     module = _module()
     result = module.verify_source_execution(_copy_workflows(tmp_path))
-    assert result.managed_python_job_count == 16
+    assert result.managed_python_job_count == 17
     assert result.managed_python_version == MANAGED_PYTHON_VERSION
     assert result.managed_python_root == MANAGED_PYTHON_ROOT
     assert result.network_none_invocation_count == 6
+
+
+def test_source_execution_fixture_accepts_protected_live_authority_route(
+    tmp_path: Path,
+) -> None:
+    """The final V2 route is a closed state-only checkout-local command."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+
+    module._planned_live_authority_route_is_closed(
+        path.read_text(encoding="utf-8"),
+        module._parse_jobs(path.read_text(encoding="utf-8")),
+    )
+
+
+def test_source_execution_verifier_accepts_protected_authority_route(
+    tmp_path: Path,
+) -> None:
+    """The final route joins the all-workflow source proof."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+
+    result = module.verify_source_execution(repository)
+
+    assert result.managed_python_job_count == 17
+    assert any(step.job_name == LIVE_AUTHORITY_JOB_NAME for step in result.authoritative_steps)
+
+
+def test_source_execution_verifier_requires_final_live_authority_job(
+    tmp_path: Path,
+) -> None:
+    """The post-Task2 source proof has no transitional 16-job route."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    _remove_phase6_job(path, LIVE_AUTHORITY_JOB_NAME)
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        ("shell: bash", "shell: bash -e {0}"),
+        (
+            "defaults:\n  run:\n    shell: bash",
+            "env:\n"
+            "  SKILLSCOUT_STATE_GITHUB_TOKEN: "
+            "${{ secrets.SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN }}\n"
+            "defaults:\n  run:\n    shell: bash",
+        ),
+    ),
+    ids=("root-shell", "root-state-env"),
+)
+def test_source_execution_verifier_binds_non_phase6_workflow_root_bytes(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    """Unparsed root context cannot add shell or credential authority."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/discover.yml")
+    source = path.read_text(encoding="utf-8")
+    assert source.count(needle) == 1
+    path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+def test_source_execution_verifier_rejects_unparsed_quoted_live_recorder_job(
+    tmp_path: Path,
+) -> None:
+    """A quoted YAML job ID cannot evade the exclusive recorder closure."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    source = path.read_text(encoding="utf-8")
+    final = next(
+        job for job in module._parse_jobs(source) if job.name == LIVE_AUTHORITY_JOB_NAME
+    )
+    hidden_job = final.source.replace(
+        f"  {LIVE_AUTHORITY_JOB_NAME}:\n",
+        '  "shadow_live_authority":\n',
+        1,
+    ).replace(
+        f"{LOCAL_LOCKED} python -m skillscout.cli record-live-authority ",
+        f"{LOCAL_LOCKED} .venv/bin/py''thon -m skillscout.cli record-live''-authority ",
+        1,
+    )
+    assert hidden_job != final.source
+    assert source.count("jobs:\n") == 1
+    path.write_text(
+        source.replace("jobs:\n", "jobs:\n" + hidden_job + "\n\n", 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
+    "obfuscated_subcommand",
+    ("record-live''-authority", "record-live\\-authority"),
+)
+def test_source_execution_rejects_obfuscated_recorder_outside_dedicated_job(
+    tmp_path: Path,
+    obfuscated_subcommand: str,
+) -> None:
+    """A shell-concatenated recorder name cannot bypass the dedicated route."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    source = path.read_text(encoding="utf-8")
+    needle = '          test -s "$result_file"\n      - name: Upload the bounded nomination result\n'
+    replacement = (
+        '          test -s "$result_file"\n'
+        f"          {LOCAL_LOCKED} python -m skillscout.cli {obfuscated_subcommand} "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"\n'
+        "      - name: Upload the bounded nomination result\n"
+    )
+    assert source.count(needle) == 1
+    path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
+    "shell_built_recorder",
+    (
+        '.venv/bin/py\\thon -m skillscout.cli record-live\\-authority '
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        "$(printf '%s' .venv/bin/py)thon -m skillscout.cli record-live''-authority "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        "eval .venv/bin/py''thon -m skillscout.cli record-live''-authority "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        "printf 'ignored\\n' | .venv/bin/py''thon -m skillscout.cli "
+        "record-live''-authority "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+    ),
+    ids=("escaped", "command-substitution", "eval", "pipe"),
+)
+def test_source_execution_rejects_shell_built_live_recorder_outside_environment_b(
+    tmp_path: Path,
+    shell_built_recorder: str,
+) -> None:
+    """A non-final state-writer job cannot add an unparsed shell recorder."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    needle = '          test -f "$PHASE6_ATTESTATION"\n'
+    replacement = f"{needle}          {shell_built_recorder}\n"
+    _replace_phase6_job(path, "human_attestation", needle, replacement)
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+def test_source_execution_rejects_human_if_comment_spoof_with_live_recorder(
+    tmp_path: Path,
+) -> None:
+    """A comment cannot stand in for the human-only action gate."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    _replace_phase6_job(
+        path,
+        "human_attestation",
+        "    if: ${{ inputs.phase6_action == 'record-human-review' }}",
+        "    if: ${{ inputs.phase6_action == format('{0}{1}', 'record-live-', 'authority') }}\n"
+        "    # if: ${{ inputs.phase6_action == 'record-human-review' }}",
+    )
+    _replace_phase6_job(
+        path,
+        "human_attestation",
+        '          test -f "$PHASE6_ATTESTATION"\n',
+        '          test -f "$PHASE6_ATTESTATION"\n'
+        "          .venv/bin/py''thon -m skillscout.cli record-live''-authority "
+        '--acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"\n',
+    )
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "old", "new"),
+    (
+        (
+            "alternate_command",
+            "skillscout.cli record-live-authority --acceptance-run-id ",
+            "skillscout.cli run-acceptance --action benchmark ",
+        ),
+        (
+            "permission_widening",
+            "      contents: read\n      actions: read",
+            "      contents: write",
+        ),
+        (
+            "actor_gate",
+            "github.ref == 'refs/heads/main' }}",
+            "github.ref == 'refs/heads/main' && github.actor == 'alexzhu0' }}",
+        ),
+        (
+            "free_authority_json",
+            "      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}",
+            "      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}\n"
+            "      PHASE6_LIVE_AUTHORITY_JSON: ${{ inputs.live_authority_json }}",
+        ),
+        (
+            "wrong_environment",
+            f"    environment: {LIVE_AUTHORITY_ENVIRONMENT}",
+            "    environment: phase6-human-benchmark-lock",
+        ),
+        (
+            "approval_reader_drift",
+            "          GITHUB_TOKEN: ${{ github.token }}",
+            "          GITHUB_TOKEN: ${{ vars.UNRELATED_TOKEN }}",
+        ),
+        (
+            "state_secret_drift",
+            f"${{{{ secrets.{LIVE_AUTHORITY_STATE_SECRET} }}}}",
+            "${{ secrets.SKILLSCOUT_STATE_GITHUB_TOKEN }}",
+        ),
+        (
+            "checkout_ref_drift",
+            "          ref: ${{ github.sha }}",
+            "          ref: attacker-ref",
+        ),
+    ),
+)
+def test_source_execution_fixture_rejects_protected_live_authority_mutations(
+    tmp_path: Path,
+    mutation: str,
+    old: str,
+    new: str,
+) -> None:
+    """Each mutation broadens or substitutes authority in the final route."""
+
+    del mutation
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    _replace_live_authority_route(path, old, new)
+    source = path.read_text(encoding="utf-8")
+
+    with pytest.raises(module.SourceExecutionError):
+        module._planned_live_authority_route_is_closed(
+            source,
+            module._parse_jobs(source),
+        )
 
 
 def test_fresh_locked_toolchain_installs_project_for_phase6_control_runtime(
@@ -577,7 +875,7 @@ def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_v
     tmp_path: Path,
 ) -> None:
     guards = _version_guards(ROOT)
-    assert len(guards) == 16
+    assert len(guards) == 17
     assert all(_run_guard(ROOT, guard).returncode == 0 for guard in guards)
 
     fake_repository = tmp_path / "repository"

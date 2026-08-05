@@ -363,6 +363,7 @@ def _assert_isolation_workflow(source: str) -> None:
         "live_benchmark",
         "live_replay",
         "human_attestation",
+        "record_live_authority",
         "cleanup_attestation",
         "rebuild_report",
     }
@@ -854,6 +855,7 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     benchmark = _job(source, "live_benchmark")
     replay = _job(source, "live_replay")
     human = _job(source, "human_attestation")
+    live_authority = _job(source, "record_live_authority")
     cleanup = _job(source, "cleanup_attestation")
     rebuild = _job(source, "rebuild_report")
 
@@ -964,16 +966,17 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
         assert "record-acceptance-attestation" in attestation
         assert "PHASE6_AUTHORITY_STATE_COMMIT_SHA" in attestation
         assert "PHASE6_AUTHORITY_STATE_ROOT_DIGEST" in attestation
-    assert "record-live-authority" in human
-    assert human.index("verify-live-authority-state") < human.rindex(
-        "record-live-authority"
+    assert (
+        "if: ${{ inputs.phase6_action == 'record-human-review' }}" in human
     )
+    assert "record-live-authority" not in human
+    assert "github.actor" not in human
+    assert "environment: skillscout-phase6-live-authority" in live_authority
     for job in (preflight, benchmark, replay, human):
         assert "UV_LINK_MODE: copy" in job
     assert "DEEPSEEK_API_KEY" not in human
     assert "SKILLSCOUT_LLM_PROVIDER: deepseek" in human
     assert "SKILLSCOUT_CATALOG" not in human
-    assert "github.actor == 'alexzhu0'" in human
     assert "--kind human-review" in human
     assert "--kind probe-cleanup" in cleanup
 
@@ -992,6 +995,79 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
     assert upload_blocks
     assert all("if-no-files-found: error" in block for block in upload_blocks)
     assert all("retention-days: 1" in block for block in upload_blocks)
+
+
+def test_record_live_authority_requires_environment_b_before_state_credential() -> None:
+    """Reject the legacy caller/actor route before it can persist V2 authority."""
+
+    source = _source(required=False)
+    human = _job(source, "human_attestation")
+    live = _job(source, "record_live_authority")
+
+    assert "live_authority_json" not in source.casefold()
+    assert "record-live-authority" not in human
+    assert "github.actor" not in human
+    assert "name: skillscout-phase6-live-authority" in live
+    assert (
+        "if: ${{ inputs.phase6_action == 'record-live-authority' && "
+        "github.repository == 'alexzhu0/skillscout' && "
+        "github.ref == 'refs/heads/main' }}" in live
+    )
+    assert "environment: skillscout-phase6-live-authority" in live
+    assert re.search(
+        r"^    permissions:\n      contents: read\n      actions: read$",
+        live,
+        re.MULTILINE,
+    )
+    assert "contents: write" not in live
+
+    route_prefix, separator, persist = live.partition(
+        "      - name: Persist one environment-approved V2 live authority"
+    )
+    assert separator and persist
+    assert route_prefix.count("SKILLSCOUT_STATE_GITHUB_TOKEN") == 0
+    assert "SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:" in route_prefix
+    assert "SKILLSCOUT_STATE_REPOSITORY_ID:" in route_prefix
+    assert "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME:" in route_prefix
+    assert f"actions/checkout@{CHECKOUT_SHA}" in route_prefix
+    assert "ref: ${{ github.sha }}" in route_prefix
+    assert "persist-credentials: false" in route_prefix
+    assert f"astral-sh/setup-uv@{SETUP_UV_SHA}" in route_prefix
+    assert "version: 0.11.29" in route_prefix
+    assert "enable-cache: false" in route_prefix
+    assert "Verify the repository-local locked toolchain" in route_prefix
+
+    assert "GITHUB_TOKEN: ${{ github.token }}" in persist
+    assert (
+        "SKILLSCOUT_STATE_GITHUB_TOKEN: "
+        "${{ secrets.SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN }}" in persist
+    )
+    assert "set -euo pipefail" in persist
+    assert "umask 077" in persist
+    assert (
+        ".tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli "
+        "record-live-authority --acceptance-run-id "
+        "\"${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}\"" in persist
+    )
+    assert "--authority" not in persist
+    assert "--source-commit-sha" not in persist
+    for forbidden in (
+        "github.actor",
+        "deepseek",
+        "semantic",
+        "candidate",
+        "catalog",
+        "pull-request",
+        "reviewer",
+        "publication",
+        "create-github-app-token",
+        "curl",
+        "wget",
+        "http://",
+        "https://",
+        "SKILLSCOUT_SOURCE_GITHUB_TOKEN",
+    ):
+        assert forbidden.casefold() not in live.casefold()
 
 
 def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:
