@@ -813,6 +813,17 @@ def _preflight_error_code(error: BaseException) -> str:
     return "unexpected_failure"
 
 
+def _preflight_failure_facts(
+    error: BaseException,
+) -> tuple[tuple[str, str | int | bool | None], ...]:
+    """Expose only a bounded subphase label, never provider exception text."""
+
+    phase = getattr(error, "phase", None)
+    if type(phase) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", phase):
+        return (("restore_phase", phase),)
+    return ()
+
+
 class FreshCampaignPreflightApplication:
     """Probe state identity, immutable restore, and one Search page per query only."""
 
@@ -897,7 +908,14 @@ class FreshCampaignPreflightApplication:
             )
         except Exception as error:
             code = _preflight_error_code(error)
-            stages.append(self._stage("state_restore", start, error_code=code))
+            stages.append(
+                self._stage(
+                    "state_restore",
+                    start,
+                    error_code=code,
+                    facts=_preflight_failure_facts(error),
+                )
+            )
             return FreshCampaignPreflightResult(
                 status="failed", stages=tuple(stages), failed_stage="state_restore", error_code=code
             )

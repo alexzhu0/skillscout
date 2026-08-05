@@ -104,8 +104,19 @@ class StateRefNotFound(Exception):
     """The exact fixed state ref does not exist."""
 
 
+class StateRestorePhaseFailure(StateIntegrityFailure):
+    """A safe label for one bounded phase of an immutable restore probe."""
+
+    def __init__(self, phase: Literal["ref", "lineage", "payload"]) -> None:
+        if phase not in {"ref", "lineage", "payload"}:
+            raise StateIntegrityFailure
+        self.phase = phase
+        self.code = "state_integrity_failure"
+        super().__init__(f"state restore {phase} phase failed")
+
+
 class ResolverReadBudget:
-    """One hard resolver-wide budget shared by every immutable Git read."""
+    """One hard budget shared by every immutable Git read in one phase."""
 
     def __init__(
         self,
@@ -1065,6 +1076,78 @@ class StateBranchStore:
         commit = self._commit_cache.get(ref.sha)
         if type(commit) is not StateCommitObservation or commit.sha != ref.sha:
             raise StateIntegrityFailure
+        return StateRestoreObservation(
+            "verified",
+            ref.sha,
+            bundle,
+            not commit.parents,
+        )
+
+    def restore_with_split_budgets(
+        self,
+        *,
+        lineage_anchor: StateLineageAnchor | None = None,
+        lineage_read_budget: ResolverReadBudget,
+        payload_read_budget: ResolverReadBudget,
+    ) -> StateRestoreObservation:
+        """Run a read-only restore with independent lineage and payload caps.
+
+        The ordinary restore path deliberately uses one resolver-wide budget.
+        The Phase 6 preflight is a diagnostic probe, so it gives the immutable
+        ancestry proof and the owned-payload verification separate hard caps.
+        Both phases share this store's immutable caches; no writes or weaker
+        proof are admitted by this helper.
+        """
+
+        if (
+            type(lineage_read_budget) is not ResolverReadBudget
+            or type(payload_read_budget) is not ResolverReadBudget
+        ):
+            raise StateIntegrityFailure
+
+        try:
+            ref = self._read(
+                "get_state_ref",
+                read_budget=lineage_read_budget,
+            )
+        except StateRefNotFound:
+            return StateRestoreObservation("absent", None, None)
+        except (SafeFailure, StateIntegrityFailure):
+            raise StateRestorePhaseFailure("ref") from None
+
+        if type(ref) is not StateRefObservation or _SHA.fullmatch(ref.sha) is None:
+            raise StateRestorePhaseFailure("ref")
+
+        try:
+            inspected = self.inspect_commit_root(
+                ref.sha,
+                read_budget=lineage_read_budget,
+            )
+            self._verify_root_lineage(
+                inspected.commit,
+                inspected.root,
+                anchor=lineage_anchor,
+                read_budget=lineage_read_budget,
+            )
+        except (SafeFailure, StateIntegrityFailure, StateRefNotFound):
+            raise StateRestorePhaseFailure("lineage") from None
+
+        try:
+            bundle = self.restore_commit(
+                ref.sha,
+                lineage_anchor=lineage_anchor,
+                read_budget=payload_read_budget,
+            )
+        except (SafeFailure, StateIntegrityFailure, StateRefNotFound):
+            raise StateRestorePhaseFailure("payload") from None
+
+        commit = self._commit_cache.get(ref.sha)
+        if (
+            type(commit) is not StateCommitObservation
+            or commit.sha != ref.sha
+            or type(bundle) is not VerifiedStateBundle
+        ):
+            raise StateRestorePhaseFailure("payload")
         return StateRestoreObservation(
             "verified",
             ref.sha,

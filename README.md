@@ -116,7 +116,7 @@ Run the parser help for the exact arguments:
 
 Publication is intentionally separate from extraction and generation. Do not run `publish-candidate` or `publish-discovered` from an ordinary developer shell; the reviewed production path introduces catalog authority only inside the protected environment.
 
-`preflight-fresh-campaign` is a diagnostic command for the protected Phase 6 workflow. It never writes the state branch, calls a model, reads candidate metadata or licenses, executes repository code, or creates a Pull Request. It prints only stage names, durations, immutable state digests, Search counts/rate facts, and a closed error code; a failed probe exits non-zero after printing that report.
+`preflight-fresh-campaign` is a diagnostic command for the protected Phase 6 workflow. It never writes the state branch, calls a model, reads candidate metadata or licenses, executes repository code, or creates a Pull Request. It prints only stage names, durations, immutable state digests, Search counts/rate facts, and a closed error code; state restore keeps separate hard-bounded lineage and payload phases and may report the safe subphase (`ref`, `lineage`, or `payload`). A failed probe exits non-zero after printing that report.
 
 ## Daily and manual discovery
 

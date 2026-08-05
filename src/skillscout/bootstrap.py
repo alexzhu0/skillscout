@@ -5504,9 +5504,10 @@ def _restore_fresh_campaign_state_read_only(
             max_hops=config.state_lineage_anchor_max_hops,
         )
         if bounded:
-            observation = store.restore(
+            observation = store.restore_with_split_budgets(
                 lineage_anchor=anchor,
-                read_budget=ResolverReadBudget(),
+                lineage_read_budget=ResolverReadBudget(),
+                payload_read_budget=ResolverReadBudget(),
             )
         else:
             observation = store.restore(lineage_anchor=anchor)
