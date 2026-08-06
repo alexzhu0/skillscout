@@ -1,1 +1,108 @@
-{"entries":[{"coverage_role":"borderline","entry_digest":"sha256:2f47e8469684f46adaa610f0d0dece32f033b174c27a393452349e98d58533bf","exact_commit_sha":"d73d6027fcc749e1997303787c6f0a505e83f91e","license_spdx":"Apache-2.0","nomination_entry_digest":"sha256:a6cc826ae23ee1e5cd9fb0899cc3c4ac0af1eab9d9f8a66fdfe985029b0d3306","repository_full_name":"pome-sh/digital-twins","repository_id":1277571999,"schema_version":"benchmark-entry-v1","selection_evidence_digests":["sha256:08bd7142ec63e68609cd7e94ab99aedca3f0dcade733086cb34dc8040531cbde","sha256:7183796499cde8f82d8ab76d14c6120961efdb12c7cd89e6e3d83e16d2408a72","sha256:9a058415dab9e06e83beef95a3d47c159366b41be367475bdda59dcb1457f8c5","sha256:c58e8f6194bebf3ed35c13c8211312bc7498d431ea600be661f746885ac2aa05","sha256:e84cf14e657e1f04269141c43fe7cf08611dc10d6e631514d3225ac5ff241400"],"selection_source":"search_derived"},{"coverage_role":"negative","entry_digest":"sha256:89aa34edded42baca10aa0da06b7cf22cf1ca2822f9adb4b492092856354fe1b","exact_commit_sha":"e9ed49608f768c880947957c0f1818fc3fcc5c7a","license_spdx":"Apache-2.0","nomination_entry_digest":"sha256:338662ae244b81b7df2ce843511763a4d853a4f24205f7cf721b50d417f0ddd9","repository_full_name":"kaeawc/auto-mobile","repository_id":1071744484,"schema_version":"benchmark-entry-v1","selection_evidence_digests":["sha256:352e62eb245d09c66b9514faf251d2a81136306aae0bcd025ffaa3c8ff9fc76f","sha256:460dbddcc13e71a9561b8a3574b0ac25c2df92e0f5a9a17b0a97227d188153d5","sha256:bfbe6b25b7269063804e8ad433da596a81c3d6fafa7641ec82f48be2f9820628","sha256:c5a5571ce2c7b8f1079c977d872a517f892ade976dfc0b45b154c1b172aac95c","sha256:fed997d8a5fc97ef87b35181e11f6976320c276af2444e60fe6a1acceaa2447f"],"selection_source":"search_derived"},{"coverage_role":"negative","entry_digest":"sha256:93ef413102f3684761bf6822a6afbf647f8556b17f74d488bc7ec50ff61f943b","exact_commit_sha":"08a96c7253f606c88adc9db16c824aa2e6abfbd0","license_spdx":"MIT","nomination_entry_digest":"sha256:f2f3658c2c825d5689a325275803df75e12bc47ff003826ffd4afe7a5ad50cad","repository_full_name":"EqualExperts/satsuma-lang","repository_id":1180792871,"schema_version":"benchmark-entry-v1","selection_evidence_digests":["sha256:2db5424c44060291827f4b1603f09378fefa210f70b33d32c70e79ed664324fd","sha256:3b02c9a755452ca95efc9355561c9366e91bb7622e3147205468a793e216d8ca","sha256:dba2d14cd314e41e4725b30d16172d85ef5dd86a76f690d035dedc5a460feeae","sha256:e8a917f3022fc274df0a0c34d56f84f9baa8ab80f20ffdb3bd8983fe09b67057","sha256:eba2dd58c61638f7085033ac667499437b91a69a6ada3ed76504a6c0ec8fca4e"],"selection_source":"search_derived"},{"coverage_role":"positive_multi_workflow","entry_digest":"sha256:b08d262e86b8fa4287ab5db1c515c3a1b9dc0e8cd169c84cc7c9c7c125b5ee36","exact_commit_sha":"d94c40450e26ada6099e77d05a01558d3e31404f","license_spdx":"MIT","nomination_entry_digest":"sha256:2b09bf291733fc08fa9a351521b44e80098f638259cfc91fee44806317e122a9","repository_full_name":"dotnet/skills","repository_id":1149257427,"schema_version":"benchmark-entry-v1","selection_evidence_digests":["sha256:12840ce924b19c44d9d354348c52f8762cf509a739bbcdca2a4b27962e54980e","sha256:4d433d792acf95fbed901c286b978d5190cb6f5ea92a1525e8c6da7e19bfcfeb","sha256:5d42d5fdfa61628a75ed3cbbef2af97431da9d8858fa69b735d63db385279bcb","sha256:7183796499cde8f82d8ab76d14c6120961efdb12c7cd89e6e3d83e16d2408a72","sha256:9649563fa2de3e34c4117c7e35d2dcc4389063f5a4e4fae5a25bb280a5c25656"],"selection_source":"search_derived"},{"coverage_role":"positive","entry_digest":"sha256:e6d857056c2dc71d7e05b2cb1e26cf953ec43d1ac455d6ec0ab7ef29904125ba","exact_commit_sha":"333db02e3027d59cb57b933135ef507052068f1a","license_spdx":"Apache-2.0","nomination_entry_digest":"sha256:1f7fd9a630e37deac514db2f02149843fe7a72f002125b75c50f70f5477f1f3b","repository_full_name":"ilkruglov/developing-ai-agents-skill","repository_id":1324092641,"schema_version":"benchmark-entry-v1","selection_evidence_digests":["sha256:1b35e1cd3ff9556481821d50e053d599c7efc168bffc0fa72c1d56da472c6d6d","sha256:7183796499cde8f82d8ab76d14c6120961efdb12c7cd89e6e3d83e16d2408a72","sha256:be6dfe2b277ed0f504a909c596c3eb6172a6fad074748722fb12e4b06e19568a","sha256:c7700c561c524f0e71de882300abe1b6af56b5248762af9b41a64edabcf87d06","sha256:df1037bb5fe4d547296829fdecf2568ea815ef05350a9684573e62b5a69f8a3c"],"selection_source":"search_derived"}],"lock_attestation":{"attestation_digest":"sha256:32fe7010a2ef782956f359a984c4680b39b13cb5c4146991f23c0e742f2438ec","locked_at":"2026-08-05T14:36:01.953783Z","manifest_digest":"sha256:4d14d93f1a034f495824516a9010ed96144c78f37b635896b2f58a77e7dfee29","manifest_version":2,"nomination_set_digest":"sha256:f8409cd0e11b58f52c815e861ee5a698478a447bee3b871f5e6731abca2c206f","reviewer_id":"alexzhu0","schema_version":"benchmark-lock-attestation-v1"},"manifest_digest":"sha256:4d14d93f1a034f495824516a9010ed96144c78f37b635896b2f58a77e7dfee29","manifest_version":2,"nomination_set_digest":"sha256:f8409cd0e11b58f52c815e861ee5a698478a447bee3b871f5e6731abca2c206f","prior_manifest_digest":"sha256:a868555b62d7385d1aacb745b719ccd9b1fff0286ee3369a1176e7344a9c23fc","schema_version":"locked-benchmark-manifest-v1"}
+{
+  "schema_version": "locked-benchmark-manifest-v1",
+  "manifest_version": 3,
+  "nomination_set_digest": "sha256:11415e4bcde1a1db926b7f6488e263349f7769994f58e7a612b28cdd6f54d423",
+  "entries": [
+    {
+      "schema_version": "benchmark-entry-v1",
+      "repository_full_name": "vctb12/GoldTickerLive",
+      "repository_id": 1192620600,
+      "exact_commit_sha": "6cd66c288fe643a78438d0e6f6c991b537fb4bf8",
+      "license_spdx": "Apache-2.0",
+      "selection_source": "search_derived",
+      "coverage_role": "negative",
+      "nomination_entry_digest": "sha256:406641136a4ead736d43098238b72c6fd05b343037981fb9383de52a231ad0f4",
+      "selection_evidence_digests": [
+        "sha256:1797dc2ab11b1cde6c4d2e51b1d53366a2a6cd94f9351d13b39037b4cf52784e",
+        "sha256:27c892f60b15a81d805344be3ea897d0013b26ffe2a05d3c0ec7a282a66e1dc1",
+        "sha256:8ad87ceeee67285c11f750a3079b4142f6a3ca03eda810b01c81093fc6e587d5",
+        "sha256:aefb282dd08ca6c8b0168fadd5b0ac715f36568f7d78928d487ca82adb22ee6d",
+        "sha256:b5b8378071ec75baae2c3817c60f2cf3556fd7b9c732ca45593c742b663c51d0"
+      ],
+      "entry_digest": "sha256:0c1021a4ebe2d69e3bddd366613e8bba7653f93e11d4d9d9195a42ee899a24d3"
+    },
+    {
+      "schema_version": "benchmark-entry-v1",
+      "repository_full_name": "openai/openai-agents-js",
+      "repository_id": 993521808,
+      "exact_commit_sha": "ba85cda57826d505358628c1d64f51cbc5c4efd4",
+      "license_spdx": "MIT",
+      "selection_source": "search_derived",
+      "coverage_role": "positive",
+      "nomination_entry_digest": "sha256:dfaaf1b13e9e96ba99d16490e8ea1baf605e442c96e78d9c8efccff73691bcfc",
+      "selection_evidence_digests": [
+        "sha256:55dd567a09c125621132ae5504762d9e9d984845d99b357dc78a55e853ca5cf5",
+        "sha256:68798339a3629080649f5d6bdcc102310444254470e58d978a6764013aae62ab",
+        "sha256:7ab3d04ad70601a36cc37aa108e3c5ecf9f0a60461099d115c651b112b753d22",
+        "sha256:9882f5a92a42b3ee2be4c41584a2866ddafb528be214b3e23bae9fe0230a4a36",
+        "sha256:ceb10f01f3c4ec15081d4fe9081f3796ea21bb632ebcfbbf765115c0dcf0614b"
+      ],
+      "entry_digest": "sha256:1d33386b0e609504e2b632b01ee2c522d69002d3cf49176a0f20e28ee9d43873"
+    },
+    {
+      "schema_version": "benchmark-entry-v1",
+      "repository_full_name": "hoilc/scoop-lemon",
+      "repository_id": 280706885,
+      "exact_commit_sha": "d153fb665f8f5f6d916b6f4d0d256d9629009f2e",
+      "license_spdx": "MIT",
+      "selection_source": "search_derived",
+      "coverage_role": "negative",
+      "nomination_entry_digest": "sha256:35010a78e4a05900f11f17ec4a5e7cbb2de06a36fd774b2321b1953eb8c41e42",
+      "selection_evidence_digests": [
+        "sha256:261a4b543e3387158dba4d0d1193ca9f14b2a8d200e1ea44252005311162b2d1",
+        "sha256:778503596ede74968752f5a4eb7c092b693836e834256c7e89906aec09e15602",
+        "sha256:8d5958764790d65dcfa0e881c17399a918a0ebff9f04b741bcc0b75e904863b2",
+        "sha256:bd06e6d8227a47cbba2e7fbeafa730521816208992893e8af4d16cdd77b7dc9f",
+        "sha256:d808a2d2db90e4449457c6c05096bcdf2ef0c892299dffe7786f35d5a82f24f6"
+      ],
+      "entry_digest": "sha256:4c2c1d7e1975a8a6c5090d0b063148ed3284095657cf2bbac7ee317282123fa6"
+    },
+    {
+      "schema_version": "benchmark-entry-v1",
+      "repository_full_name": "slayerlux/n8n-llm-workflows",
+      "repository_id": 689066121,
+      "exact_commit_sha": "e8b8b6c8fafff46dd5b1a02555631cd0e2f9e14d",
+      "license_spdx": "MIT",
+      "selection_source": "search_derived",
+      "coverage_role": "positive_multi_workflow",
+      "nomination_entry_digest": "sha256:26dfa45c177cea21428ce06d829715717290240860eeed93a0b1bfb30b8bd582",
+      "selection_evidence_digests": [
+        "sha256:1649e04c1afb37862f8da89e74c88437bc07ee62e9221c3ded5d88a39fedeab3",
+        "sha256:af27446fcd8dbf1a8b8685b471fbbe00eb07e692805ce02938d311205f7b7c71",
+        "sha256:ca34a37a060b447325ce3d389fefb54ed2ceaeaab1bbf5a08032d5a96fc027ed",
+        "sha256:cfb038bea658150a07b464526acedc67008959be020066f737e4a45cb7f53d6a",
+        "sha256:f3ba8f41b2dfa0507bc65caa162481054caf07b903fb33992070afbfafbfae5d"
+      ],
+      "entry_digest": "sha256:88356d888b75bb32221459376a449a372fdcda7f9a6a3f00b2dd0f32b9de525e"
+    },
+    {
+      "schema_version": "benchmark-entry-v1",
+      "repository_full_name": "Ytang520/prompt_injection_research_daily_arxiv",
+      "repository_id": 1202667740,
+      "exact_commit_sha": "6af06b6381c868967dcde433c2fcb31d49e9bc9b",
+      "license_spdx": "Apache-2.0",
+      "selection_source": "search_derived",
+      "coverage_role": "borderline",
+      "nomination_entry_digest": "sha256:77ad75fd211d621cb9834504dad6deb5522bf3a89fd8481521fa954479c3faf9",
+      "selection_evidence_digests": [
+        "sha256:0a28bf4aa7f2d18f7f0e6b7d1f43c80d94ac14f269f5357e1f3c02d2c6ed43ef",
+        "sha256:af27446fcd8dbf1a8b8685b471fbbe00eb07e692805ce02938d311205f7b7c71",
+        "sha256:bc75b3af92721212a15a7ed3d9e23cd6cba4dd0f0e7c5e60f907fafc1a49fa01",
+        "sha256:d4e0b8a66f26032b8fe93289e414ee0c1495642a2f2fb7511ba7b77992509993",
+        "sha256:e432a5e4fc88d829f535c99a42e2bbfa0a5fe57a45454dec9191ddf010583663"
+      ],
+      "entry_digest": "sha256:c2a5314fa5de7bfca2493694a5c040199983dda58beb14ff057b110a597dd357"
+    }
+  ],
+  "lock_attestation": {
+    "schema_version": "benchmark-lock-attestation-v1",
+    "manifest_version": 3,
+    "nomination_set_digest": "sha256:11415e4bcde1a1db926b7f6488e263349f7769994f58e7a612b28cdd6f54d423",
+    "manifest_digest": "sha256:44fd573c20ecf6bce4a6e56e6a46743c4deacb35147db22c87fc327e8f3f6852",
+    "reviewer_id": "alexzhu0",
+    "locked_at": "2026-08-06T03:20:25.223007Z",
+    "attestation_digest": "sha256:bbcea3d33f9a349831be799a8ac9f80fee8653b17398db0b1c551190da15b989"
+  },
+  "prior_manifest_digest": "sha256:4d14d93f1a034f495824516a9010ed96144c78f37b635896b2f58a77e7dfee29",
+  "manifest_digest": "sha256:44fd573c20ecf6bce4a6e56e6a46743c4deacb35147db22c87fc327e8f3f6852"
+}
