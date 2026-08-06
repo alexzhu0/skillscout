@@ -2515,6 +2515,95 @@ def test_resolve_acceptance_resume_cli_dispatches_verified_locator(
     assert json.loads(capsys.readouterr().out) == expected
 
 
+def test_resume_projection_ignores_locators_owned_by_other_acceptance_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh campaign must not inherit locator objects from older campaigns."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.cli as cli
+    from skillscout.domain.acceptance import AcceptanceCampaignResumeLocatorV1
+
+    current_run = "acceptance-current"
+    stale_run = "acceptance-stale"
+    current_digest = "sha256:" + ("1" * 64)
+    stale_digest = "sha256:" + ("2" * 64)
+    current_object_digest = "sha256:" + ("3" * 64)
+    stale_object_digest = "sha256:" + ("4" * 64)
+
+    current_locator = AcceptanceCampaignResumeLocatorV1.model_construct(
+        acceptance_run_id=current_run,
+        locator_digest=current_digest,
+    )
+
+    def fact_payload(run_id: str, locator_digest: str) -> str:
+        return json.dumps(
+            {
+                "columns": {"acceptance_run_id": run_id},
+                "value": {
+                    "acceptance_run_id": run_id,
+                    "locator_digest": locator_digest,
+                },
+            }
+        )
+
+    exported = SimpleNamespace(
+        facts=(
+            SimpleNamespace(
+                kind="acceptance_campaign_resume_locator",
+                payload_json=fact_payload(stale_run, stale_digest),
+                object_digest=stale_object_digest,
+            ),
+            SimpleNamespace(
+                kind="acceptance_campaign_resume_locator",
+                payload_json=fact_payload(current_run, current_digest),
+                object_digest=current_object_digest,
+            ),
+        )
+    )
+
+    class Store:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def __enter__(self) -> Store:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def acceptance_snapshot(self, run_id: str) -> object:
+            assert run_id == current_run
+            return SimpleNamespace(
+                facts=(
+                    SimpleNamespace(
+                        kind="acceptance_campaign_resume_locator",
+                        fact=current_locator,
+                    ),
+                )
+            )
+
+        def export_owned_state(self) -> object:
+            return exported
+
+    monkeypatch.setattr(operations_state, "OperationsStateStore", Store)
+    monkeypatch.setattr(
+        operations_state,
+        "restore_acceptance_state_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+
+    locators, owned_facts = cli._acceptance_resume_projection_from_bundle(
+        SimpleNamespace(),
+        current_run,
+    )
+
+    assert len(owned_facts) == 0
+    assert len(locators) == 1
+    assert locators[0].locator is current_locator
+    assert locators[0].object_digest == current_object_digest
+
+
 def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

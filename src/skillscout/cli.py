@@ -1299,6 +1299,15 @@ def _acceptance_resume_projection_from_bundle(
         if type(value) is not dict or type(columns) is not dict:
             raise ValueError
         if fact.kind == "acceptance_campaign_resume_locator":
+            # The durable operations database retains locators from prior
+            # campaigns.  Only the locator rows owned by this run belong in
+            # the current transition graph; stale rows must not make an
+            # otherwise valid fresh campaign fail closed.
+            if (
+                value.get("acceptance_run_id") != acceptance_run_id
+                or columns.get("acceptance_run_id") != acceptance_run_id
+            ):
+                continue
             if type(value.get("locator_digest")) is not str:
                 raise ValueError
             object_digests[value["locator_digest"]] = fact.object_digest
