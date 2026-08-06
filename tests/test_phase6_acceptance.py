@@ -2107,6 +2107,79 @@ def test_record_live_authority_v2_records_only_a_v2_fact() -> None:
     assert recorded == [("fresh-campaign", "acceptance_live_authority", authority)]
 
 
+def test_live_authority_cli_uses_v2_source_verifier_for_v2_fact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The carrier preflight must not feed a V2 fact to the historical V1 verifier."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.cli as cli
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+
+    _snapshot, authority, _observation = _fresh_live_authority_admission_inputs()
+    calls: list[str] = []
+
+    class Store:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def __enter__(self) -> Store:
+            return self
+
+        def __exit__(self, *_arguments: object) -> None:
+            return None
+
+        def acceptance_snapshot(self, _acceptance_run_id: str) -> AcceptanceRunSnapshot:
+            return AcceptanceRunSnapshot(
+                acceptance_run_id="fresh-campaign",
+                facts=(
+                    AcceptanceFactRecord(
+                        acceptance_run_id="fresh-campaign",
+                        kind="acceptance_live_authority",
+                        fact_digest=authority.authority_digest,
+                        fact=authority,
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        cli,
+        "load_verified_state_checkout",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(cli, "_checked_out_git_commit", lambda _path: "b" * 40)
+    monkeypatch.setattr(operations_state, "restore_acceptance_state_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(operations_state, "OperationsStateStore", Store)
+    monkeypatch.setattr(
+        cli,
+        "verify_live_acceptance_authority",
+        lambda **_kwargs: pytest.fail("historical V1 verifier used for V2 fact"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "verify_live_acceptance_authority_v2",
+        lambda **_kwargs: calls.append("v2") or authority,
+    )
+
+    result = cli._run_verify_live_authority(
+        SimpleNamespace(
+            authority_state_root=tmp_path,
+            authority_state_root_digest="sha256:" + ("c" * 64),
+            acceptance_run_id="fresh-campaign",
+            authority_digest=authority.authority_digest,
+            source_commit_sha=authority.source_commit_sha,
+            runtime_state_commit_sha="b" * 40,
+            runtime_state_root_digest="sha256:" + ("c" * 64),
+            state_repository_id=authority.state_repository_id,
+            state_repository_full_name=authority.state_repository_full_name,
+        )
+    )
+
+    assert calls == ["v2"]
+    assert result["status"] == "live_authority_verified"
+
+
 def test_closed_v2_recorder_rejects_missing_lock_before_actions_read(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

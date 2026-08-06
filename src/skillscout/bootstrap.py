@@ -255,6 +255,7 @@ def verify_live_acceptance_authority(
     observed_state_repository_id: int,
     observed_state_repository_full_name: str,
     environ: Mapping[str, str] | None = None,
+    _authority_schema: str = "live-acceptance-authority-v1",
 ) -> object:
     """Verify a human-approved authority and its exact repository-owned bytes."""
 
@@ -293,6 +294,7 @@ def verify_live_acceptance_authority(
         from skillscout.adapters.semantic_provider import resolve_semantic_provider
         from skillscout.domain.acceptance import (
             LiveAcceptanceAuthorityV1,
+            LiveAcceptanceAuthorityV2,
             LockedBenchmarkManifestV1,
         )
         from skillscout.domain.canonical import canonical_json_bytes
@@ -320,7 +322,13 @@ def verify_live_acceptance_authority(
             GENERATION_DRAFT_SCHEMA_VERSION,
         )
 
-        authority = LiveAcceptanceAuthorityV1.model_validate_json(
+        if _authority_schema == "live-acceptance-authority-v1":
+            authority_model = LiveAcceptanceAuthorityV1
+        elif _authority_schema == "live-acceptance-authority-v2":
+            authority_model = LiveAcceptanceAuthorityV2
+        else:
+            raise ValueError
+        authority = authority_model.model_validate_json(
             authority_bytes,
             strict=True,
         )
@@ -383,11 +391,47 @@ def verify_live_acceptance_authority(
                     )
                 )
             )
+            or (
+                _authority_schema == "live-acceptance-authority-v2"
+                and (
+                    authority.benchmark_lock.selection_manifest != manifest
+                    or authority.benchmark_lock_digest
+                    != authority.benchmark_lock.lock_digest
+                    or authority.selection_manifest_digest != manifest.manifest_digest
+                    or authority.entries != authority.benchmark_lock.entries
+                )
+            )
         ):
             raise ValueError
         return authority
     except Exception:
         raise ValueError("live acceptance authority rejected") from None
+
+
+def verify_live_acceptance_authority_v2(
+    *,
+    repository_root: Path,
+    authority_bytes: bytes,
+    observed_source_commit_sha: str,
+    observed_state_commit_sha: str,
+    observed_state_root_digest: str,
+    observed_state_repository_id: int,
+    observed_state_repository_full_name: str,
+    environ: Mapping[str, str] | None = None,
+) -> object:
+    """Verify a fresh V2 authority against the checked-out selection manifest."""
+
+    return verify_live_acceptance_authority(
+        repository_root=repository_root,
+        authority_bytes=authority_bytes,
+        observed_source_commit_sha=observed_source_commit_sha,
+        observed_state_commit_sha=observed_state_commit_sha,
+        observed_state_root_digest=observed_state_root_digest,
+        observed_state_repository_id=observed_state_repository_id,
+        observed_state_repository_full_name=observed_state_repository_full_name,
+        environ=environ,
+        _authority_schema="live-acceptance-authority-v2",
+    )
 
 
 def load_verified_state_checkout(
