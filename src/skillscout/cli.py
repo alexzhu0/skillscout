@@ -44,6 +44,7 @@ from skillscout.bootstrap import (
     run_protected_discovery_publication,
     validate_acceptance_state_authority,
     verify_live_acceptance_authority,
+    verify_live_acceptance_authority_v2,
     verify_publication_admission_handoff,
 )
 
@@ -1586,7 +1587,7 @@ def _run_verify_live_authority(arguments: argparse.Namespace) -> dict[str, objec
         )
         if len(records) != 1:
             raise ValueError
-        authority = verify_live_acceptance_authority(
+        authority = verify_live_acceptance_authority_v2(
             repository_root=Path.cwd().resolve(strict=True),
             authority_bytes=canonical_json_bytes(records[0].fact) + b"\n",
             observed_source_commit_sha=arguments.source_commit_sha,
