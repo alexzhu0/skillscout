@@ -146,6 +146,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 |---|-------------|------|--------|--------|-----------|
 | 260727-mfm | Add a safe DeepSeek V4 Flash provider path and retire the verified local App PEM | 2026-07-27 | ab4a34d | Verified | [260727-mfm-add-a-safe-deepseek-v4-flash-provider-pa](./quick/260727-mfm-add-a-safe-deepseek-v4-flash-provider-pa/) |
 | 260805-orr | Fix Phase 6 preflight payload read budget | 2026-08-05 | e875ab0 | Complete | [260805-orr-fix-phase-6-preflight-payload-read-budge](./quick/260805-orr-fix-phase-6-preflight-payload-read-budge/) |
+| 260806-fq1 | Refresh Phase 6 benchmark manifest from fresh nomination | 2026-08-06 | c21674c | Complete | [260806-fq1-refresh-benchmark-manifest](./quick/260806-fq1-refresh-benchmark-manifest/) |
 
 ## Session Continuity
 
