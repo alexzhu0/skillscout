@@ -2466,6 +2466,85 @@ def test_acceptance_cli_exposes_only_exact_resume_lineage_inputs() -> None:
     }
 
 
+def test_resume_authority_loader_admits_only_the_current_v2_fact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Resume preflight must not route a fresh V2 authority through V1 parsing."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.cli as cli
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV2
+
+    carrier_commit = "a" * 40
+    carrier_root = "sha256:" + ("b" * 64)
+    authority_digest = "sha256:" + ("c" * 64)
+    authority = LiveAcceptanceAuthorityV2.model_construct(
+        authority_digest=authority_digest,
+        source_commit_sha="d" * 40,
+        state_commit_sha="e" * 40,
+        state_root_digest="sha256:" + ("f" * 64),
+        state_repository_id=123,
+        state_repository_full_name="example/state",
+    )
+    snapshot = SimpleNamespace(
+        facts=(
+            SimpleNamespace(
+                kind="acceptance_live_authority",
+                fact_digest=authority_digest,
+                fact=authority,
+            ),
+        ),
+    )
+
+    class Store:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def __enter__(self) -> "Store":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def acceptance_snapshot(self, _run_id: str) -> object:
+            return snapshot
+
+    monkeypatch.setattr(
+        cli,
+        "validate_acceptance_state_authority",
+        lambda **_kwargs: (carrier_commit, carrier_root),
+    )
+    monkeypatch.setattr(cli, "_checked_out_git_commit", lambda _path: carrier_commit)
+    bundle = SimpleNamespace(root=object(), content_by_path=lambda: {})
+    monkeypatch.setattr(cli, "load_verified_state_checkout", lambda **_kwargs: bundle)
+    monkeypatch.setattr(operations_state, "OperationsStateStore", Store)
+    monkeypatch.setattr(operations_state, "restore_acceptance_state_bundle", lambda *args, **kwargs: None)
+    expected = object()
+    observed: list[bytes] = []
+    monkeypatch.setattr(
+        cli,
+        "verify_live_acceptance_authority_v2",
+        lambda **kwargs: (observed.append(kwargs["authority_bytes"]) or expected),
+    )
+
+    result = cli._load_verified_live_authority(
+        SimpleNamespace(
+            authority_state_root=tmp_path,
+            authority_state_commit_sha=carrier_commit,
+            authority_state_root_digest=carrier_root,
+            acceptance_run_id="acceptance-resume",
+            authority_digest=authority_digest,
+            source_commit_sha=authority.source_commit_sha,
+            state_repository_id=123,
+            state_repository_full_name="example/state",
+        )
+    )
+
+    assert result == (expected, bundle)
+    assert observed == [cli.canonical_json_bytes(authority) + b"\n"]
+
+
 def test_resolve_acceptance_resume_cli_dispatches_verified_locator(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

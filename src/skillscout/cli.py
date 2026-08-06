@@ -43,7 +43,6 @@ from skillscout.bootstrap import (
     require_phase3_gate_b3,
     run_protected_discovery_publication,
     validate_acceptance_state_authority,
-    verify_live_acceptance_authority,
     verify_live_acceptance_authority_v2,
     verify_publication_admission_handoff,
 )
@@ -1175,7 +1174,7 @@ def _load_verified_live_authority(arguments: argparse.Namespace) -> tuple[object
         OperationsStateStore,
         restore_acceptance_state_bundle,
     )
-    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV1
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV2
 
     carrier_commit_sha, carrier_root_digest = validate_acceptance_state_authority(
         state_commit_sha=arguments.authority_state_commit_sha,
@@ -1203,13 +1202,13 @@ def _load_verified_live_authority(arguments: argparse.Namespace) -> tuple[object
         for record in snapshot.facts
         if record.kind == "acceptance_live_authority"
         and record.fact_digest == arguments.authority_digest
-        and type(record.fact) is LiveAcceptanceAuthorityV1
+        and type(record.fact) is LiveAcceptanceAuthorityV2
     )
     if len(records) != 1:
         raise ValueError
     recorded = records[0].fact
     return (
-        verify_live_acceptance_authority(
+        verify_live_acceptance_authority_v2(
             repository_root=Path.cwd().resolve(strict=True),
             authority_bytes=canonical_json_bytes(recorded) + b"\n",
             observed_source_commit_sha=arguments.source_commit_sha,
