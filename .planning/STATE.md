@@ -148,7 +148,7 @@ Phase 5 independently passed 6/6 roadmap criteria and all five mapped requiremen
 | 260805-orr | Fix Phase 6 preflight payload read budget | 2026-08-05 | e875ab0 | Complete | [260805-orr-fix-phase-6-preflight-payload-read-budge](./quick/260805-orr-fix-phase-6-preflight-payload-read-budge/) |
 | 260806-fq1 | Refresh Phase 6 benchmark manifest from fresh nomination | 2026-08-06 | c21674c | Complete | [260806-fq1-refresh-benchmark-manifest](./quick/260806-fq1-refresh-benchmark-manifest/) |
 | 260806-ggb | Canonicalize Phase 6 benchmark manifest bytes | 2026-08-06 | f3e97c0 | Complete | [260806-ggb-canonicalize-benchmark-manifest](./quick/260806-ggb-canonicalize-benchmark-manifest/) |
-| 260806-rbm | Refresh Phase 6 benchmark manifest from fresh nomination a496 | 2026-08-06 | pending | Complete | [260806-rbm-refresh-phase6-manifest-a496](./quick/260806-rbm-refresh-phase6-manifest-a496/) |
+| 260806-rbm | Refresh Phase 6 benchmark manifest from fresh nomination a496 | 2026-08-06 | a9631e5 | Complete | [260806-rbm-refresh-phase6-manifest-a496](./quick/260806-rbm-refresh-phase6-manifest-a496/) |
 
 ## Session Continuity
 
