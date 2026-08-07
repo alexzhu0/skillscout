@@ -308,6 +308,61 @@ def _preflight_page(
     )
 
 
+def test_fresh_preparation_diagnostic_labels_candidate_metadata_without_echoing_error() -> None:
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    values = {
+        "schema_version": "search-repository-observation-v1",
+        "repository_id": 920001,
+        "owner": "octo-org",
+        "name": "workflow-1",
+        "full_name": "octo-org/workflow-1",
+        "private": False,
+        "visibility": "public",
+        "fork": False,
+        "archived": False,
+        "disabled": False,
+        "default_branch": "main",
+    }
+    repository = SearchRepositoryObservationV1(
+        **values,
+        observation_digest=sha256_digest(values),
+    )
+    secret = "SECRET_METADATA_FAILURE_DO_NOT_ECHO"
+
+    class Search:
+        def search_repositories(self, **_arguments: object) -> tuple[object, tuple[object, ...]]:
+            return _preflight_page(query_set, DIGEST, 1), (repository,)
+
+        def get_repo_metadata(self, *_arguments: object) -> object:
+            raise RuntimeError(secret, "/private/repository/path")
+
+        def resolve_commit(self, *_arguments: object) -> str:
+            pytest.fail("commit resolution must not run after metadata failure")
+
+        def get_license(self, *_arguments: object) -> LicenseResponse:
+            pytest.fail("license lookup must not run after metadata failure")
+
+    with pytest.raises(module.FreshCampaignPreparationError) as failure:
+        module.nominate_search_candidates(
+            search=Search(),
+            query_set=query_set,
+            search_run_authority_digest=DIGEST,
+            nomination_set_id="fresh-diagnostic",
+            created_at=TIMESTAMP,
+            failure_factory=lambda stage, error: module.FreshCampaignPreparationError(
+                stage, module._preflight_error_code(error)
+            ),
+        )
+
+    assert failure.value.stage == "candidate_metadata"
+    assert failure.value.error_code == "unexpected_failure"
+    assert secret not in str(failure.value)
+
+
 def test_fresh_preflight_is_read_only_and_reports_bounded_stage_facts() -> None:
     module = _application_module(skip_if_missing=False)
     query_set = DiscoveryQuerySetV1.model_validate_json(

@@ -195,6 +195,37 @@ def test_fresh_preflight_prints_sanitized_failure_and_returns_nonzero(
     assert json.loads(captured.out)["status"] == "failed"
 
 
+def test_fresh_prepare_prints_only_allowlisted_stage_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from skillscout.application.acceptance import FreshCampaignPreparationError
+
+    monkeypatch.setattr(cli, "_fresh_campaign_preparation_config", lambda: object())
+    monkeypatch.setattr(
+        cli,
+        "build_fresh_campaign_preparation_application",
+        lambda _config: SimpleNamespace(
+            run=lambda **_arguments: (_ for _ in ()).throw(
+                FreshCampaignPreparationError("candidate_metadata", "stage_permanent_failure")
+            )
+        ),
+    )
+
+    status = cli.main(["prepare-fresh-campaign"])
+    captured = capsys.readouterr()
+    lines = captured.err.splitlines()
+
+    assert status == 1
+    assert json.loads(lines[0]) == {
+        "diagnostic": {
+            "error_code": "stage_permanent_failure",
+            "stage": "candidate_metadata",
+        }
+    }
+    assert json.loads(lines[1])["error"]["code"] == "stage_permanent_failure"
+
+
 @pytest.mark.parametrize(
     "option",
     (
