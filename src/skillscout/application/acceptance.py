@@ -746,6 +746,42 @@ class FreshCampaignPreparationResult:
     state_root_digest: str
 
 
+PreparationDiagnosticStage = Literal[
+    "state_restore",
+    "search_factory",
+    "search_page",
+    "candidate_metadata",
+    "resolve_commit",
+    "license",
+    "state_record",
+    "state_sync",
+]
+
+
+class FreshCampaignPreparationError(RuntimeError):
+    """Sanitized preparation-stage failure for one bounded diagnostic breadcrumb."""
+
+    def __init__(self, stage: PreparationDiagnosticStage, error_code: str) -> None:
+        if (
+            stage
+            not in {
+                "state_restore",
+                "search_factory",
+                "search_page",
+                "candidate_metadata",
+                "resolve_commit",
+                "license",
+                "state_record",
+                "state_sync",
+            }
+            or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code) is None
+        ):
+            raise ValueError("invalid fresh preparation diagnostic")
+        self.stage = stage
+        self.error_code = error_code
+        super().__init__(stage)
+
+
 PreflightStageName = Literal["state_metadata", "state_restore", "search_page"]
 
 
@@ -1027,17 +1063,38 @@ class FreshCampaignPreparationApplication:
     def run(self, *, created_at: str) -> FreshCampaignPreparationResult:
         """Read the current parent, nominate once, then issue exactly one state CAS."""
 
-        restored = self._dependencies.state_restore()
-        observed_head, prior_root = _verified_fresh_state_parent(restored)
-        recovered = _recover_exact_fresh_nomination(
-            restored=restored,
-            operations_store_factory=self._dependencies.operations_store_factory,
-            query_set_digest=self._query_set.query_set_digest,
-            state_repository_id=self._state_repository_id,
-            state_repository_full_name=self._state_repository_full_name,
-            observed_head=observed_head,
-            state_root_digest=prior_root,
-        )
+        try:
+            restored = self._dependencies.state_restore()
+        except FreshCampaignPreparationError:
+            raise
+        except Exception as error:
+            raise FreshCampaignPreparationError(
+                "state_restore", _preflight_error_code(error)
+            ) from None
+        try:
+            observed_head, prior_root = _verified_fresh_state_parent(restored)
+        except FreshCampaignPreparationError:
+            raise
+        except Exception as error:
+            raise FreshCampaignPreparationError(
+                "state_restore", _preflight_error_code(error)
+            ) from None
+        try:
+            recovered = _recover_exact_fresh_nomination(
+                restored=restored,
+                operations_store_factory=self._dependencies.operations_store_factory,
+                query_set_digest=self._query_set.query_set_digest,
+                state_repository_id=self._state_repository_id,
+                state_repository_full_name=self._state_repository_full_name,
+                observed_head=observed_head,
+                state_root_digest=prior_root,
+            )
+        except FreshCampaignPreparationError:
+            raise
+        except Exception as error:
+            raise FreshCampaignPreparationError(
+                "state_restore", _preflight_error_code(error)
+            ) from None
         if recovered is not None:
             return recovered
         authority_digest = _fresh_nomination_authority_digest(
@@ -1048,38 +1105,76 @@ class FreshCampaignPreparationApplication:
             query_set_digest=self._query_set.query_set_digest,
         )
         nomination_set_id = "fresh-nomination-" + authority_digest.removeprefix("sha256:")[:32]
-        search = self._dependencies.search_factory()
+        try:
+            search = self._dependencies.search_factory()
+        except FreshCampaignPreparationError:
+            raise
+        except Exception as error:
+            raise FreshCampaignPreparationError(
+                "search_factory", _preflight_error_code(error)
+            ) from None
         store: object | None = None
         try:
-            nomination = nominate_search_candidates(
-                search=search,
-                query_set=self._query_set,
-                search_run_authority_digest=authority_digest,
-                nomination_set_id=nomination_set_id,
-                created_at=created_at,
-            )
+            try:
+                nomination = nominate_search_candidates(
+                    search=search,
+                    query_set=self._query_set,
+                    search_run_authority_digest=authority_digest,
+                    nomination_set_id=nomination_set_id,
+                    created_at=created_at,
+                    failure_factory=lambda stage, error: FreshCampaignPreparationError(
+                        stage, _preflight_error_code(error)
+                    ),
+                )
+            except FreshCampaignPreparationError:
+                raise
+            except Exception as error:
+                raise FreshCampaignPreparationError(
+                    "search_page", _preflight_error_code(error)
+                ) from None
             if nomination.user_nominated_entries:
                 raise AcceptanceApplicationError("evidence_missing")
-            store = self._dependencies.operations_store_factory()
-            _record_on_open_store(
-                store,
-                nomination.nomination_set_id,
-                "acceptance_nomination",
-                nomination,
-            )
-            sync = getattr(self._dependencies.durability_barrier, "sync_nomination", None)
-            if not callable(sync):
-                raise AcceptanceApplicationError("evidence_missing")
-            synchronized = sync(
-                operations_store=store,
-                observed_head=observed_head,
-                prior_root_digest=prior_root,
-                created_at=created_at,
-            )
-            state_commit_sha, state_root_digest = _verified_fresh_state_sync(
-                synchronized,
-                observed_head=observed_head,
-            )
+            try:
+                store = self._dependencies.operations_store_factory()
+                _record_on_open_store(
+                    store,
+                    nomination.nomination_set_id,
+                    "acceptance_nomination",
+                    nomination,
+                )
+            except FreshCampaignPreparationError:
+                raise
+            except Exception as error:
+                raise FreshCampaignPreparationError(
+                    "state_record", _preflight_error_code(error)
+                ) from None
+            try:
+                sync = getattr(self._dependencies.durability_barrier, "sync_nomination", None)
+                if not callable(sync):
+                    raise AcceptanceApplicationError("evidence_missing")
+                synchronized = sync(
+                    operations_store=store,
+                    observed_head=observed_head,
+                    prior_root_digest=prior_root,
+                    created_at=created_at,
+                )
+            except FreshCampaignPreparationError:
+                raise
+            except Exception as error:
+                raise FreshCampaignPreparationError(
+                    "state_sync", _preflight_error_code(error)
+                ) from None
+            try:
+                state_commit_sha, state_root_digest = _verified_fresh_state_sync(
+                    synchronized,
+                    observed_head=observed_head,
+                )
+            except FreshCampaignPreparationError:
+                raise
+            except Exception as error:
+                raise FreshCampaignPreparationError(
+                    "state_sync", _preflight_error_code(error)
+                ) from None
             return FreshCampaignPreparationResult(
                 nomination=nomination,
                 state_commit_sha=state_commit_sha,
@@ -2790,6 +2885,8 @@ def nominate_search_candidates(
     search_run_authority_digest: str,
     nomination_set_id: str,
     created_at: str,
+    failure_factory: Callable[[PreparationDiagnosticStage, BaseException], BaseException]
+    | None = None,
 ) -> NominationSetV1:
     """Acquire, filter, and pin at most 100 public Search candidates."""
 
@@ -2806,14 +2903,29 @@ def nominate_search_candidates(
     seen: set[int] = set()
     entries: list[NominationEntryV1] = []
     active_pages = {ordinal: 1 for ordinal in range(1, len(query_set.queries) + 1)}
+
+    def call(
+        stage: PreparationDiagnosticStage,
+        operation: Callable[[], object],
+    ) -> object:
+        try:
+            return operation()
+        except Exception as error:
+            if failure_factory is not None:
+                raise failure_factory(stage, error) from None
+            raise
+
     while active_pages and len(seen) < DISCOVERY_MAX_CANDIDATES:
         for query_ordinal in tuple(sorted(active_pages)):
             page_number = active_pages[query_ordinal]
-            page, repositories = search.search_repositories(
-                query_set=query_set,
-                discovery_run_authority_digest=search_run_authority_digest,
-                query_ordinal=query_ordinal,
-                page=page_number,
+            page, repositories = call(
+                "search_page",
+                lambda: search.search_repositories(
+                    query_set=query_set,
+                    discovery_run_authority_digest=search_run_authority_digest,
+                    query_ordinal=query_ordinal,
+                    page=page_number,
+                ),
             )
             if type(page) is not SearchPageObservationV1 or type(repositories) is not tuple:
                 raise AcceptanceApplicationError("evidence_missing")
@@ -2835,7 +2947,10 @@ def nominate_search_candidates(
                     or repository.default_branch is None
                 ):
                     continue
-                metadata = search.get_repo_metadata(repository.owner, repository.name)
+                metadata = call(
+                    "candidate_metadata",
+                    lambda: search.get_repo_metadata(repository.owner, repository.name),
+                )
                 if (
                     getattr(metadata, "id", None) != repository.repository_id
                     or getattr(metadata, "owner", None) != repository.owner
@@ -2849,15 +2964,21 @@ def nominate_search_candidates(
                     or getattr(metadata, "license_spdx", None) not in ALLOWED_LICENSE_SPDX
                 ):
                     continue
-                commit_sha = search.resolve_commit(
-                    repository.owner,
-                    repository.name,
-                    repository.default_branch,
+                commit_sha = call(
+                    "resolve_commit",
+                    lambda: search.resolve_commit(
+                        repository.owner,
+                        repository.name,
+                        repository.default_branch,
+                    ),
                 )
-                license_facts = search.get_license(
-                    repository.owner,
-                    repository.name,
-                    commit_sha,
+                license_facts = call(
+                    "license",
+                    lambda: search.get_license(
+                        repository.owner,
+                        repository.name,
+                        commit_sha,
+                    ),
                 )
                 if (
                     type(commit_sha) is not str

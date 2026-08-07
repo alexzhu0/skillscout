@@ -849,6 +849,8 @@ def _fresh_campaign_lock_source_context() -> tuple[int, str, str, int, int, str]
 def _run_prepare_fresh_campaign() -> dict[str, object]:
     """Run only the bounded Search nomination from the current canonical parent."""
 
+    from skillscout.application.acceptance import FreshCampaignPreparationError
+
     try:
         config = _fresh_campaign_preparation_config()
         result = build_fresh_campaign_preparation_application(config).run(
@@ -868,6 +870,25 @@ def _run_prepare_fresh_campaign() -> dict[str, object]:
             ],
             "status": "fresh_campaign_prepared",
         }
+    except FreshCampaignPreparationError as failure:
+        print(
+            json.dumps(
+                {
+                    "diagnostic": {
+                        "stage": failure.stage,
+                        "error_code": failure.error_code,
+                    }
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+        )
+        try:
+            code = ErrorCode(failure.error_code)
+        except ValueError:
+            code = ErrorCode.STATE_INTEGRITY_ERROR
+        raise SafeFailure(code) from None
     except SafeFailure:
         raise
     except Exception:
