@@ -346,7 +346,7 @@ def test_timeouts_and_network_errors_are_transient_without_httpx_leakage() -> No
         assert failure.value.code is ErrorCode.STAGE_TRANSIENT_FAILURE
 
 
-def test_metadata_and_pin_404_are_permanent() -> None:
+def test_metadata_404_is_permanent_but_missing_commit_is_unavailable() -> None:
     not_found = RecordedResponse(status=404, headers={}, body=b'{"message":"Not Found"}')
     routes = _routes()
     routes[META] = not_found
@@ -357,6 +357,13 @@ def test_metadata_and_pin_404_are_permanent() -> None:
 
     routes = _routes()
     routes[PIN] = not_found
+    with _client(RecordedTransport(routes)) as client:
+        assert client.resolve_commit("example", "approved-repo", "main") is None
+
+
+def test_commit_non_404_failures_remain_permanent() -> None:
+    routes = _routes()
+    routes[PIN] = RecordedResponse(status=403, headers={}, body=b'{"message":"forbidden"}')
     with _client(RecordedTransport(routes)) as client:
         with pytest.raises(SafeFailure) as failure:
             client.resolve_commit("example", "approved-repo", "main")

@@ -264,6 +264,94 @@ def test_nomination_search_filters_and_pins_role_neutral_entries() -> None:
     )
 
 
+def test_nomination_skips_candidate_when_default_branch_commit_is_missing() -> None:
+    module = _application_module(skip_if_missing=False)
+    query_set = DiscoveryQuerySetV1.model_validate_json(
+        (ROOT / "config/discovery-queries-v1.json").read_bytes(),
+        strict=True,
+    )
+    repositories = []
+    for index in range(1, 7):
+        values = {
+            "schema_version": "search-repository-observation-v1",
+            "repository_id": 915000 + index,
+            "owner": "octo-org",
+            "name": f"workflow-missing-commit-{index}",
+            "full_name": f"octo-org/workflow-missing-commit-{index}",
+            "private": False,
+            "visibility": "public",
+            "fork": False,
+            "archived": False,
+            "disabled": False,
+            "default_branch": "main",
+        }
+        repositories.append(
+            SearchRepositoryObservationV1(
+                **values,
+                observation_digest=sha256_digest(values),
+            )
+        )
+
+    class Search:
+        def search_repositories(
+            self,
+            *,
+            query_set: DiscoveryQuerySetV1,
+            discovery_run_authority_digest: str,
+            query_ordinal: int,
+            page: int,
+        ) -> tuple[SearchPageObservationV1, tuple[SearchRepositoryObservationV1, ...]]:
+            return (
+                _preflight_page(query_set, discovery_run_authority_digest, query_ordinal),
+                tuple(repositories),
+            )
+
+        def get_repo_metadata(self, owner: str, repo: str) -> RepoMetadata:
+            index = int(repo.rpartition("-")[2])
+            return RepoMetadata(
+                id=915000 + index,
+                owner=owner,
+                name=repo,
+                default_branch="main",
+                private=False,
+                fork=False,
+                archived=False,
+                disabled=False,
+                visibility="public",
+                license_spdx="MIT",
+                rate_limit=RateLimitFacts(limit=5000, remaining=4999, reset=1),
+            )
+
+        def resolve_commit(self, _owner: str, repo: str, _ref: str) -> str | None:
+            index = int(repo.rpartition("-")[2])
+            return None if index == 1 else f"{index:040x}"
+
+        def get_license(self, _owner: str, repo: str, _sha: str) -> LicenseResponse:
+            index = int(repo.rpartition("-")[2])
+            return LicenseResponse(
+                status="confirmed",
+                spdx_id="MIT",
+                license_blob_sha=f"{index + 100:040x}",
+            )
+
+    nomination = module.nominate_search_candidates(
+        search=Search(),
+        query_set=query_set,
+        search_run_authority_digest=DIGEST,
+        nomination_set_id="nomination-missing-commit",
+        created_at=TIMESTAMP,
+    )
+
+    assert len(nomination.search_derived_entries) == 5
+    assert {entry.repository_id for entry in nomination.search_derived_entries} == {
+        915002,
+        915003,
+        915004,
+        915005,
+        915006,
+    }
+
+
 def _preflight_page(
     query_set: DiscoveryQuerySetV1,
     authority_digest: str,
