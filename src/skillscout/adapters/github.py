@@ -428,13 +428,19 @@ class GitHubReadClient:
         finally:
             response.close()
 
-    def resolve_commit(self, owner: str, repo: str, ref: str) -> str:
+    def resolve_commit(self, owner: str, repo: str, ref: str) -> str | None:
         path = (
             f"/repos/{_require_segment(_OWNER_REPO_PATTERN, owner)}"
             f"/{_require_segment(_OWNER_REPO_PATTERN, repo)}"
             f"/commits/{_require_segment(_REF_PATTERN, ref)}"
         )
-        _status, _headers, body = self._get(path, cap=MAX_METADATA_BYTES)
+        status, _headers, body = self._get(
+            path,
+            cap=MAX_METADATA_BYTES,
+            not_found_ok=True,
+        )
+        if status == 404:
+            return None
         return _validate_json(_RawCommit, body).sha
 
     def get_tree(self, owner: str, repo: str, sha: str) -> TreeSnapshot:

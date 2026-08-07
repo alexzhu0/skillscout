@@ -142,7 +142,9 @@ class PhaseTwoProcessor:
             rejection = "no_ref_resolvable"
         else:
             candidate_sha = self._github.resolve_commit(owner, repo, ref)
-            if _COMMIT_SHA_PATTERN.fullmatch(candidate_sha) is None:
+            if candidate_sha is None:
+                rejection = "ref_not_found"
+            elif _COMMIT_SHA_PATTERN.fullmatch(candidate_sha) is None:
                 rejection = "sha256_repository_unsupported"
             else:
                 pinned = candidate_sha

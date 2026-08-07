@@ -2972,6 +2972,11 @@ def nominate_search_candidates(
                         repository.default_branch,
                     ),
                 )
+                if (
+                    type(commit_sha) is not str
+                    or re.fullmatch(r"[0-9a-f]{40}", commit_sha) is None
+                ):
+                    continue
                 license_facts = call(
                     "license",
                     lambda: search.get_license(
@@ -2981,9 +2986,7 @@ def nominate_search_candidates(
                     ),
                 )
                 if (
-                    type(commit_sha) is not str
-                    or re.fullmatch(r"[0-9a-f]{40}", commit_sha) is None
-                    or getattr(license_facts, "status", None) != "confirmed"
+                    getattr(license_facts, "status", None) != "confirmed"
                     or getattr(license_facts, "spdx_id", None) != metadata.license_spdx
                     or getattr(license_facts, "license_blob_sha", None) is None
                 ):
