@@ -1166,6 +1166,8 @@ def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
         "      - name: Execute the approved live benchmark"
     )
     assert benchmark_execution
+    assert benchmark_prefix.count("token: ${{ github.token }}") == 2
+    assert "token: ''" not in benchmark_prefix
     assert "DEEPSEEK_API_KEY" not in benchmark_prefix
     assert "SKILLSCOUT_SOURCE_GITHUB_TOKEN" not in benchmark_prefix
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in benchmark_prefix
@@ -1185,6 +1187,8 @@ def test_benchmark_and_replay_have_separate_late_capability_steps() -> None:
     assert "SKILLSCOUT_CATALOG" not in replay
     assert "actions/create-github-app-token" not in replay
     assert "resolve-acceptance-resume" in replay
+    assert replay.count("token: ${{ github.token }}") == 2
+    assert "token: ''" not in replay
     assert (
         '--authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA"'
         in replay

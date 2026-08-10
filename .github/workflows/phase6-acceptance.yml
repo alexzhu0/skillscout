@@ -1413,7 +1413,7 @@ jobs:
           ref: ${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}
           path: .phase6-authority-state
           persist-credentials: false
-          token: ''
+          token: ${{ github.token }}
       - name: Check out the exact complete campaign state
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -1421,7 +1421,7 @@ jobs:
           ref: ${{ needs.live_authority_preflight.outputs.state_commit_sha }}
           path: .phase6-campaign-state
           persist-credentials: false
-          token: ''
+          token: ${{ github.token }}
       - name: Repeat the complete credential-free live gate
         env:
           SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
@@ -1592,7 +1592,7 @@ jobs:
           ref: ${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}
           path: .phase6-authority-state
           persist-credentials: false
-          token: ''
+          token: ${{ github.token }}
       - name: Check out the exact complete campaign state
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -1600,7 +1600,7 @@ jobs:
           ref: ${{ needs.live_authority_preflight.outputs.state_commit_sha }}
           path: .phase6-campaign-state
           persist-credentials: false
-          token: ''
+          token: ${{ github.token }}
       - name: Reconstruct the approved replay authority
         env:
           SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
