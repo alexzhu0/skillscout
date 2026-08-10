@@ -1413,8 +1413,9 @@ def _run_resolve_acceptance_resume(
             # is verified only as the carrier's single direct predecessor.
             max_carrier_descendant_hops = max_campaign_transitions - 1
             max_lineage_visits = max_campaign_transitions
-            read_budget = ResolverReadBudget()
-            head = reader.get_state_ref(read_budget=read_budget).sha
+            lineage_read_budget = ResolverReadBudget(phase="lineage")
+            payload_read_budget = ResolverReadBudget.payload_phase()
+            head = reader.get_state_ref(read_budget=lineage_read_budget).sha
             store = StateBranchStore(reader)
             descending: list[CampaignStateLineageObservation] = []
             restored_bundles: dict[str, object] = {}
@@ -1436,12 +1437,12 @@ def _run_resolve_acceptance_resume(
                 commit_sha=carrier_commit_sha,
                 root_digest=carrier_root_digest,
                 anchor=predecessor_anchor,
-                read_budget=read_budget,
+                read_budget=lineage_read_budget,
             )
             remote_carrier_bundle = store.restore_commit(
                 carrier_commit_sha,
                 lineage_anchor=carrier_anchor,
-                read_budget=read_budget,
+                read_budget=payload_read_budget,
             )
             if (
                 remote_carrier_bundle.root != carrier_bundle.root
@@ -1451,14 +1452,14 @@ def _run_resolve_acceptance_resume(
                 raise ValueError
             predecessor_inspected = store.inspect_commit_root(
                 authority.state_commit_sha,
-                read_budget=read_budget,
+                read_budget=lineage_read_budget,
             )
             if predecessor_inspected.root.root_digest != authority.state_root_digest:
                 raise ValueError
             predecessor_bundle = store.restore_commit(
                 authority.state_commit_sha,
                 lineage_anchor=predecessor_anchor,
-                read_budget=read_budget,
+                read_budget=payload_read_budget,
             )
             predecessor_locators, predecessor_owned_facts = (
                 _acceptance_resume_projection_from_bundle(
@@ -1484,7 +1485,7 @@ def _run_resolve_acceptance_resume(
             for _index in range(max_lineage_visits):
                 inspected = store.inspect_commit_root(
                     current,
-                    read_budget=read_budget,
+                    read_budget=lineage_read_budget,
                 )
                 descending.append(
                     CampaignStateLineageObservation(
@@ -1511,7 +1512,7 @@ def _run_resolve_acceptance_resume(
                 restored = store.restore_commit(
                     observation.commit_sha,
                     lineage_anchor=carrier_anchor,
-                    read_budget=read_budget,
+                    read_budget=payload_read_budget,
                 )
                 locators, owned_facts = _acceptance_resume_projection_from_bundle(
                     restored,

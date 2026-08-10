@@ -2751,7 +2751,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             events.append("closed")
 
         def get_state_ref(self, *, read_budget: object) -> object:
-            assert read_budget is not None
+            assert getattr(read_budget, "phase", None) == "lineage"
             return SimpleNamespace(sha=carrier_commit)
 
     class Store:
@@ -2766,7 +2766,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             anchor: object,
             read_budget: object,
         ) -> None:
-            assert read_budget is not None
+            assert getattr(read_budget, "phase", None) == "lineage"
             assert commit_sha == carrier_commit
             assert root_digest == carrier_root
             assert getattr(anchor, "commit_sha", None) == original_commit
@@ -2779,7 +2779,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             *,
             read_budget: object,
         ) -> object:
-            assert read_budget is not None
+            assert getattr(read_budget, "phase", None) == "lineage"
             parent = ("0" * 40,) if sha == original_commit else (original_commit,)
             root = bundles[sha].root
             return SimpleNamespace(
@@ -2796,7 +2796,7 @@ def test_resume_resolver_verifies_authority_before_reading_exact_branch_lineage(
             lineage_anchor: object,
             read_budget: object,
         ) -> object:
-            assert read_budget is not None
+            assert getattr(read_budget, "phase", None) == "payload"
             if sha == original_commit:
                 assert getattr(lineage_anchor, "commit_sha", None) == original_commit
                 assert getattr(lineage_anchor, "root_digest", None) == original_root
