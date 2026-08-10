@@ -50,7 +50,7 @@ EXPECTED_CLOSED_WORKFLOW_SOURCE_DIGESTS = (
     ),
     (
         ".github/workflows/phase6-acceptance.yml",
-        "ef01aa17bbebb47e2c43e62de7574431cfe18fdb9de01d0eb5ade314ccbe7cf0",
+        "b95f1837004024a84465fa7c569d45ae34746b9fabf9e7942477a1af7486c968",
     ),
 )
 MANAGED_PYTHON_INSTALL = (
@@ -634,14 +634,14 @@ def _authority_checkout_is_closed(step: _Step) -> bool:
                 "ref": "${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}",
                 "path": ".phase6-authority-state",
                 "persist-credentials": "false",
-                "token": "''",
+                "token": "${{ github.token }}",
             },
             {
                 "repository": "${{ needs.live_authority_preflight.outputs.state_repository_full_name }}",
                 "ref": "${{ needs.live_authority_preflight.outputs.state_commit_sha }}",
                 "path": ".phase6-campaign-state",
                 "persist-credentials": "false",
-                "token": "''",
+                "token": "${{ github.token }}",
             },
         )
     )

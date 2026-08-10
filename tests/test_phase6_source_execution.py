@@ -1099,6 +1099,31 @@ def test_late_checkout_mutation_fails_closed(tmp_path: Path) -> None:
         module.verify_source_execution(repository)
 
 
+def test_benchmark_state_checkout_rejects_a_substituted_token(tmp_path: Path) -> None:
+    """The two later state checkouts may use only the job's read-only token."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    source = path.read_text(encoding="utf-8")
+    benchmark_start = source.index("  live_benchmark:")
+    benchmark_end = source.index("  live_replay:", benchmark_start)
+    benchmark = source[benchmark_start:benchmark_end]
+    assert benchmark.count("token: ${{ github.token }}") == 2
+    benchmark = benchmark.replace(
+        "token: ${{ github.token }}",
+        "token: ${{ secrets.UNRELATED_TOKEN }}",
+        1,
+    )
+    path.write_text(
+        source[:benchmark_start] + benchmark + source[benchmark_end:],
+        encoding="utf-8",
+    )
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
 def test_empty_authoritative_step_scan_fails_closed(tmp_path: Path) -> None:
     module = _module()
     repository = _copy_workflows(tmp_path)
