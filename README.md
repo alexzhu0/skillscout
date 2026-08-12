@@ -1,6 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
-<!-- GSD:DOC generated -->
-
 # SkillScout
 
 SkillScout is an auditable Python pipeline for maintainers who turn reusable workflows from public GitHub repositories into human-reviewed Agent Skill Draft PRs.

@@ -1128,7 +1128,7 @@ jobs:
       UV_LINK_MODE: copy
       SKILLSCOUT_LLM_PROVIDER: deepseek
       DEEPSEEK_BASE_URL: https://api.deepseek.com
-      PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
+      PHASE6_MANIFEST: config/acceptance/phase6/benchmark-manifest.json
       PHASE6_AUTHORITY_STATE_COMMIT_SHA: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_COMMIT_SHA }}
       PHASE6_AUTHORITY_STATE_ROOT_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_STATE_ROOT_DIGEST }}
       PHASE6_AUTHORITY_DIGEST: ${{ vars.SKILLSCOUT_PHASE6_AUTHORITY_DIGEST }}
@@ -1312,7 +1312,7 @@ jobs:
       UV_LINK_MODE: copy
       SKILLSCOUT_LLM_PROVIDER: deepseek
       DEEPSEEK_BASE_URL: https://api.deepseek.com
-      PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
+      PHASE6_MANIFEST: config/acceptance/phase6/benchmark-manifest.json
       PHASE6_ACCEPTANCE_RUN_ID: ${{ needs.live_authority_preflight.outputs.acceptance_run_id }}
       PHASE6_AUTHORITY_DIGEST: ${{ needs.live_authority_preflight.outputs.authority_digest }}
       PHASE6_AUTHORITY_STATE_COMMIT_SHA: ${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}
@@ -1491,7 +1491,7 @@ jobs:
       UV_LINK_MODE: copy
       SKILLSCOUT_LLM_PROVIDER: deepseek
       DEEPSEEK_BASE_URL: https://api.deepseek.com
-      PHASE6_MANIFEST: .planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json
+      PHASE6_MANIFEST: config/acceptance/phase6/benchmark-manifest.json
       PHASE6_ACCEPTANCE_RUN_ID: ${{ needs.live_authority_preflight.outputs.acceptance_run_id }}
       PHASE6_AUTHORITY_DIGEST: ${{ needs.live_authority_preflight.outputs.authority_digest }}
       PHASE6_AUTHORITY_STATE_COMMIT_SHA: ${{ needs.live_authority_preflight.outputs.authority_state_commit_sha }}

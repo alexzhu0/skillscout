@@ -1,6 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
-<!-- GSD:DOC generated -->
-
 # Configuration
 
 SkillScout is configured through command-line paths, a versioned discovery-query file, and a small, closed set of environment variables. It does not load a repository `.env` file or a general application config file. Keep local development settings, discovery/state credentials, semantic-provider credentials, and protected publication authority separate.

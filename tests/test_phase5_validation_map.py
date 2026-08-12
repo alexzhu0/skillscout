@@ -11,7 +11,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parents[1]
 CHECKER = PROJECT_ROOT / "tools/verify_phase5_validation_map.py"
-PHASE = Path(".planning/phases/05-automated-discovery-operations")
+PHASE = Path("evidence/phase-5-automated-discovery-operations")
 COMPLETION_EVIDENCE = ("05-10-SUMMARY.md", "05-VERIFICATION.md")
 
 

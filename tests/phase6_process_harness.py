@@ -656,7 +656,7 @@ def _materialize_checkout(
 def _manifest(repository: Path) -> LockedBenchmarkManifestV1:
     return LockedBenchmarkManifestV1.model_validate_json(
         (
-            repository / ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+            repository / "config/acceptance/phase6/benchmark-manifest.json"
         ).read_bytes(),
         strict=True,
     )
@@ -692,7 +692,7 @@ def _setup(workspace: Path) -> dict[str, object]:
         authority_version=1,
         source_commit_sha=source_commit,
         acceptance_workflow_sha256=workflow_digest,
-        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
+        manifest_path="config/acceptance/phase6/benchmark-manifest.json",
         manifest_digest=manifest.manifest_digest,
         nomination_set_digest=manifest.nomination_set_digest,
         lock_attestation_digest=manifest.lock_attestation.attestation_digest,
@@ -1074,8 +1074,7 @@ def crash(workspace: Path, stage: str, status: str) -> NoReturn:
             "benchmark",
             "--manifest",
             str(
-                repository / ".planning/phases/06-adversarial-mvp-acceptance/"
-                "06-BENCHMARK-MANIFEST.json"
+                repository / "config/acceptance/phase6/benchmark-manifest.json"
             ),
             "--acceptance-run-id",
             RUN_ID,
@@ -1118,8 +1117,7 @@ def resume(
             "benchmark",
             "--manifest",
             str(
-                repository / ".planning/phases/06-adversarial-mvp-acceptance/"
-                "06-BENCHMARK-MANIFEST.json"
+                repository / "config/acceptance/phase6/benchmark-manifest.json"
             ),
             "--acceptance-run-id",
             RUN_ID,

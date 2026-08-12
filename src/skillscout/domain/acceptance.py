@@ -498,8 +498,7 @@ class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
     source_commit_sha: _Sha
     acceptance_workflow_sha256: Digest
     manifest_path: Literal[
-        ".planning/phases/06-adversarial-mvp-acceptance/"
-        "06-BENCHMARK-MANIFEST.json"
+        "config/acceptance/phase6/benchmark-manifest.json"
     ]
     manifest_digest: Digest
     nomination_set_digest: Digest
@@ -578,6 +577,20 @@ class LiveAcceptanceAuthorityV1(_SelfDigestedModel):
         return self
 
 
+class HistoricalLiveAcceptanceAuthorityV1(LiveAcceptanceAuthorityV1):
+    """Archived V1 authority that preserves the retired manifest locator.
+
+    This type exists solely for immutable state/evidence deserialization.
+    Active authority construction remains bound to the current configuration
+    locator on ``LiveAcceptanceAuthorityV1``.
+    """
+
+    manifest_path: Literal[
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    ]
+
+
 class LiveAcceptanceAuthorityV2(_SelfDigestedModel):
     """Fresh, lock-rebuilt authority for one protected live execution path.
 
@@ -607,8 +620,7 @@ class LiveAcceptanceAuthorityV2(_SelfDigestedModel):
     acceptance_workflow_sha256: Digest
     source_state_binding_digest: Digest
     manifest_path: Literal[
-        ".planning/phases/06-adversarial-mvp-acceptance/"
-        "06-BENCHMARK-MANIFEST.json"
+        "config/acceptance/phase6/benchmark-manifest.json"
     ]
     manifest_digest: Digest
     selection_manifest_digest: Digest

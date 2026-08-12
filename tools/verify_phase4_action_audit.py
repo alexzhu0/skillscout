@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-AUDIT_PATH = Path(".planning/phases/04-controlled-draft-pr/04-ACTION-AUDIT.md")
+AUDIT_PATH = Path("evidence/phase-4-controlled-draft-pr/04-ACTION-AUDIT.md")
 MAX_AUDIT_BYTES = 65_536
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SHA1 = re.compile(r"^[0-9a-f]{40}$")

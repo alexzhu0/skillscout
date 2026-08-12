@@ -19,9 +19,9 @@ SPEC.loader.exec_module(checker)
 @pytest.fixture
 def planning_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
-    target = repository / ".planning/phases/04-controlled-draft-pr"
+    target = repository / "evidence/phase-4-controlled-draft-pr"
     target.mkdir(parents=True)
-    source = PROJECT_ROOT / ".planning/phases/04-controlled-draft-pr"
+    source = PROJECT_ROOT / "evidence/phase-4-controlled-draft-pr"
     for path in source.glob("04-??-PLAN.md"):
         shutil.copy2(path, target / path.name)
     shutil.copy2(source / "04-VALIDATION.md", target / "04-VALIDATION.md")
@@ -29,7 +29,7 @@ def planning_repository(tmp_path: Path) -> Path:
 
 
 def _validation(repository: Path) -> Path:
-    return repository / ".planning/phases/04-controlled-draft-pr/04-VALIDATION.md"
+    return repository / "evidence/phase-4-controlled-draft-pr/04-VALIDATION.md"
 
 
 def _replace(path: Path, old: str, new: str) -> None:
@@ -124,7 +124,7 @@ def test_nonlocal_uv_and_release_chain_drift_are_rejected(
 
 
 def test_plan_command_and_dependency_mutations_fail(planning_repository: Path) -> None:
-    phase = planning_repository / ".planning/phases/04-controlled-draft-pr"
+    phase = planning_repository / "evidence/phase-4-controlled-draft-pr"
     _replace(
         phase / "04-03-PLAN.md",
         "depends_on: [04-01]",

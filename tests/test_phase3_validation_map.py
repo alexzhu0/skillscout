@@ -24,9 +24,9 @@ CHECKER_SPEC.loader.exec_module(checker)
 @pytest.fixture
 def planning_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
-    target = repository / ".planning/phases/03-validated-skill-candidate"
+    target = repository / "evidence/phase-3-validated-skill-candidate"
     shutil.copytree(
-        PROJECT_ROOT / ".planning/phases/03-validated-skill-candidate",
+        PROJECT_ROOT / "evidence/phase-3-validated-skill-candidate",
         target,
         ignore=shutil.ignore_patterns("*-SUMMARY.md", "03-RESEARCH.md", "03-PATTERNS.md"),
     )
@@ -34,7 +34,7 @@ def planning_repository(tmp_path: Path) -> Path:
 
 
 def _phase(repository: Path) -> Path:
-    return repository / ".planning/phases/03-validated-skill-candidate"
+    return repository / "evidence/phase-3-validated-skill-candidate"
 
 
 def _map(repository: Path) -> Path:
@@ -158,7 +158,7 @@ def test_malformed_coverage_and_dropped_requirement_are_rejected(
         checker.verify_validation_map(planning_repository)
 
     shutil.copy2(
-        PROJECT_ROOT / ".planning/phases/03-validated-skill-candidate/03-VALIDATION.md",
+        PROJECT_ROOT / "evidence/phase-3-validated-skill-candidate/03-VALIDATION.md",
         validation,
     )
     _replace_once(

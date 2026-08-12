@@ -9,7 +9,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AUDIT = ROOT / ".planning/phases/04-controlled-draft-pr/04-ACTION-AUDIT.md"
+AUDIT = ROOT / "evidence/phase-4-controlled-draft-pr/04-ACTION-AUDIT.md"
 VERIFIER = ROOT / "tools/verify_phase4_action_audit.py"
 SPEC = importlib.util.spec_from_file_location("phase4_action_audit", VERIFIER)
 assert SPEC is not None and SPEC.loader is not None

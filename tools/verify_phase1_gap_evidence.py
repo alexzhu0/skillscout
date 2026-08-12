@@ -27,8 +27,8 @@ COMMAND_TIMEOUT_SECONDS = 300
 LOCK_HASH = "b87e7f1035d452ef1c5e66ca19e03e980398303fa8d3f99aec1822de75d85004"
 FROZEN_DB_HASH = "49fa8067a2cc7e55b3afb2e2c93aca91f2b3d6cfbaee1bc32242f7b175bc0251"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-REVIEW_PATH = ".planning/phases/01-auditable-dry-run-spine/01-REVIEW.md"
-VERIFICATION_PATH = ".planning/phases/01-auditable-dry-run-spine/01-VERIFICATION.md"
+REVIEW_PATH = "evidence/phase-1-auditable-dry-run-spine/01-REVIEW.md"
+VERIFICATION_PATH = "evidence/phase-1-auditable-dry-run-spine/01-VERIFICATION.md"
 VERIFIER_PATH = "tools/verify_phase1_gap_evidence.py"
 FROZEN_DB_PATH = "tests/fixtures/state/v1-cli.db"
 EXPECTED_TOP_LEVEL = {
@@ -506,7 +506,7 @@ def _validate_source_claims(value: object, repository_root: Path) -> None:
         _require(_is_sha256(record["sha256"]))
         paths.append(path)
     _require(paths == sorted(paths) and len(paths) == len(set(paths)))
-    _require(".planning/config.json" not in paths)
+    _require("retired-gsd-config.json" not in paths)
 
 
 def _validate_immutable_claims(value: object, repository_root: Path) -> None:

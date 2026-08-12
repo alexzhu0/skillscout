@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-PHASE_DIRECTORY = Path(".planning/phases/05-automated-discovery-operations")
+PHASE_DIRECTORY = Path("evidence/phase-5-automated-discovery-operations")
 PLAN_NAMES = tuple(f"05-{number:02d}-PLAN.md" for number in range(1, 15))
 VALIDATION_NAME = "05-VALIDATION.md"
 SUMMARY_NAME = "05-10-SUMMARY.md"

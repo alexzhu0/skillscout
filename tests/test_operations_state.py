@@ -33,6 +33,7 @@ from skillscout.domain.acceptance import (
     AcceptanceScenarioResultV1,
     BenchmarkEntryV1,
     BenchmarkLockAttestationV1,
+    HistoricalLiveAcceptanceAuthorityV1,
     HostedIsolationCapabilityV1,
     LiveAcceptanceAuthorityV1,
     LockedBenchmarkManifestV1,
@@ -480,8 +481,7 @@ def _historical_live_authority(nomination: NominationSetV1) -> LiveAcceptanceAut
         source_commit_sha="a" * 40,
         acceptance_workflow_sha256=DIGEST_A,
         manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         ),
         manifest_digest=manifest.manifest_digest,
         nomination_set_digest=nomination.nomination_set_digest,
@@ -570,8 +570,7 @@ def _live_authority_v2(nomination: NominationSetV1):
         acceptance_workflow_sha256=lock.acceptance_workflow_sha256,
         source_state_binding_digest=lock.source_state_binding_digest,
         manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         ),
         manifest_digest=lock.selection_manifest_digest,
         selection_manifest_digest=lock.selection_manifest_digest,
@@ -695,6 +694,34 @@ def test_live_authority_v2_schema_registry_preserves_historical_v1_and_rebuilds(
     assert fresh.fact == fresh_authority
     assert restored.facts == exported.facts
     assert restored.projection == exported.projection
+
+
+def test_operations_state_reads_legacy_authority_only_as_archival_evidence(
+    tmp_path: Path,
+) -> None:
+    """A retired locator can rehydrate old state but cannot create a new fact."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    active = _historical_live_authority(nomination)
+    raw = active.model_dump(mode="json", exclude_none=False)
+    raw["manifest_path"] = (
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    )
+    raw["authority_digest"] = None
+    archived = HistoricalLiveAcceptanceAuthorityV1.model_validate(raw, strict=True)
+
+    decoded = module._validate_acceptance_model("acceptance_live_authority", archived.model_dump())
+    assert type(decoded) is HistoricalLiveAcceptanceAuthorityV1
+
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        with pytest.raises(TypeError):
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_live_authority",
+                archived,
+            )
 
 
 def test_benchmark_lock_schema_registry_preserves_v1_history_and_restores_v2(

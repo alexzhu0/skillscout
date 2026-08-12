@@ -111,14 +111,15 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 
 This document evolves at phase transitions and milestone boundaries.
 
-**After each phase transition** (via `$gsd-transition`):
+**After each phase transition** (start with `superpowers:using-superpowers`, then
+use the applicable planning and verification skills):
 1. Requirements invalidated? → Move to Out of Scope with reason
 2. Requirements validated? → Move to Validated with phase reference
 3. New requirements emerged? → Add to Active
 4. Decisions to log? → Add to Key Decisions
 5. "What This Is" still accurate? → Update if drifted
 
-**After each milestone** (via `$gsd-complete-milestone`):
+**After each milestone** (during a Superpowers-guided review):
 1. Full review of all sections
 2. Core Value check — still the right priority?
 3. Audit Out of Scope — reasons still valid?

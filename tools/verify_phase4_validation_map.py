@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-PHASE_DIRECTORY = Path(".planning/phases/04-controlled-draft-pr")
+PHASE_DIRECTORY = Path("evidence/phase-4-controlled-draft-pr")
 PLAN_NAMES = tuple(f"04-{number:02d}-PLAN.md" for number in range(1, 12))
 VALIDATION_NAME = "04-VALIDATION.md"
 MAX_INPUT_BYTES = 256_000

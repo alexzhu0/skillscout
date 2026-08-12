@@ -1,6 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
-<!-- GSD:DOC generated -->
-
 # SkillScout v0.1.0 Preview Release Notes
 
 SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turns bounded, read-only evidence from public GitHub repositories into validated Agent Skill candidates and, through a separately controlled publication boundary, human-reviewable Draft Pull Requests.

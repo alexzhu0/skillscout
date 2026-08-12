@@ -1,6 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
-<!-- GSD:DOC generated -->
-
 # SkillScout Architecture
 
 ## System overview
