@@ -106,12 +106,14 @@ class DiscoveryQuerySetV1(StrictFrozenModel):
     @model_validator(mode="before")
     @classmethod
     def bind_query_set_digest(cls, value: object) -> object:
-        if isinstance(value, dict) and value.get("query_set_digest") is None:
+        if isinstance(value, dict):
             payload = dict(value)
-            payload.pop("query_set_digest", None)
-            digest_payload = dict(payload)
-            payload["queries"] = tuple(payload.get("queries", ()))
-            payload["query_set_digest"] = sha256_digest(digest_payload)
+            if payload.get("query_set_digest") is None:
+                payload.pop("query_set_digest", None)
+                digest_payload = dict(payload)
+                payload["query_set_digest"] = sha256_digest(digest_payload)
+            if isinstance(payload.get("queries"), list):
+                payload["queries"] = tuple(payload["queries"])
             return payload
         return value
 

@@ -589,7 +589,8 @@ def _verify_manifest_and_model_contract(root: Path) -> None:
         _reject()
     if (
         len(manifest.entries) != 5
-        or manifest.prior_manifest_digest is not None
+        or (manifest.manifest_version == 1) != (manifest.prior_manifest_digest is None)
+        or manifest.prior_manifest_digest == manifest.manifest_digest
         or manifest.lock_attestation.manifest_digest != manifest.manifest_digest
         or manifest.lock_attestation.nomination_set_digest != manifest.nomination_set_digest
         or manifest_bytes

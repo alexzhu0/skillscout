@@ -109,6 +109,21 @@ def test_query_policy_exact_bytes_parse_and_bind_stable_digest() -> None:
     )
 
 
+def test_query_policy_strictly_parses_canonical_json_with_bound_digest() -> None:
+    query_set = _query_set()
+    canonical = canonical_json_bytes(query_set)
+
+    assert DiscoveryQuerySetV1.model_validate_json(canonical, strict=True) == query_set
+
+    wrong_digest = json.loads(canonical)
+    wrong_digest["query_set_digest"] = DIGEST_B
+    with pytest.raises(ValidationError):
+        DiscoveryQuerySetV1.model_validate_json(
+            canonical_json_bytes(wrong_digest),
+            strict=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (

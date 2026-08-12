@@ -30,6 +30,8 @@ import skillscout.adapters.openai_extract as extract_adapter
 import skillscout.adapters.openai_generate as generate_adapter
 import skillscout.adapters.openai_review as review_adapter
 from skillscout.adapters.operations_state import (
+    AcceptanceFactRecord,
+    AcceptanceRunSnapshot,
     OperationsStateStore,
     _bundle_from_exports,
     _parse_bundle_exports,
@@ -38,6 +40,7 @@ from skillscout.adapters.operations_state import (
 from skillscout.adapters.publication_state import PublicationStateStore
 from skillscout.adapters.state import SQLiteStateStore
 import skillscout.adapters.state_branch as state_branch
+import skillscout.bootstrap as bootstrap
 from skillscout.adapters.state_branch import (
     StateBranchStore,
     StateCommitObservation,
@@ -49,10 +52,17 @@ import skillscout.cli as cli
 from skillscout.domain.acceptance import (
     AcceptanceBudgetReservationV1,
     AcceptanceCampaignResumeLocatorV1,
-    LiveAcceptanceAuthorityV1,
+    BenchmarkEntryV1,
+    BenchmarkLockApprovalReceiptV2,
+    BenchmarkLockAttestationV1,
+    LiveAcceptanceAuthorityV2,
+    LiveExecutionApprovalReceiptV2,
     LockedBenchmarkManifestV1,
+    LockedBenchmarkManifestV2,
+    NominationEntryV1,
+    NominationSetV1,
 )
-from skillscout.domain.canonical import canonical_json_bytes
+from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.discovery import (
     DiscoveryBudgetPolicyV1,
     DiscoveryQuerySetV1,
@@ -61,7 +71,7 @@ from skillscout.domain.discovery import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TIMESTAMP = "2026-07-30T12:00:00.000000Z"
-RUN_ID = "nomination-80878c1a9a0f28e8fe8c5c63be8932ae"
+RUN_ID = "phase6-process-v2-local"
 LOCK_HEAD = "500b3de1b14d8c0d1e0a4d3a35bf027eb19db2eb"
 LOCK_ROOT = "sha256:a9131fdfec479202f1f626834c805bece17f933e802ecb9877827a9525f94d85"
 STATE_REPOSITORY_ID = 1_310_897_029
@@ -385,6 +395,13 @@ def _patch_state_clients(workspace: Path) -> None:
     state_branch.StateBranchClient = client  # type: ignore[assignment]
     state_branch.StateBranchReadClient = client  # type: ignore[assignment]
 
+    def local_temporary_directory(*args: object, **kwargs: object) -> object:
+        kwargs.setdefault("dir", workspace)
+        return TemporaryDirectory(*args, **kwargs)
+
+    bootstrap.tempfile.TemporaryDirectory = local_temporary_directory  # type: ignore[assignment]
+    cli.TemporaryDirectory = local_temporary_directory  # type: ignore[assignment]
+
 
 def _response(base: RecordedResponse, value: object) -> RecordedResponse:
     return RecordedResponse(
@@ -662,53 +679,231 @@ def _manifest(repository: Path) -> LockedBenchmarkManifestV1:
     )
 
 
-def _setup(workspace: Path) -> dict[str, object]:
-    repository, source_commit = _copy_repository(workspace)
-    os.chdir(repository)
-    manifest = _manifest(repository)
-    locked = _locked_bundle()
-    remote = DurableStateRemote(workspace)
-    remote.seed(LOCK_HEAD, locked)
-    state_root = repository / "state/databases"
-    restore_acceptance_state_bundle(
-        locked,
-        pipeline_path=state_root / "pipeline.sqlite3",
-        operations_path=state_root / "operations.sqlite3",
+def _fresh_selection(
+    *,
+    seed: LockedBenchmarkManifestV1,
+    query_set: DiscoveryQuerySetV1,
+) -> tuple[NominationSetV1, LockedBenchmarkManifestV1]:
+    """Create the local V1 selection that the synthetic V2 chain re-admits."""
+
+    nominations = tuple(
+        NominationEntryV1(
+            schema_version="nomination-entry-v1",
+            repository_full_name=entry.repository_full_name,
+            repository_id=entry.repository_id,
+            exact_commit_sha=entry.exact_commit_sha,
+            license_spdx=entry.license_spdx,
+            selection_source="search_derived",
+            selection_evidence_digests=entry.selection_evidence_digests,
+        )
+        for entry in seed.entries
     )
-    publication = PublicationStateStore(state_root / "publication.sqlite3")
-    publication.close()
-    workflow_digest = (
-        "sha256:"
-        + hashlib.sha256(
-            (repository / ".github/workflows/phase6-acceptance.yml").read_bytes()
-        ).hexdigest()
+    nomination = NominationSetV1(
+        schema_version="nomination-set-v1",
+        nomination_set_id=RUN_ID,
+        query_set_digest=query_set.query_set_digest,
+        search_run_authority_digest=sha256_digest(
+            {"phase6_process_harness": "local_search_authority"}
+        ),
+        search_derived_entries=tuple(sorted(nominations, key=lambda entry: entry.entry_digest)),
+        user_nominated_entries=(),
+        created_at=TIMESTAMP,
     )
-    query = DiscoveryQuerySetV1.model_validate_json(
-        (repository / "config/discovery-queries-v1.json").read_bytes(),
-        strict=True,
+    roles = {entry.repository_id: entry.coverage_role for entry in seed.entries}
+    entries = tuple(
+        sorted(
+            (
+                BenchmarkEntryV1(
+                    schema_version="benchmark-entry-v1",
+                    repository_full_name=entry.repository_full_name,
+                    repository_id=entry.repository_id,
+                    exact_commit_sha=entry.exact_commit_sha,
+                    license_spdx=entry.license_spdx,
+                    selection_source=entry.selection_source,
+                    coverage_role=roles[entry.repository_id],
+                    nomination_entry_digest=entry.entry_digest,
+                    selection_evidence_digests=entry.selection_evidence_digests,
+                )
+                for entry in nomination.search_derived_entries
+            ),
+            key=lambda entry: entry.entry_digest,
+        )
     )
-    authority = LiveAcceptanceAuthorityV1(
-        schema_version="live-acceptance-authority-v1",
-        authority_version=1,
+    preimage = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": nomination.nomination_set_digest,
+        "entries": [entry.model_dump(mode="json", exclude_none=False) for entry in entries],
+        "prior_manifest_digest": None,
+    }
+    manifest_digest = sha256_digest(preimage)
+    manifest = LockedBenchmarkManifestV1(
+        **preimage,
+        lock_attestation=BenchmarkLockAttestationV1(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=nomination.nomination_set_digest,
+            manifest_digest=manifest_digest,
+            reviewer_id="local-harness",
+            locked_at=TIMESTAMP,
+        ),
+        manifest_digest=manifest_digest,
+    )
+    return nomination, manifest
+
+
+def _amend_selection_manifest(
+    repository: Path,
+    manifest: LockedBenchmarkManifestV1,
+    query_set: DiscoveryQuerySetV1,
+) -> str:
+    """Bind the copied test repository's source commit to canonical V2 inputs."""
+
+    manifest_path = repository / "config/acceptance/phase6/benchmark-manifest.json"
+    query_path = repository / "config/discovery-queries-v1.json"
+    manifest_path.write_bytes(canonical_json_bytes(manifest))
+    query_path.write_bytes(canonical_json_bytes(query_set))
+    subprocess.run(("git", "add", manifest_path, query_path), cwd=repository, check=True)
+    subprocess.run(
+        (
+            "git",
+            "-c",
+            "user.name=SkillScout Test",
+            "-c",
+            "user.email=skillscout@example.invalid",
+            "commit",
+            "--amend",
+            "--no-edit",
+            "-q",
+        ),
+        cwd=repository,
+        check=True,
+    )
+    return subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _fresh_lock(
+    *,
+    nomination: NominationSetV1,
+    manifest: LockedBenchmarkManifestV1,
+    source_commit: str,
+    workflow_digest: str,
+    query_set: DiscoveryQuerySetV1,
+    parent_commit: str,
+    parent_root: str,
+) -> LockedBenchmarkManifestV2:
+    """Construct a V2 lock through the same domain binding as production."""
+
+    from skillscout.application.acceptance import bind_fresh_benchmark_lock
+
+    snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id=RUN_ID,
+        facts=(
+            AcceptanceFactRecord(
+                acceptance_run_id=RUN_ID,
+                kind="acceptance_nomination",
+                fact_digest=nomination.nomination_set_digest,
+                fact=nomination,
+            ),
+        ),
+    )
+    lock_receipt = BenchmarkLockApprovalReceiptV2(
+        schema_version="benchmark-lock-approval-receipt-v2",
+        purpose="benchmark_lock",
+        environment="phase6-human-benchmark-lock",
+        source_repository_id=STATE_REPOSITORY_ID,
+        source_repository_full_name=STATE_REPOSITORY,
+        reviewer_login="alexzhu0",
+        reviewer_id=101,
+        workflow_run_id=1001,
+        workflow_run_attempt=1,
         source_commit_sha=source_commit,
-        acceptance_workflow_sha256=workflow_digest,
-        manifest_path="config/acceptance/phase6/benchmark-manifest.json",
-        manifest_digest=manifest.manifest_digest,
-        nomination_set_digest=manifest.nomination_set_digest,
-        lock_attestation_digest=manifest.lock_attestation.attestation_digest,
-        state_commit_sha=LOCK_HEAD,
-        state_root_digest=LOCK_ROOT,
+        workflow_sha256=workflow_digest,
+        trigger_identity="workflow_dispatch:local-lock",
+        approval_record_digest=sha256_digest({"local": "lock-approval"}),
+    )
+    lock = bind_fresh_benchmark_lock(
+        snapshot=snapshot,
+        selection_manifest=manifest,
         state_repository_id=STATE_REPOSITORY_ID,
         state_repository_full_name=STATE_REPOSITORY,
-        query_set_digest=query.query_set_digest,
+        parent_state_commit_sha=parent_commit,
+        parent_state_root_digest=parent_root,
+        expected_nomination_authority_digest=nomination.search_run_authority_digest,
+        approval_receipt=lock_receipt,
+    )
+    return lock
+
+
+def _live_authority(
+    *,
+    lock: LockedBenchmarkManifestV2,
+    source_commit: str,
+    workflow_digest: str,
+    query_set: DiscoveryQuerySetV1,
+    state_commit: str,
+    state_root: str,
+) -> LiveAcceptanceAuthorityV2:
+    """Construct the V2 authority only after the local V2 lock is durable."""
+
+    approval = LiveExecutionApprovalReceiptV2(
+        schema_version="live-execution-approval-receipt-v2",
+        purpose="live_execution",
+        environment="skillscout-phase6-live-authority",
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        reviewer_login="alexzhu0",
+        reviewer_id=202,
+        workflow_run_id=2001,
+        workflow_run_attempt=1,
+        source_commit_sha=lock.source_commit_sha,
+        workflow_sha256=lock.acceptance_workflow_sha256,
+        trigger_identity="workflow_dispatch:local-authority",
+        approval_record_digest=sha256_digest({"local": "live-approval"}),
+    )
+    return LiveAcceptanceAuthorityV2(
+        schema_version="live-acceptance-authority-v2",
+        authority_version=2,
+        purpose="live_execution",
+        benchmark_lock_digest=lock.lock_digest,
+        benchmark_lock=lock,
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        state_repository_id=lock.state_repository_id,
+        state_repository_full_name=lock.state_repository_full_name,
+        parent_state_commit_sha=lock.parent_state_commit_sha,
+        parent_state_root_digest=lock.parent_state_root_digest,
+        state_commit_sha=state_commit,
+        state_root_digest=state_root,
+        source_commit_sha=source_commit,
+        acceptance_workflow_sha256=workflow_digest,
+        source_state_binding_digest=lock.source_state_binding_digest,
+        manifest_path="config/acceptance/phase6/benchmark-manifest.json",
+        manifest_digest=lock.selection_manifest_digest,
+        selection_manifest_digest=lock.selection_manifest_digest,
+        nomination_set_digest=lock.nomination_set_digest,
+        lock_attestation_digest=lock.selection_manifest.lock_attestation.attestation_digest,
+        entries=lock.entries,
+        environment="skillscout-phase6-live-authority",
+        approved_reviewer_login=approval.reviewer_login,
+        approved_reviewer_id=approval.reviewer_id,
+        workflow_run_id=approval.workflow_run_id,
+        workflow_run_attempt=approval.workflow_run_attempt,
+        trigger_identity=approval.trigger_identity,
+        approval_record_digest=approval.approval_record_digest,
+        approval_receipt=approval,
+        approval_receipt_digest=approval.receipt_digest,
+        query_set_digest=query_set.query_set_digest,
         budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
         semantic_provider="deepseek",
         provider_base_url="https://api.deepseek.com",
-        stage_models=(
-            "deepseek-v4-flash",
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-        ),
+        stage_models=("deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-pro"),
         prompt_versions=(
             "extract-prompt-v1",
             "generator-prompt-v1",
@@ -738,76 +933,139 @@ def _setup(workspace: Path) -> dict[str, object]:
         benchmark_scenario_write_count=5,
         replay_semantic_effect_count=0,
         replay_publication_effect_count=0,
-        reviewer_id="alexzhu0",
         approved_at=TIMESTAMP,
+    )
+
+
+def _setup(workspace: Path) -> dict[str, object]:
+    repository, _ = _copy_repository(workspace)
+    os.chdir(repository)
+    query = DiscoveryQuerySetV1.model_validate_json(
+        (repository / "config/discovery-queries-v1.json").read_bytes(), strict=True
+    )
+    nomination, manifest = _fresh_selection(seed=_manifest(repository), query_set=query)
+    source_commit = _amend_selection_manifest(repository, manifest, query)
+    workflow_digest = "sha256:" + hashlib.sha256(
+        (repository / ".github/workflows/phase6-acceptance.yml").read_bytes()
+    ).hexdigest()
+    remote = DurableStateRemote(workspace)
+    locked = _locked_bundle()
+    remote.seed(LOCK_HEAD, locked)
+    state_root = repository / "state/databases"
+    restore_acceptance_state_bundle(
+        locked,
+        pipeline_path=state_root / "pipeline.sqlite3",
+        operations_path=state_root / "operations.sqlite3",
     )
     with OperationsStateStore(state_root / "operations.sqlite3") as operations:
         operations.upgrade_acceptance_schema()
-        operations.record_acceptance_fact(RUN_ID, "acceptance_live_authority", authority)
-        authority_locator = AcceptanceCampaignResumeLocatorV1(
-            schema_version="acceptance-campaign-resume-locator-v1",
-            acceptance_run_id=RUN_ID,
-            live_acceptance_authority_digest=authority.authority_digest,
-            source_commit_sha=authority.source_commit_sha,
-            manifest_digest=authority.manifest_digest,
-            state_repository_id=authority.state_repository_id,
-            state_repository_full_name=authority.state_repository_full_name,
-            original_state_commit_sha=LOCK_HEAD,
-            original_state_root_digest=LOCK_ROOT,
-            parent_state_commit_sha=LOCK_HEAD,
-            parent_state_root_digest=LOCK_ROOT,
-            transition_index=1,
-            previous_locator_digest=None,
-            transition_phase="authority_carrier",
-            semantic_stage=None,
-            attempt_no=None,
-            semantic_status=None,
-            workflow_authority_digest=None,
-            semantic_provider=authority.semantic_provider,
-            stage_models=authority.stage_models,
-            prompt_versions=authority.prompt_versions,
-            schema_versions=authority.schema_versions,
-            policy_versions=authority.policy_versions,
-            recorded_at=TIMESTAMP,
-        )
-        operations.record_acceptance_fact(
-            RUN_ID,
-            "acceptance_campaign_resume_locator",
-            authority_locator,
-        )
-        pipeline = SQLiteStateStore(state_root / "pipeline.sqlite3")
-        publication = PublicationStateStore(state_root / "publication.sqlite3")
-        try:
-            authority_bundle, _ = _bundle_from_exports(
-                pipeline=pipeline.export_owned_state(),
-                operations=operations.export_owned_state(),
-                publication=publication.export_owned_state(),
-                prior_root_digest=LOCK_ROOT,
-                state_parent_commit_sha=LOCK_HEAD,
-                query_set_digest=query.query_set_digest,
-                budget_policy_digest=authority.budget_policy_digest,
-                created_at=TIMESTAMP,
-            )
-        finally:
-            pipeline.close()
-            publication.close()
-    authority_synced = StateBranchStore(remote).sync(
-        authority_bundle,
+
+    def export_bundle(*, parent_commit: str, parent_root: str) -> VerifiedStateBundle:
+        with OperationsStateStore(state_root / "operations.sqlite3") as operations:
+            pipeline = SQLiteStateStore(state_root / "pipeline.sqlite3")
+            publication = PublicationStateStore(state_root / "publication.sqlite3")
+            try:
+                bundle, _ = _bundle_from_exports(
+                    pipeline=pipeline.export_owned_state(),
+                    operations=operations.export_owned_state(),
+                    publication=publication.export_owned_state(),
+                    prior_root_digest=parent_root,
+                    state_parent_commit_sha=parent_commit,
+                    query_set_digest=query.query_set_digest,
+                    budget_policy_digest=DiscoveryBudgetPolicyV1().budget_policy_digest,
+                    created_at=TIMESTAMP,
+                )
+            finally:
+                pipeline.close()
+                publication.close()
+        return bundle
+
+    with OperationsStateStore(state_root / "operations.sqlite3") as operations:
+        operations.record_acceptance_fact(RUN_ID, "acceptance_nomination", nomination)
+    nomination_synced = StateBranchStore(remote).sync(
+        export_bundle(parent_commit=LOCK_HEAD, parent_root=LOCK_ROOT),
         LOCK_HEAD,
         expected_prior_root_digest=LOCK_ROOT,
         lineage_anchor=_lock_anchor(),
     )
-    authority_state_bundle = StateBranchStore(remote).restore_commit(
-        authority_synced.commit_sha,
+    lock = _fresh_lock(
+        nomination=nomination,
+        manifest=manifest,
+        source_commit=source_commit,
+        workflow_digest=workflow_digest,
+        query_set=query,
+        parent_commit=nomination_synced.commit_sha,
+        parent_root=nomination_synced.root_digest,
+    )
+    with OperationsStateStore(state_root / "operations.sqlite3") as operations:
+        operations.record_acceptance_fact(RUN_ID, "acceptance_benchmark_lock", lock)
+    lock_synced = StateBranchStore(remote).sync(
+        export_bundle(
+            parent_commit=nomination_synced.commit_sha,
+            parent_root=nomination_synced.root_digest,
+        ),
+        nomination_synced.commit_sha,
+        expected_prior_root_digest=nomination_synced.root_digest,
         lineage_anchor=_lock_anchor(),
+    )
+    authority = _live_authority(
+        lock=lock,
+        source_commit=source_commit,
+        workflow_digest=workflow_digest,
+        query_set=query,
+        state_commit=lock_synced.commit_sha,
+        state_root=lock_synced.root_digest,
+    )
+    authority_locator = AcceptanceCampaignResumeLocatorV1(
+        schema_version="acceptance-campaign-resume-locator-v1",
+        acceptance_run_id=RUN_ID,
+        live_acceptance_authority_digest=authority.authority_digest,
+        source_commit_sha=authority.source_commit_sha,
+        manifest_digest=authority.manifest_digest,
+        state_repository_id=authority.state_repository_id,
+        state_repository_full_name=authority.state_repository_full_name,
+        original_state_commit_sha=authority.state_commit_sha,
+        original_state_root_digest=authority.state_root_digest,
+        parent_state_commit_sha=lock_synced.commit_sha,
+        parent_state_root_digest=lock_synced.root_digest,
+        transition_index=1,
+        previous_locator_digest=None,
+        transition_phase="authority_carrier",
+        semantic_stage=None,
+        attempt_no=None,
+        semantic_status=None,
+        workflow_authority_digest=None,
+        semantic_provider=authority.semantic_provider,
+        stage_models=authority.stage_models,
+        prompt_versions=authority.prompt_versions,
+        schema_versions=authority.schema_versions,
+        policy_versions=authority.policy_versions,
+        recorded_at=TIMESTAMP,
+    )
+    with OperationsStateStore(state_root / "operations.sqlite3") as operations:
+        operations.record_acceptance_fact(RUN_ID, "acceptance_live_authority", authority)
+        operations.record_acceptance_fact(
+            RUN_ID, "acceptance_campaign_resume_locator", authority_locator
+        )
+    authority_synced = StateBranchStore(remote).sync(
+        export_bundle(
+            parent_commit=lock_synced.commit_sha,
+            parent_root=lock_synced.root_digest,
+        ),
+        lock_synced.commit_sha,
+        expected_prior_root_digest=lock_synced.root_digest,
+        lineage_anchor=_lock_anchor(),
+    )
+    authority_state_bundle = StateBranchStore(remote).restore_commit(
+        authority_synced.commit_sha, lineage_anchor=_lock_anchor()
     )
     _materialize_checkout(
         workspace / "authority-checkout",
         bundle=authority_state_bundle,
         commit_sha=authority_synced.commit_sha,
     )
+    first_entry = manifest.entries[0]
     with OperationsStateStore(state_root / "operations.sqlite3") as operations:
-        first_entry = manifest.entries[0]
         operations.record_acceptance_fact(
             RUN_ID,
             "acceptance_budget_reservation",
@@ -841,8 +1099,8 @@ def _setup(workspace: Path) -> dict[str, object]:
                 manifest_digest=authority.manifest_digest,
                 state_repository_id=authority.state_repository_id,
                 state_repository_full_name=authority.state_repository_full_name,
-                original_state_commit_sha=LOCK_HEAD,
-                original_state_root_digest=LOCK_ROOT,
+                original_state_commit_sha=authority.state_commit_sha,
+                original_state_root_digest=authority.state_root_digest,
                 parent_state_commit_sha=authority_synced.commit_sha,
                 parent_state_root_digest=authority_synced.root_digest,
                 transition_index=2,
@@ -860,24 +1118,11 @@ def _setup(workspace: Path) -> dict[str, object]:
                 recorded_at=TIMESTAMP,
             ),
         )
-        pipeline = SQLiteStateStore(state_root / "pipeline.sqlite3")
-        publication = PublicationStateStore(state_root / "publication.sqlite3")
-        try:
-            bundle, _ = _bundle_from_exports(
-                pipeline=pipeline.export_owned_state(),
-                operations=operations.export_owned_state(),
-                publication=publication.export_owned_state(),
-                prior_root_digest=authority_synced.root_digest,
-                state_parent_commit_sha=authority_synced.commit_sha,
-                query_set_digest=query.query_set_digest,
-                budget_policy_digest=authority.budget_policy_digest,
-                created_at=TIMESTAMP,
-            )
-        finally:
-            pipeline.close()
-            publication.close()
     StateBranchStore(remote).sync(
-        bundle,
+        export_bundle(
+            parent_commit=authority_synced.commit_sha,
+            parent_root=authority_synced.root_digest,
+        ),
         authority_synced.commit_sha,
         expected_prior_root_digest=authority_synced.root_digest,
         lineage_anchor=_lock_anchor(),
@@ -888,6 +1133,8 @@ def _setup(workspace: Path) -> dict[str, object]:
         "authority_digest": authority.authority_digest,
         "authority_head": authority_synced.commit_sha,
         "authority_root": authority_synced.root_digest,
+        "lock_head": lock_synced.commit_sha,
+        "lock_root": lock_synced.root_digest,
         "target_repository_id": manifest.entries[-1].repository_id,
     }
     _write_json(workspace / "setup.json", setup)
@@ -987,9 +1234,9 @@ def _resolve_resume_proof(
     proof = _run_cli(arguments)
     if (
         proof.get("lineage_commit_shas", [])[:2]
-        != [LOCK_HEAD, str(setup["authority_head"])]
+        != [str(setup["lock_head"]), str(setup["authority_head"])]
         or proof.get("lineage_root_digests", [])[:2]
-        != [LOCK_ROOT, str(setup["authority_root"])]
+        != [str(setup["lock_root"]), str(setup["authority_root"])]
     ):
         raise AssertionError("resume proof omitted the verified authority carrier")
     proof_path = workspace / filename
@@ -1084,6 +1331,12 @@ def crash(workspace: Path, stage: str, status: str) -> NoReturn:
             str(proof["state_commit_sha"]),
             "--state-root-digest",
             str(proof["state_root_digest"]),
+            "--authority-state-root",
+            str(workspace / "authority-checkout"),
+            "--authority-state-commit-sha",
+            str(setup["authority_head"]),
+            "--authority-state-root-digest",
+            str(setup["authority_root"]),
         ]
     )
     raise AssertionError("fault seam did not terminate after durable attempt three")
@@ -1127,6 +1380,12 @@ def resume(
             proof["state_commit_sha"],
             "--state-root-digest",
             proof["state_root_digest"],
+            "--authority-state-root",
+            str(workspace / "authority-checkout"),
+            "--authority-state-commit-sha",
+            str(setup["authority_head"]),
+            "--authority-state-root-digest",
+            str(setup["authority_root"]),
         ]
     )
     if status == "decided":
@@ -1223,11 +1482,11 @@ def resume(
             "resume_lineage_commit_shas": proof["lineage_commit_shas"],
             "resume_lineage_root_digests": proof["lineage_root_digests"],
             "expected_resume_lineage_commit_prefix": [
-                LOCK_HEAD,
+                str(setup["lock_head"]),
                 str(setup["authority_head"]),
             ],
             "expected_resume_lineage_root_prefix": [
-                LOCK_ROOT,
+                str(setup["lock_root"]),
                 str(setup["authority_root"]),
             ],
             "candidate_terminal_count": len(target_terminals),
