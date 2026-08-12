@@ -1,22 +1,18 @@
----
-gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-current_phase: 06
-current_phase_name: adversarial-mvp-acceptance
-status: executing
-stopped_at: Completed hardened 06-17-PLAN.md V2 live-authority admission
-last_updated: "2026-08-05T10:20:00Z"
-last_activity: 2026-08-05
-progress:
-  total_phases: 6
-  completed_phases: 5
-  total_plans: 79
-  completed_plans: 71
-  percent: 90
----
+# SkillScout v1 Status
 
-# Project State: SkillScout
+## Historical status metadata
+
+Retained from the pre-migration status record; this is archival context, not
+active workflow configuration.
+
+- State format version: 1.0
+- Milestone: v1.0 (`milestone`)
+- Current phase: 06 (`adversarial-mvp-acceptance`)
+- Recorded status: executing
+- Recorded stop point: Completed hardened 06-17-PLAN.md V2 live-authority admission
+- Metadata last updated: 2026-08-05T10:20:00Z
+- Metadata last activity: 2026-08-05
+- Recorded progress: 6 total phases, 5 completed; 79 total plans, 71 completed (90%)
 
 **Last updated:** 2026-08-04
 **Milestone:** v1 — Safe discovery-to-Draft-PR MVP  
@@ -27,7 +23,8 @@ progress:
 **Phase:** 06 (adversarial-mvp-acceptance) — EXECUTING
 **Plan:** 10 of 18
 **Verification:** V2 live authority is now independently rebuilt and re-admitted before any live capability boundary. Plan 06-18 must wire that closed route into the protected workflow and preserve its exact environment and workflow-byte gates before 06-08 can begin.
-**Next command:** `$gsd-execute-phase 6`
+**Next step:** Start the next Codex session with `superpowers:using-superpowers`,
+then select the Superpowers skill appropriate to the Phase 6 task.
 
 ## Progress
 
@@ -55,7 +52,7 @@ Phase 6 acceptance      [██████░░░░]  56%
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-07-22)
+See: `docs/project/product.md` (updated 2026-07-22)
 
 **Core value:** 安全、可追溯地把公开仓库中的可复用 AI 工作流转化为值得人类审核的标准 Agent Skill Draft PR。
 **Current focus:** Phase 06 — adversarial-mvp-acceptance

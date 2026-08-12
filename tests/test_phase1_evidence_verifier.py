@@ -39,11 +39,11 @@ def evidence_repository(tmp_path: Path) -> Path:
     _write(repository / "pyproject.toml", "[project]\nname='evidence-fixture'\n")
     _write(repository / "src/skillscout/__init__.py", 'VALUE = "bound"\n')
     _write(
-        repository / ".planning/phases/01-auditable-dry-run-spine/01-REVIEW.md",
+        repository / "evidence/phase-1-auditable-dry-run-spine/01-REVIEW.md",
         "# Current review\n",
     )
     _write(
-        repository / ".planning/phases/01-auditable-dry-run-spine/01-VERIFICATION.md",
+        repository / "evidence/phase-1-auditable-dry-run-spine/01-VERIFICATION.md",
         "# Current verification\n",
     )
     (repository / "tools").mkdir(parents=True)
@@ -98,7 +98,7 @@ def _successful_runner() -> CommandRunner:
 
 
 def _document(repository: Path) -> Path:
-    document = repository / ".planning/phases/01-auditable-dry-run-spine/01-GAP-VALIDATION.md"
+    document = repository / "evidence/phase-1-auditable-dry-run-spine/01-GAP-VALIDATION.md"
     document.parent.mkdir(parents=True, exist_ok=True)
     document.write_text("untrusted prior document bytes\n", encoding="utf-8")
     verifier.record_evidence(document, repository, runner=_successful_runner())
@@ -261,7 +261,7 @@ def test_record_rejects_unsafe_or_unbounded_source_authority(
         source.write_bytes(b"x" * (verifier.MAX_SOURCE_BYTES + 1))
     document = (
         evidence_repository
-        / ".planning/phases/01-auditable-dry-run-spine/01-GAP-VALIDATION.md"
+        / "evidence/phase-1-auditable-dry-run-spine/01-GAP-VALIDATION.md"
     )
 
     with pytest.raises((verifier.EvidenceError, OSError)):

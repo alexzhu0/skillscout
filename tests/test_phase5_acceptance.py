@@ -13,7 +13,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parents[1]
 INSPECTOR = PROJECT_ROOT / "tools/verify_phase5_acceptance.py"
-PHASE = Path(".planning/phases/05-automated-discovery-operations")
+PHASE = Path("evidence/phase-5-automated-discovery-operations")
 PHASE5_GATE_B4_WORKFLOW_DIGESTS = {
     Path(".github/workflows/discover.yml"): (
         "8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd"
@@ -290,12 +290,12 @@ def test_current_tree_fails_closed_until_fresh_gate_b4_evidence_is_recorded() ->
             "environment: unprotected",
         ),
         (
-            ".planning/phases/05-automated-discovery-operations/05-HOSTED-GATE-B4-APPROVAL.json",
+            "evidence/phase-5-automated-discovery-operations/05-HOSTED-GATE-B4-APPROVAL.json",
             "1ee162ea47cf86b7faec68bfba37b7a9b2af3b25472066312b43c4a5e4414cdd",
             "0" * 64,
         ),
         (
-            ".planning/phases/05-automated-discovery-operations/05-HOSTED-GATE-B4-APPROVAL.json",
+            "evidence/phase-5-automated-discovery-operations/05-HOSTED-GATE-B4-APPROVAL.json",
             "concurrency_evidence_is_not_gate_b4",
             "concurrency_evidence_is_gate_b4",
         ),

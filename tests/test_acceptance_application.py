@@ -1018,7 +1018,7 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     fresh_lock, live_authority = _fresh_live_evidence_for_manifest(manifest)
     observed: list[object] = []
@@ -1187,12 +1187,30 @@ def test_live_authority_runs_exact_five_without_exposing_evaluator_roles() -> No
     assert resumed.state_root_digest == result.state_root_digest
 
 
+def test_locked_manifest_loader_rejects_the_retired_locator_even_with_canonical_bytes(
+    tmp_path: Path,
+) -> None:
+    module = _application_module(skip_if_missing=False)
+    legacy = (
+        tmp_path
+        / ".planning/phases/06-adversarial-mvp-acceptance"
+        / "06-BENCHMARK-MANIFEST.json"
+    )
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(
+        (ROOT / "config/acceptance/phase6/benchmark-manifest.json").read_bytes()
+    )
+
+    with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+        module.load_locked_benchmark_manifest(legacy)
+
+
 def test_locked_benchmark_rejects_historical_v1_before_discovery_factory() -> None:
     """Historical facts stay inspectable but cannot start semantic benchmark work."""
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     historical = LiveAcceptanceAuthorityV1.model_construct(
         schema_version="live-acceptance-authority-v1",
@@ -1253,7 +1271,7 @@ def test_live_authority_recorder_allows_one_exact_authority_only() -> None:
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     authority = _live_authority_for_manifest(manifest)
     persisted: list[Any] = []
@@ -1323,7 +1341,7 @@ def _run_attempt_boundary_benchmark(
 ) -> tuple[Any | None, list[Any]]:
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     live_authority = _live_authority_for_manifest(manifest)
     fresh_lock = live_authority.benchmark_lock
@@ -1509,7 +1527,7 @@ def test_exact_replay_reuses_completed_projection_with_zero_live_effects() -> No
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     events: list[str] = []
 
@@ -1626,7 +1644,7 @@ def test_exact_replay_blocks_when_post_write_campaign_projection_changes() -> No
 
     module = _application_module(skip_if_missing=False)
     manifest = module.load_locked_benchmark_manifest(
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     calls = 0
 

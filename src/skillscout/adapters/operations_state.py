@@ -44,6 +44,7 @@ from skillscout.domain.acceptance import (
     ChangedSourceDraftUpdateCompletionV1,
     ChangedSourceEvidenceV1,
     GateB4BindingV1,
+    HistoricalLiveAcceptanceAuthorityV1,
     HostedIsolationCapabilityV1,
     HumanSkillReviewAttestationV1,
     LiveAcceptanceAuthorityV1,
@@ -238,6 +239,7 @@ _AcceptanceFactModel: TypeAlias = (
     NominationSetV1
     | LockedBenchmarkManifestV1
     | LockedBenchmarkManifestV2
+    | HistoricalLiveAcceptanceAuthorityV1
     | LiveAcceptanceAuthorityV1
     | LiveAcceptanceAuthorityV2
     | AcceptanceCampaignResumeLocatorV1
@@ -994,6 +996,14 @@ def _validate_acceptance_model(
     if not isinstance(raw, dict) or _contains_forbidden_acceptance_key(raw):
         raise OperationsIntegrityError("acceptance fact kind or redaction boundary is invalid")
     model = _acceptance_fact_model(kind, raw.get("schema_version"))
+    if (
+        kind == "acceptance_live_authority"
+        and raw.get("schema_version") == "live-acceptance-authority-v1"
+        and raw.get("manifest_path")
+        == ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    ):
+        model = HistoricalLiveAcceptanceAuthorityV1
     if model is None:
         raise OperationsIntegrityError("acceptance fact kind or schema version is invalid")
     try:
@@ -1141,11 +1151,15 @@ def _selection_manifest_for_live_authority(
     connection: sqlite3.Connection,
     *,
     acceptance_run_id: str,
-    authority: LiveAcceptanceAuthorityV1 | LiveAcceptanceAuthorityV2,
+    authority: (
+        HistoricalLiveAcceptanceAuthorityV1
+        | LiveAcceptanceAuthorityV1
+        | LiveAcceptanceAuthorityV2
+    ),
 ) -> LockedBenchmarkManifestV1:
     """Bind a live authority to its sole immutable V1 selection preimage."""
 
-    if type(authority) is LiveAcceptanceAuthorityV1:
+    if type(authority) in {HistoricalLiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV1}:
         lock = _acceptance_fact_by_digest(
             connection,
             acceptance_run_id=acceptance_run_id,
@@ -1264,7 +1278,11 @@ def _validate_acceptance_references(
             raise OperationsIntegrityError(
                 "scenario live authority is missing"
             ) from None
-        if type(authority) not in {LiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV2}:
+        if type(authority) not in {
+            HistoricalLiveAcceptanceAuthorityV1,
+            LiveAcceptanceAuthorityV1,
+            LiveAcceptanceAuthorityV2,
+        }:
             raise OperationsIntegrityError("scenario live authority is invalid")
         if authority.manifest_digest != fact.benchmark_manifest_digest:
             raise OperationsIntegrityError(
@@ -1654,7 +1672,7 @@ def _validate_acceptance_references(
             )
             _validate_v2_benchmark_lock_selection(fact, nomination)
     elif kind == "acceptance_live_authority":
-        if type(fact) is LiveAcceptanceAuthorityV1:
+        if type(fact) in {HistoricalLiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV1}:
             manifest = _acceptance_fact_by_digest(
                 connection,
                 acceptance_run_id=acceptance_run_id,
@@ -1705,7 +1723,11 @@ def _validate_acceptance_references(
             kind="acceptance_live_authority",
             digest=fact.live_acceptance_authority_digest,
         )
-        if type(authority) not in {LiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV2}:
+        if type(authority) not in {
+            HistoricalLiveAcceptanceAuthorityV1,
+            LiveAcceptanceAuthorityV1,
+            LiveAcceptanceAuthorityV2,
+        }:
             raise OperationsIntegrityError("campaign resume authority is invalid")
         if (
             fact.source_commit_sha != authority.source_commit_sha

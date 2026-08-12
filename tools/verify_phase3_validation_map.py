@@ -16,7 +16,7 @@ from typing import NamedTuple
 
 MAX_PLAN_BYTES = 65_536
 MAX_MAP_BYTES = 65_536
-PHASE_DIRECTORY = Path(".planning/phases/03-validated-skill-candidate")
+PHASE_DIRECTORY = Path("evidence/phase-3-validated-skill-candidate")
 PLAN_NAMES = tuple(f"03-{number:02d}-PLAN.md" for number in range(1, 15))
 VALIDATION_NAME = "03-VALIDATION.md"
 SUCCESS_DIAGNOSTIC = "phase3 validation map valid"

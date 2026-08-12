@@ -13,7 +13,7 @@ from typing import Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PHASE = ROOT / ".planning/phases/06-adversarial-mvp-acceptance"
+PHASE = ROOT / "evidence/phase-6-adversarial-mvp-acceptance"
 VALIDATION = PHASE / "06-VALIDATION.md"
 SUCCESS = "phase6 validation map valid"
 FAILURE = "phase6 validation map invalid"
@@ -37,7 +37,7 @@ WAVE_ZERO_FILES = {
     "tools/verify_phase6_red_contracts.py": "06-01-01",
     "tests/test_acceptance_application.py": "06-01-02",
     "tests/test_semantic_provider.py": "06-01-02",
-    ".planning/phases/06-adversarial-mvp-acceptance/06-VALIDATION.md": "06-01-03",
+    "evidence/phase-6-adversarial-mvp-acceptance/06-VALIDATION.md": "06-01-03",
     "tools/verify_phase6_validation_map.py": "06-01-03",
     "tools/verify_phase6_acceptance.py": "06-01-03",
     "tests/test_phase6_adversarial.py": "06-02-01",
@@ -140,6 +140,17 @@ class InvalidMap(Exception):
     pass
 
 
+def archival_path(value: str) -> str:
+    """Resolve the sole historical Phase 6 locator without rewriting evidence."""
+
+    historical = ".planning/phases/06-adversarial-mvp-acceptance/"
+    if value.startswith(historical):
+        return "evidence/phase-6-adversarial-mvp-acceptance/" + value.removeprefix(
+            historical
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class Plan:
     plan_id: str
@@ -225,7 +236,7 @@ def parse_plans() -> tuple[dict[str, Plan], dict[str, Task]]:
             )
             files = (
                 tuple(
-                    item.strip()
+                    archival_path(item.strip())
                     for item in file_match.group(1).split(",")
                     if item.strip()
                 )
@@ -302,7 +313,7 @@ def parse_registry(source: str) -> tuple[dict[str, tuple[str, tuple[str, ...]]],
             continue
         cells = tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
         require(len(cells) == 2)
-        files[cells[0].strip("`")] = cells[1]
+        files[archival_path(cells[0].strip("`"))] = cells[1]
     return registry, files
 
 
@@ -443,7 +454,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         global ROOT, PHASE, VALIDATION
         if args.repository_root is not None:
             ROOT = args.repository_root.resolve()
-            PHASE = ROOT / ".planning/phases/06-adversarial-mvp-acceptance"
+            PHASE = ROOT / "evidence/phase-6-adversarial-mvp-acceptance"
             VALIDATION = PHASE / "06-VALIDATION.md"
         require(not (args.plan_contract and args.wave_zero_complete))
         verify(wave_zero_complete=args.wave_zero_complete)

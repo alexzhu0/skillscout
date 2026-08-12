@@ -1,5 +1,3 @@
-<!-- GSD:project-start source:PROJECT.md -->
-
 ## Project
 
 **SkillScout**
@@ -21,10 +19,6 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 - **阶段隔离**: 每个阶段具有明确的带版本输入输出 schema，失败可单独重试，不依赖隐式共享状态 — 保证可审计性和可测试性。
 - **成本**: 单次运行的候选数和 LLM 调用数必须有硬上限 — 避免 GitHub API 与模型成本失控。
 - **兼容性**: 第一版只支持公开 GitHub 仓库和中央 Agent Skills 仓库 — 暂不抽象为多提供商、多租户平台。
-
-<!-- GSD:project-end -->
-
-<!-- GSD:stack-start source:research/STACK.md -->
 
 ## Technology Stack
 
@@ -109,51 +103,29 @@ SkillScout 是一个 Agent Skill 自动发现与生成系统，面向维护中�
 - [GitHub Actions token guidance](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)
 - [GitHub Actions secrets guidance](https://docs.github.com/en/actions/concepts/security/secrets)
 
-<!-- GSD:stack-end -->
-
-<!-- GSD:conventions-start source:CONVENTIONS.md -->
-
 ## Conventions
 
 Conventions not yet established. Will populate as patterns emerge during development.
-<!-- GSD:conventions-end -->
-
-<!-- GSD:architecture-start source:ARCHITECTURE.md -->
-
 ## Architecture
 
 Architecture not yet mapped. Follow existing patterns found in the codebase.
-<!-- GSD:architecture-end -->
-
-<!-- GSD:skills-start source:skills/ -->
-
 ## Project Skills
 
 No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/`, with the standard Agent Skill index file inside each skill directory.
-<!-- GSD:skills-end -->
+## Superpowers Development Workflow
 
-<!-- GSD:workflow-start source:GSD defaults -->
+Every new Codex development session must first invoke
+`superpowers:using-superpowers` and follow its instructions. Then invoke every
+applicable Superpowers skill before acting: use `superpowers:brainstorming`
+before creative work, `superpowers:writing-plans` before multi-step
+implementation, `superpowers:test-driven-development` for features and bug
+fixes, `superpowers:systematic-debugging` for unexpected behavior, and
+`superpowers:verification-before-completion` before claiming completion. Use
+any additional Superpowers skill whenever its documented trigger applies.
 
-## GSD Workflow Enforcement
-
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
-
-Use these entry points:
-
-- `/gsd-quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd-debug` for investigation and bug fixing
-- `/gsd-execute-phase` for planned phase work
-
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-<!-- GSD:workflow-end -->
-
-<!-- GSD:profile-start -->
-
-## Developer Profile
-
-> Profile not yet configured. Run `/gsd-profile-user` to generate your developer profile.
-> This section is managed by `generate-claude-profile` -- do not edit manually.
-<!-- GSD:profile-end -->
+Do not use `$gsd-*` commands, GSD agents, hooks, configuration, or `.planning/`
+as the current development mechanism. Historical GSD records are archival
+evidence only and must not be rewritten to alter historical facts.
 
 ## Current Implementation Status
 

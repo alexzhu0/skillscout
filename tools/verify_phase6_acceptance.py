@@ -23,7 +23,8 @@ INCOMPLETE = "phase6 acceptance incomplete"
 INVALID = "phase6 acceptance registry invalid"
 REPOSITORY_SUCCESS = "phase6 repository contract valid"
 _MAX_REPOSITORY_FILE_BYTES = 2_000_000
-_PHASE = Path(".planning/phases/06-adversarial-mvp-acceptance")
+_PHASE = Path("evidence/phase-6-adversarial-mvp-acceptance")
+_MANIFEST = Path("config/acceptance/phase6/benchmark-manifest.json")
 _PHASE_PLAN_COUNT = 18
 _PHASE_TASK_COUNT = 47
 _PHASE_REGISTRY_SURFACE_COUNT = 85
@@ -47,12 +48,12 @@ _REQUIRED_REPOSITORY_FILES = (
     Path("uv.lock"),
     Path("AGENTS.md"),
     Path("RELEASE.md"),
-    Path(".planning/PROJECT.md"),
-    Path(".planning/ROADMAP.md"),
-    Path(".planning/REQUIREMENTS.md"),
-    Path(".planning/STATE.md"),
+    Path("docs/project/product.md"),
+    Path("docs/project/v1-roadmap.md"),
+    Path("docs/project/v1-requirements.md"),
+    Path("docs/project/v1-status.md"),
     _PHASE / "06-AI-SPEC.md",
-    _PHASE / "06-BENCHMARK-MANIFEST.json",
+    _MANIFEST,
     _PHASE / "06-CONTEXT.md",
     _PHASE / "06-PATTERNS.md",
     _PHASE / "06-RESEARCH.md",
@@ -512,7 +513,7 @@ def _verify_plan_validation_contract(root: Path) -> tuple[int, int]:
 
 
 def _verify_requirement_contract(root: Path) -> tuple[str, ...]:
-    source = _repository_text(root, Path(".planning/REQUIREMENTS.md"))
+    source = _repository_text(root, Path("docs/project/v1-requirements.md"))
     identifiers = tuple(
         re.findall(
             r"^- \[[ x]\] \*\*([A-Z]+-\d{2})\*\*:",
@@ -581,7 +582,7 @@ def _verify_manifest_and_model_contract(root: Path) -> None:
     from skillscout.domain.acceptance import LockedBenchmarkManifestV1
     from skillscout.domain.canonical import canonical_json_bytes
 
-    manifest_bytes = _repository_bytes(root, _PHASE / "06-BENCHMARK-MANIFEST.json")
+    manifest_bytes = _repository_bytes(root, _MANIFEST)
     try:
         manifest = LockedBenchmarkManifestV1.model_validate_json(manifest_bytes, strict=True)
     except Exception:
@@ -642,7 +643,7 @@ def _verify_manifest_and_model_contract(root: Path) -> None:
 
 
 def _verify_current_and_historical_state(root: Path) -> None:
-    state = _repository_text(root, Path(".planning/STATE.md"))
+    state = _repository_text(root, Path("docs/project/v1-status.md"))
     summary = _repository_text(root, _PHASE / "06-15-SUMMARY.md")
     actual = tuple(
         hashlib.sha256(_repository_bytes(root, workflow)).hexdigest() for workflow in _WORKFLOWS

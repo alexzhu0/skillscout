@@ -24,11 +24,11 @@ def acceptance_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
     shutil.copytree(PROJECT_ROOT / "src", repository / "src")
     shutil.copytree(PROJECT_ROOT / ".github", repository / ".github")
-    phase = repository / ".planning/phases/04-controlled-draft-pr"
+    phase = repository / "evidence/phase-4-controlled-draft-pr"
     phase.mkdir(parents=True)
     for name in ("04-08-SUMMARY.md", "04-10-SUMMARY.md"):
         shutil.copy2(
-            PROJECT_ROOT / ".planning/phases/04-controlled-draft-pr" / name,
+            PROJECT_ROOT / "evidence/phase-4-controlled-draft-pr" / name,
             phase / name,
         )
     workflow = repository / ".github/workflows/publish-candidate.yml"
@@ -114,17 +114,17 @@ def test_current_tree_fails_closed_until_fresh_gate_b4_evidence_is_recorded() ->
             "environment: unprotected",
         ),
         (
-            ".planning/phases/04-controlled-draft-pr/04-08-SUMMARY.md",
+            "evidence/phase-4-controlled-draft-pr/04-08-SUMMARY.md",
             "d3d5f8a3480d55b7cf7278505f92e8f96ccd6622683f95401dd739f916aae622",
             "0" * 64,
         ),
         (
-            ".planning/phases/04-controlled-draft-pr/04-10-SUMMARY.md",
+            "evidence/phase-4-controlled-draft-pr/04-10-SUMMARY.md",
             "Default-ref update | 422 | validation",
             "Default-ref update | 200 | success",
         ),
         (
-            ".planning/phases/04-controlled-draft-pr/04-10-SUMMARY.md",
+            "evidence/phase-4-controlled-draft-pr/04-10-SUMMARY.md",
             "PRs `#3` and `#4` are closed, not merged.",
             "cleanup pending",
         ),

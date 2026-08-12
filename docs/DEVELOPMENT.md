@@ -1,6 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
-<!-- GSD:DOC generated -->
-
 # SkillScout Development
 
 This guide is for maintainers changing SkillScout's pipeline, contracts, adapters, and controlled publication path. Read [Architecture](ARCHITECTURE.md) before changing a stage boundary and [Configuration](CONFIGURATION.md) before adding runtime settings or credentials.
@@ -198,7 +195,14 @@ Treat state databases, manifests, frozen candidate packages, validation reports,
 - Do not weaken stable-read checks, byte caps, file-type gates, canonical JSON, digest comparison, or fail-closed overwrite behavior.
 - Never commit credentials or copy real secret values into fixtures. Security fixtures should use unmistakably synthetic sentinels.
 
-Before changing repository files, follow the workflow entry points and editing rules in [AGENTS.md](../AGENTS.md). Direct edits outside that workflow require an explicit user request to bypass it.
+Before changing repository files, first invoke `superpowers:using-superpowers`
+and then follow every applicable Superpowers skill. Use
+`superpowers:brainstorming` before creative work,
+`superpowers:writing-plans` before multi-step implementation,
+`superpowers:test-driven-development` for features and bug fixes,
+`superpowers:systematic-debugging` for unexpected behavior, and
+`superpowers:verification-before-completion` before claiming completion. See
+[AGENTS.md](../AGENTS.md) for the complete repository rules and secret boundary.
 
 ## Test-driven and mutation expectations
 

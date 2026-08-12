@@ -21,8 +21,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIER_PATH = ROOT / "tools/verify_phase6_acceptance.py"
-VALIDATION_PATH = ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-VALIDATION.md"
-REQUIREMENTS_PATH = ROOT / ".planning/REQUIREMENTS.md"
+VALIDATION_PATH = ROOT / "evidence/phase-6-adversarial-mvp-acceptance/06-VALIDATION.md"
+REQUIREMENTS_PATH = ROOT / "docs/project/v1-requirements.md"
 
 
 def _verifier() -> Any:
@@ -87,9 +87,10 @@ def _replace_once(path: Path, old: str, new: str) -> None:
 
 
 def _mutate_acceptance_repository(repository: Path, mutation: str) -> None:
-    phase = repository / ".planning/phases/06-adversarial-mvp-acceptance"
+    phase = repository / "evidence/phase-6-adversarial-mvp-acceptance"
+    manifest = repository / "config/acceptance/phase6/benchmark-manifest.json"
     if mutation == "missing_evidence":
-        (phase / "06-BENCHMARK-MANIFEST.json").unlink()
+        manifest.unlink()
     elif mutation == "swapped_evidence":
         discover = repository / ".github/workflows/discover.yml"
         publish = repository / ".github/workflows/publish-candidate.yml"
@@ -107,14 +108,13 @@ def _mutate_acceptance_repository(repository: Path, mutation: str) -> None:
             encoding="utf-8",
         )
     elif mutation == "stale_evidence":
-        state = repository / ".planning/STATE.md"
+        state = repository / "docs/project/v1-status.md"
         _replace_once(
             state,
             "7eca32de7c0468d18c180ebecf567d7239412e54c2776e43621930b894570f63",
             "0" * 64,
         )
     elif mutation == "self_referential_evidence":
-        manifest = phase / "06-BENCHMARK-MANIFEST.json"
         payload = json.loads(manifest.read_bytes())
         payload["prior_manifest_digest"] = payload["manifest_digest"]
         manifest.write_text(
@@ -141,7 +141,7 @@ def _mutate_acceptance_repository(repository: Path, mutation: str) -> None:
         )
     elif mutation == "stale_gate_b4":
         _replace_once(
-            repository / ".planning/STATE.md",
+            repository / "docs/project/v1-status.md",
             "Gate B4 evidence remains historical",
             "Gate B4 evidence is current",
         )
@@ -169,7 +169,6 @@ def _mutate_acceptance_repository(repository: Path, mutation: str) -> None:
             "| TEST-01 | 06-01-01 |",
         )
     elif mutation == "benchmark_lock_mismatch":
-        manifest = phase / "06-BENCHMARK-MANIFEST.json"
         payload = bytearray(manifest.read_bytes())
         index = payload.index(b'"entry_digest":"sha256:') + len(b'"entry_digest":"sha256:')
         payload[index] = ord("0") if payload[index] != ord("0") else ord("1")
@@ -297,10 +296,10 @@ def test_independent_verifier_rejects_symlinked_parent_and_root_escape(
 ) -> None:
     verifier = _repository_verifier()
     error = sys.modules[verifier.__module__].AcceptanceError
-    real_planning = acceptance_repository / ".planning"
-    moved_planning = tmp_path / "moved-planning"
-    real_planning.rename(moved_planning)
-    real_planning.symlink_to(moved_planning, target_is_directory=True)
+    real_evidence = acceptance_repository / "evidence"
+    moved_evidence = tmp_path / "moved-evidence"
+    real_evidence.rename(moved_evidence)
+    real_evidence.symlink_to(moved_evidence, target_is_directory=True)
     with pytest.raises(error):
         verifier(acceptance_repository)
 
@@ -328,10 +327,10 @@ def test_wave_zero_never_fabricates_a_positive_release_verdict() -> None:
     assert module.main([]) == 1
     assert module.main(["--registry-only"]) == 0
     assert not (
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-ACCEPTANCE-REPORT.md"
+        ROOT / "evidence/phase-6-adversarial-mvp-acceptance/06-ACCEPTANCE-REPORT.md"
     ).exists()
     assert not (
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-RELEASE-REQUIREMENTS.json"
+        ROOT / "evidence/phase-6-adversarial-mvp-acceptance/06-RELEASE-REQUIREMENTS.json"
     ).exists()
 
 
@@ -396,7 +395,7 @@ def test_search_credential_gate_rejects_a_stale_canonical_state_identity() -> No
 
 
 def test_future_requirement_map_must_be_canonical_and_exactly_all_44() -> None:
-    path = ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-RELEASE-REQUIREMENTS.json"
+    path = ROOT / "evidence/phase-6-adversarial-mvp-acceptance" / "06-RELEASE-REQUIREMENTS.json"
     if not path.exists():
         pytest.skip("phase6-release-requirement-map-not-yet-built")
     raw = path.read_bytes()
@@ -664,8 +663,7 @@ def _fresh_live_authority_admission_inputs() -> tuple[object, object, object]:
         acceptance_workflow_sha256=lock.acceptance_workflow_sha256,
         source_state_binding_digest=lock.source_state_binding_digest,
         manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         ),
         manifest_digest=lock.selection_manifest_digest,
         selection_manifest_digest=lock.selection_manifest_digest,
@@ -1224,7 +1222,7 @@ def test_acceptance_runtime_loads_only_exact_resolver_proof(
         "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
     }
     manifest_path = (
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     manifest = acceptance_application.load_locked_benchmark_manifest(manifest_path)
     live_admission = acceptance_application.LiveExecutionAdmissionV2(
@@ -1803,7 +1801,7 @@ def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     from skillscout.domain.discovery import DiscoveryBudgetPolicyV1, DiscoveryQuerySetV1
 
     manifest_relative = Path(
-        ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+        "config/acceptance/phase6/benchmark-manifest.json"
     )
     workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
     query_relative = Path("config/discovery-queries-v1.json")
@@ -4915,7 +4913,7 @@ def test_completed_projector_rejects_unverified_state_locator(
     from skillscout.application.acceptance import load_locked_benchmark_manifest
 
     manifest = load_locked_benchmark_manifest(
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     verified = {
         ("a" * 40, "sha256:" + ("b" * 64)),
@@ -4959,11 +4957,7 @@ def test_acceptance_runtime_rejects_missing_v2_admission_before_provider_resolut
 
     with pytest.raises(ValueError, match="acceptance runtime configuration rejected"):
         bootstrap.load_acceptance_runtime_config(
-            manifest_path=(
-                ROOT
-                / ".planning/phases/06-adversarial-mvp-acceptance"
-                / "06-BENCHMARK-MANIFEST.json"
-            ),
+            manifest_path=(ROOT / "config/acceptance/phase6/benchmark-manifest.json"),
             state_commit_sha="a" * 40,
             state_root_digest="sha256:" + ("b" * 64),
             environ={"PHASE6_AUTHORITY_DIGEST": "sha256:" + ("c" * 64)},
@@ -4981,7 +4975,7 @@ def test_live_execution_builder_rejects_missing_v2_admission_before_discovery_fa
     from skillscout.application import acceptance
 
     manifest_path = (
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     manifest = acceptance.load_locked_benchmark_manifest(manifest_path)
     config = bootstrap.AcceptanceRuntimeConfig(
@@ -5030,7 +5024,7 @@ def test_live_replay_builder_dispatches_state_only_dependencies(
     import skillscout.bootstrap as bootstrap
 
     manifest_path = (
-        ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
     )
     manifest = acceptance.load_locked_benchmark_manifest(manifest_path)
     config = bootstrap.AcceptanceRuntimeConfig(
@@ -5223,7 +5217,7 @@ def test_production_replay_rejects_historical_authority_before_terminal_graph(
         authority_version=1,
         source_commit_sha="c" * 40,
         acceptance_workflow_sha256="sha256:" + ("d" * 64),
-        manifest_path=(".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"),
+        manifest_path=("config/acceptance/phase6/benchmark-manifest.json"),
         manifest_digest=manifest.manifest_digest,
         nomination_set_digest=manifest.nomination_set_digest,
         lock_attestation_digest=manifest.lock_attestation.attestation_digest,
@@ -5505,7 +5499,7 @@ def test_production_replay_rejects_historical_authority_before_terminal_graph(
     )
     config = bootstrap.AcceptanceRuntimeConfig(
         manifest_path=(
-            ROOT / ".planning/phases/06-adversarial-mvp-acceptance" / "06-BENCHMARK-MANIFEST.json"
+            ROOT / "config/acceptance/phase6/benchmark-manifest.json"
         ),
         manifest=manifest,
         state_commit_sha="d" * 40,
@@ -6256,8 +6250,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         acceptance_workflow_sha256=fresh_lock.acceptance_workflow_sha256,
         source_state_binding_digest=fresh_lock.source_state_binding_digest,
         manifest_path=(
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         ),
         manifest_digest=fresh_lock.selection_manifest_digest,
         selection_manifest_digest=fresh_lock.selection_manifest_digest,
@@ -6542,7 +6535,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
 
     config = bootstrap.AcceptanceRuntimeConfig(
         manifest_path=(
-            ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+            ROOT / "config/acceptance/phase6/benchmark-manifest.json"
         ),
         manifest=manifest,
         state_commit_sha=authority.state_commit_sha,

@@ -1941,8 +1941,9 @@ def load_locked_benchmark_manifest(path: Path) -> LockedBenchmarkManifestV1:
 
     if (
         not isinstance(path, Path)
-        or path.name != "06-BENCHMARK-MANIFEST.json"
-        or path.parent.name != "06-adversarial-mvp-acceptance"
+        or path.name != "benchmark-manifest.json"
+        or path.parent.name != "phase6"
+        or path.parent.parent.name != "acceptance"
     ):
         raise AcceptanceApplicationError("evidence_missing")
     try:

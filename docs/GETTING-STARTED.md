@@ -1,6 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
-<!-- GSD:DOC generated -->
-
 # Getting Started
 
 This guide takes a maintained SkillScout checkout from locked dependency setup to its first safe, offline result. Live semantic-provider access and Draft PR publication are optional, separate steps with additional authority requirements. The automated operations path is implemented and Phase 5 is verified, but Phase 6 adversarial acceptance is still pending; do not treat this checkout as production-ready.

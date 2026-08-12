@@ -34,7 +34,7 @@ _GENERATED_RECORD_NAMES = frozenset({"INSTALLER", "RECORD", "REQUESTED"})
 _VALIDATOR_MODULE_RECORD_PATH = "skills_ref/__init__.py"
 _DISCOVERY_QUERY_SET_NAME = "discovery-queries-v1.json"
 _DISCOVERY_STATE_REF = "refs/heads/skillscout-state"
-_ACCEPTANCE_MANIFEST_NAME = "06-BENCHMARK-MANIFEST.json"
+_ACCEPTANCE_MANIFEST_NAME = "benchmark-manifest.json"
 _ACCEPTANCE_MANIFEST_BYTES = 1_048_576
 _DISCOVERY_DATABASE_LOCATORS = (
     "state/databases/pipeline.sqlite3",
@@ -261,7 +261,7 @@ def verify_live_acceptance_authority(
 
     try:
         manifest_relative = Path(
-            ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         )
         workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
         query_relative = Path("config/discovery-queries-v1.json")
@@ -968,7 +968,7 @@ def load_fresh_campaign_lock_runtime_config(
         if _checked_out_repository_commit(root) != source_commit_sha:
             raise ValueError
         manifest_relative = Path(
-            ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         )
         workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
         manifest_bytes = _read_exact_checked_out_source_file(
@@ -1132,7 +1132,7 @@ def load_live_authority_recording_runtime_config(
         if _checked_out_repository_commit(root) != source_commit_sha:
             raise ValueError
         manifest_relative = Path(
-            ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         )
         workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
         query_relative = Path("config") / _DISCOVERY_QUERY_SET_NAME
@@ -1744,8 +1744,7 @@ def record_live_acceptance_authority_v2(
             acceptance_workflow_sha256=lock.acceptance_workflow_sha256,
             source_state_binding_digest=lock.source_state_binding_digest,
             manifest_path=(
-                ".planning/phases/06-adversarial-mvp-acceptance/"
-                "06-BENCHMARK-MANIFEST.json"
+                "config/acceptance/phase6/benchmark-manifest.json"
             ),
             manifest_digest=lock.selection_manifest_digest,
             selection_manifest_digest=lock.selection_manifest_digest,
@@ -1903,7 +1902,7 @@ def _verify_live_execution_admission_source(admission: object) -> None:
     if _checked_out_repository_commit(root) != authority.source_commit_sha:
         raise ValueError("live execution source admission rejected")
     manifest_relative = Path(
-        ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+        "config/acceptance/phase6/benchmark-manifest.json"
     )
     workflow_relative = Path(".github/workflows/phase6-acceptance.yml")
     query_relative = Path("config") / _DISCOVERY_QUERY_SET_NAME

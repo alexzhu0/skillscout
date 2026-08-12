@@ -16,7 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/phase6-acceptance.yml"
-SUMMARY = ROOT / ".planning/phases/06-adversarial-mvp-acceptance/06-02-SUMMARY.md"
+SUMMARY = ROOT / "evidence/phase-6-adversarial-mvp-acceptance/06-02-SUMMARY.md"
 CHECKOUT_SHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 UPLOAD_ARTIFACT_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
@@ -1104,8 +1104,7 @@ def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in resume_suffix
     assert (
         "PHASE6_MANIFEST: "
-        ".planning/phases/06-adversarial-mvp-acceptance/"
-        "06-BENCHMARK-MANIFEST.json" in preflight
+        "config/acceptance/phase6/benchmark-manifest.json" in preflight
     )
     assert "verify-live-authority" in preflight
     assert "resolve-acceptance-resume" in preflight
@@ -1144,7 +1143,7 @@ def test_deepseek_only_exact_manifest_jobs_are_distinct_and_bounded() -> None:
     live = _job(source, "live_benchmark")
     replay = _job(source, "live_replay")
 
-    canonical = ".planning/phases/06-adversarial-mvp-acceptance/06-BENCHMARK-MANIFEST.json"
+    canonical = "config/acceptance/phase6/benchmark-manifest.json"
     assert f"PHASE6_MANIFEST: {canonical}" in preflight
     assert f"PHASE6_MANIFEST: {canonical}" in live
     assert f"PHASE6_MANIFEST: {canonical}" in replay

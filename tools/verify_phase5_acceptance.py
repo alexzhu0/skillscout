@@ -33,7 +33,7 @@ QUERY_CONFIG = Path("config/discovery-queries-v1.json")
 DISCOVER_WORKFLOW = Path(".github/workflows/discover.yml")
 PUBLISH_WORKFLOW = Path(".github/workflows/publish-candidate.yml")
 CANARY_WORKFLOW = Path(".github/workflows/gate-b4-canary.yml")
-PHASE = Path(".planning/phases/05-automated-discovery-operations")
+PHASE = Path("evidence/phase-5-automated-discovery-operations")
 EVIDENCE = PHASE / "05-HOSTED-GATE-B4-EVIDENCE.json"
 APPROVAL = PHASE / "05-HOSTED-GATE-B4-APPROVAL.json"
 

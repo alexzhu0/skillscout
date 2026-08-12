@@ -16,7 +16,7 @@ from typing import NamedTuple
 MAX_SOURCE_BYTES = 2_000_000
 SUCCESS_DIAGNOSTIC = "phase4 acceptance valid"
 FAILURE_DIAGNOSTIC = "phase4 acceptance invalid"
-PHASE = Path(".planning/phases/04-controlled-draft-pr")
+PHASE = Path("evidence/phase-4-controlled-draft-pr")
 DOMAIN = Path("src/skillscout/domain/publication.py")
 ADAPTER = Path("src/skillscout/adapters/github_publish.py")
 RECOVERY = Path("src/skillscout/application/publication.py")

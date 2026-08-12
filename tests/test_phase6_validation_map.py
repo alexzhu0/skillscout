@@ -26,15 +26,15 @@ CHECKER_SPEC.loader.exec_module(checker)
 def planning_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
     shutil.copytree(
-        PROJECT_ROOT / ".planning/phases/06-adversarial-mvp-acceptance",
-        repository / ".planning/phases/06-adversarial-mvp-acceptance",
+        PROJECT_ROOT / "evidence/phase-6-adversarial-mvp-acceptance",
+        repository / "evidence/phase-6-adversarial-mvp-acceptance",
         ignore=shutil.ignore_patterns("*-SUMMARY.md", "06-RESEARCH.md"),
     )
     return repository
 
 
 def _phase(repository: Path) -> Path:
-    return repository / ".planning/phases/06-adversarial-mvp-acceptance"
+    return repository / "evidence/phase-6-adversarial-mvp-acceptance"
 
 
 def _mutate(path: Path, mutation: Callable[[str], str]) -> None:

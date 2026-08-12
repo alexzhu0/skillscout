@@ -1058,8 +1058,7 @@ def test_live_authority_contract_binds_human_approval_and_every_effect_identity(
         "source_commit_sha": SHA_A,
         "acceptance_workflow_sha256": DIGEST_A,
         "manifest_path": (
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         ),
         "manifest_digest": DIGEST_B,
         "nomination_set_digest": DIGEST_C,
@@ -1118,6 +1117,80 @@ def test_live_authority_contract_binds_human_approval_and_every_effect_identity(
         contract(**{**values, "max_semantic_requests": 21})
 
 
+def test_legacy_live_authority_locator_is_historical_read_only() -> None:
+    """The old locator can be decoded as archival evidence, never as a new authority."""
+
+    module = _acceptance_module(skip_if_missing=False)
+    active = module.LiveAcceptanceAuthorityV1
+    values = {
+        "schema_version": "live-acceptance-authority-v1",
+        "authority_version": 1,
+        "source_commit_sha": SHA_A,
+        "acceptance_workflow_sha256": DIGEST_A,
+        "manifest_path": (
+            ".planning/phases/06-adversarial-mvp-acceptance/"
+            "06-BENCHMARK-MANIFEST.json"
+        ),
+        "manifest_digest": DIGEST_B,
+        "nomination_set_digest": DIGEST_C,
+        "lock_attestation_digest": "sha256:" + ("d" * 64),
+        "state_commit_sha": SHA_B,
+        "state_root_digest": "sha256:" + ("e" * 64),
+        "state_repository_id": 123,
+        "state_repository_full_name": "example/state",
+        "query_set_digest": "sha256:" + ("f" * 64),
+        "budget_policy_digest": "sha256:" + ("1" * 64),
+        "semantic_provider": "deepseek",
+        "provider_base_url": "https://api.deepseek.com",
+        "stage_models": (
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+        "prompt_versions": (
+            "extract-prompt-v1",
+            "generator-prompt-v1",
+            "reviewer-prompt-v1",
+        ),
+        "schema_versions": (
+            "workflow-spec-v1",
+            "generation-draft-v1",
+            "reviewer-judgment-v1",
+        ),
+        "policy_versions": (
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        "max_candidates": 100,
+        "max_semantic_candidates": 20,
+        "max_semantic_requests": 20,
+        "max_files_per_repository": 25,
+        "max_source_files_per_repository": 5,
+        "max_file_bytes": 131_072,
+        "max_total_bytes_per_repository": 524_288,
+        "max_tokens_per_repository": 40_000,
+        "benchmark_scenario_write_count": 5,
+        "replay_semantic_effect_count": 0,
+        "replay_publication_effect_count": 0,
+        "reviewer_id": "alexzhu0",
+        "approved_at": TIMESTAMP_A,
+    }
+
+    with pytest.raises(ValidationError):
+        active(**values)
+
+    historical = getattr(module, "HistoricalLiveAcceptanceAuthorityV1", None)
+    assert historical is not None
+    archived = historical(**values)
+    assert type(archived) is historical
+    with pytest.raises(ValidationError):
+        historical(**{**values, "manifest_path": "config/acceptance/phase6/benchmark-manifest.json"})
+
+
 def _v2_live_authority_payload() -> dict[str, object]:
     """Return one complete fresh authority without using caller approval prose."""
 
@@ -1157,8 +1230,7 @@ def _v2_live_authority_payload() -> dict[str, object]:
         "acceptance_workflow_sha256": lock.acceptance_workflow_sha256,
         "source_state_binding_digest": lock.source_state_binding_digest,
         "manifest_path": (
-            ".planning/phases/06-adversarial-mvp-acceptance/"
-            "06-BENCHMARK-MANIFEST.json"
+            "config/acceptance/phase6/benchmark-manifest.json"
         ),
         "manifest_digest": lock.selection_manifest_digest,
         "selection_manifest_digest": lock.selection_manifest_digest,
@@ -1227,6 +1299,7 @@ def test_live_authority_v2_binds_complete_fresh_lock_chain_and_distinct_receipt(
     assert authority.manifest_digest == authority.benchmark_lock.selection_manifest_digest
     assert authority.nomination_set_digest == authority.benchmark_lock.nomination_set_digest
     assert authority.approval_receipt_digest == authority.approval_receipt.receipt_digest
+
     assert authority.approval_receipt.purpose == "live_execution"
     assert authority.approval_receipt.environment == "skillscout-phase6-live-authority"
     assert {
@@ -1266,6 +1339,18 @@ def test_live_authority_v2_binds_complete_fresh_lock_chain_and_distinct_receipt(
         payload.pop("authority_digest")
         with pytest.raises(ValidationError):
             model.model_validate(payload, strict=True)
+
+
+def test_fresh_live_authority_rejects_the_retired_manifest_locator() -> None:
+    model = _symbol("LiveAcceptanceAuthorityV2", skip_if_missing=False)
+    payload = _v2_live_authority_payload()
+    payload["manifest_path"] = (
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    )
+
+    with pytest.raises(ValidationError):
+        model.model_validate(payload, strict=True)
 
 
 def test_semantic_telemetry_is_bound_to_live_authority_and_exact_stage_matrix() -> None:

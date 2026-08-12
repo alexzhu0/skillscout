@@ -15,16 +15,14 @@ PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-candidate.yml"
 DISCOVER_WORKFLOW = ROOT / ".github" / "workflows" / "discover.yml"
 ACTION_REFRESH_AUDIT = (
     ROOT
-    / ".planning"
-    / "phases"
-    / "05-automated-discovery-operations"
+    / "evidence"
+    / "phase-5-automated-discovery-operations"
     / "05-ACTION-AUDIT-REFRESH.md"
 )
 ACTION_REFRESH_APPROVAL = (
     ROOT
-    / ".planning"
-    / "phases"
-    / "05-automated-discovery-operations"
+    / "evidence"
+    / "phase-5-automated-discovery-operations"
     / "05-ACTION-PIN-REFRESH-APPROVAL.json"
 )
 PUBLISH_WORKFLOW_SHA256 = "224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c"
@@ -86,7 +84,7 @@ def test_action_refresh_approval_is_bound_to_exact_audit_bytes_and_commits() -> 
 
 def test_phase4_gate_b4_record_remains_historical_after_live_workflow_change() -> None:
     record = (
-        ROOT / ".planning" / "phases" / "04-controlled-draft-pr" / "04-10-SUMMARY.md"
+        ROOT / "evidence" / "phase-4-controlled-draft-pr" / "04-10-SUMMARY.md"
     ).read_text(encoding="utf-8")
     assert PUBLISH_WORKFLOW_SHA256 in record
     assert OLD_APP_TOKEN_SHA in record

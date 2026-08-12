@@ -50,7 +50,7 @@ EXPECTED_CLOSED_WORKFLOW_SOURCE_DIGESTS = (
     ),
     (
         ".github/workflows/phase6-acceptance.yml",
-        "b95f1837004024a84465fa7c569d45ae34746b9fabf9e7942477a1af7486c968",
+        "ec2a881fec822be0d53bf30afbb3b99bf1e85382e330fa3350887c9f10dca66f",
     ),
 )
 MANAGED_PYTHON_INSTALL = (

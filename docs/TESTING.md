@@ -1,5 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
-
 # Testing SkillScout
 
 ## Test framework and setup
