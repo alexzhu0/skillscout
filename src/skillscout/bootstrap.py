@@ -11,11 +11,13 @@ import io
 import json
 import os
 import re
+import select
 import shutil
+import signal
 import stat
-import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -602,31 +604,72 @@ def _read_checked_out_commit_blob(
         "LC_ALL": "C",
     }
 
-    def read_git(*arguments: str) -> bytes:
+    def read_git(*arguments: str, output_limit: int) -> bytes:
+        read_fd, write_fd = os.pipe()
+        devnull = os.open(os.devnull, os.O_RDWR)
+        child_pid: int | None = None
+        child_status: int | None = None
         try:
-            completed = subprocess.run(
+            child_pid = os.posix_spawn(
+                os.fspath(executable),
                 (os.fspath(executable), "-C", os.fspath(root), *arguments),
-                check=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                env=environment,
-                timeout=5,
+                environment,
+                file_actions=(
+                    (os.POSIX_SPAWN_DUP2, devnull, 0),
+                    (os.POSIX_SPAWN_DUP2, write_fd, 1),
+                    (os.POSIX_SPAWN_DUP2, devnull, 2),
+                    (os.POSIX_SPAWN_CLOSE, read_fd),
+                    (os.POSIX_SPAWN_CLOSE, write_fd),
+                ),
             )
-        except (OSError, subprocess.SubprocessError):
+            os.close(write_fd)
+            write_fd = -1
+            output = bytearray()
+            deadline = time.monotonic() + 5
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                readable, _, _ = select.select((read_fd,), (), (), remaining)
+                if not readable:
+                    raise TimeoutError
+                chunk = os.read(read_fd, min(65_536, output_limit + 1 - len(output)))
+                if not chunk:
+                    _, child_status = os.waitpid(child_pid, 0)
+                    child_pid = None
+                    break
+                output.extend(chunk)
+                if len(output) > output_limit:
+                    raise ValueError
+        except (OSError, TimeoutError, ValueError):
             raise ValueError from None
-        if completed.returncode != 0:
+        finally:
+            if read_fd >= 0:
+                os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+            os.close(devnull)
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    os.waitpid(child_pid, 0)
+                except ChildProcessError:
+                    pass
+        if child_status is None or not os.WIFEXITED(child_status) or os.WEXITSTATUS(child_status) != 0:
             raise ValueError
-        return completed.stdout
+        return bytes(output)
 
-    size_text = read_git("cat-file", "-s", object_name)
+    size_text = read_git("cat-file", "-s", object_name, output_limit=_MAX_DIGEST_BYTES)
     try:
         size = int(size_text.decode("ascii").strip())
     except (UnicodeDecodeError, ValueError):
         raise ValueError from None
     if size < 0 or size > max_bytes:
         raise ValueError
-    blob = read_git("cat-file", "blob", object_name)
+    blob = read_git("cat-file", "blob", object_name, output_limit=max_bytes)
     if len(blob) != size:
         raise ValueError
     return blob

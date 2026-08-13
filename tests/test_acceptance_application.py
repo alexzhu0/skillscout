@@ -792,8 +792,10 @@ def test_fresh_campaign_preparation_reuses_only_exact_durable_nomination_without
             state_root_digest=child_root,
         )
     else:
-        with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+        with pytest.raises(module.FreshCampaignPreparationError) as failure:
             application.run(created_at=TIMESTAMP)
+        assert failure.value.stage == "state_restore"
+        assert failure.value.error_code == "evidence_missing"
     assert calls == [nomination_set_id, "close"]
 
 

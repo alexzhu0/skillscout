@@ -2153,6 +2153,7 @@ def test_live_authority_cli_uses_v2_source_verifier_for_v2_fact(
         cli,
         "verify_live_acceptance_authority",
         lambda **_kwargs: pytest.fail("historical V1 verifier used for V2 fact"),
+        raising=False,
     )
     monkeypatch.setattr(
         cli,
