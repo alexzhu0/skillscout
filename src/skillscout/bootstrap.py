@@ -1966,6 +1966,7 @@ def record_benchmark_lock_rebind_v2(
             AcceptanceFactRecord,
             AcceptanceRunSnapshot,
             OperationsStateStore,
+            _parse_bundle_exports,
         )
         from skillscout.application.acceptance import (
             re_admit_fresh_benchmark_lock_v2,
@@ -1978,6 +1979,7 @@ def record_benchmark_lock_rebind_v2(
             if (
                 type(source_snapshot) is not AcceptanceRunSnapshot
                 or type(target_snapshot) is not AcceptanceRunSnapshot
+                or source_snapshot.acceptance_run_id != source_acceptance_run_id
                 or target_snapshot.acceptance_run_id != target_acceptance_run_id
                 or target_snapshot.facts
             ):
@@ -2000,14 +2002,12 @@ def record_benchmark_lock_rebind_v2(
                 parent_state_root_digest=prior_root_digest,
                 approval_receipt=receipt,
             )
-            reference_record = operations.record_acceptance_fact(
+            pair_recorder = getattr(operations, "record_benchmark_rebind_pair", None)
+            if not callable(pair_recorder):
+                raise ValueError
+            reference_record, lock_record = pair_recorder(
                 target_acceptance_run_id,
-                "acceptance_benchmark_rebind",
                 rebound.reference,
-            )
-            lock_record = operations.record_acceptance_fact(
-                target_acceptance_run_id,
-                "acceptance_benchmark_lock",
                 rebound.lock,
             )
             if (
@@ -2017,7 +2017,12 @@ def record_benchmark_lock_rebind_v2(
                 or lock_record.fact_digest != rebound.lock.lock_digest
             ):
                 raise ValueError
-            barrier = _LateStateDurabilityBarrier(config.preparation, source)
+            _, _, frozen_publication_export, _ = _parse_bundle_exports(restored.bundle)
+            barrier = _LateStateDurabilityBarrier(
+                config.preparation,
+                source,
+                frozen_publication_export=frozen_publication_export,
+            )
             synchronized = barrier.sync_benchmark_lock(
                 operations_store=operations,
                 observed_head=observed_head,

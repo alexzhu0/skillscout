@@ -1187,6 +1187,53 @@ def test_benchmark_rebind_persists_target_lock_and_rebuilds_three_store_bundle(
     assert restored_operations.projection == expected_operations.projection
 
 
+def test_benchmark_rebind_pair_rolls_back_reference_when_lock_constraint_fails(
+    tmp_path: Path,
+) -> None:
+    """The second rebind-pair write cannot leave its reference durable alone."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    source_lock = _locked_manifest_v2(nomination)
+    target_run_id = "acceptance-rebind-atomic"
+    reference = _benchmark_rebind(
+        target_acceptance_run_id=target_run_id,
+        source_acceptance_run_id=nomination.nomination_set_id,
+        nomination=nomination,
+    )
+    alternate_manifest = _locked_manifest(
+        nomination,
+        roles=("negative", "positive", "borderline", "negative", "positive_multi_workflow"),
+    )
+    incompatible_lock = _locked_manifest_v2(
+        nomination,
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("e" * 64),
+        selection_manifest=alternate_manifest,
+    )
+
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            source_lock,
+        )
+
+        with pytest.raises(module.OperationsIntegrityError, match="lock chain mismatch"):
+            store.record_benchmark_rebind_pair(
+                target_run_id,
+                reference,
+                incompatible_lock,
+            )
+
+        assert store.acceptance_snapshot(target_run_id).facts == ()
+
+
 @pytest.mark.parametrize(
     "mutation",
     (

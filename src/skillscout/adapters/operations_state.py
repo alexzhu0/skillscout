@@ -2201,6 +2201,7 @@ class OperationsStateStore:
         self._durable_bytes: bytes | None = None
         self._poisoned = False
         self._thread_lock = threading.RLock()
+        self._active_snapshot_connection: sqlite3.Connection | None = None
         try:
             self._parent = AnchoredDirectory.open(
                 self.path.parent,
@@ -2615,6 +2616,8 @@ class OperationsStateStore:
         mutation: Callable[[sqlite3.Connection], _T],
     ) -> _T:
         with self._thread_lock:
+            if self._active_snapshot_connection is not None:
+                return mutation(self._active_snapshot_connection)
             if (
                 self._poisoned
                 or self._durable_bytes is None
@@ -2627,7 +2630,11 @@ class OperationsStateStore:
                 candidate.deserialize(self._durable_bytes)
                 candidate.execute("PRAGMA foreign_keys = ON")
                 candidate.execute("BEGIN IMMEDIATE")
-                result = mutation(candidate)
+                self._active_snapshot_connection = candidate
+                try:
+                    result = mutation(candidate)
+                finally:
+                    self._active_snapshot_connection = None
                 candidate.commit()
                 self._verify_connection(candidate)
                 payload = self._serialize(candidate)
@@ -3670,6 +3677,38 @@ class OperationsStateStore:
                 ),
             )
             return record(validated)
+
+        return self._snapshot_transaction(mutate)
+
+    def record_benchmark_rebind_pair(
+        self,
+        acceptance_run_id: str,
+        reference: BenchmarkSelectionRebindV1,
+        lock: LockedBenchmarkManifestV2,
+    ) -> tuple[AcceptanceFactRecord, AcceptanceFactRecord]:
+        """Persist one rebind reference and its V2 lock in one durable snapshot."""
+
+        if (
+            type(reference) is not BenchmarkSelectionRebindV1
+            or type(lock) is not LockedBenchmarkManifestV2
+            or acceptance_run_id != reference.acceptance_run_id
+        ):
+            raise TypeError("invalid benchmark rebind pair")
+
+        def mutate(
+            _connection: sqlite3.Connection,
+        ) -> tuple[AcceptanceFactRecord, AcceptanceFactRecord]:
+            reference_record = self.record_acceptance_fact(
+                acceptance_run_id,
+                "acceptance_benchmark_rebind",
+                reference,
+            )
+            lock_record = self.record_acceptance_fact(
+                acceptance_run_id,
+                "acceptance_benchmark_lock",
+                lock,
+            )
+            return reference_record, lock_record
 
         return self._snapshot_transaction(mutate)
 

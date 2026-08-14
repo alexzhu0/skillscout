@@ -2374,8 +2374,27 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
                 fact=fact,
             )
 
+        def record_benchmark_rebind_pair(
+            self,
+            acceptance_run_id: str,
+            reference: object,
+            lock: object,
+        ) -> tuple[AcceptanceFactRecord, AcceptanceFactRecord]:
+            return (
+                self.record_acceptance_fact(
+                    acceptance_run_id,
+                    "acceptance_benchmark_rebind",
+                    reference,
+                ),
+                self.record_acceptance_fact(
+                    acceptance_run_id,
+                    "acceptance_benchmark_lock",
+                    lock,
+                ),
+            )
+
     class Barrier:
-        def __init__(self, *_arguments: object) -> None:
+        def __init__(self, *_arguments: object, **_kwargs: object) -> None:
             events.append("barrier")
 
         def sync_benchmark_lock(self, **arguments: object) -> object:
@@ -2403,6 +2422,11 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
         bootstrap,
         "_build_live_execution_approval_receipt",
         lambda **_kwargs: events.append("approval") or _fresh_lock_receipt(),
+    )
+    monkeypatch.setattr(
+        operations_state,
+        "_parse_bundle_exports",
+        lambda _bundle: (object(), object(), SimpleNamespace(export_digest="sha256:" + ("1" * 64)), object()),
     )
     monkeypatch.setattr(operations_state, "OperationsStateStore", Store)
     monkeypatch.setattr(bootstrap, "_LateStateDurabilityBarrier", Barrier)
@@ -2473,7 +2497,10 @@ def test_rebind_benchmark_lock_rejects_nonempty_target_before_actions_or_cas(
         def acceptance_snapshot(self, acceptance_run_id: str) -> object:
             if acceptance_run_id == source_snapshot.acceptance_run_id:
                 return source_snapshot
-            return SimpleNamespace(acceptance_run_id=target_run_id, facts=(object(),))
+            return operations_state.AcceptanceRunSnapshot(
+                acceptance_run_id=target_run_id,
+                facts=(source_snapshot.facts[0],),
+            )
 
     monkeypatch.setattr(
         bootstrap,
@@ -2506,6 +2533,181 @@ def test_rebind_benchmark_lock_rejects_nonempty_target_before_actions_or_cas(
             target_acceptance_run_id=target_run_id,
             environ={},
         )
+
+
+def test_rebind_benchmark_lock_rejects_typed_source_snapshot_for_another_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A valid snapshot type is not authority for a caller-supplied source ID."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.bootstrap as bootstrap
+
+    source_snapshot, _authority, _observation = _fresh_live_authority_admission_inputs()
+    requested_source = source_snapshot.acceptance_run_id
+    target_run_id = "fresh-rebound-campaign"
+    wrong_snapshot = operations_state.AcceptanceRunSnapshot(
+        acceptance_run_id="another-valid-source-run",
+        facts=source_snapshot.facts,
+    )
+    configuration = SimpleNamespace(
+        preparation=SimpleNamespace(operations_state=tmp_path / "operations.sqlite3"),
+    )
+
+    class Store:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def __enter__(self) -> "Store":
+            return self
+
+        def __exit__(self, *_arguments: object) -> None:
+            return None
+
+        def acceptance_snapshot(self, acceptance_run_id: str) -> object:
+            if acceptance_run_id == requested_source:
+                return wrong_snapshot
+            return operations_state.AcceptanceRunSnapshot(
+                acceptance_run_id=target_run_id,
+                facts=(),
+            )
+
+    monkeypatch.setattr(
+        bootstrap,
+        "load_live_authority_recording_runtime_config",
+        lambda **_kwargs: configuration,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_restore_current_live_authority_recording_state",
+        lambda **_kwargs: SimpleNamespace(
+            observed_head="d" * 40,
+            bundle=SimpleNamespace(root=SimpleNamespace(root_digest="sha256:" + ("e" * 64))),
+        ),
+    )
+    monkeypatch.setattr(operations_state, "OperationsStateStore", Store)
+    monkeypatch.setattr(
+        bootstrap,
+        "_build_live_execution_approval_receipt",
+        lambda **_kwargs: pytest.fail("approval opened for wrong source snapshot"),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_LateStateDurabilityBarrier",
+        lambda *_arguments: pytest.fail("barrier opened for wrong source snapshot"),
+    )
+
+    with pytest.raises(ValueError, match="benchmark lock rebind rejected"):
+        bootstrap.record_benchmark_lock_rebind_v2(
+            source_acceptance_run_id=requested_source,
+            target_acceptance_run_id=target_run_id,
+            environ={},
+        )
+
+
+def test_rebind_benchmark_lock_real_barrier_carries_frozen_publication_before_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The late CAS uses frozen state exports and no publication capability."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.adapters.state_branch as state_branch
+    import skillscout.bootstrap as bootstrap
+
+    events: list[str] = ["config", "restore", "source_target", "manifest", "approval", "empty"]
+    frozen_publication = SimpleNamespace(export_digest="sha256:" + ("a" * 64))
+    config = SimpleNamespace(
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        query_set_digest="sha256:" + ("b" * 64),
+    )
+
+    class Client:
+        def __init__(self, *, token: str, **_kwargs: object) -> None:
+            assert token == "opaque-state-token"
+            events.append("state-client")
+
+        def close(self) -> None:
+            events.append("close-client")
+
+    class Store:
+        def __init__(self, _client: object, **_kwargs: object) -> None:
+            events.append("branch-store")
+
+        def sync(self, _bundle: object, observed_head: str, **_kwargs: object) -> object:
+            events.append("cas")
+            return state_branch.StateSyncObservation(
+                status="verified",
+                previous_head=observed_head,
+                commit_sha="c" * 40,
+                tree_sha="d" * 40,
+                root_digest="sha256:" + ("e" * 64),
+            )
+
+    class Pipeline:
+        def close(self) -> None:
+            events.append("close-pipeline")
+
+    class Operations:
+        def record_acceptance_fact(self, *_arguments: object) -> None:
+            pytest.fail("barrier attempted an unexpected transition fact")
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_required_credential",
+        lambda _source, name: (
+            events.append(f"credential:{name}") or "opaque-state-token"
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_default_publication_state",
+        lambda _config: pytest.fail("publication state capability was constructed"),
+    )
+    monkeypatch.setattr(state_branch, "StateBranchClient", Client)
+    monkeypatch.setattr(state_branch, "StateBranchStore", Store)
+    monkeypatch.setattr(
+        operations_state,
+        "assemble_three_store_bundle",
+        lambda **kwargs: (
+            events.append("assemble")
+            or (
+                kwargs["publication_store"].export_owned_state() == frozen_publication
+                or pytest.fail("frozen publication export was not used")
+            )
+            and SimpleNamespace(root=SimpleNamespace(root_digest="sha256:" + ("e" * 64)))
+        ),
+    )
+
+    barrier = bootstrap._LateStateDurabilityBarrier(
+        config,
+        {},
+        frozen_publication_export=frozen_publication,
+    )
+    result = barrier.sync_benchmark_lock(
+        operations_store=Operations(),
+        pipeline_store=Pipeline(),
+        observed_head="f" * 40,
+        prior_root_digest="sha256:" + ("0" * 64),
+        created_at="2026-08-14T00:00:00.000000Z",
+    )
+
+    assert result.status == "verified"
+    assert events == [
+        "config",
+        "restore",
+        "source_target",
+        "manifest",
+        "approval",
+        "empty",
+        "credential:SKILLSCOUT_STATE_GITHUB_TOKEN",
+        "state-client",
+        "assemble",
+        "branch-store",
+        "cas",
+        "close-client",
+    ]
 
 
 def test_live_authority_state_preflight_is_read_only() -> None:
