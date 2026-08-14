@@ -41,6 +41,7 @@ from skillscout.domain.acceptance import (
     AcceptanceEvidenceRootV1,
     AcceptanceGateResultV1,
     AcceptanceScenarioResultV1,
+    BenchmarkSelectionRebindV1,
     ChangedSourceDraftUpdateCompletionV1,
     ChangedSourceEvidenceV1,
     GateB4BindingV1,
@@ -179,6 +180,7 @@ class DiscoveryRunSnapshot:
 
 _AcceptanceFactKind = Literal[
     "acceptance_nomination",
+    "acceptance_benchmark_rebind",
     "acceptance_benchmark_lock",
     "acceptance_live_authority",
     "acceptance_campaign_resume_locator",
@@ -213,6 +215,7 @@ _FactKind = Literal[
     "run_summary",
     "root_checkpoint",
     "acceptance_nomination",
+    "acceptance_benchmark_rebind",
     "acceptance_benchmark_lock",
     "acceptance_live_authority",
     "acceptance_campaign_resume_locator",
@@ -237,6 +240,7 @@ _FactKind = Literal[
 
 _AcceptanceFactModel: TypeAlias = (
     NominationSetV1
+    | BenchmarkSelectionRebindV1
     | LockedBenchmarkManifestV1
     | LockedBenchmarkManifestV2
     | HistoricalLiveAcceptanceAuthorityV1
@@ -266,6 +270,9 @@ _ACCEPTANCE_FACT_MODEL_VALUES: Final[
     Mapping[str, Mapping[str, type[StrictFrozenModel]]]
 ] = {
     "acceptance_nomination": {"nomination-set-v1": NominationSetV1},
+    "acceptance_benchmark_rebind": {
+        "benchmark-selection-rebind-v1": BenchmarkSelectionRebindV1,
+    },
     "acceptance_benchmark_lock": {
         "locked-benchmark-manifest-v1": LockedBenchmarkManifestV1,
         "locked-benchmark-manifest-v2": LockedBenchmarkManifestV2,
@@ -324,6 +331,9 @@ ACCEPTANCE_FACT_MODELS: Final[
 _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
     {
         "acceptance_nomination": {"nomination-set-v1": "nomination_set_digest"},
+        "acceptance_benchmark_rebind": {
+            "benchmark-selection-rebind-v1": "rebind_digest",
+        },
         "acceptance_benchmark_lock": {
             "locked-benchmark-manifest-v1": "manifest_digest",
             "locked-benchmark-manifest-v2": "lock_digest",
@@ -373,25 +383,48 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, Mapping[str, str]]] = MappingProxy
     }
 )
 _ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
+_PRE_BENCHMARK_REBIND_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind for kind in _ACCEPTANCE_FACT_KINDS if kind != "acceptance_benchmark_rebind"
+)
 _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_replay_evidence"
+)
+_PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind
+    for kind in _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_benchmark_rebind"
 )
 _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_semantic_request_reservation"
 )
+_PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind
+    for kind in _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_benchmark_rebind"
+)
 _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_fixed_candidate_admission"
 )
+_PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind
+    for kind in _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_benchmark_rebind"
+)
 _PRE_BUDGET_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_budget_reservation"
+)
+_PRE_BENCHMARK_REBIND_PRE_BUDGET_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind
+    for kind in _PRE_BUDGET_ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_benchmark_rebind"
 )
 _LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
@@ -401,6 +434,11 @@ _LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
         "acceptance_live_authority",
         "acceptance_campaign_resume_locator",
     }
+)
+_PRE_BENCHMARK_REBIND_LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
+    kind
+    for kind in _LEGACY_ACCEPTANCE_FACT_KINDS
+    if kind != "acceptance_benchmark_rebind"
 )
 
 
@@ -453,6 +491,10 @@ class OperationsStateProjectionV1(StrictFrozenModel):
     candidate_terminal_digests: tuple[Digest, ...]
     run_summary_digests: tuple[Digest, ...]
     acceptance_nomination_digests: tuple[Digest, ...]
+    acceptance_benchmark_rebind_digests: tuple[Digest, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
     acceptance_benchmark_lock_digests: tuple[Digest, ...]
     acceptance_live_authority_digests: tuple[Digest, ...] = Field(
         default=(),
@@ -729,19 +771,37 @@ def _expected_schema(
 
 
 _EXPECTED_SCHEMA: Final = _expected_schema()
+_PRE_BENCHMARK_REBIND_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_BENCHMARK_REBIND_ACCEPTANCE_FACT_KINDS
+)
 _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
+)
+_PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
 )
 _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
 )
+_PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
+)
 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
+)
+_PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
 )
 _PRE_BUDGET_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_BUDGET_ACCEPTANCE_FACT_KINDS
 )
+_PRE_BENCHMARK_REBIND_PRE_BUDGET_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_BENCHMARK_REBIND_PRE_BUDGET_ACCEPTANCE_FACT_KINDS
+)
 _LEGACY_EXPECTED_SCHEMA: Final = _expected_schema(_LEGACY_ACCEPTANCE_FACT_KINDS)
+_PRE_BENCHMARK_REBIND_LEGACY_EXPECTED_SCHEMA: Final = _expected_schema(
+    _PRE_BENCHMARK_REBIND_LEGACY_ACCEPTANCE_FACT_KINDS
+)
 _FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str, ...]], ...]] = (
     (
         "run",
@@ -897,11 +957,17 @@ def _schema_fingerprint() -> str:
 _SCHEMA_FINGERPRINTS: Final = frozenset(
     {
         _fingerprint_for_schema(_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_BUDGET_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_PRE_BUDGET_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_LEGACY_EXPECTED_SCHEMA),
+        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_LEGACY_EXPECTED_SCHEMA),
     }
 )
 
@@ -1654,23 +1720,100 @@ def _validate_acceptance_references(
             changed.planned_lineage_id,
         ):
             raise OperationsIntegrityError("changed-source intent binding mismatch")
+    elif kind == "acceptance_nomination":
+        if not isinstance(fact, NominationSetV1):
+            raise OperationsIntegrityError("benchmark nomination model is invalid")
+        rebind_rows = connection.execute(
+            """SELECT fact_digest FROM operations_acceptance_facts
+               WHERE acceptance_run_id = ?
+                 AND fact_kind = 'acceptance_benchmark_rebind'""",
+            (acceptance_run_id,),
+        ).fetchall()
+        if rebind_rows:
+            raise OperationsIntegrityError(
+                "direct nomination and benchmark rebind cannot coexist"
+            )
+    elif kind == "acceptance_benchmark_rebind":
+        if type(fact) is not BenchmarkSelectionRebindV1:
+            raise OperationsIntegrityError("benchmark rebind model is invalid")
+        direct_rows = connection.execute(
+            """SELECT fact_digest FROM operations_acceptance_facts
+               WHERE acceptance_run_id = ?
+                 AND fact_kind = 'acceptance_nomination'""",
+            (acceptance_run_id,),
+        ).fetchall()
+        rebind_rows = connection.execute(
+            """SELECT fact_digest FROM operations_acceptance_facts
+               WHERE acceptance_run_id = ?
+                 AND fact_kind = 'acceptance_benchmark_rebind'""",
+            (acceptance_run_id,),
+        ).fetchall()
+        if direct_rows:
+            raise OperationsIntegrityError(
+                "direct nomination and benchmark rebind cannot coexist"
+            )
+        if len(rebind_rows) > 1:
+            raise OperationsIntegrityError("benchmark rebind is already bound for this run")
     elif kind == "acceptance_benchmark_lock":
         if not isinstance(fact, (LockedBenchmarkManifestV1, LockedBenchmarkManifestV2)):
             raise OperationsIntegrityError("benchmark lock model is invalid")
-        nomination = _acceptance_fact_by_digest(
-            connection,
-            acceptance_run_id=acceptance_run_id,
-            kind="acceptance_nomination",
-            digest=fact.nomination_set_digest,
-        )
-        if not isinstance(nomination, NominationSetV1):
-            raise OperationsIntegrityError("benchmark nomination model is invalid")
         if isinstance(fact, LockedBenchmarkManifestV2):
             _validate_v2_benchmark_lock_cardinality(
                 connection,
                 acceptance_run_id=acceptance_run_id,
             )
+            direct_rows = connection.execute(
+                """SELECT * FROM operations_acceptance_facts
+                   WHERE acceptance_run_id = ?
+                     AND fact_kind = 'acceptance_nomination'
+                   ORDER BY fact_digest""",
+                (acceptance_run_id,),
+            ).fetchall()
+            rebind_rows = connection.execute(
+                """SELECT * FROM operations_acceptance_facts
+                   WHERE acceptance_run_id = ?
+                     AND fact_kind = 'acceptance_benchmark_rebind'
+                   ORDER BY fact_digest""",
+                (acceptance_run_id,),
+            ).fetchall()
+            if (len(direct_rows), len(rebind_rows)) == (1, 0):
+                nomination = _acceptance_row_fact(direct_rows[0])
+                if (
+                    type(nomination) is not NominationSetV1
+                    or nomination.nomination_set_digest != fact.nomination_set_digest
+                ):
+                    raise OperationsIntegrityError(
+                        "benchmark nomination model is invalid"
+                    )
+            elif (len(direct_rows), len(rebind_rows)) == (0, 1):
+                reference = _acceptance_row_fact(rebind_rows[0])
+                if type(reference) is not BenchmarkSelectionRebindV1:
+                    raise OperationsIntegrityError("benchmark rebind model is invalid")
+                nomination = reference.source_nomination
+                if (
+                    fact.nomination_set_digest != nomination.nomination_set_digest
+                    or fact.selection_manifest_digest
+                    != reference.selection_manifest_digest
+                    or fact.selection_manifest != reference.source_lock.selection_manifest
+                    or fact.entries != reference.source_lock.entries
+                ):
+                    raise OperationsIntegrityError(
+                        "benchmark rebind lock chain mismatch"
+                    )
+            else:
+                raise OperationsIntegrityError(
+                    "fresh benchmark lock requires exactly one nomination or benchmark rebind"
+                )
             _validate_v2_benchmark_lock_selection(fact, nomination)
+        else:
+            nomination = _acceptance_fact_by_digest(
+                connection,
+                acceptance_run_id=acceptance_run_id,
+                kind="acceptance_nomination",
+                digest=fact.nomination_set_digest,
+            )
+            if not isinstance(nomination, NominationSetV1):
+                raise OperationsIntegrityError("benchmark nomination model is invalid")
     elif kind == "acceptance_live_authority":
         if type(fact) in {HistoricalLiveAcceptanceAuthorityV1, LiveAcceptanceAuthorityV1}:
             manifest = _acceptance_fact_by_digest(
@@ -1864,6 +2007,7 @@ def _projection_from_facts(
         "candidate_terminal_digests": [],
         "run_summary_digests": [],
         "acceptance_nomination_digests": [],
+        "acceptance_benchmark_rebind_digests": [],
         "acceptance_benchmark_lock_digests": [],
         "acceptance_live_authority_digests": [],
         "acceptance_campaign_resume_locator_digests": [],
@@ -1902,6 +2046,10 @@ def _projection_from_facts(
         "acceptance_nomination": (
             "acceptance_nomination_digests",
             "nomination_set_digest",
+        ),
+        "acceptance_benchmark_rebind": (
+            "acceptance_benchmark_rebind_digests",
+            "rebind_digest",
         ),
         "acceptance_benchmark_lock": (
             "acceptance_benchmark_lock_digests",
@@ -1996,6 +2144,7 @@ def _projection_from_facts(
     }
     digest_values = dict(values)
     for field in (
+        "acceptance_benchmark_rebind_digests",
         "acceptance_live_authority_digests",
         "acceptance_campaign_resume_locator_digests",
         "acceptance_budget_reservation_digests",
@@ -2174,11 +2323,17 @@ class OperationsStateStore:
             }
             if actual not in (
                 _EXPECTED_SCHEMA,
+                _PRE_BENCHMARK_REBIND_EXPECTED_SCHEMA,
                 _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
+                _PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
                 _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
+                _PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
                 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
+                _PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                 _PRE_BUDGET_EXPECTED_SCHEMA,
+                _PRE_BENCHMARK_REBIND_PRE_BUDGET_EXPECTED_SCHEMA,
                 _LEGACY_EXPECTED_SCHEMA,
+                _PRE_BENCHMARK_REBIND_LEGACY_EXPECTED_SCHEMA,
             ):
                 raise OperationsIntegrityError("operations schema fingerprint mismatch")
             integrity = tuple(
@@ -2567,11 +2722,17 @@ class OperationsStateStore:
                 if actual == _EXPECTED_SCHEMA:
                     return False
                 if actual not in (
+                    _PRE_BENCHMARK_REBIND_EXPECTED_SCHEMA,
                     _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
+                    _PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
                     _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
+                    _PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
                     _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
+                    _PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                     _PRE_BUDGET_EXPECTED_SCHEMA,
+                    _PRE_BENCHMARK_REBIND_PRE_BUDGET_EXPECTED_SCHEMA,
                     _LEGACY_EXPECTED_SCHEMA,
+                    _PRE_BENCHMARK_REBIND_LEGACY_EXPECTED_SCHEMA,
                 ):
                     raise OperationsIntegrityError(
                         "operations schema cannot be upgraded"
@@ -3450,6 +3611,17 @@ class OperationsStateStore:
                 if existing_v2:
                     raise OperationsIntegrityError(
                         "fresh live authority is already bound for this run"
+                    )
+            if kind == "acceptance_benchmark_rebind":
+                existing_rebind = connection.execute(
+                    """SELECT fact_digest FROM operations_acceptance_facts
+                       WHERE acceptance_run_id = ?
+                         AND fact_kind = 'acceptance_benchmark_rebind'""",
+                    (acceptance_run_id,),
+                ).fetchall()
+                if existing_rebind:
+                    raise OperationsIntegrityError(
+                        "benchmark rebind is already bound for this run"
                     )
             identity_row = connection.execute(
                 """SELECT * FROM operations_acceptance_facts

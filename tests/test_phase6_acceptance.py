@@ -995,6 +995,67 @@ def test_fresh_benchmark_lock_rebinds_static_v1_manifest_to_current_nomination()
         )
 
 
+def test_fresh_benchmark_lock_readmission_accepts_one_persisted_rebind_reference() -> None:
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+    from skillscout.application import acceptance as application
+
+    nomination, manifest, source_snapshot = _fresh_lock_inputs()
+    receipt = _fresh_lock_receipt()
+    source_lock = application.bind_fresh_benchmark_lock(
+        snapshot=source_snapshot,
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="b" * 40,
+        parent_state_root_digest="sha256:" + ("c" * 64),
+        expected_nomination_authority_digest=nomination.search_run_authority_digest,
+        approval_receipt=receipt,
+    )
+    source_snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id=source_snapshot.acceptance_run_id,
+        facts=(
+            *source_snapshot.facts,
+            AcceptanceFactRecord(
+                acceptance_run_id=source_snapshot.acceptance_run_id,
+                kind="acceptance_benchmark_lock",
+                fact_digest=source_lock.lock_digest,
+                fact=source_lock,
+            ),
+        ),
+    )
+    rebound = application.rebind_benchmark_lock_v2(
+        source_snapshot=source_snapshot,
+        target_acceptance_run_id="fresh-campaign-rebound",
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("e" * 64),
+        approval_receipt=receipt,
+    )
+    target_snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id="fresh-campaign-rebound",
+        facts=(
+            AcceptanceFactRecord(
+                acceptance_run_id="fresh-campaign-rebound",
+                kind="acceptance_benchmark_rebind",
+                fact_digest=rebound.reference.rebind_digest,
+                fact=rebound.reference,
+            ),
+            AcceptanceFactRecord(
+                acceptance_run_id="fresh-campaign-rebound",
+                kind="acceptance_benchmark_lock",
+                fact_digest=rebound.lock.lock_digest,
+                fact=rebound.lock,
+            ),
+        ),
+    )
+
+    admitted = application.re_admit_fresh_benchmark_lock_v2(snapshot=target_snapshot)
+    assert admitted.nomination == nomination
+    assert admitted.lock == rebound.lock
+
+
 def test_fresh_lock_rejects_invalid_handoff_before_opening_late_state_capability() -> None:
     from skillscout.application import acceptance as application
 
