@@ -5,16 +5,21 @@
 Complete one controlled vertical acceptance slice against the already locked
 five-repository benchmark: bind fresh V2 live authority to the reviewed current
 source and workflow bytes, run one real benchmark, prove an exact replay, and
-produce a fully evidenced publication-ready candidate when one qualifies. This
-slice never opens catalog credentials or creates a Pull Request.
+produce a fully evidenced publication-ready candidate when one qualifies. A
+state-only V2 lock rebind preserves the existing five entries while binding the
+final current source. This slice never opens catalog credentials or creates a
+Pull Request.
 
 ## Chosen approach
 
 Reuse the existing five-repository selection and its pinned commit SHAs. Do not
-repeat GitHub nomination or benchmark locking. All live work runs through the
-protected GitHub Actions acceptance workflow and its persistent state receipts;
-no developer-shell shortcut may substitute for protected authority. Fresh Gate
-B4 and Draft publication form the next, separately authorized slice.
+repeat GitHub nomination or human selection. After all planning bytes land on
+`main`, perform one model-free, publication-free state-only V2 lock rebind so the
+unchanged manifest is bound to the exact final source and workflow. All live
+work runs through the protected GitHub Actions acceptance workflow and its
+persistent state receipts; no developer-shell shortcut may substitute for
+protected authority. Fresh Gate B4 and Draft publication form the next,
+separately authorized slice.
 
 Rejected alternatives:
 
@@ -31,22 +36,28 @@ This slice includes:
 1. Read-only preflight of the exact current `main` commit, Phase 6 workflow
    digest, locked benchmark manifest, immutable state carrier, reviewer identity,
    protected environment configuration, and DeepSeek stage policy.
-2. One new V2 live-authority receipt bound to those exact identities and to the
+2. One state-only V2 lock rebind that preserves the exact five manifest entries,
+   roles, repository IDs, commit SHAs, licenses, and nomination lineage while
+   binding the final source/workflow bytes.
+3. One new V2 live-authority receipt bound to those exact identities and to the
    existing 100-candidate and 20-semantic-reservation budgets.
-3. One live benchmark over the five pinned repositories.
-4. One exact replay of the same accepted input and policy.
-5. A canonical publication-ready candidate handoff, when at least one Skill
+4. One live benchmark over the five pinned repositories.
+5. One exact replay of the same accepted input and policy.
+6. A canonical publication-ready candidate handoff, when at least one Skill
    passes every deterministic, semantic, safety, format, and reviewer gate.
 
-This slice excludes fresh nomination, benchmark re-locking, Gate B4, catalog
-credentials, Draft PR creation, admin cleanup, changed-source reevaluation,
-final report rebuild, production-ready claims, automatic merge, and public
-marketplace publication.
+This slice excludes fresh nomination, repository reselection, manifest entry or
+role changes, Gate B4, catalog credentials, Draft PR creation, admin cleanup,
+changed-source reevaluation, final report rebuild, production-ready claims,
+automatic merge, and public marketplace publication.
 
 ## Authority and safety boundaries
 
 - Every previously consumed or byte-stale authorization remains historical and
   grants no authority to this run.
+- The state-only rebind must byte-compare the five entries and their selection
+  lineage with the approved manifest; any repository, SHA, role, license,
+  evidence, nomination, or manifest drift fails closed.
 - The new V2 authority binds the exact source SHA, workflow SHA-256, selection
   manifest, state carrier commit/root, provider policy, prompts, schemas, and
   hard budgets.
@@ -70,18 +81,21 @@ marketplace publication.
 1. **Preflight** verifies current Git/source identities, canonical benchmark
    bytes, immutable state lineage, environment names, reviewer binding, and
    provider configuration without model or publication authority.
-2. **Authority recording** persists one immutable V2 live-authority fact through
+2. **State-only lock rebind** re-admits the unchanged five-entry manifest and
+   persists a new V2 lock bound to the final current source/workflow. It cannot
+   call a model, read candidate content, or publish.
+3. **Authority recording** persists one immutable V2 live-authority fact through
    the state compare-and-swap boundary. This step cannot call a model or publish.
-3. **Benchmark execution** restores and re-admits the exact carrier, reads only
+4. **Benchmark execution** restores and re-admits the exact carrier, reads only
    the five pinned public repositories through bounded GitHub REST endpoints,
    runs deterministic stages, and invokes isolated DeepSeek semantic stages.
-4. **Replay execution** restores the accepted benchmark facts and reprocesses the
+5. **Replay execution** restores the accepted benchmark facts and reprocesses the
    identical identity tuple. It must demonstrate that previously verified
    semantic, candidate-package, and handoff effects are not duplicated.
-5. **Candidate handoff** freezes canonical evidence only for a candidate that
+6. **Candidate handoff** freezes canonical evidence only for a candidate that
    passes license, qualification, safety, format, official `skills-ref`, and
    independent-review gates. The handoff is data, not publication authority.
-6. **Human checkpoint** inspects usefulness, workflow fidelity, provenance,
+7. **Human checkpoint** inspects usefulness, workflow fidelity, provenance,
    license, safety findings, generated instructions, and replay evidence before
    deciding whether to authorize the separate Gate B4 and publication slice.
 
@@ -134,15 +148,17 @@ unbounded source contents.
 
 This slice succeeds only when:
 
-1. Fresh V2 authority is persisted for the exact reviewed source, workflow,
+1. A state-only V2 lock is persisted for the exact final source/workflow while
+   preserving all five approved manifest entries and their selection lineage.
+2. Fresh V2 authority is persisted for the exact reviewed source, workflow,
    state carrier, benchmark selection, and provider policy.
-2. All five pinned repositories reach deterministic terminal outcomes under the
+3. All five pinned repositories reach deterministic terminal outcomes under the
    documented budgets, including safe rejection paths where applicable.
-3. Exact replay completes without duplicate semantic, workflow, Skill,
+4. Exact replay completes without duplicate semantic, workflow, Skill,
    candidate-package, or handoff effects.
-4. At least one eligible candidate produces a canonical, independently reviewed
+5. At least one eligible candidate produces a canonical, independently reviewed
    publication-ready handoff without opening catalog credentials.
-5. The human can audit source, SHA, license, structured decisions, generated
+6. The human can audit source, SHA, license, structured decisions, generated
    Skill, safety checks, reviewer verdict, replay evidence, and admission handoff
    without access to secrets or raw protected logs.
 
