@@ -44,6 +44,7 @@ _DISCOVERY_DATABASE_LOCATORS = (
     "state/databases/publication.sqlite3",
 )
 _DISCOVERY_DIGEST_BYTES = 65_536
+_BENCHMARK_REBIND_HANDOFF_RELATIVE = Path(".skillscout/phase6-benchmark-lock-rebind-handoff.json")
 ACCEPTANCE_CATALOG_FULL_NAME = "alexzhu0/skillscout-catalog-test"
 # Phase-one hosted discovery is intentionally single-tenant: the checked
 # baseline below is meaningful only in this state repository.  The workflow's
@@ -1152,12 +1153,9 @@ def load_live_authority_recording_runtime_config(
             source,
             "GITHUB_REPOSITORY_ID",
         )
-        state_repository_id = _required_positive_decimal_environment(
-            source,
-            "SKILLSCOUT_STATE_REPOSITORY_ID",
-        )
+        state_repository_id = _HOSTED_STATE_REPOSITORY_ID
         source_repository_full_name = source["GITHUB_REPOSITORY"]
-        state_repository_full_name = source["SKILLSCOUT_STATE_REPOSITORY_FULL_NAME"]
+        state_repository_full_name = _HOSTED_STATE_REPOSITORY_FULL_NAME
         source_commit_sha = source["GITHUB_SHA"]
         workflow_run_id = _required_positive_decimal_environment(source, "GITHUB_RUN_ID")
         workflow_run_attempt = _required_positive_decimal_environment(
@@ -1688,7 +1686,7 @@ def _build_live_execution_approval_receipt(
 def _build_benchmark_lock_rebind_approval_receipt(
     *,
     config: LiveAuthorityRecordingRuntimeConfig,
-    lock: object,
+    lock: object | None = None,
     source: Mapping[str, str],
 ) -> object:
     """Read one exact benchmark-lock approval for the state-only rebind boundary."""
@@ -1699,7 +1697,7 @@ def _build_benchmark_lock_rebind_approval_receipt(
         LockedBenchmarkManifestV2,
     )
 
-    if type(config) is not LiveAuthorityRecordingRuntimeConfig or type(lock) is not LockedBenchmarkManifestV2:
+    if type(config) is not LiveAuthorityRecordingRuntimeConfig or (lock is not None and type(lock) is not LockedBenchmarkManifestV2):
         raise ValueError("benchmark lock rebind approval receipt rejected")
     owner, repository = config.source_repository_full_name.split("/", 1)
     client = GitHubReadClient(token=_required_credential(source, "GITHUB_TOKEN"))
@@ -1727,7 +1725,7 @@ def _build_benchmark_lock_rebind_approval_receipt(
         or attempt.workflow_run_id != config.workflow_run_id
         or attempt.workflow_run_attempt != config.workflow_run_attempt
         or attempt.source_commit_sha != config.source_commit_sha
-        or attempt.source_commit_sha != lock.source_commit_sha
+        or (lock is not None and attempt.source_commit_sha != lock.source_commit_sha)
         or attempt.event != "workflow_dispatch"
         or not _is_fresh_campaign_workflow_path(attempt.workflow_path)
         or attempt.actor_id != attempt.triggering_actor_id
@@ -1762,6 +1760,73 @@ def _build_benchmark_lock_rebind_approval_receipt(
         trigger_identity=trigger_identity,
         approval_record_digest=approval.approval_record_digest,
     )
+
+
+def prepare_benchmark_lock_rebind_handoff(
+    *, source_acceptance_run_id: str, target_acceptance_run_id: str, environ: Mapping[str, str] | None = None
+) -> object:
+    """Build one approval-only, self-digested handoff before state authority exists."""
+
+    from skillscout.domain.acceptance import BenchmarkLockRebindHandoffV1
+
+    source = os.environ if environ is None else environ
+    config = load_live_authority_recording_runtime_config(
+        acceptance_run_id=target_acceptance_run_id, environ=source
+    )
+    receipt = _build_benchmark_lock_rebind_approval_receipt(config=config, source=source)
+    return BenchmarkLockRebindHandoffV1(
+        schema_version="benchmark-lock-rebind-handoff-v1",
+        source_acceptance_run_id=source_acceptance_run_id,
+        target_acceptance_run_id=target_acceptance_run_id,
+        source_repository_id=config.source_repository_id,
+        source_repository_full_name=config.source_repository_full_name,
+        source_commit_sha=config.source_commit_sha,
+        acceptance_workflow_sha256=config.acceptance_workflow_sha256,
+        workflow_run_id=config.workflow_run_id,
+        workflow_run_attempt=1,
+        trigger_identity=receipt.trigger_identity,
+        approval_receipt=receipt,
+    )
+
+
+def load_benchmark_lock_rebind_handoff(
+    *, config: LiveAuthorityRecordingRuntimeConfig, source_acceptance_run_id: str, target_acceptance_run_id: str
+) -> object:
+    """Admit exactly one canonical regular handoff at the reviewed workspace path."""
+
+    from skillscout.domain.acceptance import BenchmarkLockRebindHandoffV1
+    from skillscout.domain.canonical import canonical_json_bytes
+
+    try:
+        root = _trusted_repository_root(Path.cwd().resolve(strict=True))
+        path = root / _BENCHMARK_REBIND_HANDOFF_RELATIVE
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= 0 or info.st_size > _DISCOVERY_DIGEST_BYTES:
+            raise ValueError
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_size != info.st_size:
+                raise ValueError
+            payload = os.read(descriptor, _DISCOVERY_DIGEST_BYTES + 1)
+        finally:
+            os.close(descriptor)
+        handoff = BenchmarkLockRebindHandoffV1.model_validate_json(payload, strict=True)
+        if (
+            payload != canonical_json_bytes(handoff)
+            or handoff.source_acceptance_run_id != source_acceptance_run_id
+            or handoff.target_acceptance_run_id != target_acceptance_run_id
+            or handoff.source_repository_id != config.source_repository_id
+            or handoff.source_repository_full_name != config.source_repository_full_name
+            or handoff.source_commit_sha != config.source_commit_sha
+            or handoff.acceptance_workflow_sha256 != config.acceptance_workflow_sha256
+            or handoff.workflow_run_id != config.workflow_run_id
+            or handoff.workflow_run_attempt != 1
+        ):
+            raise ValueError
+        return handoff
+    except Exception:
+        raise ValueError("benchmark lock rebind handoff rejected") from None
 
 
 def record_live_acceptance_authority_v2(
@@ -2028,6 +2093,11 @@ def record_benchmark_lock_rebind_v2(
             acceptance_run_id=target_acceptance_run_id,
             environ=source,
         )
+        handoff = load_benchmark_lock_rebind_handoff(
+            config=config,
+            source_acceptance_run_id=source_acceptance_run_id,
+            target_acceptance_run_id=target_acceptance_run_id,
+        )
         restored = _restore_current_live_authority_recording_state(
             config=config,
             source=source,
@@ -2048,7 +2118,6 @@ def record_benchmark_lock_rebind_v2(
             _parse_bundle_exports,
         )
         from skillscout.application.acceptance import (
-            re_admit_fresh_benchmark_lock_v2,
             rebind_benchmark_lock_v2,
         )
 
@@ -2063,14 +2132,6 @@ def record_benchmark_lock_rebind_v2(
                 or target_snapshot.facts
             ):
                 raise ValueError
-            source_lock = re_admit_fresh_benchmark_lock_v2(
-                snapshot=source_snapshot
-            ).lock
-            receipt = _build_benchmark_lock_rebind_approval_receipt(
-                config=config,
-                lock=source_lock,
-                source=source,
-            )
             rebound = rebind_benchmark_lock_v2(
                 source_snapshot=source_snapshot,
                 target_acceptance_run_id=target_acceptance_run_id,
@@ -2079,7 +2140,7 @@ def record_benchmark_lock_rebind_v2(
                 state_repository_full_name=config.preparation.state_repository_full_name,
                 parent_state_commit_sha=observed_head,
                 parent_state_root_digest=prior_root_digest,
-                approval_receipt=receipt,
+                approval_receipt=handoff.approval_receipt,
             )
             pair_recorder = getattr(operations, "record_benchmark_rebind_pair", None)
             if not callable(pair_recorder):

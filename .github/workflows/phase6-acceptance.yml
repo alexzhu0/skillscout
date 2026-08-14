@@ -369,8 +369,6 @@ jobs:
       UV_LINK_MODE: copy
       SKILLSCOUT_SOURCE_GITHUB_TOKEN: ${{ github.token }}
       SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}
-      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
-      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
       SKILLSCOUT_INITIAL_STATE_ROOT_DIGEST: sha256:b4167cffc31969854260d4acd58b804f4823a4d25d078ef3b5dc88445b75c2e5
     steps:
       - name: Check out the dispatched commit
@@ -713,8 +711,6 @@ jobs:
       UV_LINK_MODE: copy
       SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID }}
       SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}
-      SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}
-      SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}
     steps:
       - name: Check out the dispatched commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -798,16 +794,15 @@ jobs:
             printf 'UV_MANAGED_PYTHON=1\n'
             printf 'UV_PYTHON_DOWNLOADS=never\n'
           } >> "${GITHUB_ENV}"
-      - name: Read one environment-approved benchmark lock receipt
+      - name: Read and write one environment-approved benchmark lock rebind handoff
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           umask 077
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli prepare-fresh-lock-handoff >/dev/null
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli prepare-benchmark-lock-rebind-handoff >/dev/null
       - name: Persist one environment-approved benchmark lock rebind
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN }}
         run: |
           set -euo pipefail

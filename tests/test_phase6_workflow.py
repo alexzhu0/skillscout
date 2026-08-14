@@ -1114,8 +1114,10 @@ def test_rebind_benchmark_lock_requires_environment_approval_before_state_creden
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in prefix
     assert "SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID:" in prefix
     assert "SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:" in prefix
+    assert "SKILLSCOUT_STATE_REPOSITORY_ID" not in rebind
+    assert "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" not in rebind
     assert "GITHUB_TOKEN: ${{ github.token }}" in prefix
-    assert "prepare-fresh-lock-handoff" in prefix
+    assert "prepare-benchmark-lock-rebind-handoff" in prefix
     assert f"actions/checkout@{CHECKOUT_SHA}" in prefix
     assert "ref: ${{ github.sha }}" in prefix
     assert "persist-credentials: false" in prefix
@@ -1126,7 +1128,7 @@ def test_rebind_benchmark_lock_requires_environment_approval_before_state_creden
     assert (
         "${{ secrets.SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN }}" in persist
     )
-    assert "GITHUB_TOKEN: ${{ github.token }}" in persist
+    assert "GITHUB_TOKEN: ${{ github.token }}" not in persist
     assert "set -euo pipefail" in persist
     assert "umask 077" in persist
     assert "skillscout.cli rebind-benchmark-lock" in persist

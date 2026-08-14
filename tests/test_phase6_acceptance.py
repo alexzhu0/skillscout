@@ -2307,7 +2307,6 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
 ) -> None:
     """A rebind creates no capability beyond state, approval, and one CAS."""
 
-    import skillscout.adapters.github as github
     import skillscout.adapters.operations_state as operations_state
     import skillscout.bootstrap as bootstrap
     from skillscout.adapters.operations_state import AcceptanceFactRecord
@@ -2417,38 +2416,6 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
                 root_digest="sha256:" + ("0" * 64),
             )
 
-    class Client:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        def get_workflow_run_attempt(self, *_arguments: object) -> object:
-            return SimpleNamespace(
-                workflow_run_id=configuration.workflow_run_id,
-                workflow_run_attempt=configuration.workflow_run_attempt,
-                source_commit_sha=source_lock.source_commit_sha,
-                event="workflow_dispatch",
-                workflow_path=".github/workflows/phase6-acceptance.yml",
-                actor_id=101,
-                actor_login="alexzhu0",
-                triggering_actor_id=101,
-                triggering_actor_login="alexzhu0",
-            )
-
-        def get_workflow_run_approvals(self, *_arguments: object) -> tuple[object, ...]:
-            events.append("approval")
-            return (
-                SimpleNamespace(
-                    environment="phase6-human-benchmark-lock",
-                    reviewer_login="alexzhu0",
-                    reviewer_id=202,
-                    workflow_run_id=configuration.workflow_run_id,
-                    approval_record_digest="sha256:" + ("c" * 64),
-                ),
-            )
-
-        def close(self) -> None:
-            pass
-
     monkeypatch.setattr(
         bootstrap,
         "load_live_authority_recording_runtime_config",
@@ -2456,10 +2423,15 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
     )
     monkeypatch.setattr(
         bootstrap,
+        "load_benchmark_lock_rebind_handoff",
+        lambda **_kwargs: events.append("handoff")
+        or SimpleNamespace(approval_receipt=_fresh_lock_receipt()),
+    )
+    monkeypatch.setattr(
+        bootstrap,
         "_restore_current_live_authority_recording_state",
         lambda **_kwargs: events.append("restore") or restored,
     )
-    monkeypatch.setattr(github, "GitHubReadClient", Client)
     monkeypatch.setattr(
         operations_state,
         "_parse_bundle_exports",
@@ -2471,7 +2443,7 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
     result = bootstrap.record_benchmark_lock_rebind_v2(
         source_acceptance_run_id=source_run_id,
         target_acceptance_run_id=target_run_id,
-        environ={"GITHUB_TOKEN": "fixture-actions-token"},
+        environ={"SKILLSCOUT_STATE_GITHUB_TOKEN": "fixture-state-token"},
     )
 
     assert recorded == [
@@ -2480,11 +2452,11 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
     ]
     assert events == [
         "config",
+        "handoff",
         "restore",
         "store",
         f"snapshot:{source_run_id}",
         f"snapshot:{target_run_id}",
-        "approval",
         "barrier",
         "cas",
     ]
@@ -2507,16 +2479,24 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
 
 
 @pytest.mark.parametrize(
-    ("approval_environment", "rejected"),
+    ("approval_environment", "attempt_mutation", "rejected"),
     (
-        ("phase6-human-benchmark-lock", False),
-        ("skillscout-phase6-live-authority", True),
-        ("phase6-human-benchmark-lock-other", True),
+        ("phase6-human-benchmark-lock", "exact", False),
+        ("skillscout-phase6-live-authority", "exact", True),
+        ("phase6-human-benchmark-lock-other", "exact", True),
+        ("phase6-human-benchmark-lock", "run-id", True),
+        ("phase6-human-benchmark-lock", "attempt", True),
+        ("phase6-human-benchmark-lock", "source", True),
+        ("phase6-human-benchmark-lock", "workflow", True),
+        ("phase6-human-benchmark-lock", "actor", True),
+        ("phase6-human-benchmark-lock", "missing", True),
+        ("phase6-human-benchmark-lock", "ambiguous", True),
     ),
 )
 def test_benchmark_lock_rebind_receipt_binds_task5_actions_approval(
     monkeypatch: pytest.MonkeyPatch,
     approval_environment: str,
+    attempt_mutation: str,
     rejected: bool,
 ) -> None:
     """The rebind boundary consumes only the Task 5 benchmark-lock approval."""
@@ -2562,19 +2542,19 @@ def test_benchmark_lock_rebind_receipt_binds_task5_actions_approval(
 
         def get_workflow_run_attempt(self, *_arguments: object) -> object:
             return SimpleNamespace(
-                workflow_run_id=2001,
-                workflow_run_attempt=1,
-                source_commit_sha=source_lock.source_commit_sha,
+                workflow_run_id=2002 if attempt_mutation == "run-id" else 2001,
+                workflow_run_attempt=2 if attempt_mutation == "attempt" else 1,
+                source_commit_sha=("d" * 40) if attempt_mutation == "source" else source_lock.source_commit_sha,
                 event="workflow_dispatch",
-                workflow_path=".github/workflows/phase6-acceptance.yml",
+                workflow_path=".github/workflows/other.yml" if attempt_mutation == "workflow" else ".github/workflows/phase6-acceptance.yml",
                 actor_id=101,
                 actor_login="alexzhu0",
-                triggering_actor_id=101,
+                triggering_actor_id=102 if attempt_mutation == "actor" else 101,
                 triggering_actor_login="alexzhu0",
             )
 
         def get_workflow_run_approvals(self, *_arguments: object) -> tuple[object, ...]:
-            return (
+            approvals = (
                 SimpleNamespace(
                     environment=approval_environment,
                     reviewer_login="alexzhu0",
@@ -2583,6 +2563,11 @@ def test_benchmark_lock_rebind_receipt_binds_task5_actions_approval(
                     approval_record_digest="sha256:" + ("c" * 64),
                 ),
             )
+            if attempt_mutation == "missing":
+                return ()
+            if attempt_mutation == "ambiguous":
+                return approvals + approvals
+            return approvals
 
         def close(self) -> None:
             pass
@@ -2614,6 +2599,41 @@ def test_benchmark_lock_rebind_receipt_binds_task5_actions_approval(
     assert receipt.workflow_run_attempt == 1
     assert receipt.source_commit_sha == source_lock.source_commit_sha
     assert receipt.trigger_identity == "workflow_dispatch:101:alexzhu0"
+
+
+def test_rebind_benchmark_lock_has_fixed_handoff_admission_before_state_restore() -> None:
+    """Rebind persistence must admit the pre-step handoff before any state read."""
+
+    import skillscout.bootstrap as bootstrap
+
+    assert callable(bootstrap.prepare_benchmark_lock_rebind_handoff)
+    assert callable(bootstrap.load_benchmark_lock_rebind_handoff)
+
+
+def test_benchmark_lock_rebind_handoff_rejects_tampered_approval_digest() -> None:
+    """A self-digested handoff cannot adopt a modified approval record digest."""
+
+    from skillscout.domain.acceptance import BenchmarkLockRebindHandoffV1
+
+    receipt = _fresh_lock_receipt()
+    handoff = BenchmarkLockRebindHandoffV1(
+        schema_version="benchmark-lock-rebind-handoff-v1",
+        source_acceptance_run_id="fresh-campaign",
+        target_acceptance_run_id="fresh-rebound-campaign",
+        source_repository_id=receipt.source_repository_id,
+        source_repository_full_name=receipt.source_repository_full_name,
+        source_commit_sha=receipt.source_commit_sha,
+        acceptance_workflow_sha256=receipt.workflow_sha256,
+        workflow_run_id=receipt.workflow_run_id,
+        workflow_run_attempt=1,
+        trigger_identity=receipt.trigger_identity,
+        approval_receipt=receipt,
+    )
+    payload = handoff.model_dump(mode="json", exclude_none=False)
+    payload["approval_receipt"]["approval_record_digest"] = "sha256:" + ("d" * 64)
+
+    with pytest.raises(ValueError):
+        BenchmarkLockRebindHandoffV1.model_validate(payload, strict=True)
 
 
 def test_rebind_benchmark_lock_rejects_nonempty_target_before_actions_or_cas(

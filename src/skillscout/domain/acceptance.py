@@ -293,6 +293,40 @@ class BenchmarkLockApprovalReceiptV2(_SelfDigestedModel):
     receipt_digest: Digest | None = None
 
 
+class BenchmarkLockRebindHandoffV1(_SelfDigestedModel):
+    """Canonical approval-only handoff consumed by the state-only rebind step."""
+
+    _digest_field = "handoff_digest"
+
+    schema_version: Literal["benchmark-lock-rebind-handoff-v1"]
+    source_acceptance_run_id: _Identifier
+    target_acceptance_run_id: _Identifier
+    source_repository_id: _Positive
+    source_repository_full_name: _FullName
+    source_commit_sha: _Sha
+    acceptance_workflow_sha256: Digest
+    workflow_run_id: _Positive
+    workflow_run_attempt: Literal[1]
+    trigger_identity: _Identifier
+    approval_receipt: BenchmarkLockApprovalReceiptV2
+    handoff_digest: Digest | None = None
+
+    @model_validator(mode="after")
+    def validate_handoff_binding(self) -> Self:
+        receipt = self.approval_receipt
+        if (
+            receipt.source_repository_id != self.source_repository_id
+            or receipt.source_repository_full_name != self.source_repository_full_name
+            or receipt.source_commit_sha != self.source_commit_sha
+            or receipt.workflow_sha256 != self.acceptance_workflow_sha256
+            or receipt.workflow_run_id != self.workflow_run_id
+            or receipt.workflow_run_attempt != self.workflow_run_attempt
+            or receipt.trigger_identity != self.trigger_identity
+        ):
+            raise ValueError("benchmark lock rebind handoff binding mismatch")
+        return self
+
+
 class FreshBenchmarkLockHandoffV1(_SelfDigestedModel):
     """Canonical, redacted authority passed from approval to state persistence."""
 

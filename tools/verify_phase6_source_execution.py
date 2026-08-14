@@ -53,7 +53,7 @@ EXPECTED_CLOSED_WORKFLOW_SOURCE_DIGESTS = (
     ),
     (
         ".github/workflows/phase6-acceptance.yml",
-        "9b44b908a9cbcdf36f671c1d3deb8d43e73e07362d19b243c1773838e8206c3f",
+        "623afd3c5217b003724a853b7db77609e5c1434774f8b19ab9942102ebda0ba2",
     ),
 )
 MANAGED_PYTHON_INSTALL = (
@@ -1262,8 +1262,6 @@ def _closed_benchmark_rebind_job(job: _Job) -> None:
             "UV_LINK_MODE": "copy",
             "SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID": "${{ vars.SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID }}",
             "SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID": "${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}",
-            "SKILLSCOUT_STATE_REPOSITORY_ID": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}",
-            "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}",
         }
     )
     expected_prefix = (
@@ -1275,7 +1273,7 @@ def _closed_benchmark_rebind_job(job: _Job) -> None:
         tuple(step.name for step in job.steps)
         == (
             *expected_prefix,
-            "Read one environment-approved benchmark lock receipt",
+            "Read and write one environment-approved benchmark lock rebind handoff",
             "Persist one environment-approved benchmark lock rebind",
         )
     )
@@ -1300,16 +1298,13 @@ def _closed_benchmark_rebind_job(job: _Job) -> None:
         == (
             "set -euo pipefail",
             "umask 077",
-            f"{LOCAL_LOCKED} python -m skillscout.cli prepare-fresh-lock-handoff >/dev/null",
+            f"{LOCAL_LOCKED} python -m skillscout.cli prepare-benchmark-lock-rebind-handoff >/dev/null",
         )
     )
     _require(set(_step_direct_keys(persist)) == {"name", "env", "run"})
     _require(
         _direct_mapping(persist.source, indent=8, name="env")
-        == {
-            "GITHUB_TOKEN": "${{ github.token }}",
-            "SKILLSCOUT_STATE_GITHUB_TOKEN": f"${{{{ secrets.{BENCHMARK_REBIND_STATE_SECRET} }}}}",
-        }
+        == {"SKILLSCOUT_STATE_GITHUB_TOKEN": f"${{{{ secrets.{BENCHMARK_REBIND_STATE_SECRET} }}}}"}
     )
     _require(
         persist.run is not None

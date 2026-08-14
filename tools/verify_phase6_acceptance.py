@@ -605,6 +605,7 @@ def _verify_source_and_workflow_contract(root: Path) -> int:
             "SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}",
             "GITHUB_TOKEN: ${{ github.token }}",
             "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN }}",
+            "prepare-benchmark-lock-rebind-handoff",
             "skillscout.cli rebind-benchmark-lock",
             '--source-acceptance-run-id "${SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID:?}"',
             '--target-acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
@@ -613,8 +614,11 @@ def _verify_source_and_workflow_contract(root: Path) -> int:
             any(marker not in rebind for marker in required_rebind_markers)
             or phase6_source.count("skillscout.cli rebind-benchmark-lock") != 1
             or rebind.count("SKILLSCOUT_STATE_GITHUB_TOKEN") != 1
-            or rebind.index("Read one environment-approved benchmark lock receipt")
+            or "SKILLSCOUT_STATE_REPOSITORY_ID" in rebind
+            or "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" in rebind
+            or rebind.index("Read and write one environment-approved benchmark lock rebind handoff")
             >= rebind.index("SKILLSCOUT_STATE_GITHUB_TOKEN")
+            or rebind[rebind.index("SKILLSCOUT_STATE_GITHUB_TOKEN") :].count("GITHUB_TOKEN: ${{ github.token }}") != 0
             or any(
                 marker in rebind.casefold()
                 for marker in (
