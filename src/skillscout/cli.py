@@ -38,6 +38,7 @@ from skillscout.bootstrap import (
     load_nomination_runtime_config,
     load_publication_authority_config,
     read_exact_acceptance_state,
+    record_benchmark_lock_rebind_v2,
     read_exact_discovery_state,
     require_hosted_state_repository,
     require_phase3_gate_b3,
@@ -232,6 +233,9 @@ def build_parser() -> SafeArgumentParser:
     record_attestation.add_argument("--state-root-digest", required=True)
     record_authority = commands.add_parser("record-live-authority")
     record_authority.add_argument("--acceptance-run-id", required=True)
+    rebind_benchmark_lock = commands.add_parser("rebind-benchmark-lock")
+    rebind_benchmark_lock.add_argument("--source-acceptance-run-id", required=True)
+    rebind_benchmark_lock.add_argument("--target-acceptance-run-id", required=True)
     verify_authority_state = commands.add_parser("verify-live-authority-state")
     verify_authority_state.add_argument("--authority", required=True, type=Path)
     verify_authority_state.add_argument("--source-commit-sha", required=True)
@@ -1941,6 +1945,36 @@ def _run_publish_discovered(arguments: argparse.Namespace) -> dict[str, object]:
         raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
 
 
+def _run_rebind_benchmark_lock(arguments: argparse.Namespace) -> dict[str, object]:
+    """Project the closed state-only rebind result without disclosing internals."""
+
+    keys = (
+        "source_acceptance_run_id",
+        "acceptance_run_id",
+        "rebind_digest",
+        "lock_digest",
+        "state_commit_sha",
+        "state_root_digest",
+        "status",
+    )
+    try:
+        result = record_benchmark_lock_rebind_v2(
+            source_acceptance_run_id=arguments.source_acceptance_run_id,
+            target_acceptance_run_id=arguments.target_acceptance_run_id,
+        )
+        if (
+            type(result) is not dict
+            or any(type(result.get(key)) is not str for key in keys)
+            or result["source_acceptance_run_id"] != arguments.source_acceptance_run_id
+            or result["acceptance_run_id"] != arguments.target_acceptance_run_id
+            or result["status"] != "benchmark_lock_rebound"
+        ):
+            raise ValueError
+        return {key: result[key] for key in keys}
+    except Exception:
+        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR) from None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     state: SQLiteStateStore | None = None
@@ -1980,6 +2014,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_record_acceptance_attestation(arguments)
         elif arguments.command == "record-live-authority":
             payload = _run_record_live_authority(arguments)
+        elif arguments.command == "rebind-benchmark-lock":
+            payload = _run_rebind_benchmark_lock(arguments)
         elif arguments.command == "verify-live-authority-state":
             payload = _run_verify_live_authority_state(arguments)
         elif arguments.command == "rebuild-acceptance":

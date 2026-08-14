@@ -1930,6 +1930,120 @@ def record_live_acceptance_authority_v2(
         raise ValueError("live acceptance authority recording rejected") from None
 
 
+def record_benchmark_lock_rebind_v2(
+    *,
+    source_acceptance_run_id: str,
+    target_acceptance_run_id: str,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Rebind an admitted V2 source selection into one empty current run.
+
+    This is deliberately a closed, state-only transition: immutable source
+    configuration and the current state are checked before an approval read,
+    then the reference and replacement lock are recorded before one late CAS.
+    """
+
+    try:
+        source = os.environ if environ is None else environ
+        config = load_live_authority_recording_runtime_config(
+            acceptance_run_id=target_acceptance_run_id,
+            environ=source,
+        )
+        restored = _restore_current_live_authority_recording_state(
+            config=config,
+            source=source,
+        )
+        root = getattr(getattr(restored, "bundle", None), "root", None)
+        observed_head = getattr(restored, "observed_head", None)
+        prior_root_digest = getattr(root, "root_digest", None)
+        if (
+            root is None
+            or not _is_commit_sha(observed_head)
+            or not _is_digest(prior_root_digest)
+        ):
+            raise ValueError
+        from skillscout.adapters.operations_state import (
+            AcceptanceFactRecord,
+            AcceptanceRunSnapshot,
+            OperationsStateStore,
+        )
+        from skillscout.application.acceptance import (
+            re_admit_fresh_benchmark_lock_v2,
+            rebind_benchmark_lock_v2,
+        )
+
+        with OperationsStateStore(config.preparation.operations_state) as operations:
+            source_snapshot = operations.acceptance_snapshot(source_acceptance_run_id)
+            target_snapshot = operations.acceptance_snapshot(target_acceptance_run_id)
+            if (
+                type(source_snapshot) is not AcceptanceRunSnapshot
+                or type(target_snapshot) is not AcceptanceRunSnapshot
+                or target_snapshot.acceptance_run_id != target_acceptance_run_id
+                or target_snapshot.facts
+            ):
+                raise ValueError
+            source_lock = re_admit_fresh_benchmark_lock_v2(
+                snapshot=source_snapshot
+            ).lock
+            receipt = _build_live_execution_approval_receipt(
+                config=config,
+                lock=source_lock,
+                source=source,
+            )
+            rebound = rebind_benchmark_lock_v2(
+                source_snapshot=source_snapshot,
+                target_acceptance_run_id=target_acceptance_run_id,
+                selection_manifest=config.selection_manifest,
+                state_repository_id=config.preparation.state_repository_id,
+                state_repository_full_name=config.preparation.state_repository_full_name,
+                parent_state_commit_sha=observed_head,
+                parent_state_root_digest=prior_root_digest,
+                approval_receipt=receipt,
+            )
+            reference_record = operations.record_acceptance_fact(
+                target_acceptance_run_id,
+                "acceptance_benchmark_rebind",
+                rebound.reference,
+            )
+            lock_record = operations.record_acceptance_fact(
+                target_acceptance_run_id,
+                "acceptance_benchmark_lock",
+                rebound.lock,
+            )
+            if (
+                type(reference_record) is not AcceptanceFactRecord
+                or type(lock_record) is not AcceptanceFactRecord
+                or reference_record.fact_digest != rebound.reference.rebind_digest
+                or lock_record.fact_digest != rebound.lock.lock_digest
+            ):
+                raise ValueError
+            barrier = _LateStateDurabilityBarrier(config.preparation, source)
+            synchronized = barrier.sync_benchmark_lock(
+                operations_store=operations,
+                observed_head=observed_head,
+                prior_root_digest=prior_root_digest,
+                created_at=_discovery_timestamp(),
+            )
+        if (
+            getattr(synchronized, "status", None) != "verified"
+            or getattr(synchronized, "previous_head", None) != observed_head
+            or not _is_commit_sha(getattr(synchronized, "commit_sha", None))
+            or not _is_digest(getattr(synchronized, "root_digest", None))
+        ):
+            raise ValueError
+        return {
+            "source_acceptance_run_id": source_acceptance_run_id,
+            "acceptance_run_id": target_acceptance_run_id,
+            "rebind_digest": rebound.reference.rebind_digest,
+            "lock_digest": rebound.lock.lock_digest,
+            "state_commit_sha": synchronized.commit_sha,
+            "state_root_digest": synchronized.root_digest,
+            "status": "benchmark_lock_rebound",
+        }
+    except Exception:
+        raise ValueError("benchmark lock rebind rejected") from None
+
+
 def _verify_live_execution_admission_source(admission: object) -> None:
     """Recheck only checked-out source bytes bound into a V2 authority."""
 

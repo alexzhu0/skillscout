@@ -2302,6 +2302,212 @@ def test_closed_v2_recorder_rejects_missing_lock_before_actions_read(
     assert events == ["state-open"]
 
 
+def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A rebind creates no capability beyond state, approval, and one CAS."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.bootstrap as bootstrap
+    from skillscout.adapters.operations_state import AcceptanceFactRecord
+
+    source_snapshot, _authority, _observation = _fresh_live_authority_admission_inputs()
+    source_run_id = source_snapshot.acceptance_run_id
+    target_run_id = "fresh-rebound-campaign"
+    source_lock = next(
+        record.fact
+        for record in source_snapshot.facts
+        if record.kind == "acceptance_benchmark_lock"
+    )
+    events: list[str] = []
+    recorded: list[tuple[str, str]] = []
+    configuration = SimpleNamespace(
+        acceptance_run_id=target_run_id,
+        preparation=SimpleNamespace(
+            operations_state=tmp_path / "operations.sqlite3",
+            state_repository_id=source_lock.state_repository_id,
+            state_repository_full_name=source_lock.state_repository_full_name,
+        ),
+        selection_manifest=source_lock.selection_manifest,
+        source_repository_id=source_lock.source_repository_id,
+        source_repository_full_name=source_lock.source_repository_full_name,
+        source_commit_sha=source_lock.source_commit_sha,
+        acceptance_workflow_sha256=source_lock.acceptance_workflow_sha256,
+        workflow_run_id=2001,
+        workflow_run_attempt=1,
+    )
+    restored = SimpleNamespace(
+        observed_head="d" * 40,
+        bundle=SimpleNamespace(root=SimpleNamespace(root_digest="sha256:" + ("e" * 64))),
+    )
+
+    class Store:
+        def __init__(self, _path: Path) -> None:
+            events.append("store")
+
+        def __enter__(self) -> "Store":
+            return self
+
+        def __exit__(self, *_arguments: object) -> None:
+            return None
+
+        def acceptance_snapshot(self, acceptance_run_id: str) -> object:
+            events.append(f"snapshot:{acceptance_run_id}")
+            return source_snapshot if acceptance_run_id == source_run_id else operations_state.AcceptanceRunSnapshot(
+                acceptance_run_id=target_run_id,
+                facts=(),
+            )
+
+        def record_acceptance_fact(
+            self,
+            acceptance_run_id: str,
+            kind: str,
+            fact: object,
+        ) -> AcceptanceFactRecord:
+            recorded.append((acceptance_run_id, kind))
+            return AcceptanceFactRecord(
+                acceptance_run_id=acceptance_run_id,
+                kind=kind,
+                fact_digest=getattr(fact, "rebind_digest", None)
+                or getattr(fact, "lock_digest"),
+                fact=fact,
+            )
+
+    class Barrier:
+        def __init__(self, *_arguments: object) -> None:
+            events.append("barrier")
+
+        def sync_benchmark_lock(self, **arguments: object) -> object:
+            events.append("cas")
+            assert arguments["observed_head"] == "d" * 40
+            assert arguments["prior_root_digest"] == "sha256:" + ("e" * 64)
+            return SimpleNamespace(
+                status="verified",
+                previous_head="d" * 40,
+                commit_sha="f" * 40,
+                root_digest="sha256:" + ("0" * 64),
+            )
+
+    monkeypatch.setattr(
+        bootstrap,
+        "load_live_authority_recording_runtime_config",
+        lambda **_kwargs: events.append("config") or configuration,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_restore_current_live_authority_recording_state",
+        lambda **_kwargs: events.append("restore") or restored,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_build_live_execution_approval_receipt",
+        lambda **_kwargs: events.append("approval") or _fresh_lock_receipt(),
+    )
+    monkeypatch.setattr(operations_state, "OperationsStateStore", Store)
+    monkeypatch.setattr(bootstrap, "_LateStateDurabilityBarrier", Barrier)
+
+    result = bootstrap.record_benchmark_lock_rebind_v2(
+        source_acceptance_run_id=source_run_id,
+        target_acceptance_run_id=target_run_id,
+        environ={},
+    )
+
+    assert recorded == [
+        (target_run_id, "acceptance_benchmark_rebind"),
+        (target_run_id, "acceptance_benchmark_lock"),
+    ]
+    assert events == [
+        "config",
+        "restore",
+        "store",
+        f"snapshot:{source_run_id}",
+        f"snapshot:{target_run_id}",
+        "approval",
+        "barrier",
+        "cas",
+    ]
+    assert set(result) == {
+        "source_acceptance_run_id",
+        "acceptance_run_id",
+        "rebind_digest",
+        "lock_digest",
+        "state_commit_sha",
+        "state_root_digest",
+        "status",
+    }
+    assert result["source_acceptance_run_id"] == source_run_id
+    assert result["acceptance_run_id"] == target_run_id
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", str(result["rebind_digest"]))
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", str(result["lock_digest"]))
+    assert result["state_commit_sha"] == "f" * 40
+    assert result["state_root_digest"] == "sha256:" + ("0" * 64)
+    assert result["status"] == "benchmark_lock_rebound"
+
+
+def test_rebind_benchmark_lock_rejects_nonempty_target_before_actions_or_cas(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A target with prior facts cannot consume approval or writer authority."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.bootstrap as bootstrap
+
+    source_snapshot, _authority, _observation = _fresh_live_authority_admission_inputs()
+    target_run_id = "fresh-rebound-campaign"
+    configuration = SimpleNamespace(
+        preparation=SimpleNamespace(operations_state=tmp_path / "operations.sqlite3"),
+    )
+
+    class Store:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def __enter__(self) -> "Store":
+            return self
+
+        def __exit__(self, *_arguments: object) -> None:
+            return None
+
+        def acceptance_snapshot(self, acceptance_run_id: str) -> object:
+            if acceptance_run_id == source_snapshot.acceptance_run_id:
+                return source_snapshot
+            return SimpleNamespace(acceptance_run_id=target_run_id, facts=(object(),))
+
+    monkeypatch.setattr(
+        bootstrap,
+        "load_live_authority_recording_runtime_config",
+        lambda **_kwargs: configuration,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_restore_current_live_authority_recording_state",
+        lambda **_kwargs: SimpleNamespace(
+            observed_head="d" * 40,
+            bundle=SimpleNamespace(root=SimpleNamespace(root_digest="sha256:" + ("e" * 64))),
+        ),
+    )
+    monkeypatch.setattr(operations_state, "OperationsStateStore", Store)
+    monkeypatch.setattr(
+        bootstrap,
+        "_build_live_execution_approval_receipt",
+        lambda **_kwargs: pytest.fail("approval opened for nonempty target"),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_LateStateDurabilityBarrier",
+        lambda *_arguments: pytest.fail("writer opened for nonempty target"),
+    )
+
+    with pytest.raises(ValueError, match="benchmark lock rebind rejected"):
+        bootstrap.record_benchmark_lock_rebind_v2(
+            source_acceptance_run_id=source_snapshot.acceptance_run_id,
+            target_acceptance_run_id=target_run_id,
+            environ={},
+        )
+
+
 def test_live_authority_state_preflight_is_read_only() -> None:
     """The diagnostic preflight cannot persist an authority or invoke a model."""
 
