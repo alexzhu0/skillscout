@@ -1685,6 +1685,85 @@ def _build_live_execution_approval_receipt(
     )
 
 
+def _build_benchmark_lock_rebind_approval_receipt(
+    *,
+    config: LiveAuthorityRecordingRuntimeConfig,
+    lock: object,
+    source: Mapping[str, str],
+) -> object:
+    """Read one exact benchmark-lock approval for the state-only rebind boundary."""
+
+    from skillscout.adapters.github import GitHubReadClient
+    from skillscout.domain.acceptance import (
+        BenchmarkLockApprovalReceiptV2,
+        LockedBenchmarkManifestV2,
+    )
+
+    if type(config) is not LiveAuthorityRecordingRuntimeConfig or type(lock) is not LockedBenchmarkManifestV2:
+        raise ValueError("benchmark lock rebind approval receipt rejected")
+    owner, repository = config.source_repository_full_name.split("/", 1)
+    client = GitHubReadClient(token=_required_credential(source, "GITHUB_TOKEN"))
+    try:
+        attempt = client.get_workflow_run_attempt(
+            owner,
+            repository,
+            config.workflow_run_id,
+            config.workflow_run_attempt,
+        )
+        approvals = client.get_workflow_run_approvals(
+            owner,
+            repository,
+            config.workflow_run_id,
+        )
+    finally:
+        client.close()
+    trigger_identity = (
+        f"{attempt.event}:{attempt.actor_id}:{attempt.actor_login}"
+        if getattr(attempt, "event", None) == "workflow_dispatch"
+        else ""
+    )
+    if (
+        config.workflow_run_attempt != 1
+        or attempt.workflow_run_id != config.workflow_run_id
+        or attempt.workflow_run_attempt != config.workflow_run_attempt
+        or attempt.source_commit_sha != config.source_commit_sha
+        or attempt.source_commit_sha != lock.source_commit_sha
+        or attempt.event != "workflow_dispatch"
+        or not _is_fresh_campaign_workflow_path(attempt.workflow_path)
+        or attempt.actor_id != attempt.triggering_actor_id
+        or attempt.actor_login != attempt.triggering_actor_login
+        or not _fresh_campaign_trigger_identity(trigger_identity)
+    ):
+        raise ValueError("benchmark lock rebind Actions attempt rejected")
+    matching = tuple(
+        approval
+        for approval in approvals
+        if (
+            approval.environment == "phase6-human-benchmark-lock"
+            and approval.reviewer_login == "alexzhu0"
+            and approval.workflow_run_id == config.workflow_run_id
+        )
+    )
+    if len(matching) != 1:
+        raise ValueError("benchmark lock rebind approval is missing or ambiguous")
+    approval = matching[0]
+    return BenchmarkLockApprovalReceiptV2(
+        schema_version="benchmark-lock-approval-receipt-v2",
+        purpose="benchmark_lock",
+        environment="phase6-human-benchmark-lock",
+        source_repository_id=config.source_repository_id,
+        source_repository_full_name=config.source_repository_full_name,
+        reviewer_login="alexzhu0",
+        reviewer_id=approval.reviewer_id,
+        workflow_run_id=config.workflow_run_id,
+        workflow_run_attempt=config.workflow_run_attempt,
+        source_commit_sha=config.source_commit_sha,
+        workflow_sha256=config.acceptance_workflow_sha256,
+        trigger_identity=trigger_identity,
+        approval_record_digest=approval.approval_record_digest,
+    )
+
+
 def record_live_acceptance_authority_v2(
     *,
     acceptance_run_id: str,
@@ -1987,7 +2066,7 @@ def record_benchmark_lock_rebind_v2(
             source_lock = re_admit_fresh_benchmark_lock_v2(
                 snapshot=source_snapshot
             ).lock
-            receipt = _build_live_execution_approval_receipt(
+            receipt = _build_benchmark_lock_rebind_approval_receipt(
                 config=config,
                 lock=source_lock,
                 source=source,
