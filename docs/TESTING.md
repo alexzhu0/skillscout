@@ -14,12 +14,13 @@ Pytest is configured in `pyproject.toml` to discover tests under `tests/` and re
 
 The ordinary suite is offline by default. GitHub and OpenAI HTTP behavior is represented by frozen JSON fixtures and `httpx.MockTransport`; `tests/recorded_transport.py` rejects any request for which no response was recorded. Tests that exercise CLI dry runs can also use the `outbound_socket_sentinel` fixture from `tests/conftest.py`, which fails on attempted socket connections.
 
-The repository also includes two independent, read-only release inspectors:
+The repository also includes independent, read-only release inspectors:
 
 - `tools/verify_phase5_validation_map.py` checks the exact validation map, release command, requirement coverage, pinned Action identities, and hosted-evidence identities.
 - `tools/verify_phase5_acceptance.py` checks the implemented discovery limits, semantic durability barriers, three-store recovery boundary, protected publication handoff, workflow bytes, and hosted Gate B4 evidence.
+- `tools/verify_phase6_source_execution.py`, `tools/verify_phase6_validation_map.py`, and `tools/verify_phase6_acceptance.py` check the closed Phase 6 source-execution boundary, requirement ownership, and acceptance registry. They do not dispatch Actions, read credentials, call a model, or publish.
 
-Both inspectors use only the Python standard library. Their mutation suites assert that they do not import the project package, network clients, pytest, or subprocess-based execution authority.
+All of these inspectors use only the Python standard library. Their mutation suites assert that they do not import the project package, network clients, pytest, or subprocess-based execution authority.
 
 ## Running tests
 
@@ -70,6 +71,30 @@ export UV_CACHE_DIR="$PWD/.tools/uv-cache"
 
 The repository-local cache setting is optional; it is useful in sandboxes where uv's default cache is not writable. It does not permit dependency updates because every uv invocation still uses `--locked`.
 
+### Phase 6 rebind offline chain
+
+Before the protected Phase 6 route is approved on final `main`, run the focused rebind boundary suite and then the complete offline chain:
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked pytest -q \
+  tests/test_acceptance_domain.py \
+  tests/test_acceptance_application.py \
+  tests/test_operations_state.py \
+  tests/test_phase6_acceptance.py \
+  tests/test_cli_security.py \
+  tests/test_phase6_workflow.py \
+  tests/test_phase6_source_execution.py \
+  tests/test_phase6_validation_map.py
+.tools/uv-0.11.29/bin/uv run --locked pytest -q
+.tools/uv-0.11.29/bin/uv run --locked ruff check .
+.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_source_execution.py
+.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_validation_map.py --plan-contract
+.tools/uv-0.11.29/bin/uv run --locked python tools/verify_phase6_acceptance.py --registry-only
+git diff --check
+```
+
+These checks prove only the offline contracts for the ordered `rebind-benchmark-lock → record-live-authority → run-benchmark → run-replay` route. They do not consume the one-shot human approvals, write canonical state, call DeepSeek, or create a candidate, catalog branch, or Draft PR. Live-only tests may skip when their complete protected configuration is absent; a skip is not live acceptance evidence.
+
 ## Suite categories
 
 The tests are named `tests/test_*.py` and are grouped by behavior rather than by separate unit and integration directories:
@@ -86,7 +111,7 @@ The tests are named `tests/test_*.py` and are grouped by behavior rather than by
 | CLI boundaries | `test_cli_dry_run.py`, `test_cli_extract_repo.py`, `test_cli_validate_skill.py`, `test_cli_security.py` | Stable JSON contracts, dry-run no-write guarantees, sanitized failures, and credential non-disclosure |
 | Publication | `test_publication_domain.py`, `test_github_publish_adapter.py`, `test_publication_recovery.py`, `test_publication_security.py` | Owned-branch reconciliation, Draft PR creation/update, reviewer requests, idempotency, and forbidden remote actions |
 | Gate B4 canary | `test_gate_b4_canary.py`, `test_gate_b4_canary_workflow.py`, `test_publication_live_canary.py` | Bounded canary behavior, workflow identity and authority-zone mutations, causal denials, unchanged default branch, and explicit live opt-in |
-| Verification tools | `test_phase1_evidence_verifier.py`, `test_phase3_acceptance_tool.py`, `test_phase3_validation_map.py`, `test_phase4_action_audit.py`, `test_phase5_acceptance.py`, `test_phase5_validation_map.py` | Dependency-free evidence inspectors plus mutation checks for release-map drift and weakened acceptance boundaries |
+| Verification tools | `test_phase1_evidence_verifier.py`, `test_phase3_acceptance_tool.py`, `test_phase3_validation_map.py`, `test_phase4_action_audit.py`, `test_phase5_acceptance.py`, `test_phase5_validation_map.py`, `test_phase6_acceptance.py`, `test_phase6_source_execution.py`, `test_phase6_validation_map.py` | Dependency-free evidence inspectors plus mutation checks for release-map drift, state-only rebind, and weakened acceptance boundaries |
 
 ## Fixtures and recorded transports
 
