@@ -1733,31 +1733,37 @@ def _benchmark_rebind_source(
         NominationSetV1,
     )
 
-    roles = ("positive", "positive_multi_workflow", "negative", "negative", "borderline")
+    checked_out_manifest = LockedBenchmarkManifestV1.model_validate_json(
+        (ROOT / "config/acceptance/phase6/benchmark-manifest.json").read_bytes(),
+        strict=True,
+    )
     entries = []
-    for index in range(1, 6):
+    roles_by_nomination_digest: dict[str, str] = {}
+    for index, selected in enumerate(checked_out_manifest.entries, start=1):
         values: dict[str, Any] = {
-            "repository_full_name": f"octo-org/rebind-{index}",
-            "repository_id": 960000 + index,
-            "exact_commit_sha": f"{index:040x}",
-            "license_spdx": "MIT",
-            "selection_evidence_digests": (sha256_digest({"rebind-evidence": index}),),
+            "repository_full_name": selected.repository_full_name,
+            "repository_id": selected.repository_id,
+            "exact_commit_sha": selected.exact_commit_sha,
+            "license_spdx": selected.license_spdx,
+            "selection_evidence_digests": selected.selection_evidence_digests,
         }
         if index == 1 and mutation == "repository_id":
-            values["repository_id"] = 970001
+            values["repository_id"] = selected.repository_id + 1
+        elif index == 1 and mutation == "repository_full_name":
+            values["repository_full_name"] = "octo-org/rebound-name"
         elif index == 1 and mutation == "exact_commit_sha":
             values["exact_commit_sha"] = "f" * 40
         elif index == 1 and mutation == "license_spdx":
             values["license_spdx"] = "Apache-2.0"
         elif index == 1 and mutation == "selection_evidence_digests":
             values["selection_evidence_digests"] = (sha256_digest({"rebind-evidence": "changed"}),)
-        entries.append(
-            NominationEntryV1(
+        entry = NominationEntryV1(
                 schema_version="nomination-entry-v1",
                 selection_source="search_derived",
                 **values,
             )
-        )
+        entries.append(entry)
+        roles_by_nomination_digest[entry.entry_digest] = selected.coverage_role
     nomination = NominationSetV1(
         schema_version="nomination-set-v1",
         nomination_set_id="rebind-source",
@@ -1777,15 +1783,47 @@ def _benchmark_rebind_source(
                     exact_commit_sha=entry.exact_commit_sha,
                     license_spdx=entry.license_spdx,
                     selection_source="search_derived",
-                    coverage_role=role,
+                    coverage_role=roles_by_nomination_digest[entry.entry_digest],
                     nomination_entry_digest=entry.entry_digest,
                     selection_evidence_digests=entry.selection_evidence_digests,
                 )
-                for entry, role in zip(nomination.search_derived_entries, roles, strict=True)
+                for entry in nomination.search_derived_entries
             ),
             key=lambda entry: entry.entry_digest,
         )
     )
+    if mutation == "coverage_role":
+        by_role = {entry.coverage_role: entry for entry in selection_entries}
+        positive = by_role["positive"]
+        borderline = by_role["borderline"]
+        selection_entries = tuple(
+            sorted(
+                (
+                    *(
+                        entry
+                        for entry in selection_entries
+                        if entry not in {positive, borderline}
+                    ),
+                    BenchmarkEntryV1(
+                        **{
+                            **positive.model_dump(mode="python", exclude_none=False),
+                            "coverage_role": "borderline",
+                            "entry_digest": None,
+                        }
+                    ),
+                    BenchmarkEntryV1(
+                        **{
+                            **borderline.model_dump(mode="python", exclude_none=False),
+                            "coverage_role": "positive",
+                            "entry_digest": None,
+                        }
+                    ),
+                ),
+                key=lambda entry: entry.entry_digest,
+            )
+        )
+    if mutation is None:
+        assert selection_entries == checked_out_manifest.entries
     manifest_preimage = {
         "schema_version": "locked-benchmark-manifest-v1",
         "manifest_version": 1,
@@ -1877,6 +1915,152 @@ def _benchmark_rebind_receipt() -> Any:
     )
 
 
+def _rebound_live_admission_inputs(module: Any) -> tuple[Any, Any, Any]:
+    """Build one fully typed target reference/lock/authority chain."""
+
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+    from skillscout.domain.acceptance import (
+        LiveAcceptanceAuthorityV2,
+        LiveExecutionApprovalReceiptV2,
+    )
+
+    source_snapshot, manifest, _ = _benchmark_rebind_source(module)
+    rebound = module.rebind_benchmark_lock_v2(
+        source_snapshot=source_snapshot,
+        target_acceptance_run_id="phase6-current-main",
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="e" * 40,
+        parent_state_root_digest="sha256:" + ("f" * 64),
+        approval_receipt=_benchmark_rebind_receipt(),
+    )
+    lock = rebound.lock
+    approval = LiveExecutionApprovalReceiptV2(
+        schema_version="live-execution-approval-receipt-v2",
+        purpose="live_execution",
+        environment="skillscout-phase6-live-authority",
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        reviewer_login="alexzhu0",
+        reviewer_id=202,
+        workflow_run_id=2001,
+        workflow_run_attempt=1,
+        source_commit_sha=lock.source_commit_sha,
+        workflow_sha256=lock.acceptance_workflow_sha256,
+        trigger_identity=lock.trigger_identity,
+        approval_record_digest=sha256_digest({"live-approval": "rebind"}),
+    )
+    authority = LiveAcceptanceAuthorityV2(
+        schema_version="live-acceptance-authority-v2",
+        authority_version=2,
+        purpose="live_execution",
+        benchmark_lock_digest=lock.lock_digest,
+        benchmark_lock=lock,
+        source_repository_id=lock.source_repository_id,
+        source_repository_full_name=lock.source_repository_full_name,
+        state_repository_id=lock.state_repository_id,
+        state_repository_full_name=lock.state_repository_full_name,
+        parent_state_commit_sha=lock.parent_state_commit_sha,
+        parent_state_root_digest=lock.parent_state_root_digest,
+        state_commit_sha="1" * 40,
+        state_root_digest="sha256:" + ("2" * 64),
+        source_commit_sha=lock.source_commit_sha,
+        acceptance_workflow_sha256=lock.acceptance_workflow_sha256,
+        source_state_binding_digest=lock.source_state_binding_digest,
+        manifest_path="config/acceptance/phase6/benchmark-manifest.json",
+        manifest_digest=lock.selection_manifest_digest,
+        selection_manifest_digest=lock.selection_manifest_digest,
+        nomination_set_digest=lock.nomination_set_digest,
+        lock_attestation_digest=lock.selection_manifest.lock_attestation.attestation_digest,
+        entries=lock.entries,
+        environment="skillscout-phase6-live-authority",
+        approved_reviewer_login=approval.reviewer_login,
+        approved_reviewer_id=approval.reviewer_id,
+        workflow_run_id=approval.workflow_run_id,
+        workflow_run_attempt=approval.workflow_run_attempt,
+        trigger_identity=approval.trigger_identity,
+        approval_record_digest=approval.approval_record_digest,
+        approval_receipt=approval,
+        approval_receipt_digest=approval.receipt_digest,
+        query_set_digest="sha256:" + ("6" * 64),
+        budget_policy_digest="sha256:" + ("7" * 64),
+        semantic_provider="deepseek",
+        provider_base_url="https://api.deepseek.com",
+        stage_models=("deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-pro"),
+        prompt_versions=("extract-prompt-v1", "generator-prompt-v1", "reviewer-prompt-v1"),
+        schema_versions=("workflow-spec-v1", "generation-draft-v1", "reviewer-judgment-v1"),
+        policy_versions=(
+            "discovery-budget-policy-v1",
+            "extract-policy-v1",
+            "generator-policy-v1",
+            "qualification-policy-v1",
+            "reader-policy-v1",
+            "reviewer-policy-v1",
+        ),
+        max_candidates=100,
+        max_semantic_candidates=20,
+        max_semantic_requests=20,
+        max_files_per_repository=25,
+        max_source_files_per_repository=5,
+        max_file_bytes=131_072,
+        max_total_bytes_per_repository=524_288,
+        max_tokens_per_repository=40_000,
+        benchmark_scenario_write_count=5,
+        replay_semantic_effect_count=0,
+        replay_publication_effect_count=0,
+        approved_at="2026-08-14T00:30:00.000000Z",
+    )
+    snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id="phase6-current-main",
+        facts=(
+            AcceptanceFactRecord(
+                acceptance_run_id="phase6-current-main",
+                kind="acceptance_benchmark_rebind",
+                fact_digest=rebound.reference.rebind_digest,
+                fact=rebound.reference,
+            ),
+            AcceptanceFactRecord(
+                acceptance_run_id="phase6-current-main",
+                kind="acceptance_benchmark_lock",
+                fact_digest=lock.lock_digest,
+                fact=lock,
+            ),
+            AcceptanceFactRecord(
+                acceptance_run_id="phase6-current-main",
+                kind="acceptance_live_authority",
+                fact_digest=authority.authority_digest,
+                fact=authority,
+            ),
+        ),
+    )
+    observation = module.LiveAuthorityStateObservation(
+        state_repository_id=lock.state_repository_id,
+        state_repository_full_name=lock.state_repository_full_name,
+        authority_carrier_commit_sha="3" * 40,
+        authority_carrier_root_digest="sha256:" + ("4" * 64),
+        authority_carrier_parent_commit_sha=authority.state_commit_sha,
+        authority_carrier_prior_root_digest=authority.state_root_digest,
+        lock_state_parent_commit_sha=lock.parent_state_commit_sha,
+        lock_state_prior_root_digest=lock.parent_state_root_digest,
+    )
+    return snapshot, authority, observation
+
+
+def test_benchmark_rebind_live_re_admission_uses_reference_nomination() -> None:
+    module = _application_module(skip_if_missing=False)
+    snapshot, authority, observation = _rebound_live_admission_inputs(module)
+
+    admitted = module.re_admit_live_execution_v2(
+        snapshot=snapshot,
+        authority_digest=authority.authority_digest,
+        state_observation=observation,
+    )
+
+    assert admitted.authority == authority
+    assert admitted.nomination == snapshot.facts[0].fact.source_nomination
+
+
 def test_benchmark_rebind_re_admits_source_and_builds_current_lock() -> None:
     module = _application_module(skip_if_missing=False)
     source_snapshot, manifest, _source_receipt = _benchmark_rebind_source(module)
@@ -1904,7 +2088,14 @@ def test_benchmark_rebind_re_admits_source_and_builds_current_lock() -> None:
 
 @pytest.mark.parametrize(
     "mutation",
-    ("repository_id", "exact_commit_sha", "license_spdx", "selection_evidence_digests"),
+    (
+        "repository_id",
+        "repository_full_name",
+        "exact_commit_sha",
+        "license_spdx",
+        "selection_evidence_digests",
+        "coverage_role",
+    ),
 )
 def test_benchmark_rebind_rejects_validly_redigested_source_selection_drift(
     mutation: str,
@@ -1963,6 +2154,127 @@ def test_benchmark_rebind_re_admission_accepts_one_reference_not_direct_nominati
     admitted = module.re_admit_fresh_benchmark_lock_v2(snapshot=snapshot)
     assert admitted.lock == result.lock
     assert admitted.nomination == result.reference.source_nomination
+
+
+def test_benchmark_rebind_re_admission_rejects_two_locks_even_when_one_digest_is_named() -> None:
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+
+    module = _application_module(skip_if_missing=False)
+    source_snapshot, manifest, receipt = _benchmark_rebind_source(module)
+    first_lock = next(
+        record.fact for record in source_snapshot.facts if record.kind == "acceptance_benchmark_lock"
+    )
+    second_lock = module.bind_fresh_benchmark_lock(
+        snapshot=AcceptanceRunSnapshot(
+            acceptance_run_id=source_snapshot.acceptance_run_id,
+            facts=(source_snapshot.facts[0],),
+        ),
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="e" * 40,
+        parent_state_root_digest="sha256:" + ("f" * 64),
+        expected_nomination_authority_digest=source_snapshot.facts[0].fact.search_run_authority_digest,
+        approval_receipt=receipt,
+    )
+    assert second_lock.lock_digest != first_lock.lock_digest
+    snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id=source_snapshot.acceptance_run_id,
+        facts=(
+            *source_snapshot.facts,
+            AcceptanceFactRecord(
+                acceptance_run_id=source_snapshot.acceptance_run_id,
+                kind="acceptance_benchmark_lock",
+                fact_digest=second_lock.lock_digest,
+                fact=second_lock,
+            ),
+        ),
+    )
+
+    with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+        module.re_admit_fresh_benchmark_lock_v2(
+            snapshot=snapshot,
+            lock_digest=first_lock.lock_digest,
+        )
+
+
+@pytest.mark.parametrize("source_mutation", ("empty_lock", "ambiguous_nomination"))
+def test_benchmark_rebind_rejects_missing_or_ambiguous_source_authority(
+    source_mutation: str,
+) -> None:
+    from skillscout.adapters.operations_state import AcceptanceRunSnapshot
+
+    module = _application_module(skip_if_missing=False)
+    source_snapshot, manifest, _ = _benchmark_rebind_source(module)
+    facts = (
+        (source_snapshot.facts[0],)
+        if source_mutation == "empty_lock"
+        else (source_snapshot.facts[0], source_snapshot.facts[0], source_snapshot.facts[1])
+    )
+    with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+        module.rebind_benchmark_lock_v2(
+            source_snapshot=AcceptanceRunSnapshot(
+                acceptance_run_id=source_snapshot.acceptance_run_id,
+                facts=facts,
+            ),
+            target_acceptance_run_id="phase6-current-main",
+            selection_manifest=manifest,
+            state_repository_id=9001,
+            state_repository_full_name="octo-org/skillscout-state",
+            parent_state_commit_sha="e" * 40,
+            parent_state_root_digest="sha256:" + ("f" * 64),
+            approval_receipt=_benchmark_rebind_receipt(),
+        )
+
+
+def test_benchmark_rebind_re_admission_rejects_canonically_redigested_nested_reference_drift() -> None:
+    from skillscout.adapters.operations_state import AcceptanceFactRecord, AcceptanceRunSnapshot
+
+    module = _application_module(skip_if_missing=False)
+    source_snapshot, manifest, _ = _benchmark_rebind_source(module)
+    result = module.rebind_benchmark_lock_v2(
+        source_snapshot=source_snapshot,
+        target_acceptance_run_id="phase6-current-main",
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="e" * 40,
+        parent_state_root_digest="sha256:" + ("f" * 64),
+        approval_receipt=_benchmark_rebind_receipt(),
+    )
+    mutated_source, mutated_manifest, _ = _benchmark_rebind_source(
+        module,
+        mutation="repository_full_name",
+    )
+    corrupted = module.rebind_benchmark_lock_v2(
+        source_snapshot=mutated_source,
+        target_acceptance_run_id="phase6-current-main",
+        selection_manifest=mutated_manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="e" * 40,
+        parent_state_root_digest="sha256:" + ("f" * 64),
+        approval_receipt=_benchmark_rebind_receipt(),
+    )
+    snapshot = AcceptanceRunSnapshot(
+        acceptance_run_id="phase6-current-main",
+        facts=(
+            AcceptanceFactRecord(
+                acceptance_run_id="phase6-current-main",
+                kind="acceptance_benchmark_rebind",
+                fact_digest=corrupted.reference.rebind_digest,
+                fact=corrupted.reference,
+            ),
+            AcceptanceFactRecord(
+                acceptance_run_id="phase6-current-main",
+                kind="acceptance_benchmark_lock",
+                fact_digest=result.lock.lock_digest,
+                fact=result.lock,
+            ),
+        ),
+    )
+    with pytest.raises(module.AcceptanceApplicationError, match="evidence_missing"):
+        module.re_admit_fresh_benchmark_lock_v2(snapshot=snapshot)
 
 
 @pytest.mark.parametrize("extra_kind", ("acceptance_nomination", "acceptance_benchmark_rebind"))

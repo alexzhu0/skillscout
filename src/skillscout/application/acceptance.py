@@ -2818,7 +2818,6 @@ def re_admit_live_execution_v2(
             or type(authority.approval_receipt) is not LiveExecutionApprovalReceiptV2
         ):
             raise ValueError
-        re_admit_locked_manifest(snapshot, lock.selection_manifest)
         _verify_live_authority_v2_selected_entries(
             authority=authority,
             lock=lock,
@@ -2858,9 +2857,9 @@ def re_admit_fresh_benchmark_lock_v2(
     """Rebuild one current V2 lock and its Search-only selection chain.
 
     The recorder deliberately receives no lock document or caller-selected
-    receipt.  It can name at most the sole V2 lock already reconstructed from
-    an operations-owned snapshot.  Passing ``None`` therefore requires exact
-    V2 cardinality rather than choosing an arbitrary historical V1 lock.
+    receipt.  It can name only the sole V2 lock already reconstructed from an
+    operations-owned snapshot; a supplied digest verifies that sole fact and
+    never selects from multiple locks.
     """
 
     if (
@@ -2883,10 +2882,11 @@ def re_admit_fresh_benchmark_lock_v2(
                 and record.acceptance_run_id == snapshot.acceptance_run_id
                 and record.kind == "acceptance_benchmark_lock"
                 and type(record.fact) is LockedBenchmarkManifestV2
-                and (lock_digest is None or record.fact_digest == lock_digest)
             )
         )
         if len(lock_records) != 1:
+            raise ValueError
+        if lock_digest is not None and lock_records[0].fact_digest != lock_digest:
             raise ValueError
         lock = LockedBenchmarkManifestV2.model_validate_json(
             canonical_json_bytes(lock_records[0].fact),
