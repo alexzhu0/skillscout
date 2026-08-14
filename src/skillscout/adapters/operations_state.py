@@ -383,48 +383,48 @@ _ACCEPTANCE_DIGEST_FIELDS: Final[Mapping[str, Mapping[str, str]]] = MappingProxy
     }
 )
 _ACCEPTANCE_FACT_KINDS: Final = tuple(ACCEPTANCE_FACT_MODELS)
-_PRE_BENCHMARK_REBIND_ACCEPTANCE_FACT_KINDS: Final = tuple(
-    kind for kind in _ACCEPTANCE_FACT_KINDS if kind != "acceptance_benchmark_rebind"
+_PRE_BENCHMARK_REBIND_ACCEPTANCE_FACT_KINDS: Final = (
+    "acceptance_nomination",
+    "acceptance_benchmark_lock",
+    "acceptance_live_authority",
+    "acceptance_campaign_resume_locator",
+    "acceptance_budget_reservation",
+    "acceptance_fixed_candidate_admission",
+    "acceptance_semantic_request_reservation",
+    "acceptance_scenario",
+    "acceptance_hosted_isolation_capability",
+    "acceptance_offline_adversarial_run",
+    "acceptance_replay",
+    "acceptance_replay_evidence",
+    "acceptance_changed_source",
+    "acceptance_publication_replay_completion",
+    "acceptance_changed_source_draft_update_completion",
+    "acceptance_gate_b4",
+    "acceptance_human_review",
+    "acceptance_cleanup",
+    "acceptance_reviewer_calibration",
+    "acceptance_gate",
+    "acceptance_report_root",
 )
 _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
-    for kind in _ACCEPTANCE_FACT_KINDS
+    for kind in _PRE_BENCHMARK_REBIND_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_replay_evidence"
-)
-_PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS: Final = tuple(
-    kind
-    for kind in _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
-    if kind != "acceptance_benchmark_rebind"
 )
 _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_semantic_request_reservation"
 )
-_PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS: Final = tuple(
-    kind
-    for kind in _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
-    if kind != "acceptance_benchmark_rebind"
-)
 _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_fixed_candidate_admission"
 )
-_PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS: Final = tuple(
-    kind
-    for kind in _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
-    if kind != "acceptance_benchmark_rebind"
-)
 _PRE_BUDGET_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
     for kind in _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
     if kind != "acceptance_budget_reservation"
-)
-_PRE_BENCHMARK_REBIND_PRE_BUDGET_ACCEPTANCE_FACT_KINDS: Final = tuple(
-    kind
-    for kind in _PRE_BUDGET_ACCEPTANCE_FACT_KINDS
-    if kind != "acceptance_benchmark_rebind"
 )
 _LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
     kind
@@ -434,11 +434,6 @@ _LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
         "acceptance_live_authority",
         "acceptance_campaign_resume_locator",
     }
-)
-_PRE_BENCHMARK_REBIND_LEGACY_ACCEPTANCE_FACT_KINDS: Final = tuple(
-    kind
-    for kind in _LEGACY_ACCEPTANCE_FACT_KINDS
-    if kind != "acceptance_benchmark_rebind"
 )
 
 
@@ -777,31 +772,16 @@ _PRE_BENCHMARK_REBIND_EXPECTED_SCHEMA: Final = _expected_schema(
 _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
 )
-_PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA: Final = _expected_schema(
-    _PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS
-)
 _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
-)
-_PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA: Final = _expected_schema(
-    _PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS
 )
 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
 )
-_PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA: Final = _expected_schema(
-    _PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS
-)
 _PRE_BUDGET_EXPECTED_SCHEMA: Final = _expected_schema(
     _PRE_BUDGET_ACCEPTANCE_FACT_KINDS
 )
-_PRE_BENCHMARK_REBIND_PRE_BUDGET_EXPECTED_SCHEMA: Final = _expected_schema(
-    _PRE_BENCHMARK_REBIND_PRE_BUDGET_ACCEPTANCE_FACT_KINDS
-)
 _LEGACY_EXPECTED_SCHEMA: Final = _expected_schema(_LEGACY_ACCEPTANCE_FACT_KINDS)
-_PRE_BENCHMARK_REBIND_LEGACY_EXPECTED_SCHEMA: Final = _expected_schema(
-    _PRE_BENCHMARK_REBIND_LEGACY_ACCEPTANCE_FACT_KINDS
-)
 _FACT_TABLES: Final[tuple[tuple[_FactKind, str, str, tuple[str, ...], tuple[str, ...]], ...]] = (
     (
         "run",
@@ -959,15 +939,10 @@ _SCHEMA_FINGERPRINTS: Final = frozenset(
         _fingerprint_for_schema(_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA),
-        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA),
-        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA),
-        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_PRE_BUDGET_EXPECTED_SCHEMA),
-        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_PRE_BUDGET_EXPECTED_SCHEMA),
         _fingerprint_for_schema(_LEGACY_EXPECTED_SCHEMA),
-        _fingerprint_for_schema(_PRE_BENCHMARK_REBIND_LEGACY_EXPECTED_SCHEMA),
     }
 )
 
@@ -1736,6 +1711,28 @@ def _validate_acceptance_references(
     elif kind == "acceptance_benchmark_rebind":
         if type(fact) is not BenchmarkSelectionRebindV1:
             raise OperationsIntegrityError("benchmark rebind model is invalid")
+        try:
+            source_nomination = _acceptance_fact_by_digest(
+                connection,
+                acceptance_run_id=fact.source_acceptance_run_id,
+                kind="acceptance_nomination",
+                digest=fact.source_nomination.nomination_set_digest,
+            )
+            source_lock = _acceptance_fact_by_digest(
+                connection,
+                acceptance_run_id=fact.source_acceptance_run_id,
+                kind="acceptance_benchmark_lock",
+                digest=fact.source_lock.lock_digest,
+            )
+        except OperationsIntegrityError:
+            raise OperationsIntegrityError("benchmark rebind source is missing") from None
+        if (
+            type(source_nomination) is not NominationSetV1
+            or type(source_lock) is not LockedBenchmarkManifestV2
+            or source_nomination != fact.source_nomination
+            or source_lock != fact.source_lock
+        ):
+            raise OperationsIntegrityError("benchmark rebind source binding mismatch")
         direct_rows = connection.execute(
             """SELECT fact_digest FROM operations_acceptance_facts
                WHERE acceptance_run_id = ?
@@ -2325,15 +2322,10 @@ class OperationsStateStore:
                 _EXPECTED_SCHEMA,
                 _PRE_BENCHMARK_REBIND_EXPECTED_SCHEMA,
                 _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
-                _PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
                 _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
-                _PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
                 _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
-                _PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                 _PRE_BUDGET_EXPECTED_SCHEMA,
-                _PRE_BENCHMARK_REBIND_PRE_BUDGET_EXPECTED_SCHEMA,
                 _LEGACY_EXPECTED_SCHEMA,
-                _PRE_BENCHMARK_REBIND_LEGACY_EXPECTED_SCHEMA,
             ):
                 raise OperationsIntegrityError("operations schema fingerprint mismatch")
             integrity = tuple(
@@ -2724,15 +2716,10 @@ class OperationsStateStore:
                 if actual not in (
                     _PRE_BENCHMARK_REBIND_EXPECTED_SCHEMA,
                     _PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
-                    _PRE_BENCHMARK_REBIND_PRE_REPLAY_EVIDENCE_EXPECTED_SCHEMA,
                     _PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
-                    _PRE_BENCHMARK_REBIND_PRE_REQUEST_RESERVATION_EXPECTED_SCHEMA,
                     _PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
-                    _PRE_BENCHMARK_REBIND_PRE_FIXED_ADMISSION_EXPECTED_SCHEMA,
                     _PRE_BUDGET_EXPECTED_SCHEMA,
-                    _PRE_BENCHMARK_REBIND_PRE_BUDGET_EXPECTED_SCHEMA,
                     _LEGACY_EXPECTED_SCHEMA,
-                    _PRE_BENCHMARK_REBIND_LEGACY_EXPECTED_SCHEMA,
                 ):
                     raise OperationsIntegrityError(
                         "operations schema cannot be upgraded"
