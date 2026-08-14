@@ -358,6 +358,7 @@ def _assert_isolation_workflow(source: str) -> None:
         "nominate",
         "prepare_fresh_campaign",
         "benchmark_lock",
+        "rebind_benchmark_lock",
         "offline_adversarial",
         "live_authority_preflight",
         "live_benchmark",
@@ -839,6 +840,7 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
         "preflight-fresh-campaign",
         "prepare-fresh-campaign",
         "lock-fresh-campaign",
+        "rebind-benchmark-lock",
         "offline-adversarial",
         "run-benchmark",
         "run-replay",
@@ -1084,6 +1086,65 @@ def test_record_live_authority_requires_environment_b_before_state_credential() 
         "SKILLSCOUT_SOURCE_GITHUB_TOKEN",
     ):
         assert forbidden.casefold() not in live.casefold()
+
+
+def test_rebind_benchmark_lock_requires_environment_approval_before_state_credential() -> None:
+    """The rebind route is a distinct, closed state-only environment transition."""
+
+    rebind = _job(_source(required=False), "rebind_benchmark_lock")
+
+    assert "name: skillscout-phase6-benchmark-lock-rebind" in rebind
+    assert (
+        "if: ${{ inputs.phase6_action == 'rebind-benchmark-lock' && "
+        "github.repository == 'alexzhu0/skillscout' && "
+        "github.ref == 'refs/heads/main' && github.run_attempt == '1' }}" in rebind
+    )
+    assert "environment: phase6-human-benchmark-lock" in rebind
+    assert re.search(
+        r"^    permissions:\n      contents: read\n      actions: read$",
+        rebind,
+        re.MULTILINE,
+    )
+    assert "contents: write" not in rebind
+
+    prefix, separator, persist = rebind.partition(
+        "      - name: Persist one environment-approved benchmark lock rebind"
+    )
+    assert separator and persist
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN" not in prefix
+    assert "SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID:" in prefix
+    assert "SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:" in prefix
+    assert "GITHUB_TOKEN: ${{ github.token }}" in prefix
+    assert "prepare-fresh-lock-handoff" in prefix
+    assert f"actions/checkout@{CHECKOUT_SHA}" in prefix
+    assert "ref: ${{ github.sha }}" in prefix
+    assert "persist-credentials: false" in prefix
+    assert f"astral-sh/setup-uv@{SETUP_UV_SHA}" in prefix
+    assert "Verify the repository-local locked toolchain" in prefix
+
+    assert "SKILLSCOUT_STATE_GITHUB_TOKEN: " in persist
+    assert (
+        "${{ secrets.SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN }}" in persist
+    )
+    assert "GITHUB_TOKEN: ${{ github.token }}" in persist
+    assert "set -euo pipefail" in persist
+    assert "umask 077" in persist
+    assert "skillscout.cli rebind-benchmark-lock" in persist
+    assert '--source-acceptance-run-id "${SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID:?}"' in persist
+    assert '--target-acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"' in persist
+    for forbidden in (
+        "deepseek",
+        "github_app",
+        "catalog",
+        "publish",
+        "run-acceptance",
+        "curl",
+        "wget",
+        "http://",
+        "https://",
+        "SKILLSCOUT_SOURCE_GITHUB_TOKEN",
+    ):
+        assert forbidden.casefold() not in rebind.casefold()
 
 
 def test_live_authority_preflight_precedes_all_semantic_credentials() -> None:

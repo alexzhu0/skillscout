@@ -135,6 +135,15 @@ OWNERS = {
     "06-RELEASE-REQUIREMENTS.json": "06-13-02",
 }
 
+BENCHMARK_REBIND_OWNERS = {
+    "BenchmarkSelectionRebindV1": "06-16-02",
+    "rebind-benchmark-lock": "06-16-02",
+    "phase6-human-benchmark-lock/rebind": "06-16-02",
+    "rebind_benchmark_lock": "06-16-02",
+    "tests/test_phase6_workflow.py/rebind": "06-16-02",
+    "tests/test_phase6_source_execution.py/rebind": "06-16-02",
+}
+
 
 class InvalidMap(Exception):
     pass
@@ -423,6 +432,17 @@ def verify(*, wave_zero_complete: bool) -> None:
         )
     verify_checkpoint_topology()
     registry, wave_files = parse_registry(source)
+    require(
+        BENCHMARK_REBIND_OWNERS
+        == {
+            "BenchmarkSelectionRebindV1": "06-16-02",
+            "rebind-benchmark-lock": "06-16-02",
+            "phase6-human-benchmark-lock/rebind": "06-16-02",
+            "rebind_benchmark_lock": "06-16-02",
+            "tests/test_phase6_workflow.py/rebind": "06-16-02",
+            "tests/test_phase6_source_execution.py/rebind": "06-16-02",
+        }
+    )
     require(set(registry) == set(OWNERS))
     for surface, expected_owner in OWNERS.items():
         owner, consumers = registry[surface]

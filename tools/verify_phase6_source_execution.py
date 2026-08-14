@@ -34,6 +34,9 @@ FRESH_MATERIALIZATION_RUN_SHA256 = (
 LIVE_AUTHORITY_JOB = "record_live_authority"
 LIVE_AUTHORITY_ENVIRONMENT = "skillscout-phase6-live-authority"
 LIVE_AUTHORITY_STATE_SECRET = "SKILLSCOUT_LIVE_AUTHORITY_STATE_GITHUB_TOKEN"
+BENCHMARK_REBIND_JOB = "rebind_benchmark_lock"
+BENCHMARK_REBIND_ENVIRONMENT = "phase6-human-benchmark-lock"
+BENCHMARK_REBIND_STATE_SECRET = "SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN"
 FINAL_LIVE_AUTHORITY_JOB_SENTINEL = "__SKILLSCOUT_PHASE6_FINAL_LIVE_AUTHORITY_JOB__"
 EXPECTED_CLOSED_WORKFLOW_SOURCE_DIGESTS = (
     (
@@ -50,7 +53,7 @@ EXPECTED_CLOSED_WORKFLOW_SOURCE_DIGESTS = (
     ),
     (
         ".github/workflows/phase6-acceptance.yml",
-        "ec2a881fec822be0d53bf30afbb3b99bf1e85382e330fa3350887c9f10dca66f",
+        "9b44b908a9cbcdf36f671c1d3deb8d43e73e07362d19b243c1773838e8206c3f",
     ),
 )
 MANAGED_PYTHON_INSTALL = (
@@ -1218,6 +1221,150 @@ def _planned_live_authority_route_is_closed(source: str, jobs: tuple[_Job, ...])
     return True
 
 
+def _closed_benchmark_rebind_job(job: _Job) -> None:
+    """Accept only the environment-A, state-only benchmark rebind route."""
+
+    _require(job.name == BENCHMARK_REBIND_JOB)
+    _require(
+        set(_job_direct_keys(job))
+        == {
+            "name",
+            "if",
+            "environment",
+            "runs-on",
+            "timeout-minutes",
+            "permissions",
+            "env",
+            "steps",
+        }
+    )
+    _require(
+        _direct_scalar(job.source, indent=4, name="name")
+        == "skillscout-phase6-benchmark-lock-rebind"
+    )
+    _require(
+        _direct_scalar(job.source, indent=4, name="if")
+        == "${{ inputs.phase6_action == 'rebind-benchmark-lock' && github.repository == 'alexzhu0/skillscout' && github.ref == 'refs/heads/main' && github.run_attempt == '1' }}"
+    )
+    _require(
+        _direct_scalar(job.source, indent=4, name="environment")
+        == BENCHMARK_REBIND_ENVIRONMENT
+    )
+    _require(_direct_scalar(job.source, indent=4, name="runs-on") == "ubuntu-24.04")
+    _require(_direct_scalar(job.source, indent=4, name="timeout-minutes") == "30")
+    _require(
+        _direct_mapping(job.source, indent=4, name="permissions")
+        == {"contents": "read", "actions": "read"}
+    )
+    _require(
+        _direct_mapping(job.source, indent=4, name="env")
+        == {
+            "UV_LINK_MODE": "copy",
+            "SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID": "${{ vars.SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID }}",
+            "SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID": "${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}",
+            "SKILLSCOUT_STATE_REPOSITORY_ID": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}",
+            "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME": "${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}",
+        }
+    )
+    expected_prefix = (
+        "Check out the dispatched commit",
+        "Materialize the pinned uv binary",
+        "Verify the repository-local locked toolchain",
+    )
+    _require(
+        tuple(step.name for step in job.steps)
+        == (
+            *expected_prefix,
+            "Read one environment-approved benchmark lock receipt",
+            "Persist one environment-approved benchmark lock rebind",
+        )
+    )
+    _require(
+        tuple(_step_direct_keys(step) for step in job.steps[:3])
+        == (("name", "uses", "with"), ("name", "uses", "with"), ("name", "run"))
+    )
+    _require(_checkout_is_closed(job.steps[0]))
+    _require(_setup_is_closed(job.steps[1]))
+    _require(_fresh_materialization_is_exact(job.steps[2]))
+
+    receipt = job.steps[-2]
+    persist = job.steps[-1]
+    _require(set(_step_direct_keys(receipt)) == {"name", "env", "run"})
+    _require(
+        _direct_mapping(receipt.source, indent=8, name="env")
+        == {"GITHUB_TOKEN": "${{ github.token }}"}
+    )
+    _require(
+        receipt.run is not None
+        and tuple(receipt.run.splitlines())
+        == (
+            "set -euo pipefail",
+            "umask 077",
+            f"{LOCAL_LOCKED} python -m skillscout.cli prepare-fresh-lock-handoff >/dev/null",
+        )
+    )
+    _require(set(_step_direct_keys(persist)) == {"name", "env", "run"})
+    _require(
+        _direct_mapping(persist.source, indent=8, name="env")
+        == {
+            "GITHUB_TOKEN": "${{ github.token }}",
+            "SKILLSCOUT_STATE_GITHUB_TOKEN": f"${{{{ secrets.{BENCHMARK_REBIND_STATE_SECRET} }}}}",
+        }
+    )
+    _require(
+        persist.run is not None
+        and tuple(persist.run.splitlines())
+        == (
+            "set -euo pipefail",
+            "umask 077",
+            f"{LOCAL_LOCKED} python -m skillscout.cli rebind-benchmark-lock \\",
+            '  --source-acceptance-run-id "${SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID:?}" \\',
+            '  --target-acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        )
+    )
+    for forbidden in (
+        "deepseek",
+        "github_app",
+        "catalog",
+        "publish",
+        "run-acceptance",
+        "candidate",
+        "semantic",
+        "curl",
+        "wget",
+        "http://",
+        "https://",
+        "SKILLSCOUT_SOURCE_GITHUB_TOKEN",
+    ):
+        _require(forbidden.casefold() not in job.source.casefold())
+    _require(
+        all(
+            "SKILLSCOUT_STATE_GITHUB_TOKEN" not in step.source
+            for step in job.steps[:-1]
+        )
+    )
+
+
+def _planned_benchmark_rebind_route_is_closed(jobs: tuple[_Job, ...]) -> bool:
+    """Require exactly one literal protected rebind invocation and no alternate form."""
+
+    planned = tuple(job for job in jobs if job.name == BENCHMARK_REBIND_JOB)
+    _require(len(planned) == 1)
+    rebind_steps: list[tuple[_Job, _Step]] = []
+    for job in jobs:
+        for step in job.steps:
+            if step.run is None:
+                continue
+            subcommands = _static_skillscout_cli_subcommands(step.run)
+            if job != planned[0]:
+                _require("rebind-benchmark-lock" not in subcommands)
+            if "rebind-benchmark-lock" in subcommands:
+                rebind_steps.append((job, step))
+    _require(len(rebind_steps) == 1 and rebind_steps[0][0] == planned[0])
+    _closed_benchmark_rebind_job(planned[0])
+    return True
+
+
 def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     root = Path(os.path.abspath(os.fspath(repository_root)))
     _require(root.is_dir())
@@ -1227,6 +1374,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     control_user_mapping_count = 0
     diagnostic_upload_count = 0
     planned_live_authority = False
+    planned_benchmark_rebind = False
     workflow_sources: list[tuple[Path, str, tuple[_Job, ...]]] = []
     for relative in WORKFLOW_PATHS:
         source = _read(root, relative)
@@ -1239,6 +1387,7 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
             control_user_mapping_count += _closed_control_user_mapping_count(jobs)
             _fresh_campaign_jobs_are_closed(jobs)
             planned_live_authority = _planned_live_authority_route_is_closed(source, jobs)
+            planned_benchmark_rebind = _planned_benchmark_rebind_route_is_closed(jobs)
         for job in jobs:
             checkout_indexes = tuple(
                 index for index, step in enumerate(job.steps) if CHECKOUT in step.source
@@ -1336,7 +1485,8 @@ def verify_source_execution(repository_root: Path) -> SourceExecutionResult:
     _closed_post_task2_workflow_sources(tuple(workflow_sources))
     _require(bool(findings))
     _require(planned_live_authority)
-    _require(managed_python_job_count == 17)
+    _require(planned_benchmark_rebind)
+    _require(managed_python_job_count == 18)
     _require(network_none_invocation_count == EXPECTED_NETWORK_NONE_INVOCATIONS)
     _require(control_user_mapping_count == EXPECTED_CONTROL_USER_MAPPINGS)
     _require(diagnostic_upload_count == 1)
