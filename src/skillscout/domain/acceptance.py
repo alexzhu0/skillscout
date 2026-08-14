@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, ClassVar, Final, Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from skillscout.domain.canonical import sha256_digest
 from skillscout.domain.models import Digest, StrictFrozenModel
@@ -464,6 +464,64 @@ class LockedBenchmarkManifestV2(_SelfDigestedModel):
             nomination_set_digest=self.nomination_set_digest,
         ):
             raise ValueError("fresh benchmark source/state binding mismatch")
+        return self
+
+
+class BenchmarkSelectionRebindV1(_SelfDigestedModel):
+    """State-only reference preserving one previously approved selection chain."""
+
+    _digest_field = "rebind_digest"
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["benchmark-selection-rebind-v1"]
+    acceptance_run_id: _Identifier
+    source_acceptance_run_id: _Identifier
+    source_nomination: NominationSetV1
+    source_lock: LockedBenchmarkManifestV2
+    selection_manifest_digest: Digest
+    rebind_digest: Digest | None = None
+
+    @model_validator(mode="after")
+    def validate_rebind_chain(self) -> Self:
+        nomination = self.source_nomination
+        lock = self.source_lock
+        selection = lock.selection_manifest
+        if self.acceptance_run_id == self.source_acceptance_run_id:
+            raise ValueError("benchmark rebind source and target runs must differ")
+        if nomination.user_nominated_entries:
+            raise ValueError("benchmark rebind source nomination must be search-only")
+        if len(lock.entries) != 5:
+            raise ValueError("benchmark rebind must preserve exactly five entries")
+        if (
+            nomination.nomination_set_digest != lock.nomination_set_digest
+            or nomination.nomination_set_digest != selection.nomination_set_digest
+            or self.selection_manifest_digest != lock.selection_manifest_digest
+            or self.selection_manifest_digest != selection.manifest_digest
+            or lock.entries != selection.entries
+        ):
+            raise ValueError("benchmark rebind selection digest chain mismatch")
+        nominations_by_digest = {
+            entry.entry_digest: entry for entry in nomination.search_derived_entries
+        }
+        for entry in lock.entries:
+            nominated = nominations_by_digest.get(entry.nomination_entry_digest)
+            if nominated is None or (
+                entry.repository_full_name,
+                entry.repository_id,
+                entry.exact_commit_sha,
+                entry.license_spdx,
+                entry.selection_source,
+                entry.selection_evidence_digests,
+            ) != (
+                nominated.repository_full_name,
+                nominated.repository_id,
+                nominated.exact_commit_sha,
+                nominated.license_spdx,
+                nominated.selection_source,
+                nominated.selection_evidence_digests,
+            ):
+                raise ValueError("benchmark rebind selected-entry projection mismatch")
         return self
 
 
