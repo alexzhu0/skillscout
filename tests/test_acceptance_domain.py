@@ -993,12 +993,11 @@ def test_benchmark_rebind_preserves_exact_old_selection_chain() -> None:
 @pytest.mark.parametrize(
     ("path", "value"),
     (
-        (("source_lock", "entries", 0, "repository_id"), 999999),
-        (("source_lock", "entries", 0, "exact_commit_sha"), SHA_A),
-        (("source_lock", "entries", 0, "coverage_role"), "negative"),
-        (("source_lock", "entries", 0, "license_spdx"), "Apache-2.0"),
-        (("source_lock", "entries", 0, "selection_evidence_digests", 0), DIGEST_A),
-        (("source_nomination", "nomination_set_digest"), DIGEST_A),
+        (("search_derived_entries", 0, "repository_id"), 999999),
+        (("search_derived_entries", 0, "exact_commit_sha"), SHA_A),
+        (("search_derived_entries", 0, "license_spdx"), "Apache-2.0"),
+        (("search_derived_entries", 0, "selection_evidence_digests", 0), DIGEST_A),
+        (("query_set_digest",), DIGEST_A),
         (("selection_manifest_digest",), DIGEST_A),
         (("source_acceptance_run_id",), "phase6-current-main"),
     ),
@@ -1007,8 +1006,11 @@ def test_benchmark_rebind_rejects_selection_chain_mutations(
     path: tuple[object, ...], value: object
 ) -> None:
     model = _symbol("BenchmarkSelectionRebindV1", skip_if_missing=False)
-    payload = _benchmark_rebind_payload()
-    target: object = payload
+    nomination_model = _symbol("NominationSetV1", skip_if_missing=False)
+    nomination_entry_model = _symbol("NominationEntryV1", skip_if_missing=False)
+    nomination, lock = _benchmark_rebind_chain()
+    nomination_payload = nomination.model_dump(mode="json", exclude_none=False)
+    target: object = nomination_payload
     for key in path[:-1]:
         if isinstance(target, dict):
             target = target[key]
@@ -1022,10 +1024,45 @@ def test_benchmark_rebind_rejects_selection_chain_mutations(
         assert isinstance(target, list)
         assert isinstance(path[-1], int)
         target[path[-1]] = value
-    payload.pop("rebind_digest")
+    if path[0] != "selection_manifest_digest" and path[0] != "source_acceptance_run_id":
+        if len(path) > 1:
+            entry = nomination_payload["search_derived_entries"][0]
+            assert isinstance(entry, dict)
+            entry.pop("entry_digest")
+        entries = nomination_payload["search_derived_entries"]
+        assert isinstance(entries, list)
+        for item in entries:
+            assert isinstance(item, dict)
+            evidence = item["selection_evidence_digests"]
+            assert isinstance(evidence, list)
+            item["selection_evidence_digests"] = tuple(evidence)
+        nomination_payload["search_derived_entries"] = tuple(
+            sorted(
+                (
+                    nomination_entry_model.model_validate(item, strict=True)
+                    for item in entries
+                ),
+                key=lambda item: item.entry_digest,
+            )
+        )
+        nomination_payload["user_nominated_entries"] = ()
+        nomination_payload.pop("nomination_set_digest")
+        nomination = nomination_model.model_validate(nomination_payload, strict=True)
+    values: dict[str, object] = {
+        "schema_version": "benchmark-selection-rebind-v1",
+        "acceptance_run_id": "phase6-current-main",
+        "source_acceptance_run_id": "phase6-approved-selection",
+        "source_nomination": nomination,
+        "source_lock": lock,
+        "selection_manifest_digest": lock.selection_manifest_digest,
+    }
+    if path == ("selection_manifest_digest",):
+        values["selection_manifest_digest"] = value
+    if path == ("source_acceptance_run_id",):
+        values["source_acceptance_run_id"] = value
 
     with pytest.raises(ValidationError):
-        model.model_validate(payload, strict=True)
+        model(**values)
 
 
 def test_locked_benchmark_manifest_v2_binds_redacted_environment_approval() -> None:
