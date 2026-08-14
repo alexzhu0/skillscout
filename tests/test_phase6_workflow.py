@@ -864,6 +864,8 @@ def test_phase6_actions_and_jobs_have_closed_authority_zones() -> None:
 
     assert "contents: write" in nomination
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN" in nomination
+    assert "SKILLSCOUT_STATE_REPOSITORY_ID: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_ID }}" in nomination
+    assert "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME: ${{ vars.SKILLSCOUT_STATE_REPOSITORY_FULL_NAME }}" in nomination
     assert "DEEPSEEK" not in nomination
     assert "SKILLSCOUT_CATALOG" not in nomination
     assert "${{ secrets." not in nomination
