@@ -64,7 +64,16 @@ def test_benchmark_rebind_preserves_exact_old_selection_chain() -> None:
     assert fact.rebind_digest.startswith("sha256:")
 ```
 
-Add mutations that change one repository ID, commit SHA, role, license, evidence digest, nomination digest, manifest digest, or source run ID and assert `ValidationError`.
+Add mutations that break one internal relation at a time—repository ID, commit
+SHA, license, evidence digest, nomination digest, manifest digest, or source
+run ID—and assert `ValidationError`. Recompute the mutated child object's own
+digest where necessary so the test reaches the outer relation it names.
+
+`NominationEntryV1` carries no coverage role, so a completely re-digested
+nomination/V1/V2 chain has no trusted role baseline inside this self-contained
+fact. Do not claim the domain fact can detect that case. Canonical whole-chain
+repository/SHA/role/license/evidence drift is rejected in Task 2 by comparing
+the admitted operations-state source lock with the checked-out manifest.
 
 - [ ] **Step 2: Run the RED tests**
 
@@ -133,7 +142,14 @@ assert result.lock.entries == old_lock.entries
 assert result.lock.source_commit_sha == current_source_sha
 ```
 
-Add RED tests for an empty/multiple source lock, existing source authority ambiguity, target ID reuse, manifest drift, source receipt mismatch, non-search nomination, and any changed selected entry.
+Add RED tests for an empty/multiple source lock, existing source authority
+ambiguity, target ID reuse, manifest drift, source receipt mismatch, non-search
+nomination, and any changed selected entry. For repository ID, commit SHA,
+coverage role, license, and evidence mutations, rebuild the entire mutated
+nomination/V1/V2 chain with valid canonical child digests; the test must still
+fail because the mutated chain disagrees with the independently checked-out
+manifest or the operations-owned source snapshot, not because an inner digest
+is stale.
 
 - [ ] **Step 2: Verify RED**
 
