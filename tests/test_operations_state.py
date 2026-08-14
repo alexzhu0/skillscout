@@ -568,10 +568,14 @@ def _historical_live_authority(nomination: NominationSetV1) -> LiveAcceptanceAut
     )
 
 
-def _live_authority_v2(nomination: NominationSetV1):
+def _live_authority_v2(
+    nomination: NominationSetV1,
+    *,
+    lock: object | None = None,
+):
     authority_model = _v2_symbol("LiveAcceptanceAuthorityV2")
     receipt_model = _v2_symbol("LiveExecutionApprovalReceiptV2")
-    lock = _locked_manifest_v2(nomination)
+    lock = _locked_manifest_v2(nomination) if lock is None else lock
     receipt = receipt_model(
         schema_version="live-execution-approval-receipt-v2",
         purpose="live_execution",
@@ -1185,6 +1189,74 @@ def test_benchmark_rebind_persists_target_lock_and_rebuilds_three_store_bundle(
     assert restored_snapshot == expected_snapshot
     assert restored_operations.facts == expected_operations.facts
     assert restored_operations.projection == expected_operations.projection
+
+
+def test_rebound_v2_authority_persists_and_survives_export_rebuild(
+    tmp_path: Path,
+) -> None:
+    """A target authority resolves its nomination through the sole rebind reference."""
+
+    module = _operations_module()
+    source_run_id = "acceptance-authority-rebind-source"
+    target_run_id = "acceptance-authority-rebind-target"
+    nomination = _nomination_set(nomination_set_id=source_run_id)
+    source_lock = _locked_manifest_v2(nomination)
+    reference = _benchmark_rebind(
+        target_acceptance_run_id=target_run_id,
+        source_acceptance_run_id=source_run_id,
+        nomination=nomination,
+    )
+    assert reference.source_lock == source_lock
+    target_lock = _locked_manifest_v2(
+        nomination,
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("e" * 64),
+    )
+    authority = _live_authority_v2(nomination, lock=target_lock)
+    source = tmp_path / "rebound-authority-source.sqlite3"
+
+    with module.OperationsStateStore(source) as store:
+        store.record_acceptance_fact(
+            source_run_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            source_run_id,
+            "acceptance_benchmark_lock",
+            source_lock,
+        )
+        store.record_acceptance_fact(
+            target_run_id,
+            "acceptance_benchmark_rebind",
+            reference,
+        )
+        store.record_acceptance_fact(
+            target_run_id,
+            "acceptance_benchmark_lock",
+            target_lock,
+        )
+        recorded = store.record_acceptance_fact(
+            target_run_id,
+            "acceptance_live_authority",
+            authority,
+        )
+        exported = store.export_owned_state()
+
+    rebuilt = tmp_path / "rebound-authority-rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        snapshot = store.acceptance_snapshot(target_run_id)
+        restored = store.export_owned_state()
+
+    assert recorded.fact == authority
+    assert tuple(record.kind for record in snapshot.facts) == (
+        "acceptance_benchmark_lock",
+        "acceptance_benchmark_rebind",
+        "acceptance_live_authority",
+    )
+    assert restored.facts == exported.facts
+    assert restored.projection == exported.projection
 
 
 def test_benchmark_rebind_pair_rolls_back_reference_when_lock_constraint_fails(

@@ -1280,6 +1280,55 @@ def _validate_v2_benchmark_lock_cardinality(
         raise OperationsIntegrityError("fresh benchmark lock cardinality is invalid")
 
 
+def _v2_benchmark_nomination_for_lock(
+    connection: sqlite3.Connection,
+    *,
+    acceptance_run_id: str,
+    lock: LockedBenchmarkManifestV2,
+) -> NominationSetV1:
+    """Resolve the sole direct or rebound nomination admitted by one V2 lock."""
+
+    direct_rows = connection.execute(
+        """SELECT * FROM operations_acceptance_facts
+           WHERE acceptance_run_id = ?
+             AND fact_kind = 'acceptance_nomination'
+           ORDER BY fact_digest""",
+        (acceptance_run_id,),
+    ).fetchall()
+    rebind_rows = connection.execute(
+        """SELECT * FROM operations_acceptance_facts
+           WHERE acceptance_run_id = ?
+             AND fact_kind = 'acceptance_benchmark_rebind'
+           ORDER BY fact_digest""",
+        (acceptance_run_id,),
+    ).fetchall()
+    if (len(direct_rows), len(rebind_rows)) == (1, 0):
+        nomination = _acceptance_row_fact(direct_rows[0])
+        if (
+            type(nomination) is not NominationSetV1
+            or nomination.nomination_set_digest != lock.nomination_set_digest
+        ):
+            raise OperationsIntegrityError("benchmark nomination model is invalid")
+    elif (len(direct_rows), len(rebind_rows)) == (0, 1):
+        reference = _acceptance_row_fact(rebind_rows[0])
+        if type(reference) is not BenchmarkSelectionRebindV1:
+            raise OperationsIntegrityError("benchmark rebind model is invalid")
+        nomination = reference.source_nomination
+        if (
+            lock.nomination_set_digest != nomination.nomination_set_digest
+            or lock.selection_manifest_digest != reference.selection_manifest_digest
+            or lock.selection_manifest != reference.source_lock.selection_manifest
+            or lock.entries != reference.source_lock.entries
+        ):
+            raise OperationsIntegrityError("benchmark rebind lock chain mismatch")
+    else:
+        raise OperationsIntegrityError(
+            "fresh benchmark lock requires exactly one nomination or benchmark rebind"
+        )
+    _validate_v2_benchmark_lock_selection(lock, nomination)
+    return nomination
+
+
 def _validate_v2_live_authority_cardinality(
     connection: sqlite3.Connection,
     *,
@@ -1759,49 +1808,11 @@ def _validate_acceptance_references(
                 connection,
                 acceptance_run_id=acceptance_run_id,
             )
-            direct_rows = connection.execute(
-                """SELECT * FROM operations_acceptance_facts
-                   WHERE acceptance_run_id = ?
-                     AND fact_kind = 'acceptance_nomination'
-                   ORDER BY fact_digest""",
-                (acceptance_run_id,),
-            ).fetchall()
-            rebind_rows = connection.execute(
-                """SELECT * FROM operations_acceptance_facts
-                   WHERE acceptance_run_id = ?
-                     AND fact_kind = 'acceptance_benchmark_rebind'
-                   ORDER BY fact_digest""",
-                (acceptance_run_id,),
-            ).fetchall()
-            if (len(direct_rows), len(rebind_rows)) == (1, 0):
-                nomination = _acceptance_row_fact(direct_rows[0])
-                if (
-                    type(nomination) is not NominationSetV1
-                    or nomination.nomination_set_digest != fact.nomination_set_digest
-                ):
-                    raise OperationsIntegrityError(
-                        "benchmark nomination model is invalid"
-                    )
-            elif (len(direct_rows), len(rebind_rows)) == (0, 1):
-                reference = _acceptance_row_fact(rebind_rows[0])
-                if type(reference) is not BenchmarkSelectionRebindV1:
-                    raise OperationsIntegrityError("benchmark rebind model is invalid")
-                nomination = reference.source_nomination
-                if (
-                    fact.nomination_set_digest != nomination.nomination_set_digest
-                    or fact.selection_manifest_digest
-                    != reference.selection_manifest_digest
-                    or fact.selection_manifest != reference.source_lock.selection_manifest
-                    or fact.entries != reference.source_lock.entries
-                ):
-                    raise OperationsIntegrityError(
-                        "benchmark rebind lock chain mismatch"
-                    )
-            else:
-                raise OperationsIntegrityError(
-                    "fresh benchmark lock requires exactly one nomination or benchmark rebind"
-                )
-            _validate_v2_benchmark_lock_selection(fact, nomination)
+            _v2_benchmark_nomination_for_lock(
+                connection,
+                acceptance_run_id=acceptance_run_id,
+                lock=fact,
+            )
         else:
             nomination = _acceptance_fact_by_digest(
                 connection,
@@ -1840,19 +1851,15 @@ def _validate_acceptance_references(
             )
             if type(lock) is not LockedBenchmarkManifestV2 or lock != fact.benchmark_lock:
                 raise OperationsIntegrityError("fresh live authority requires V2 lock")
-            nomination = _acceptance_fact_by_digest(
+            _v2_benchmark_nomination_for_lock(
                 connection,
                 acceptance_run_id=acceptance_run_id,
-                kind="acceptance_nomination",
-                digest=fact.nomination_set_digest,
+                lock=lock,
             )
-            if type(nomination) is not NominationSetV1:
-                raise OperationsIntegrityError("fresh live authority nomination is invalid")
             _validate_v2_benchmark_lock_cardinality(
                 connection,
                 acceptance_run_id=acceptance_run_id,
             )
-            _validate_v2_benchmark_lock_selection(lock, nomination)
         else:
             raise OperationsIntegrityError("live authority model is invalid")
     elif kind == "acceptance_campaign_resume_locator":
