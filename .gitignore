@@ -1,4 +1,4 @@
-.tools/
+.tools
 .env
 *.pem
 *.private-key
