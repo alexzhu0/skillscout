@@ -93,17 +93,13 @@ See: `docs/project/product.md` (updated 2026-07-22)
 
 ## Open Decisions
 
-No product-scope blocker remains. Phase 6 execution retains explicit human checkpoints for:
-
-- Selecting and locking the five Search-derived public repositories and fixed commit SHAs.
-- Accepting only a fail-closed hosted kernel/network isolation mechanism proven by the capability probe.
-- Authorizing the exact DeepSeek/GitHub live runs, changed-source lineage, fresh Gate B4, exact-head Skill review, and separate human/admin cleanup.
+No product-scope blocker remains. The following earlier Phase 6 checkpoint descriptions are historical context, not current authority. The current rebind slice instead has four ordered human checkpoints: approve the exact final-`main` rebind packet; approve one `phase6-human-benchmark-lock` rebind dispatch; approve one `skillscout-phase6-live-authority` recording dispatch; then inspect completed benchmark/replay evidence before deciding whether to authorize the separate Gate B4 and Draft-publication slice. Historical selection/lock and isolation evidence remains archival; neither gives current authority.
 
 Live acceptance uses DeepSeek Flash for extraction/generation and Pro for independent review. A live OpenAI credential is not required. The target catalog remains fixed to `alexzhu0/skillscout-catalog-test`, and no checkpoint may broaden remote permissions or execution authority.
 
 ## Blockers
 
-Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips. The 2026-07-28 Gate B4 evidence remains historical, but its workflow-byte bindings are stale after the 06-15 toolchain and hosted-runtime corrections and grant no current authority. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance.
+Phase 5 independently passed 6/6 roadmap criteria and all five mapped requirements. The final locked release chain passed 1,920 tests with 2 expected live-only skips. The 2026-07-28 Gate B4 evidence remains historical, but its workflow-byte bindings are stale after the 06-15 toolchain and hosted-runtime corrections and grant no current authority. Whole-product production readiness remains pending Phase 6 real-repository and adversarial acceptance. The current rebind implementation is also pending review and merge: it will use a new target acceptance run to preserve the historical five-entry lock while binding final source/workflow bytes. Its only planned live sequence is `rebind-benchmark-lock → record-live-authority → run-benchmark → run-replay`; no fresh Gate B4, candidate publication, or Draft PR result is credited by that planned work.
 
 - Plan 06-06 hosted isolation ingestion is blocked: run 30430010273 failed before the network probe, upload was skipped, and artifact count is zero.
 - Plan 06-06 Task 3 blocked: exact offline-adversarial run 30441596331 attempt 1 at source 27d7a41f0e7c7ffeb2991110f44eab6a977c78ca failed during repository-local locked-toolchain verification; campaign and upload were skipped, artifact count is zero, and no hosted-isolation or offline-run canonical fact was persisted. No retry is authorized.

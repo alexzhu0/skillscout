@@ -106,3 +106,18 @@ def test_live_admission_checkpoint_rejects_another_gateway(
 
     with pytest.raises(checker.InvalidMap):
         checker.verify_checkpoint_topology()
+
+
+def test_rebind_surfaces_are_mapped_without_granting_later_live_gates() -> None:
+    """The rebind transition is owned by lock authority, never later live gates."""
+
+    for surface in (
+        "BenchmarkSelectionRebindV1",
+        "rebind-benchmark-lock",
+        "phase6-human-benchmark-lock/rebind",
+        "rebind_benchmark_lock",
+        "tests/test_phase6_workflow.py/rebind",
+        "tests/test_phase6_source_execution.py/rebind",
+    ):
+        assert checker.BENCHMARK_REBIND_OWNERS[surface] == "06-16-02"
+    assert "06-08-01" not in checker.OWNERS.values()

@@ -846,6 +846,319 @@ def _v2_benchmark_lock_payload() -> dict[str, object]:
     }
 
 
+def _benchmark_rebind_chain() -> tuple[Any, Any]:
+    """Build a closed nomination-to-V2-lock chain for rebind contract tests."""
+
+    nomination_entry_model = _symbol("NominationEntryV1", skip_if_missing=False)
+    nomination_model = _symbol("NominationSetV1", skip_if_missing=False)
+    entry_model = _symbol("BenchmarkEntryV1", skip_if_missing=False)
+    attestation_model = _symbol("BenchmarkLockAttestationV1", skip_if_missing=False)
+    selection_model = _symbol("LockedBenchmarkManifestV1", skip_if_missing=False)
+    lock_model = _symbol("LockedBenchmarkManifestV2", skip_if_missing=False)
+    source_binding = _symbol(
+        "fresh_benchmark_source_state_binding_digest", skip_if_missing=False
+    )
+    roles = (
+        "positive",
+        "positive_multi_workflow",
+        "negative",
+        "negative",
+        "borderline",
+    )
+    nominations = tuple(
+        sorted(
+            (
+                nomination_entry_model(
+                    schema_version="nomination-entry-v1",
+                    repository_full_name=f"octo-org/rebind-workflow-{index}",
+                    repository_id=930000 + index,
+                    exact_commit_sha=f"{index + 10:040x}",
+                    license_spdx="MIT",
+                    selection_source="search_derived",
+                    selection_evidence_digests=(
+                        sha256_digest({"rebind-evidence": index}),
+                    ),
+                )
+                for index in range(1, 6)
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+    nomination = nomination_model(
+        schema_version="nomination-set-v1",
+        nomination_set_id="phase6-approved-selection",
+        query_set_digest=sha256_digest({"rebind-query": 1}),
+        search_run_authority_digest=sha256_digest({"rebind-authority": 1}),
+        search_derived_entries=nominations,
+        user_nominated_entries=(),
+        created_at=TIMESTAMP_A,
+    )
+    entries = tuple(
+        sorted(
+            (
+                entry_model(
+                    schema_version="benchmark-entry-v1",
+                    repository_full_name=item.repository_full_name,
+                    repository_id=item.repository_id,
+                    exact_commit_sha=item.exact_commit_sha,
+                    license_spdx=item.license_spdx,
+                    selection_source="search_derived",
+                    coverage_role=roles[index],
+                    nomination_entry_digest=item.entry_digest,
+                    selection_evidence_digests=item.selection_evidence_digests,
+                )
+                for index, item in enumerate(nominations)
+            ),
+            key=lambda item: item.entry_digest,
+        )
+    )
+    selection_preimage = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": nomination.nomination_set_digest,
+        "entries": [
+            entry.model_dump(mode="json", exclude_none=False) for entry in entries
+        ],
+        "prior_manifest_digest": None,
+    }
+    selection_digest = sha256_digest(selection_preimage)
+    selection = selection_model(
+        **selection_preimage,
+        lock_attestation=attestation_model(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=nomination.nomination_set_digest,
+            manifest_digest=selection_digest,
+            reviewer_id="rebind-reviewer",
+            locked_at=TIMESTAMP_A,
+        ),
+        manifest_digest=selection_digest,
+    )
+    payload = _v2_benchmark_lock_payload()
+    payload.update(
+        {
+            "selection_manifest_digest": selection.manifest_digest,
+            "nomination_set_digest": nomination.nomination_set_digest,
+            "selection_manifest": selection,
+            "entries": selection.entries,
+        }
+    )
+    payload["source_state_binding_digest"] = source_binding(
+        source_repository_id=int(payload["source_repository_id"]),
+        source_repository_full_name=str(payload["source_repository_full_name"]),
+        state_repository_id=int(payload["state_repository_id"]),
+        state_repository_full_name=str(payload["state_repository_full_name"]),
+        parent_state_commit_sha=str(payload["parent_state_commit_sha"]),
+        parent_state_root_digest=str(payload["parent_state_root_digest"]),
+        source_commit_sha=str(payload["source_commit_sha"]),
+        acceptance_workflow_sha256=str(payload["acceptance_workflow_sha256"]),
+        selection_manifest_digest=selection.manifest_digest,
+        nomination_set_digest=nomination.nomination_set_digest,
+    )
+    return nomination, lock_model.model_validate(payload, strict=True)
+
+
+def _benchmark_rebind_payload() -> dict[str, object]:
+    model = _symbol("BenchmarkSelectionRebindV1", skip_if_missing=False)
+    nomination, lock = _benchmark_rebind_chain()
+    return model(
+        schema_version="benchmark-selection-rebind-v1",
+        acceptance_run_id="phase6-current-main",
+        source_acceptance_run_id="phase6-approved-selection",
+        source_nomination=nomination,
+        source_lock=lock,
+        selection_manifest_digest=lock.selection_manifest_digest,
+    ).model_dump(mode="json", exclude_none=False)
+
+
+def test_benchmark_rebind_preserves_exact_old_selection_chain() -> None:
+    model = _symbol("BenchmarkSelectionRebindV1", skip_if_missing=False)
+    old_nomination, old_lock = _benchmark_rebind_chain()
+
+    fact = model(
+        schema_version="benchmark-selection-rebind-v1",
+        acceptance_run_id="phase6-current-main",
+        source_acceptance_run_id="phase6-approved-selection",
+        source_nomination=old_nomination,
+        source_lock=old_lock,
+        selection_manifest_digest=old_lock.selection_manifest_digest,
+    )
+
+    assert fact.source_lock.entries == old_lock.entries
+    assert fact.source_nomination.nomination_set_digest == old_lock.nomination_set_digest
+    assert fact.rebind_digest is not None
+    assert fact.rebind_digest.startswith("sha256:")
+
+
+def test_benchmark_rebind_rejects_redigested_selected_entry_projection_drift() -> None:
+    """A valid inner digest chain cannot rewrite the nomination's selected fields."""
+
+    rebind_model = _symbol("BenchmarkSelectionRebindV1", skip_if_missing=False)
+    entry_model = _symbol("BenchmarkEntryV1", skip_if_missing=False)
+    attestation_model = _symbol("BenchmarkLockAttestationV1", skip_if_missing=False)
+    selection_model = _symbol("LockedBenchmarkManifestV1", skip_if_missing=False)
+    lock_model = _symbol("LockedBenchmarkManifestV2", skip_if_missing=False)
+    source_binding = _symbol(
+        "fresh_benchmark_source_state_binding_digest",
+        skip_if_missing=False,
+    )
+    nomination, lock = _benchmark_rebind_chain()
+    selected = lock.entries[0]
+    drifted = entry_model(
+        schema_version="benchmark-entry-v1",
+        repository_full_name="octo-org/selected-only-drift",
+        repository_id=9_999_991,
+        exact_commit_sha="f" * 40,
+        license_spdx="Apache-2.0",
+        selection_source="search_derived",
+        coverage_role=selected.coverage_role,
+        nomination_entry_digest=selected.nomination_entry_digest,
+        selection_evidence_digests=(
+            "sha256:" + ("9" * 64),
+        ),
+    )
+    drifted_entries = tuple(
+        sorted(
+            (drifted, *lock.entries[1:]),
+            key=lambda entry: entry.entry_digest,
+        )
+    )
+    selection_preimage = {
+        "schema_version": "locked-benchmark-manifest-v1",
+        "manifest_version": 1,
+        "nomination_set_digest": nomination.nomination_set_digest,
+        "entries": [
+            entry.model_dump(mode="json", exclude_none=False)
+            for entry in drifted_entries
+        ],
+        "prior_manifest_digest": None,
+    }
+    selection_digest = sha256_digest(selection_preimage)
+    drifted_selection = selection_model(
+        **selection_preimage,
+        lock_attestation=attestation_model(
+            schema_version="benchmark-lock-attestation-v1",
+            manifest_version=1,
+            nomination_set_digest=nomination.nomination_set_digest,
+            manifest_digest=selection_digest,
+            reviewer_id="projection-drift-reviewer",
+            locked_at="2026-08-14T12:00:00.000000Z",
+        ),
+        manifest_digest=selection_digest,
+    )
+    lock_payload = lock.model_dump(mode="python", exclude_none=False)
+    lock_payload.update(
+        {
+            "selection_manifest_digest": drifted_selection.manifest_digest,
+            "selection_manifest": drifted_selection,
+            "entries": drifted_selection.entries,
+            "source_state_binding_digest": source_binding(
+                source_repository_id=lock.source_repository_id,
+                source_repository_full_name=lock.source_repository_full_name,
+                state_repository_id=lock.state_repository_id,
+                state_repository_full_name=lock.state_repository_full_name,
+                parent_state_commit_sha=lock.parent_state_commit_sha,
+                parent_state_root_digest=lock.parent_state_root_digest,
+                source_commit_sha=lock.source_commit_sha,
+                acceptance_workflow_sha256=lock.acceptance_workflow_sha256,
+                selection_manifest_digest=drifted_selection.manifest_digest,
+                nomination_set_digest=nomination.nomination_set_digest,
+            ),
+            "lock_digest": None,
+        }
+    )
+    drifted_lock = lock_model.model_validate(lock_payload, strict=True)
+
+    assert drifted_lock.selection_manifest.manifest_digest == selection_digest
+    assert drifted_lock.entries[0].nomination_entry_digest in {
+        entry.entry_digest for entry in nomination.search_derived_entries
+    }
+    with pytest.raises(ValidationError, match="selected-entry projection mismatch"):
+        rebind_model(
+            schema_version="benchmark-selection-rebind-v1",
+            acceptance_run_id="phase6-current-main",
+            source_acceptance_run_id="phase6-approved-selection",
+            source_nomination=nomination,
+            source_lock=drifted_lock,
+            selection_manifest_digest=drifted_lock.selection_manifest_digest,
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("search_derived_entries", 0, "repository_id"), 999999),
+        (("search_derived_entries", 0, "exact_commit_sha"), SHA_A),
+        (("search_derived_entries", 0, "license_spdx"), "Apache-2.0"),
+        (("search_derived_entries", 0, "selection_evidence_digests", 0), DIGEST_A),
+        (("query_set_digest",), DIGEST_A),
+        (("selection_manifest_digest",), DIGEST_A),
+        (("source_acceptance_run_id",), "phase6-current-main"),
+    ),
+)
+def test_benchmark_rebind_rejects_selection_chain_mutations(
+    path: tuple[object, ...], value: object
+) -> None:
+    model = _symbol("BenchmarkSelectionRebindV1", skip_if_missing=False)
+    nomination_model = _symbol("NominationSetV1", skip_if_missing=False)
+    nomination_entry_model = _symbol("NominationEntryV1", skip_if_missing=False)
+    nomination, lock = _benchmark_rebind_chain()
+    nomination_payload = nomination.model_dump(mode="json", exclude_none=False)
+    target: object = nomination_payload
+    for key in path[:-1]:
+        if isinstance(target, dict):
+            target = target[key]
+        else:
+            assert isinstance(target, list)
+            assert isinstance(key, int)
+            target = target[key]
+    if isinstance(target, dict):
+        target[path[-1]] = value
+    else:
+        assert isinstance(target, list)
+        assert isinstance(path[-1], int)
+        target[path[-1]] = value
+    if path[0] != "selection_manifest_digest" and path[0] != "source_acceptance_run_id":
+        if len(path) > 1:
+            entry = nomination_payload["search_derived_entries"][0]
+            assert isinstance(entry, dict)
+            entry.pop("entry_digest")
+        entries = nomination_payload["search_derived_entries"]
+        assert isinstance(entries, list)
+        for item in entries:
+            assert isinstance(item, dict)
+            evidence = item["selection_evidence_digests"]
+            assert isinstance(evidence, list)
+            item["selection_evidence_digests"] = tuple(evidence)
+        nomination_payload["search_derived_entries"] = tuple(
+            sorted(
+                (
+                    nomination_entry_model.model_validate(item, strict=True)
+                    for item in entries
+                ),
+                key=lambda item: item.entry_digest,
+            )
+        )
+        nomination_payload["user_nominated_entries"] = ()
+        nomination_payload.pop("nomination_set_digest")
+        nomination = nomination_model.model_validate(nomination_payload, strict=True)
+    values: dict[str, object] = {
+        "schema_version": "benchmark-selection-rebind-v1",
+        "acceptance_run_id": "phase6-current-main",
+        "source_acceptance_run_id": "phase6-approved-selection",
+        "source_nomination": nomination,
+        "source_lock": lock,
+        "selection_manifest_digest": lock.selection_manifest_digest,
+    }
+    if path == ("selection_manifest_digest",):
+        values["selection_manifest_digest"] = value
+    if path == ("source_acceptance_run_id",):
+        values["source_acceptance_run_id"] = value
+
+    with pytest.raises(ValidationError):
+        model(**values)
+
+
 def test_locked_benchmark_manifest_v2_binds_redacted_environment_approval() -> None:
     receipt_model = _symbol("BenchmarkLockApprovalReceiptV2", skip_if_missing=False)
     manifest_model = _symbol("LockedBenchmarkManifestV2", skip_if_missing=False)

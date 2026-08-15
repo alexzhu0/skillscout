@@ -2,7 +2,7 @@
 
 SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turns bounded, read-only evidence from public GitHub repositories into validated Agent Skill candidates and, through a separately controlled publication boundary, human-reviewable Draft Pull Requests.
 
-This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including a fresh exact-byte **Gate B4** for the reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. The V2 five-repository benchmark lock has been successfully persisted, but it is not Phase 6 adversarial MVP acceptance: live authority, a real benchmark, replay, and Draft PR acceptance remain pending before whole-product production readiness.
+This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including a fresh exact-byte **Gate B4** for the reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. The historical V2 five-repository benchmark lock is being rebound through a new state-only target run, but this implementation has not yet been merged or used live. Fresh authority, a real benchmark, replay, fresh Gate B4, and Draft PR acceptance remain pending before whole-product production readiness.
 
 ## Implemented preview scope
 
@@ -55,7 +55,7 @@ The V2 five-repository benchmark lock was successfully persisted for source comm
 - Nomination digest: `sha256:46535e6ce499a710c2ecf5b9cd0db8134682dbac2429b8e3d7af4035130297ea`
 - Lock digest: `sha256:3c1a9b2737ee79c58696e5e601b61e49b35549630f5826ac9fef3c694feaffa6`
 
-Persisting this lock is not a live-authority grant or an adversarial acceptance result. A real benchmark execution, replay, and Draft PR acceptance are still pending; SkillScout remains not production-ready.
+Persisting this historical lock is not a live-authority grant or an adversarial acceptance result. The next, still-unperformed sequence is `rebind-benchmark-lock → record-live-authority → run-benchmark → run-replay`: a fresh target acceptance run reuses the five unchanged entries but binds final source/workflow bytes. Rebind receives no model or catalog credential and produces only a sanitized state receipt. Each state-only approval and the subsequent authority carrier is single-use; any code or workflow change after merge invalidates every approval in the sequence. A real benchmark execution, exact replay, fresh Gate B4, and Draft PR acceptance are still pending; SkillScout remains not production-ready.
 
 ## Security posture
 
@@ -117,7 +117,7 @@ Do not enable `publish-candidate` from an ordinary developer shell. Follow [Conf
 
 The following gates remain before SkillScout can make a production-ready release claim:
 
-1. **Phase 6 operational acceptance:** the V2 five-repository benchmark lock is persisted, but the V2 live-authority gate must be completed before the pinned-repository MVP matrix can adversarially exercise discovery budgets, serialized three-store recovery, credential isolation, and exact Gate B4 binding.
+1. **Phase 6 operational acceptance:** the historical V2 five-repository benchmark lock must first be rebound to final `main`, then receive fresh V2 live authority before the pinned-repository MVP matrix can adversarially exercise discovery budgets, serialized three-store recovery, credential isolation, and exact Gate B4 binding.
 2. **Adversarial MVP acceptance:** five public repositories pinned to exact commits must exercise successful and rejected paths, prompt-injection samples, end-to-end idempotency, at least one real human-reviewed Draft PR, repeated platform canary evidence, secret scanning, and evidence for every release requirement.
 
 ## Production-ready release checklist

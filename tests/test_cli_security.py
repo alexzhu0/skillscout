@@ -144,13 +144,15 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "lock-fresh-campaign",
         "nominate-benchmark",
         "preflight-fresh-campaign",
-        "prepare-fresh-campaign",
-        "prepare-fresh-lock-handoff",
+            "prepare-fresh-campaign",
+            "prepare-benchmark-lock-rebind-handoff",
+            "prepare-fresh-lock-handoff",
         "publish-discovered",
         "publish-candidate",
         "rebuild-acceptance",
         "record-acceptance-attestation",
         "record-live-authority",
+        "rebind-benchmark-lock",
         "resolve-acceptance-resume",
         "run-acceptance",
         "verify-acceptance-state",
@@ -159,6 +161,94 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "verify-publication-admission",
     }
     assert all(isinstance(child, cli.SafeArgumentParser) for child in subparsers.choices.values())
+
+
+def test_rebind_benchmark_lock_cli_is_closed_and_projects_only_allowlisted_result(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = cli.build_parser()
+    subparsers = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    command = subparsers.choices["rebind-benchmark-lock"]
+    options = {
+        option
+        for action in command._actions
+        for option in action.option_strings
+    }
+    assert options == {"--source-acceptance-run-id", "--target-acceptance-run-id", "-h", "--help"}
+
+    expected = {
+        "source_acceptance_run_id": "prior-run",
+        "acceptance_run_id": "new-run",
+        "rebind_digest": "sha256:" + ("a" * 64),
+        "lock_digest": "sha256:" + ("b" * 64),
+        "state_commit_sha": "c" * 40,
+        "state_root_digest": "sha256:" + ("d" * 64),
+        "status": "benchmark_lock_rebound",
+        "credential": _CREDENTIAL_CANARY,
+    }
+    monkeypatch.setattr(
+        cli,
+        "record_benchmark_lock_rebind_v2",
+        lambda **_kwargs: expected,
+    )
+
+    assert cli.main(
+        [
+            "rebind-benchmark-lock",
+            "--source-acceptance-run-id",
+            "prior-run",
+            "--target-acceptance-run-id",
+            "new-run",
+        ]
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {key: value for key, value in expected.items() if key != "credential"}
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "rebind-benchmark-lock",
+                "--source-acceptance-run-id",
+                "prior-run",
+                "--target-acceptance-run-id",
+                "new-run",
+                "--credential",
+                _CREDENTIAL_CANARY,
+            ]
+        )
+    assert _CREDENTIAL_CANARY not in capsys.readouterr().err
+
+
+def test_rebind_benchmark_lock_cli_collapses_unexpected_error_without_echoing_it(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "record_benchmark_lock_rebind_v2",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(_CREDENTIAL_CANARY)),
+    )
+
+    assert cli.main(
+        [
+            "rebind-benchmark-lock",
+            "--source-acceptance-run-id",
+            "prior-run",
+            "--target-acceptance-run-id",
+            "new-run",
+        ]
+    ) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.err) == {
+        "error": {
+            "code": ErrorCode.STATE_INTEGRITY_ERROR.value,
+            "summary": ERROR_SUMMARIES[ErrorCode.STATE_INTEGRITY_ERROR],
+        }
+    }
+    assert _CREDENTIAL_CANARY not in captured.err
 
 
 def test_fresh_preflight_prints_sanitized_failure_and_returns_nonzero(

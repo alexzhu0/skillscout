@@ -130,6 +130,14 @@ The repository currently implements the automated discovery and controlled-publi
 
 The automated endpoint remains Draft-only. The publisher always creates pull requests with `draft: true` and `maintainer_can_modify: false`, and exposes no merge, approval, review-submission, ready-for-review, default-branch-write, or arbitrary-request capability.
 
+### Phase 6 state-only rebind and live carrier
+
+Phase 6 has a separate, still-incomplete acceptance route: `rebind-benchmark-lock → record-live-authority → run-benchmark → run-replay`. The rebind distinguishes the historical **source acceptance-run ID**, which owns the approved five-entry selection chain, from a new empty **target acceptance-run ID**. The target is set before rebind. A protected job first obtains fixed-host approval metadata using `github.token`, admits the handoff before restore, and gives the state credential only to the final persistence step. The persistence transaction writes the immutable rebind reference and the target V2 lock together; it has no semantic client, source reader, catalog client, publication state, or Pull Request capability.
+
+Authority recording is a separate protected, state-only transition. It accepts only the target run ID, reads no caller-controlled approval object, persists one V2 authority carrier, rebuilds it, and re-admits it before benchmark or replay composition. The carrier binds exact source/workflow/manifest/lock/state/provider-policy identities, is single-purpose, and cannot authorize a second or ambiguous attempt. Benchmark and replay must start by verifying that exact carrier; only the benchmark's later protected semantic stage can receive the DeepSeek credential. Neither rebind nor authority recording can receive model or catalog credentials.
+
+The operator sets the four non-secret carrier variables only from a successful authority receipt: `SKILLSCOUT_PHASE6_AUTHORITY_STATE_COMMIT_SHA`, `SKILLSCOUT_PHASE6_AUTHORITY_STATE_ROOT_DIGEST`, `SKILLSCOUT_PHASE6_AUTHORITY_DIGEST`, and `SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID`. They identify evidence; they do not grant authority. Any source or workflow change after merge invalidates the final-main packet, rebind approval, authority approval, and later campaign approval. A new exact human decision is required.
+
 Repository code and tests establish the bounded runtime surface, but the real-repository adversarial acceptance campaign remains pending. In particular, the repository does not yet contain completed campaign evidence across the planned real public-repository fixture set or a final adversarial acceptance report.
 
 These omissions do not weaken the present safety rule: the implemented system never auto-merges and never executes untrusted repository code.

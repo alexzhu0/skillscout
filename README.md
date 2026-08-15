@@ -101,6 +101,8 @@ The installed `skillscout` command exposes these bounded workflows:
 | `publish-candidate` | Reconcile one admitted candidate into its controlled Draft PR. |
 | `discover` | Run the bounded, unprotected discovery graph and emit a non-authorizing metadata handoff. |
 | `publish-discovered` | Re-read exact persisted state, re-admit the discovery handoff, and publish eligible candidates as Draft PRs from the protected boundary. |
+| `rebind-benchmark-lock` | Protected state-only rebind of an approved Phase 6 five-repository lock from a source acceptance run to a new target run. |
+| `record-live-authority` | Protected state-only V2 authority receipt for one rebound acceptance run. |
 | `preflight-fresh-campaign` | Read-only, bounded diagnosis of state identity, state restore, and one Search page per reviewed query. |
 
 Run the parser help for the exact arguments:
@@ -114,6 +116,12 @@ Run the parser help for the exact arguments:
 Publication is intentionally separate from extraction and generation. Do not run `publish-candidate` or `publish-discovered` from an ordinary developer shell; the reviewed production path introduces catalog authority only inside the protected environment.
 
 `preflight-fresh-campaign` is a diagnostic command for the protected Phase 6 workflow. It never writes the state branch, calls a model, reads candidate metadata or licenses, executes repository code, or creates a Pull Request. It prints only stage names, durations, immutable state digests, Search counts/rate facts, and a closed error code; state restore keeps separate hard-bounded lineage and payload phases and may report the safe subphase (`ref`, `lineage`, or `payload`). A failed probe exits non-zero after printing that report.
+
+### Phase 6 benchmark rebind
+
+The pending live-acceptance sequence is `rebind-benchmark-lock → record-live-authority → run-benchmark → run-replay`. It is an operator workflow, not a developer-shell shortcut. Before rebind, set a fresh target `SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID`; keep the historical `SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID` distinct. The protected rebind uses Actions approval metadata to write and admit a fixed-locator canonical self-digested handoff before state restore, then exposes its state token solely for final persistence. That persistence performs exactly one state CAS to atomically write the rebind reference and replacement lock. It has no model, catalog, candidate-source, publication, or Pull Request capability.
+
+After `record-live-authority` succeeds, retain and verify the preselected `SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID`, then set `SKILLSCOUT_PHASE6_AUTHORITY_STATE_COMMIT_SHA`, `SKILLSCOUT_PHASE6_AUTHORITY_STATE_ROOT_DIGEST`, and `SKILLSCOUT_PHASE6_AUTHORITY_DIGEST` from its sanitized receipt before a benchmark or replay may begin. Together, those four variables must exactly match that receipt. Each approval and carrier is single-use: ambiguity, a failed attempt, or any source/workflow change after merge stops the sequence and requires a new exact human approval. A completed replay can at most yield a publication-ready handoff; Gate B4 and any Draft PR remain separate, unstarted work.
 
 ## Daily and manual discovery
 

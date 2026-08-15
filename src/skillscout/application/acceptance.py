@@ -26,7 +26,9 @@ from skillscout.domain.acceptance import (
     AcceptanceScenarioResultV1,
     AcceptanceSemanticTelemetryV1,
     AcceptanceWarningV1,
+    BenchmarkEntryV1,
     BenchmarkLockApprovalReceiptV2,
+    BenchmarkSelectionRebindV1,
     ChangedSourceDraftUpdateCompletionV1,
     ChangedSourceEvidenceV1,
     FreshBenchmarkLockHandoffV1,
@@ -139,6 +141,14 @@ class FreshBenchmarkLockAdmissionV2:
 
     lock: LockedBenchmarkManifestV2
     nomination: NominationSetV1
+
+
+@dataclass(frozen=True)
+class BenchmarkRebindResult:
+    """A new current V2 lock plus its immutable source-selection reference."""
+
+    reference: BenchmarkSelectionRebindV1
+    lock: LockedBenchmarkManifestV2
 
 
 def resolve_campaign_resume_lineage(
@@ -1329,6 +1339,45 @@ def bind_fresh_benchmark_lock(
         or any(entry.selection_source != "search_derived" for entry in selection_manifest.entries)
     ):
         raise AcceptanceApplicationError("evidence_missing")
+    return _construct_fresh_benchmark_lock_v2(
+        nomination=nomination,
+        selection_manifest=selection_manifest,
+        state_repository_id=state_repository_id,
+        state_repository_full_name=state_repository_full_name,
+        parent_state_commit_sha=parent_state_commit_sha,
+        parent_state_root_digest=parent_state_root_digest,
+        approval_receipt=approval_receipt,
+    )
+
+
+def _construct_fresh_benchmark_lock_v2(
+    *,
+    nomination: NominationSetV1,
+    selection_manifest: LockedBenchmarkManifestV1,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    parent_state_commit_sha: str,
+    parent_state_root_digest: str,
+    approval_receipt: BenchmarkLockApprovalReceiptV2,
+) -> LockedBenchmarkManifestV2:
+    """Build a V2 lock only after a caller has admitted the source nomination."""
+
+    if (
+        type(nomination) is not NominationSetV1
+        or type(selection_manifest) is not LockedBenchmarkManifestV1
+        or type(state_repository_id) is not int
+        or state_repository_id <= 0
+        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", state_repository_full_name)
+        is None
+        or re.fullmatch(r"[0-9a-f]{40}", parent_state_commit_sha) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", parent_state_root_digest) is None
+        or type(approval_receipt) is not BenchmarkLockApprovalReceiptV2
+        or nomination.user_nominated_entries
+        or len(nomination.search_derived_entries) < 5
+        or any(entry.selection_source != "search_derived" for entry in selection_manifest.entries)
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    _verify_locked_manifest_selection(nomination=nomination, manifest=selection_manifest)
     return LockedBenchmarkManifestV2(
         schema_version="locked-benchmark-manifest-v2",
         purpose="benchmark_lock",
@@ -1366,6 +1415,70 @@ def bind_fresh_benchmark_lock(
         approval_receipt=approval_receipt,
         approval_receipt_digest=approval_receipt.receipt_digest,
     )
+
+
+def rebind_benchmark_lock_v2(
+    *,
+    source_snapshot: AcceptanceRunSnapshot,
+    target_acceptance_run_id: str,
+    selection_manifest: LockedBenchmarkManifestV1,
+    state_repository_id: int,
+    state_repository_full_name: str,
+    parent_state_commit_sha: str,
+    parent_state_root_digest: str,
+    approval_receipt: BenchmarkLockApprovalReceiptV2,
+) -> BenchmarkRebindResult:
+    """Bind one independently checked V1 manifest to an admitted old V2 selection."""
+
+    if (
+        type(source_snapshot) is not AcceptanceRunSnapshot
+        or type(target_acceptance_run_id) is not str
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", target_acceptance_run_id)
+        is None
+        or target_acceptance_run_id == source_snapshot.acceptance_run_id
+        or type(selection_manifest) is not LockedBenchmarkManifestV1
+        or type(state_repository_id) is not int
+        or state_repository_id <= 0
+        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", state_repository_full_name)
+        is None
+        or re.fullmatch(r"[0-9a-f]{40}", parent_state_commit_sha) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", parent_state_root_digest) is None
+        or type(approval_receipt) is not BenchmarkLockApprovalReceiptV2
+    ):
+        raise AcceptanceApplicationError("evidence_missing")
+    try:
+        admitted = re_admit_fresh_benchmark_lock_v2(snapshot=source_snapshot)
+        old_lock = admitted.lock
+        nomination = admitted.nomination
+        if (
+            canonical_json_bytes(old_lock.selection_manifest)
+            != canonical_json_bytes(selection_manifest)
+            or _canonical_benchmark_entry_bytes(old_lock.entries)
+            != _canonical_benchmark_entry_bytes(selection_manifest.entries)
+            or old_lock.nomination_set_digest != selection_manifest.nomination_set_digest
+            or old_lock.selection_manifest_digest != selection_manifest.manifest_digest
+        ):
+            raise ValueError
+        reference = BenchmarkSelectionRebindV1(
+            schema_version="benchmark-selection-rebind-v1",
+            acceptance_run_id=target_acceptance_run_id,
+            source_acceptance_run_id=source_snapshot.acceptance_run_id,
+            source_nomination=nomination,
+            source_lock=old_lock,
+            selection_manifest_digest=selection_manifest.manifest_digest,
+        )
+        lock = _construct_fresh_benchmark_lock_v2(
+            nomination=nomination,
+            selection_manifest=selection_manifest,
+            state_repository_id=state_repository_id,
+            state_repository_full_name=state_repository_full_name,
+            parent_state_commit_sha=parent_state_commit_sha,
+            parent_state_root_digest=parent_state_root_digest,
+            approval_receipt=approval_receipt,
+        )
+    except Exception:
+        raise AcceptanceApplicationError("evidence_missing") from None
+    return BenchmarkRebindResult(reference=reference, lock=lock)
 
 
 class FreshCampaignLockApplication:
@@ -2587,6 +2700,21 @@ def re_admit_locked_manifest(
     if len(nominations) != 1 or type(nominations[0]) is not NominationSetV1:
         raise AcceptanceApplicationError("evidence_missing")
     nomination = nominations[0]
+    _verify_locked_manifest_selection(nomination=nomination, manifest=manifest)
+    return nomination
+
+
+def _verify_locked_manifest_selection(
+    *,
+    nomination: NominationSetV1,
+    manifest: LockedBenchmarkManifestV1,
+) -> None:
+    """Verify one parsed nomination against all immutable selected V1 fields."""
+
+    if type(nomination) is not NominationSetV1 or type(manifest) is not LockedBenchmarkManifestV1:
+        raise AcceptanceApplicationError("evidence_missing")
+    if nomination.nomination_set_digest != manifest.nomination_set_digest:
+        raise AcceptanceApplicationError("evidence_missing")
     nominated_by_digest: dict[str | None, NominationEntryV1] = {
         entry.entry_digest: entry
         for entry in (nomination.search_derived_entries + nomination.user_nominated_entries)
@@ -2611,7 +2739,21 @@ def re_admit_locked_manifest(
             nominated.selection_evidence_digests,
         ):
             raise AcceptanceApplicationError("evidence_missing")
-    return nomination
+
+
+def _canonical_benchmark_entry_bytes(
+    entries: tuple[BenchmarkEntryV1, ...],
+) -> bytes:
+    """Encode typed benchmark entries without accepting arbitrary model objects."""
+
+    if any(type(entry) is not BenchmarkEntryV1 for entry in entries):
+        raise ValueError("invalid benchmark entry")
+    return canonical_json_bytes(
+        tuple(
+            entry.model_dump(mode="json", exclude_none=False)
+            for entry in entries
+        )
+    )
 
 
 def re_admit_live_execution_v2(
@@ -2676,7 +2818,6 @@ def re_admit_live_execution_v2(
             or type(authority.approval_receipt) is not LiveExecutionApprovalReceiptV2
         ):
             raise ValueError
-        re_admit_locked_manifest(snapshot, lock.selection_manifest)
         _verify_live_authority_v2_selected_entries(
             authority=authority,
             lock=lock,
@@ -2716,9 +2857,9 @@ def re_admit_fresh_benchmark_lock_v2(
     """Rebuild one current V2 lock and its Search-only selection chain.
 
     The recorder deliberately receives no lock document or caller-selected
-    receipt.  It can name at most the sole V2 lock already reconstructed from
-    an operations-owned snapshot.  Passing ``None`` therefore requires exact
-    V2 cardinality rather than choosing an arbitrary historical V1 lock.
+    receipt.  It can name only the sole V2 lock already reconstructed from an
+    operations-owned snapshot; a supplied digest verifies that sole fact and
+    never selects from multiple locks.
     """
 
     if (
@@ -2741,10 +2882,11 @@ def re_admit_fresh_benchmark_lock_v2(
                 and record.acceptance_run_id == snapshot.acceptance_run_id
                 and record.kind == "acceptance_benchmark_lock"
                 and type(record.fact) is LockedBenchmarkManifestV2
-                and (lock_digest is None or record.fact_digest == lock_digest)
             )
         )
         if len(lock_records) != 1:
+            raise ValueError
+        if lock_digest is not None and lock_records[0].fact_digest != lock_digest:
             raise ValueError
         lock = LockedBenchmarkManifestV2.model_validate_json(
             canonical_json_bytes(lock_records[0].fact),
@@ -2752,29 +2894,77 @@ def re_admit_fresh_benchmark_lock_v2(
         )
         if lock.lock_digest != lock_records[0].fact_digest:
             raise ValueError
-        nomination_records = tuple(
+        direct_records = tuple(
             record
             for record in snapshot.facts
             if (
                 type(record) is AcceptanceFactRecord
                 and record.acceptance_run_id == snapshot.acceptance_run_id
                 and record.kind == "acceptance_nomination"
-                and record.fact_digest == lock.nomination_set_digest
-                and type(record.fact) is NominationSetV1
             )
         )
-        if len(nomination_records) != 1:
-            raise ValueError
-        nomination_bytes = canonical_json_bytes(nomination_records[0].fact)
-        nomination = NominationSetV1.model_validate_json(
-            nomination_bytes,
-            strict=False,
+        rebind_records = tuple(
+            record
+            for record in snapshot.facts
+            if (
+                type(record) is AcceptanceFactRecord
+                and record.acceptance_run_id == snapshot.acceptance_run_id
+                and record.kind == "acceptance_benchmark_rebind"
+            )
         )
+        if (len(direct_records), len(rebind_records)) not in {(1, 0), (0, 1)}:
+            raise ValueError
+        if direct_records:
+            if type(direct_records[0].fact) is not NominationSetV1:
+                raise ValueError
+            nomination_bytes = canonical_json_bytes(direct_records[0].fact)
+            nomination = NominationSetV1.model_validate_json(
+                nomination_bytes,
+                strict=False,
+            )
+            if (
+                direct_records[0].fact_digest != nomination.nomination_set_digest
+                or nomination.nomination_set_digest != lock.nomination_set_digest
+            ):
+                raise ValueError
+            re_admit_locked_manifest(snapshot, lock.selection_manifest)
+        else:
+            if type(rebind_records[0].fact) is not BenchmarkSelectionRebindV1:
+                raise ValueError
+            reference_bytes = canonical_json_bytes(rebind_records[0].fact)
+            reference = BenchmarkSelectionRebindV1.model_validate_json(
+                reference_bytes,
+                strict=False,
+            )
+            if (
+                reference.rebind_digest != rebind_records[0].fact_digest
+                or reference.acceptance_run_id != snapshot.acceptance_run_id
+                or reference.selection_manifest_digest != lock.selection_manifest_digest
+                or reference.source_lock.selection_manifest_digest
+                != lock.selection_manifest_digest
+                or canonical_json_bytes(reference.source_lock.selection_manifest)
+                != canonical_json_bytes(lock.selection_manifest)
+                or _canonical_benchmark_entry_bytes(reference.source_lock.entries)
+                != _canonical_benchmark_entry_bytes(lock.entries)
+            ):
+                raise ValueError
+            if canonical_json_bytes(reference) != reference_bytes:
+                raise ValueError
+            nomination_bytes = canonical_json_bytes(reference.source_nomination)
+            nomination = NominationSetV1.model_validate_json(
+                nomination_bytes,
+                strict=False,
+            )
+            if nomination.nomination_set_digest != lock.nomination_set_digest:
+                raise ValueError
+            _verify_locked_manifest_selection(
+                nomination=nomination,
+                manifest=lock.selection_manifest,
+            )
         if canonical_json_bytes(nomination) != nomination_bytes:
             raise ValueError
         if nomination.user_nominated_entries:
             raise ValueError
-        re_admit_locked_manifest(snapshot, lock.selection_manifest)
         _verify_fresh_lock_v2_selected_entries(lock=lock, nomination=nomination)
     except Exception:
         raise AcceptanceApplicationError("evidence_missing") from None

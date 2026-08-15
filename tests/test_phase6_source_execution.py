@@ -169,7 +169,7 @@ def _fresh_toolchain_fragment(repository: Path) -> str:
             start = lines.index('venv_root="${repository_root}/.venv"')
             end = lines.index(MANAGED_PYTHON_SYNC, start) + 1
             fragments.append("\n".join(lines[start:end]))
-    assert len(fragments) == 17
+    assert len(fragments) == 18
     assert len(set(fragments)) == 1
     return fragments[0]
 
@@ -369,7 +369,7 @@ def test_source_execution_verifier_requires_repo_managed_cpython_for_every_job(
 ) -> None:
     module = _module()
     result = module.verify_source_execution(_copy_workflows(tmp_path))
-    assert result.managed_python_job_count == 17
+    assert result.managed_python_job_count == 18
     assert result.managed_python_version == MANAGED_PYTHON_VERSION
     assert result.managed_python_root == MANAGED_PYTHON_ROOT
     assert result.network_none_invocation_count == 6
@@ -400,7 +400,7 @@ def test_source_execution_verifier_accepts_protected_authority_route(
 
     result = module.verify_source_execution(repository)
 
-    assert result.managed_python_job_count == 17
+    assert result.managed_python_job_count == 18
     assert any(step.job_name == LIVE_AUTHORITY_JOB_NAME for step in result.authoritative_steps)
 
 
@@ -707,6 +707,35 @@ def test_source_execution_verifier_rejects_control_user_mapping_mutations(
 
 
 @pytest.mark.parametrize(
+    "unknown_invocation",
+    (
+        "rebind-benchmark\\-lock",
+        "rebind-benchmark''-lock",
+        "$(printf '%s' rebind-benchmark-lock)",
+        "run-acceptance --action benchmark",
+    ),
+    ids=("escaped", "concatenated", "substitution", "alternate-command"),
+)
+def test_source_execution_rejects_unknown_benchmark_rebind_invocation_forms(
+    tmp_path: Path,
+    unknown_invocation: str,
+) -> None:
+    """Only one literal protected rebind command may persist the state transition."""
+
+    module = _module()
+    repository = _copy_workflows(tmp_path)
+    path = repository / Path(".github/workflows/phase6-acceptance.yml")
+    source = path.read_text(encoding="utf-8")
+    rebind = next(job for job in module._parse_jobs(source) if job.name == "rebind_benchmark_lock")
+    needle = "skillscout.cli rebind-benchmark-lock"
+    assert rebind.source.count(needle) == 1
+    path.write_text(source.replace(needle, f"skillscout.cli {unknown_invocation}", 1), encoding="utf-8")
+
+    with pytest.raises(module.SourceExecutionError):
+        module.verify_source_execution(repository)
+
+
+@pytest.mark.parametrize(
     ("needle", "replacement"),
     (
         (
@@ -875,7 +904,7 @@ def test_toolchain_version_guard_accepts_official_metadata_and_rejects_invalid_v
     tmp_path: Path,
 ) -> None:
     guards = _version_guards(ROOT)
-    assert len(guards) == 17
+    assert len(guards) == 18
     assert all(_run_guard(ROOT, guard).returncode == 0 for guard in guards)
 
     fake_repository = tmp_path / "repository"

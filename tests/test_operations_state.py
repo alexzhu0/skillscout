@@ -326,15 +326,19 @@ def _offline_run(
     )
 
 
-def _nomination_set() -> NominationSetV1:
+def _nomination_set(
+    *,
+    nomination_set_id: str = "nomination-operations",
+    repository_offset: int = 0,
+) -> NominationSetV1:
     entries = tuple(
         sorted(
             (
                 NominationEntryV1(
                     schema_version="nomination-entry-v1",
-                    repository_full_name=f"fixture/repository-{index}",
-                    repository_id=index,
-                    exact_commit_sha=f"{index:040x}",
+                    repository_full_name=f"fixture/repository-{repository_offset + index}",
+                    repository_id=repository_offset + index,
+                    exact_commit_sha=f"{repository_offset + index:040x}",
                     license_spdx="MIT",
                     selection_source="search_derived",
                     selection_evidence_digests=(DIGEST_A, DIGEST_B),
@@ -346,7 +350,7 @@ def _nomination_set() -> NominationSetV1:
     )
     return NominationSetV1(
         schema_version="nomination-set-v1",
-        nomination_set_id="nomination-operations",
+        nomination_set_id=nomination_set_id,
         query_set_digest=DIGEST_A,
         search_run_authority_digest=DIGEST_B,
         search_derived_entries=entries,
@@ -357,8 +361,15 @@ def _nomination_set() -> NominationSetV1:
 
 def _locked_manifest(
     nomination: NominationSetV1,
+    *,
+    roles: tuple[str, str, str, str, str] = (
+        "positive",
+        "positive_multi_workflow",
+        "negative",
+        "negative",
+        "borderline",
+    ),
 ) -> LockedBenchmarkManifestV1:
-    roles = ("positive", "positive_multi_workflow", "negative", "negative", "borderline")
     entries = tuple(
         sorted(
             (
@@ -414,7 +425,13 @@ def _v2_symbol(name: str):
     return value
 
 
-def _locked_manifest_v2(nomination: NominationSetV1):
+def _locked_manifest_v2(
+    nomination: NominationSetV1,
+    *,
+    parent_state_commit_sha: str = "b" * 40,
+    parent_state_root_digest: str = DIGEST_C,
+    selection_manifest: LockedBenchmarkManifestV1 | None = None,
+):
     receipt_model = _v2_symbol("BenchmarkLockApprovalReceiptV2")
     manifest_model = _v2_symbol("LockedBenchmarkManifestV2")
     source_state_binding_digest = _v2_symbol("fresh_benchmark_source_state_binding_digest")
@@ -433,7 +450,7 @@ def _locked_manifest_v2(nomination: NominationSetV1):
         trigger_identity="workflow_dispatch",
         approval_record_digest=DIGEST_B,
     )
-    manifest = _locked_manifest(nomination)
+    manifest = selection_manifest or _locked_manifest(nomination)
     return manifest_model(
         schema_version="locked-benchmark-manifest-v2",
         purpose="benchmark_lock",
@@ -441,8 +458,8 @@ def _locked_manifest_v2(nomination: NominationSetV1):
         source_repository_full_name=receipt.source_repository_full_name,
         state_repository_id=9001,
         state_repository_full_name="octo-org/skillscout-state",
-        parent_state_commit_sha="b" * 40,
-        parent_state_root_digest=DIGEST_C,
+        parent_state_commit_sha=parent_state_commit_sha,
+        parent_state_root_digest=parent_state_root_digest,
         source_commit_sha="a" * 40,
         acceptance_workflow_sha256=DIGEST_A,
         source_state_binding_digest=source_state_binding_digest(
@@ -450,8 +467,8 @@ def _locked_manifest_v2(nomination: NominationSetV1):
             source_repository_full_name=receipt.source_repository_full_name,
             state_repository_id=9001,
             state_repository_full_name="octo-org/skillscout-state",
-            parent_state_commit_sha="b" * 40,
-            parent_state_root_digest=DIGEST_C,
+            parent_state_commit_sha=parent_state_commit_sha,
+            parent_state_root_digest=parent_state_root_digest,
             source_commit_sha="a" * 40,
             acceptance_workflow_sha256=DIGEST_A,
             selection_manifest_digest=manifest.manifest_digest,
@@ -470,6 +487,24 @@ def _locked_manifest_v2(nomination: NominationSetV1):
         approval_record_digest=receipt.approval_record_digest,
         approval_receipt=receipt,
         approval_receipt_digest=receipt.receipt_digest,
+    )
+
+
+def _benchmark_rebind(
+    *,
+    target_acceptance_run_id: str,
+    source_acceptance_run_id: str,
+    nomination: NominationSetV1,
+):
+    reference_model = _v2_symbol("BenchmarkSelectionRebindV1")
+    source_lock = _locked_manifest_v2(nomination)
+    return reference_model(
+        schema_version="benchmark-selection-rebind-v1",
+        acceptance_run_id=target_acceptance_run_id,
+        source_acceptance_run_id=source_acceptance_run_id,
+        source_nomination=nomination,
+        source_lock=source_lock,
+        selection_manifest_digest=source_lock.selection_manifest_digest,
     )
 
 
@@ -533,10 +568,14 @@ def _historical_live_authority(nomination: NominationSetV1) -> LiveAcceptanceAut
     )
 
 
-def _live_authority_v2(nomination: NominationSetV1):
+def _live_authority_v2(
+    nomination: NominationSetV1,
+    *,
+    lock: object | None = None,
+):
     authority_model = _v2_symbol("LiveAcceptanceAuthorityV2")
     receipt_model = _v2_symbol("LiveExecutionApprovalReceiptV2")
-    lock = _locked_manifest_v2(nomination)
+    lock = _locked_manifest_v2(nomination) if lock is None else lock
     receipt = receipt_model(
         schema_version="live-execution-approval-receipt-v2",
         purpose="live_execution",
@@ -1073,10 +1112,505 @@ def test_fresh_v2_live_authority_is_singleton_and_rebuild_rejects_conflicts(
         )
 
 
+def test_benchmark_rebind_persists_target_lock_and_rebuilds_three_store_bundle(
+    tmp_path: Path,
+) -> None:
+    """A target V2 lock is durable only when one rebind fact carries its source chain."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    source_lock = _locked_manifest_v2(nomination)
+    target_run_id = "acceptance-rebound"
+    reference = _benchmark_rebind(
+        target_acceptance_run_id=target_run_id,
+        source_acceptance_run_id=nomination.nomination_set_id,
+        nomination=nomination,
+    )
+    target_lock = _locked_manifest_v2(
+        nomination,
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("e" * 64),
+    )
+
+    pipeline = SQLiteStateStore(tmp_path / "pipeline.sqlite3")
+    operations = module.OperationsStateStore(tmp_path / "operations.sqlite3")
+    publication = PublicationStateStore(tmp_path / "publication.sqlite3")
+    try:
+        operations.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        operations.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            source_lock,
+        )
+        recorded_reference = operations.record_acceptance_fact(
+            target_run_id,
+            "acceptance_benchmark_rebind",
+            reference,
+        )
+        recorded_lock = operations.record_acceptance_fact(
+            target_run_id,
+            "acceptance_benchmark_lock",
+            target_lock,
+        )
+        expected_snapshot = operations.acceptance_snapshot(target_run_id)
+        expected_operations = operations.export_owned_state()
+        bundle = module.assemble_three_store_bundle(
+            pipeline_store=pipeline,
+            operations_store=operations,
+            publication_store=publication,
+            prior_root_digest=None,
+            state_parent_commit_sha="0" * 40,
+            query_set_digest=DIGEST_A,
+            budget_policy_digest=DIGEST_B,
+            created_at=TIMESTAMP,
+        )
+    finally:
+        publication.close()
+        operations.close()
+        pipeline.close()
+
+    restored = tmp_path / "restored"
+    restored.mkdir(mode=0o700)
+    module.restore_three_store_bundle(
+        bundle,
+        pipeline_path=restored / "pipeline.sqlite3",
+        operations_path=restored / "operations.sqlite3",
+        publication_path=restored / "publication.sqlite3",
+    )
+    with module.OperationsStateStore(restored / "operations.sqlite3") as store:
+        restored_snapshot = store.acceptance_snapshot(target_run_id)
+        restored_operations = store.export_owned_state()
+
+    assert expected_snapshot.facts == (recorded_lock, recorded_reference)
+    assert restored_snapshot == expected_snapshot
+    assert restored_operations.facts == expected_operations.facts
+    assert restored_operations.projection == expected_operations.projection
+
+
+def test_rebound_v2_authority_persists_and_survives_export_rebuild(
+    tmp_path: Path,
+) -> None:
+    """A target authority resolves its nomination through the sole rebind reference."""
+
+    module = _operations_module()
+    source_run_id = "acceptance-authority-rebind-source"
+    target_run_id = "acceptance-authority-rebind-target"
+    nomination = _nomination_set(nomination_set_id=source_run_id)
+    source_lock = _locked_manifest_v2(nomination)
+    reference = _benchmark_rebind(
+        target_acceptance_run_id=target_run_id,
+        source_acceptance_run_id=source_run_id,
+        nomination=nomination,
+    )
+    assert reference.source_lock == source_lock
+    target_lock = _locked_manifest_v2(
+        nomination,
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("e" * 64),
+    )
+    authority = _live_authority_v2(nomination, lock=target_lock)
+    source = tmp_path / "rebound-authority-source.sqlite3"
+
+    with module.OperationsStateStore(source) as store:
+        store.record_acceptance_fact(
+            source_run_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            source_run_id,
+            "acceptance_benchmark_lock",
+            source_lock,
+        )
+        store.record_acceptance_fact(
+            target_run_id,
+            "acceptance_benchmark_rebind",
+            reference,
+        )
+        store.record_acceptance_fact(
+            target_run_id,
+            "acceptance_benchmark_lock",
+            target_lock,
+        )
+        recorded = store.record_acceptance_fact(
+            target_run_id,
+            "acceptance_live_authority",
+            authority,
+        )
+        exported = store.export_owned_state()
+
+    rebuilt = tmp_path / "rebound-authority-rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        snapshot = store.acceptance_snapshot(target_run_id)
+        restored = store.export_owned_state()
+
+    assert recorded.fact == authority
+    assert tuple(record.kind for record in snapshot.facts) == (
+        "acceptance_benchmark_lock",
+        "acceptance_benchmark_rebind",
+        "acceptance_live_authority",
+    )
+    assert restored.facts == exported.facts
+    assert restored.projection == exported.projection
+
+
+def test_benchmark_rebind_pair_rolls_back_reference_when_lock_constraint_fails(
+    tmp_path: Path,
+) -> None:
+    """The second rebind-pair write cannot leave its reference durable alone."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    source_lock = _locked_manifest_v2(nomination)
+    target_run_id = "acceptance-rebind-atomic"
+    reference = _benchmark_rebind(
+        target_acceptance_run_id=target_run_id,
+        source_acceptance_run_id=nomination.nomination_set_id,
+        nomination=nomination,
+    )
+    alternate_manifest = _locked_manifest(
+        nomination,
+        roles=("negative", "positive", "borderline", "negative", "positive_multi_workflow"),
+    )
+    incompatible_lock = _locked_manifest_v2(
+        nomination,
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("e" * 64),
+        selection_manifest=alternate_manifest,
+    )
+
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            source_lock,
+        )
+
+        with pytest.raises(module.OperationsIntegrityError, match="lock chain mismatch"):
+            store.record_benchmark_rebind_pair(
+                target_run_id,
+                reference,
+                incompatible_lock,
+            )
+
+        assert store.acceptance_snapshot(target_run_id).facts == ()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "wrong_target_run",
+        "digest_drift",
+        "duplicate_reference",
+        "direct_nomination_and_reference",
+        "missing_reference",
+        "mismatched_target_lock_chain",
+    ),
+)
+def test_benchmark_rebind_rejects_invalid_target_state(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """Each mutation must fail before a target run gains a partial V2 lock chain."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    target_run_id = "acceptance-rebound-invalid"
+    reference = _benchmark_rebind(
+        target_acceptance_run_id=target_run_id,
+        source_acceptance_run_id=nomination.nomination_set_id,
+        nomination=nomination,
+    )
+    lock = _locked_manifest_v2(nomination)
+
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        if mutation in {"duplicate_reference", "mismatched_target_lock_chain"}:
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_nomination",
+                nomination,
+            )
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_benchmark_lock",
+                lock,
+            )
+        if mutation == "wrong_target_run":
+            with pytest.raises(module.OperationsIntegrityError, match="another run"):
+                store.record_acceptance_fact(
+                    "acceptance-wrong-target",
+                    "acceptance_benchmark_rebind",
+                    reference,
+                )
+        elif mutation == "digest_drift":
+            drifted = reference.model_copy(
+                update={"selection_manifest_digest": DIGEST_A}
+            )
+            with pytest.raises(module.OperationsIntegrityError, match="acceptance fact model"):
+                store.record_acceptance_fact(
+                    target_run_id,
+                    "acceptance_benchmark_rebind",
+                    drifted,
+                )
+        elif mutation == "duplicate_reference":
+            store.record_acceptance_fact(
+                target_run_id,
+                "acceptance_benchmark_rebind",
+                reference,
+            )
+            duplicate = _benchmark_rebind(
+                target_acceptance_run_id=target_run_id,
+                source_acceptance_run_id="another-source-run",
+                nomination=nomination,
+            )
+            with pytest.raises(module.OperationsIntegrityError, match="benchmark rebind"):
+                store.record_acceptance_fact(
+                    target_run_id,
+                    "acceptance_benchmark_rebind",
+                    duplicate,
+                )
+        elif mutation == "direct_nomination_and_reference":
+            store.record_acceptance_fact(
+                target_run_id,
+                "acceptance_nomination",
+                nomination,
+            )
+            with pytest.raises(module.OperationsIntegrityError, match="benchmark rebind"):
+                store.record_acceptance_fact(
+                    target_run_id,
+                    "acceptance_benchmark_rebind",
+                    reference,
+                )
+        elif mutation == "missing_reference":
+            with pytest.raises(module.OperationsIntegrityError, match="benchmark rebind"):
+                store.record_acceptance_fact(
+                    target_run_id,
+                    "acceptance_benchmark_lock",
+                    lock,
+                )
+        elif mutation == "mismatched_target_lock_chain":
+            store.record_acceptance_fact(
+                target_run_id,
+                "acceptance_benchmark_rebind",
+                reference,
+            )
+            alternate_selection = _locked_manifest(
+                nomination,
+                roles=(
+                    "borderline",
+                    "positive_multi_workflow",
+                    "negative",
+                    "negative",
+                    "positive",
+                ),
+            )
+            alternate_lock = _locked_manifest_v2(
+                nomination,
+                parent_state_commit_sha="d" * 40,
+                parent_state_root_digest="sha256:" + ("e" * 64),
+                selection_manifest=alternate_selection,
+            )
+            with pytest.raises(module.OperationsIntegrityError, match="lock chain mismatch"):
+                store.record_acceptance_fact(
+                    target_run_id,
+                    "acceptance_benchmark_lock",
+                    alternate_lock,
+                )
+        else:
+            raise AssertionError(mutation)
+
+        expected_kinds = {
+            "wrong_target_run": (),
+            "digest_drift": (),
+            "duplicate_reference": ("acceptance_benchmark_rebind",),
+            "direct_nomination_and_reference": ("acceptance_nomination",),
+            "missing_reference": (),
+            "mismatched_target_lock_chain": ("acceptance_benchmark_rebind",),
+        }[mutation]
+        assert tuple(
+            record.kind for record in store.acceptance_snapshot(target_run_id).facts
+        ) == expected_kinds
+
+
+@pytest.mark.parametrize(
+    "source_case",
+    ("missing_source", "unrelated_source", "different_source_lock"),
+)
+def test_benchmark_rebind_requires_exact_embedded_source_run_chain(
+    tmp_path: Path,
+    source_case: str,
+) -> None:
+    """A canonical embedded chain cannot be detached from its claimed source run."""
+
+    module = _operations_module()
+    target_run_id = "acceptance-rebound-source-binding"
+    source_run_id = "acceptance-rebound-source"
+    nomination = _nomination_set()
+    reference = _benchmark_rebind(
+        target_acceptance_run_id=target_run_id,
+        source_acceptance_run_id=source_run_id,
+        nomination=nomination,
+    )
+
+    with module.OperationsStateStore(tmp_path / "operations.sqlite3") as store:
+        if source_case == "unrelated_source":
+            unrelated = _nomination_set(
+                nomination_set_id=source_run_id,
+                repository_offset=100,
+            )
+            store.record_acceptance_fact(
+                source_run_id,
+                "acceptance_nomination",
+                unrelated,
+            )
+            store.record_acceptance_fact(
+                source_run_id,
+                "acceptance_benchmark_lock",
+                _locked_manifest_v2(unrelated),
+            )
+        elif source_case == "different_source_lock":
+            store.record_acceptance_fact(
+                source_run_id,
+                "acceptance_nomination",
+                nomination,
+            )
+            store.record_acceptance_fact(
+                source_run_id,
+                "acceptance_benchmark_lock",
+                _locked_manifest_v2(
+                    nomination,
+                    parent_state_commit_sha="d" * 40,
+                    parent_state_root_digest="sha256:" + ("e" * 64),
+                ),
+            )
+        elif source_case != "missing_source":
+            raise AssertionError(source_case)
+
+        with pytest.raises(module.OperationsIntegrityError, match="rebind source"):
+            store.record_acceptance_fact(
+                target_run_id,
+                "acceptance_benchmark_rebind",
+                reference,
+            )
+
+        assert store.acceptance_snapshot(target_run_id).facts == ()
+
+
+def test_benchmark_rebind_rebuild_rejects_a_detached_source_run(
+    tmp_path: Path,
+) -> None:
+    """Rebuild replays the source-run lookup instead of trusting serialized nesting."""
+
+    module = _operations_module()
+    source_run_id = "acceptance-rebind-rebuild-source"
+    target_run_id = "acceptance-rebind-rebuild-target"
+    nomination = _nomination_set(nomination_set_id=source_run_id)
+    source_lock = _locked_manifest_v2(nomination)
+    reference = _benchmark_rebind(
+        target_acceptance_run_id=target_run_id,
+        source_acceptance_run_id=source_run_id,
+        nomination=nomination,
+    )
+    target_lock = _locked_manifest_v2(
+        nomination,
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("e" * 64),
+    )
+    source = tmp_path / "operations.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        store.record_acceptance_fact(
+            source_run_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            source_run_id,
+            "acceptance_benchmark_lock",
+            source_lock,
+        )
+        store.record_acceptance_fact(
+            target_run_id,
+            "acceptance_benchmark_rebind",
+            reference,
+        )
+        store.record_acceptance_fact(
+            target_run_id,
+            "acceptance_benchmark_lock",
+            target_lock,
+        )
+        exported = store.export_owned_state()
+
+    reference_model = _v2_symbol("BenchmarkSelectionRebindV1")
+    detached = reference_model(
+        schema_version="benchmark-selection-rebind-v1",
+        acceptance_run_id=target_run_id,
+        source_acceptance_run_id="acceptance-rebind-missing-source",
+        source_nomination=reference.source_nomination,
+        source_lock=reference.source_lock,
+        selection_manifest_digest=reference.selection_manifest_digest,
+    )
+    owned = next(
+        fact
+        for fact in exported.facts
+        if fact.kind == "acceptance_benchmark_rebind"
+    )
+    payload = json.loads(owned.payload_json)
+    columns = payload["columns"]
+    assert isinstance(columns, dict)
+    columns["fact_digest"] = detached.rebind_digest
+    columns["recorded_identity"] = module._acceptance_recorded_identity(
+        target_run_id,
+        "acceptance_benchmark_rebind",
+        detached,
+    )
+    payload["value"] = detached.model_dump(mode="json", exclude_none=False)
+    payload_json = module._json_text(payload)
+    rewritten = owned.model_copy(
+        update={
+            "payload_json": payload_json,
+            "object_digest": sha256_digest(payload_json.encode("utf-8")),
+        }
+    )
+    facts = tuple(rewritten if fact == owned else fact for fact in exported.facts)
+    projection = module._projection_from_facts(facts)
+    invalid_database = b"not-a-sqlite-database"
+    tampered = exported.model_copy(
+        update={
+            "database_bytes": invalid_database,
+            "database_digest": sha256_digest(invalid_database),
+            "facts": facts,
+            "projection": projection,
+            "projection_digest": projection.projection_digest,
+            "export_digest": module._export_digest(
+                schema_fingerprint=exported.schema_fingerprint,
+                facts=facts,
+                projection=projection,
+            ),
+        }
+    )
+
+    with pytest.raises(module.OperationsIntegrityError, match="rebind source"):
+        module.OperationsStateStore.rebuild_owned_state(
+            tmp_path / "detached-source-rebuilt.sqlite3",
+            tampered,
+        )
+
+
 def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
     module = _operations_module()
     assert tuple(module.ACCEPTANCE_FACT_MODELS) == (
         "acceptance_nomination",
+        "acceptance_benchmark_rebind",
         "acceptance_benchmark_lock",
         "acceptance_live_authority",
         "acceptance_campaign_resume_locator",
@@ -1098,6 +1632,9 @@ def test_acceptance_fact_registry_is_exact_and_immutable() -> None:
         "acceptance_gate",
         "acceptance_report_root",
     )
+    assert module.ACCEPTANCE_FACT_MODELS["acceptance_benchmark_rebind"] == {
+        "benchmark-selection-rebind-v1": _v2_symbol("BenchmarkSelectionRebindV1"),
+    }
     with pytest.raises(TypeError):
         module.ACCEPTANCE_FACT_MODELS["acceptance_replay"] = object
 
@@ -1527,6 +2064,104 @@ def test_pre_budget_state_requires_explicit_acceptance_schema_upgrade(
         exported = store.export_owned_state()
 
     assert exported.schema_fingerprint == module._schema_fingerprint()
+
+
+def test_pre_benchmark_rebind_state_requires_explicit_acceptance_schema_upgrade(
+    tmp_path: Path,
+) -> None:
+    """The prior closed fact registry upgrades to admit the new rebind kind."""
+
+    module = _operations_module()
+    path = tmp_path / "operations.sqlite3"
+    connection = sqlite3.connect(path)
+    try:
+        for statement in module._schema_statements(
+            module._PRE_BENCHMARK_REBIND_ACCEPTANCE_FACT_KINDS
+        ):
+            connection.execute(statement)
+        connection.execute(f"PRAGMA user_version = {module.OPERATIONS_SCHEMA_VERSION}")
+        connection.commit()
+    finally:
+        connection.close()
+    path.chmod(0o600)
+
+    with module.OperationsStateStore(path) as store:
+        assert store.upgrade_acceptance_schema() is True
+        exported = store.export_owned_state()
+
+    assert exported.schema_fingerprint == module._schema_fingerprint()
+
+
+@pytest.mark.parametrize(
+    "schema_kinds_name",
+    (
+        "_PRE_BENCHMARK_REBIND_ACCEPTANCE_FACT_KINDS",
+        "_PRE_REPLAY_EVIDENCE_ACCEPTANCE_FACT_KINDS",
+        "_PRE_REQUEST_RESERVATION_ACCEPTANCE_FACT_KINDS",
+        "_PRE_FIXED_ADMISSION_ACCEPTANCE_FACT_KINDS",
+        "_PRE_BUDGET_ACCEPTANCE_FACT_KINDS",
+        "_LEGACY_ACCEPTANCE_FACT_KINDS",
+    ),
+)
+def test_only_genuine_pre_rebind_schema_subsets_are_accepted_and_upgradeable(
+    tmp_path: Path,
+    schema_kinds_name: str,
+) -> None:
+    """Every admitted historical schema is derived from the closed pre-rebind registry."""
+
+    module = _operations_module()
+    path = tmp_path / f"{schema_kinds_name}.sqlite3"
+    connection = sqlite3.connect(path)
+    try:
+        for statement in module._schema_statements(
+            getattr(module, schema_kinds_name)
+        ):
+            connection.execute(statement)
+        connection.execute(f"PRAGMA user_version = {module.OPERATIONS_SCHEMA_VERSION}")
+        connection.commit()
+    finally:
+        connection.close()
+    path.chmod(0o600)
+
+    with module.OperationsStateStore(path) as store:
+        assert store.upgrade_acceptance_schema() is True
+
+
+@pytest.mark.parametrize(
+    "missing_kind",
+    (
+        "acceptance_replay_evidence",
+        "acceptance_semantic_request_reservation",
+        "acceptance_fixed_candidate_admission",
+        "acceptance_budget_reservation",
+        "acceptance_live_authority",
+        "acceptance_campaign_resume_locator",
+    ),
+)
+def test_rebind_mixed_with_an_older_schema_subset_is_not_trusted(
+    tmp_path: Path,
+    missing_kind: str,
+) -> None:
+    """A new rebind kind may exist only under the full current registry schema."""
+
+    module = _operations_module()
+    path = tmp_path / f"mixed-{missing_kind}.sqlite3"
+    mixed_kinds = tuple(
+        kind for kind in module._ACCEPTANCE_FACT_KINDS if kind != missing_kind
+    )
+    assert "acceptance_benchmark_rebind" in mixed_kinds
+    connection = sqlite3.connect(path)
+    try:
+        for statement in module._schema_statements(mixed_kinds):
+            connection.execute(statement)
+        connection.execute(f"PRAGMA user_version = {module.OPERATIONS_SCHEMA_VERSION}")
+        connection.commit()
+    finally:
+        connection.close()
+    path.chmod(0o600)
+
+    with pytest.raises(module.OperationsIntegrityError, match="schema fingerprint"):
+        module.OperationsStateStore(path)
 
 
 def test_current_acceptance_schema_upgrade_is_a_true_noop(tmp_path: Path) -> None:

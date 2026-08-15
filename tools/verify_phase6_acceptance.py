@@ -200,7 +200,9 @@ def _trusted_repository_root(repository_root: Path) -> Path:
         if root != lexical:
             _reject()
         git_directory = root / ".git"
-        if git_directory.is_symlink() or not git_directory.is_dir():
+        if git_directory.is_symlink() or not (
+            git_directory.is_dir() or git_directory.is_file()
+        ):
             _reject()
         result = subprocess.run(
             ("git", "rev-parse", "--show-toplevel"),
@@ -283,6 +285,26 @@ def _mapping_literal_keys(source: str, name: str) -> tuple[str, ...]:
             if not all(type(item) is str for item in keys):
                 _reject()
             return keys
+    except (SyntaxError, ValueError):
+        _reject()
+    _reject()
+
+
+def _mapping_literal(source: str, name: str) -> dict[str, str]:
+    try:
+        tree = ast.parse(source)
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+            if not any(isinstance(target, ast.Name) and target.id == name for target in targets):
+                continue
+            value = ast.literal_eval(node.value)
+            if type(value) is not dict or not all(
+                type(key) is str and type(item) is str for key, item in value.items()
+            ):
+                _reject()
+            return value
     except (SyntaxError, ValueError):
         _reject()
     _reject()
@@ -559,6 +581,71 @@ def _verify_source_and_workflow_contract(root: Path) -> int:
         for source, required in zip(sources, required_by_workflow):
             if any(marker not in source for marker in required):
                 _reject()
+        phase6_source = sources[-1]
+        rebind_match = re.search(
+            r"^  rebind_benchmark_lock:\n(?P<body>.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)",
+            phase6_source,
+            re.MULTILINE | re.DOTALL,
+        )
+        if rebind_match is None:
+            _reject()
+        rebind = rebind_match.group(0)
+        required_rebind_markers = (
+            "name: skillscout-phase6-benchmark-lock-rebind",
+            "inputs.phase6_action == 'rebind-benchmark-lock'",
+            "github.repository == 'alexzhu0/skillscout'",
+            "github.ref == 'refs/heads/main'",
+            "github.run_attempt == '1'",
+            "environment: phase6-human-benchmark-lock",
+            "contents: read",
+            "actions: read",
+            "ref: ${{ github.sha }}",
+            "persist-credentials: false",
+            "SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID }}",
+            "SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID: ${{ vars.SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID }}",
+            "GITHUB_TOKEN: ${{ github.token }}",
+            "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ secrets.SKILLSCOUT_BENCHMARK_LOCK_STATE_GITHUB_TOKEN }}",
+            "prepare-benchmark-lock-rebind-handoff",
+            "skillscout.cli rebind-benchmark-lock",
+            '--source-acceptance-run-id "${SKILLSCOUT_PHASE6_SOURCE_ACCEPTANCE_RUN_ID:?}"',
+            '--target-acceptance-run-id "${SKILLSCOUT_PHASE6_ACCEPTANCE_RUN_ID:?}"',
+        )
+        if (
+            any(marker not in rebind for marker in required_rebind_markers)
+            or phase6_source.count("skillscout.cli rebind-benchmark-lock") != 1
+            or rebind.count("SKILLSCOUT_STATE_GITHUB_TOKEN") != 1
+            or "SKILLSCOUT_STATE_REPOSITORY_ID" in rebind
+            or "SKILLSCOUT_STATE_REPOSITORY_FULL_NAME" in rebind
+            or rebind.index("Read and write one environment-approved benchmark lock rebind handoff")
+            >= rebind.index("SKILLSCOUT_STATE_GITHUB_TOKEN")
+            or rebind[rebind.index("SKILLSCOUT_STATE_GITHUB_TOKEN") :].count("GITHUB_TOKEN: ${{ github.token }}") != 0
+            or any(
+                marker in rebind.casefold()
+                for marker in (
+                    "deepseek",
+                    "github_app",
+                    "catalog",
+                    "publish",
+                    "run-acceptance",
+                    "curl",
+                    "wget",
+                    "http://",
+                    "https://",
+                    "SKILLSCOUT_SOURCE_GITHUB_TOKEN".casefold(),
+                )
+            )
+        ):
+            _reject()
+        validation_map = _repository_text(root, Path("tools/verify_phase6_validation_map.py"))
+        if _mapping_literal(validation_map, "BENCHMARK_REBIND_OWNERS") != {
+            "BenchmarkSelectionRebindV1": "06-16-02",
+            "rebind-benchmark-lock": "06-16-02",
+            "phase6-human-benchmark-lock/rebind": "06-16-02",
+            "rebind_benchmark_lock": "06-16-02",
+            "tests/test_phase6_workflow.py/rebind": "06-16-02",
+            "tests/test_phase6_source_execution.py/rebind": "06-16-02",
+        }:
+            _reject()
         authoritative_steps = sum(
             1
             for source in sources
@@ -969,6 +1056,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(INVALID, file=sys.stderr)
         return 1
     if args.registry_only:
+        try:
+            repository = verify_repository(Path.cwd())
+        except AcceptanceError:
+            print(INVALID, file=sys.stderr)
+            return 1
+        if not repository.structural_valid or repository.acceptance_complete:
+            print(INVALID, file=sys.stderr)
+            return 1
         print(SUCCESS)
         return 0
     if args.offline_only:
