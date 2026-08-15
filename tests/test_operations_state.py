@@ -763,6 +763,112 @@ def test_operations_state_reads_legacy_authority_only_as_archival_evidence(
             )
 
 
+def test_operations_state_rehydrates_historical_v2_authority_locator(
+    tmp_path: Path,
+) -> None:
+    """A retired V2 locator remains readable but cannot become active authority."""
+
+    module = _operations_module()
+    nomination = _nomination_set()
+    lock = _locked_manifest_v2(nomination)
+    active = _live_authority_v2(nomination, lock=lock)
+    path = tmp_path / "historical-v2-authority.sqlite3"
+    with module.OperationsStateStore(path) as store:
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_nomination",
+            nomination,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_benchmark_lock",
+            lock,
+        )
+        store.record_acceptance_fact(
+            nomination.nomination_set_id,
+            "acceptance_live_authority",
+            active,
+        )
+
+    raw = active.model_dump(mode="json", exclude_none=False)
+    raw["manifest_path"] = (
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    )
+    raw.pop("authority_digest")
+    archived_digest = sha256_digest(raw)
+    raw["authority_digest"] = archived_digest
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            """UPDATE operations_acceptance_facts
+               SET fact_digest = ?, recorded_identity = ?, fact_json = ?
+               WHERE acceptance_run_id = ?
+                 AND fact_kind = 'acceptance_live_authority'
+                 AND fact_digest = ?""",
+            (
+                archived_digest,
+                module._json_text(
+                    (
+                        nomination.nomination_set_id,
+                        "acceptance_live_authority",
+                        archived_digest,
+                    )
+                ),
+                module._json_text(raw),
+                nomination.nomination_set_id,
+                active.authority_digest,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with module.OperationsStateStore(path) as store:
+        snapshot = store.acceptance_snapshot(nomination.nomination_set_id)
+
+    archived = next(
+        record.fact
+        for record in snapshot.facts
+        if record.kind == "acceptance_live_authority"
+    )
+    assert type(archived).__name__ == "HistoricalLiveAcceptanceAuthorityV2"
+    assert archived.authority_digest == archived_digest
+    assert archived.manifest_path.startswith(".planning/")
+    with module.OperationsStateStore(path) as store:
+        with pytest.raises(TypeError, match="invalid typed acceptance fact"):
+            store.record_acceptance_fact(
+                nomination.nomination_set_id,
+                "acceptance_live_authority",
+                archived,
+            )
+
+    from skillscout.application import acceptance as acceptance_application
+
+    with pytest.raises(acceptance_application.AcceptanceApplicationError, match="evidence_missing"):
+        acceptance_application.re_admit_live_execution_v2(
+            snapshot=snapshot,
+            authority_digest=archived_digest,
+            state_observation=acceptance_application.LiveAuthorityStateObservation(
+                state_repository_id=archived.state_repository_id,
+                state_repository_full_name=archived.state_repository_full_name,
+                authority_carrier_commit_sha="d" * 40,
+                authority_carrier_root_digest="sha256:" + ("e" * 64),
+                authority_carrier_parent_commit_sha=archived.state_commit_sha,
+                authority_carrier_prior_root_digest=archived.state_root_digest,
+                lock_state_parent_commit_sha=archived.parent_state_commit_sha,
+                lock_state_prior_root_digest=archived.parent_state_root_digest,
+            ),
+        )
+
+    unknown = active.model_dump(mode="json", exclude_none=False)
+    unknown["manifest_path"] = "config/acceptance/phase6/unknown-manifest.json"
+    unknown.pop("authority_digest")
+    unknown["authority_digest"] = sha256_digest(unknown)
+    with pytest.raises(module.OperationsIntegrityError, match="model is invalid"):
+        module._validate_acceptance_model("acceptance_live_authority", unknown)
+
+
 def test_benchmark_lock_schema_registry_preserves_v1_history_and_restores_v2(
     tmp_path: Path,
 ) -> None:

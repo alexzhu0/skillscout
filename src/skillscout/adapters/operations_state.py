@@ -46,6 +46,7 @@ from skillscout.domain.acceptance import (
     ChangedSourceEvidenceV1,
     GateB4BindingV1,
     HistoricalLiveAcceptanceAuthorityV1,
+    HistoricalLiveAcceptanceAuthorityV2,
     HostedIsolationCapabilityV1,
     HumanSkillReviewAttestationV1,
     LiveAcceptanceAuthorityV1,
@@ -244,6 +245,7 @@ _AcceptanceFactModel: TypeAlias = (
     | LockedBenchmarkManifestV1
     | LockedBenchmarkManifestV2
     | HistoricalLiveAcceptanceAuthorityV1
+    | HistoricalLiveAcceptanceAuthorityV2
     | LiveAcceptanceAuthorityV1
     | LiveAcceptanceAuthorityV2
     | AcceptanceCampaignResumeLocatorV1
@@ -1045,6 +1047,14 @@ def _validate_acceptance_model(
         "06-BENCHMARK-MANIFEST.json"
     ):
         model = HistoricalLiveAcceptanceAuthorityV1
+    if (
+        kind == "acceptance_live_authority"
+        and raw.get("schema_version") == "live-acceptance-authority-v2"
+        and raw.get("manifest_path")
+        == ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    ):
+        model = HistoricalLiveAcceptanceAuthorityV2
     if model is None:
         raise OperationsIntegrityError("acceptance fact kind or schema version is invalid")
     try:
@@ -1194,6 +1204,7 @@ def _selection_manifest_for_live_authority(
     acceptance_run_id: str,
     authority: (
         HistoricalLiveAcceptanceAuthorityV1
+        | HistoricalLiveAcceptanceAuthorityV2
         | LiveAcceptanceAuthorityV1
         | LiveAcceptanceAuthorityV2
     ),
@@ -1210,7 +1221,10 @@ def _selection_manifest_for_live_authority(
         if type(lock) is not LockedBenchmarkManifestV1:
             raise OperationsIntegrityError("historical live authority requires V1 lock")
         return lock
-    if type(authority) is LiveAcceptanceAuthorityV2:
+    if type(authority) in {
+        HistoricalLiveAcceptanceAuthorityV2,
+        LiveAcceptanceAuthorityV2,
+    }:
         lock = _acceptance_fact_by_digest(
             connection,
             acceptance_run_id=acceptance_run_id,
@@ -1370,6 +1384,7 @@ def _validate_acceptance_references(
             ) from None
         if type(authority) not in {
             HistoricalLiveAcceptanceAuthorityV1,
+            HistoricalLiveAcceptanceAuthorityV2,
             LiveAcceptanceAuthorityV1,
             LiveAcceptanceAuthorityV2,
         }:
@@ -1838,7 +1853,10 @@ def _validate_acceptance_references(
                 != manifest.lock_attestation.attestation_digest
             ):
                 raise OperationsIntegrityError("live authority manifest binding mismatch")
-        elif type(fact) is LiveAcceptanceAuthorityV2:
+        elif type(fact) in {
+            HistoricalLiveAcceptanceAuthorityV2,
+            LiveAcceptanceAuthorityV2,
+        }:
             _validate_v2_live_authority_cardinality(
                 connection,
                 acceptance_run_id=acceptance_run_id,
@@ -1872,6 +1890,7 @@ def _validate_acceptance_references(
         )
         if type(authority) not in {
             HistoricalLiveAcceptanceAuthorityV1,
+            HistoricalLiveAcceptanceAuthorityV2,
             LiveAcceptanceAuthorityV1,
             LiveAcceptanceAuthorityV2,
         }:
