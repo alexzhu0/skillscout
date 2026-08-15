@@ -2142,6 +2142,10 @@ def record_benchmark_lock_rebind_v2(
                 parent_state_root_digest=prior_root_digest,
                 approval_receipt=handoff.approval_receipt,
             )
+            # The restored campaign may predate the rebind fact kind. Upgrade
+            # only after exact source/target validation and immediately before
+            # the first rebind mutation; current schemas remain a true no-op.
+            operations.upgrade_acceptance_schema()
             pair_recorder = getattr(operations, "record_benchmark_rebind_pair", None)
             if not callable(pair_recorder):
                 raise ValueError

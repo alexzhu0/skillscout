@@ -8,6 +8,7 @@ import inspect
 import json
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from dataclasses import replace
@@ -2382,6 +2383,10 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
                 fact=fact,
             )
 
+        def upgrade_acceptance_schema(self) -> bool:
+            events.append("upgrade")
+            return True
+
         def record_benchmark_rebind_pair(
             self,
             acceptance_run_id: str,
@@ -2457,6 +2462,7 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
         "store",
         f"snapshot:{source_run_id}",
         f"snapshot:{target_run_id}",
+        "upgrade",
         "barrier",
         "cas",
     ]
@@ -2476,6 +2482,133 @@ def test_rebind_benchmark_lock_records_reference_then_lock_with_one_late_cas(
     assert result["state_commit_sha"] == "f" * 40
     assert result["state_root_digest"] == "sha256:" + ("0" * 64)
     assert result["status"] == "benchmark_lock_rebound"
+
+
+def test_rebind_benchmark_lock_upgrades_historical_acceptance_schema_before_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A restored pre-rebind database admits the new pair before its one CAS."""
+
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.bootstrap as bootstrap
+    from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+    source_snapshot, _authority, _observation = _fresh_live_authority_admission_inputs()
+    source_run_id = source_snapshot.acceptance_run_id
+    target_run_id = "fresh-rebound-historical-schema"
+    source_lock = next(
+        record.fact
+        for record in source_snapshot.facts
+        if record.kind == "acceptance_benchmark_lock"
+    )
+    operations_path = tmp_path / "state" / "databases" / "operations.sqlite3"
+    operations_path.parent.mkdir(parents=True)
+    connection = sqlite3.connect(operations_path)
+    try:
+        for statement in operations_state._schema_statements(
+            operations_state._PRE_BENCHMARK_REBIND_ACCEPTANCE_FACT_KINDS
+        ):
+            connection.execute(statement)
+        connection.execute(
+            f"PRAGMA user_version = {operations_state.OPERATIONS_SCHEMA_VERSION}"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    operations_path.chmod(0o600)
+    monkeypatch.chdir(tmp_path)
+    with operations_state.OperationsStateStore(operations_path) as operations:
+        for record in source_snapshot.facts:
+            operations.record_acceptance_fact(
+                source_run_id,
+                record.kind,
+                record.fact,
+            )
+
+    query_path = ROOT / "config" / "discovery-queries-v1.json"
+    query_set = DiscoveryQuerySetV1.model_validate_json(query_path.read_bytes(), strict=True)
+    configuration = bootstrap.LiveAuthorityRecordingRuntimeConfig(
+        acceptance_run_id=target_run_id,
+        preparation=bootstrap.FreshCampaignPreparationRuntimeConfig(
+            operations_state=Path("state/databases/operations.sqlite3"),
+            state_repository_id=source_lock.state_repository_id,
+            state_repository_full_name=source_lock.state_repository_full_name,
+            query_set_path=query_path,
+            query_set=query_set,
+            query_set_digest=query_set.query_set_digest or "",
+            state_lineage_anchor_commit_sha="a" * 40,
+            state_lineage_anchor_root_digest="sha256:" + ("b" * 64),
+        ),
+        repository_root=ROOT,
+        selection_manifest=source_lock.selection_manifest,
+        source_repository_id=source_lock.source_repository_id,
+        source_repository_full_name=source_lock.source_repository_full_name,
+        source_commit_sha=source_lock.source_commit_sha,
+        acceptance_workflow_sha256=source_lock.acceptance_workflow_sha256,
+        workflow_run_id=2001,
+        workflow_run_attempt=1,
+    )
+    restored = SimpleNamespace(
+        observed_head="d" * 40,
+        bundle=SimpleNamespace(root=SimpleNamespace(root_digest="sha256:" + ("e" * 64))),
+    )
+
+    class Barrier:
+        def __init__(self, *_arguments: object, **_kwargs: object) -> None:
+            pass
+
+        def sync_benchmark_lock(self, **_arguments: object) -> object:
+            return SimpleNamespace(
+                status="verified",
+                previous_head="d" * 40,
+                commit_sha="f" * 40,
+                root_digest="sha256:" + ("0" * 64),
+            )
+
+    monkeypatch.setattr(
+        bootstrap,
+        "load_live_authority_recording_runtime_config",
+        lambda **_kwargs: configuration,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "load_benchmark_lock_rebind_handoff",
+        lambda **_kwargs: SimpleNamespace(approval_receipt=_fresh_lock_receipt()),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_restore_current_live_authority_recording_state",
+        lambda **_kwargs: restored,
+    )
+    monkeypatch.setattr(
+        operations_state,
+        "_parse_bundle_exports",
+        lambda _bundle: (
+            object(),
+            object(),
+            SimpleNamespace(export_digest="sha256:" + ("1" * 64)),
+            object(),
+        ),
+    )
+    monkeypatch.setattr(bootstrap, "_LateStateDurabilityBarrier", Barrier)
+
+    result = bootstrap.record_benchmark_lock_rebind_v2(
+        source_acceptance_run_id=source_run_id,
+        target_acceptance_run_id=target_run_id,
+        environ={"SKILLSCOUT_STATE_GITHUB_TOKEN": "fixture-state-token"},
+    )
+
+    assert result["status"] == "benchmark_lock_rebound"
+    with operations_state.OperationsStateStore(operations_path) as operations:
+        target_snapshot = operations.acceptance_snapshot(target_run_id)
+        assert tuple(record.kind for record in target_snapshot.facts) == (
+            "acceptance_benchmark_lock",
+            "acceptance_benchmark_rebind",
+        )
+        assert operations.export_owned_state().schema_fingerprint == (
+            operations_state._schema_fingerprint()
+        )
 
 
 @pytest.mark.parametrize(
