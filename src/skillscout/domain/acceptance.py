@@ -860,6 +860,19 @@ class LiveAcceptanceAuthorityV2(_SelfDigestedModel):
         return self
 
 
+class HistoricalLiveAcceptanceAuthorityV2(LiveAcceptanceAuthorityV2):
+    """Archived V2 authority that preserves the retired manifest locator.
+
+    Active V2 construction remains bound to the current configuration path;
+    this model exists only for exact immutable state deserialization.
+    """
+
+    manifest_path: Literal[
+        ".planning/phases/06-adversarial-mvp-acceptance/"
+        "06-BENCHMARK-MANIFEST.json"
+    ]
+
+
 class AcceptanceCampaignResumeLocatorV1(_SelfDigestedModel):
     """One explicit protocol edge from an authorized parent state to its child."""
 
