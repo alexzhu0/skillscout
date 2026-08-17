@@ -8,8 +8,9 @@ requires.
 
 ## Scope
 
-- Modify only the two `run-acceptance` invocations in
-  `.github/workflows/phase6-acceptance.yml`.
+- Modify the two `run-acceptance` invocations in
+  `.github/workflows/phase6-acceptance.yml` and the matching fixed workflow
+  digest in `tools/verify_phase6_source_execution.py`.
 - Add workflow regression coverage that proves both invocations carry the
   authority checkout path, authority state commit SHA, and authority state
   root digest.
@@ -33,6 +34,12 @@ the existing `PHASE6_AUTHORITY_STATE_COMMIT_SHA` and
 the three arguments using exactly those established values. No CLI interface
 or behavior changes.
 
+The source-execution verifier intentionally freezes the complete Phase 6
+workflow byte stream, except for the separately closed authority-recording
+job. Its expected normalized SHA-256 must therefore be regenerated from the
+repaired workflow and updated in the existing digest constant. This preserves
+the closed-world verification boundary; it does not weaken or bypass it.
+
 The regression test will inspect the workflow as structured text and assert
 that the benchmark and replay execution blocks invoke `run-acceptance` with
 all three arguments. It will fail on the pre-fix workflow and on removal of
@@ -48,7 +55,9 @@ approval packet is required after this fix is merged and verified.
 
 1. The two invocation sites pass the three required authority arguments.
 2. The regression test fails before the workflow edit and passes after it.
-3. Focused workflow tests, the Phase 6 workflow verifiers, Ruff, and the full
+3. The fixed workflow digest matches the verifier's normalised full-workflow
+   closure.
+4. Focused workflow tests, the Phase 6 workflow verifiers, Ruff, and the full
    locked test suite pass.
 4. The PR contains no credential, provider, state-schema, source-execution,
    publication, or Draft-PR authority change.

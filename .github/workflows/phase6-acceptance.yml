@@ -1592,7 +1592,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action benchmark --manifest "$PHASE6_MANIFEST" --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --resume-proof "${RUNNER_TEMP}/phase6-live-resume-repeat.json" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action benchmark --manifest "$PHASE6_MANIFEST" --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --resume-proof "${RUNNER_TEMP}/phase6-live-resume-repeat.json" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST" --authority-state-root ".phase6-authority-state" --authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA" --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST"
 
   live_replay:
     if: ${{ inputs.phase6_action == 'run-replay' }}
@@ -1769,7 +1769,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$PHASE6_MANIFEST"
-          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action replay --manifest "$PHASE6_MANIFEST" --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --resume-proof "${RUNNER_TEMP}/phase6-replay-resume.json" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST"
+          .tools/uv-0.11.29/bin/uv run --locked python -m skillscout.cli run-acceptance --action replay --manifest "$PHASE6_MANIFEST" --acceptance-run-id "$PHASE6_ACCEPTANCE_RUN_ID" --resume-proof "${RUNNER_TEMP}/phase6-replay-resume.json" --state-commit-sha "$PHASE6_STATE_COMMIT_SHA" --state-root-digest "$PHASE6_STATE_ROOT_DIGEST" --authority-state-root ".phase6-authority-state" --authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA" --authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST"
 
   human_attestation:
     if: ${{ inputs.phase6_action == 'record-human-review' }}
