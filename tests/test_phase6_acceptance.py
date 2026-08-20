@@ -1566,6 +1566,87 @@ def test_live_authority_config_accepts_formatted_query_json_without_secret_looku
     assert config.preparation.query_set_digest == config.preparation.query_set.query_set_digest
 
 
+def test_live_execution_source_admission_accepts_formatted_digest_bound_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Execution accepts formatted query JSON while retaining its typed digest binding."""
+
+    import hashlib
+
+    import skillscout.bootstrap as bootstrap
+    from skillscout.application import acceptance as acceptance_application
+    from skillscout.domain.canonical import canonical_json_bytes
+    from skillscout.domain.discovery import DiscoveryQuerySetV1
+
+    snapshot, authority, observation = _fresh_live_authority_admission_inputs()
+    admission = acceptance_application.re_admit_live_execution_v2(
+        snapshot=snapshot,
+        authority_digest=authority.authority_digest,
+        state_observation=observation,
+    )
+    query_bytes = (ROOT / "config/discovery-queries-v1.json").read_bytes()
+    query_set = DiscoveryQuerySetV1.model_validate_json(query_bytes, strict=True)
+    workflow_bytes = b"phase6-workflow\n"
+    authority = admission.authority.model_copy(
+        update={
+            "acceptance_workflow_sha256": (
+                "sha256:" + hashlib.sha256(workflow_bytes).hexdigest()
+            ),
+            "query_set_digest": query_set.query_set_digest,
+        }
+    )
+    admission = acceptance_application.LiveExecutionAdmissionV2(
+        authority=authority,
+        lock=admission.lock,
+        nomination=admission.nomination,
+        state_observation=admission.state_observation,
+    )
+    manifest_bytes = canonical_json_bytes(admission.lock.selection_manifest)
+
+    def read_source(
+        _root: Path,
+        *,
+        source_commit_sha: str,
+        relative_path: Path,
+        max_bytes: int,
+    ) -> bytes:
+        assert source_commit_sha == authority.source_commit_sha
+        payloads = {
+            Path("config/acceptance/phase6/benchmark-manifest.json"): manifest_bytes,
+            Path(".github/workflows/phase6-acceptance.yml"): workflow_bytes,
+            Path("config/discovery-queries-v1.json"): query_bytes,
+        }
+        payload = payloads[relative_path]
+        assert len(payload) <= max_bytes
+        return payload
+
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        bootstrap,
+        "_checked_out_repository_commit",
+        lambda _root: authority.source_commit_sha,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_read_exact_checked_out_source_file",
+        read_source,
+    )
+
+    bootstrap._verify_live_execution_admission_source(admission)
+
+    wrong_digest_authority = authority.model_copy(
+        update={"query_set_digest": "sha256:" + ("f" * 64)}
+    )
+    wrong_digest_admission = acceptance_application.LiveExecutionAdmissionV2(
+        authority=wrong_digest_authority,
+        lock=admission.lock,
+        nomination=admission.nomination,
+        state_observation=admission.state_observation,
+    )
+    with pytest.raises(ValueError, match="live execution source admission rejected"):
+        bootstrap._verify_live_execution_admission_source(wrong_digest_admission)
+
+
 def test_live_authority_recording_rejects_before_opening_state_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
