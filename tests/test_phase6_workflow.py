@@ -1331,6 +1331,31 @@ def test_replay_reconstructs_live_authority_before_state_write_token() -> None:
     assert "SKILLSCOUT_STATE_GITHUB_TOKEN: ${{ github.token }}" in execution
 
 
+@pytest.mark.parametrize("job_name", ("live_benchmark", "live_replay"))
+def test_live_execution_passes_complete_authority_state_to_run_acceptance(
+    job_name: str,
+) -> None:
+    """The final CLI command must retain the immutable authority checkout."""
+
+    job = _job(_source(required=False), job_name)
+    execution_step = {
+        "live_benchmark": "      - name: Execute the approved live benchmark",
+        "live_replay": "      - name: Execute the approved zero-effect replay",
+    }[job_name]
+    _, separator, execution = job.partition(execution_step)
+    commands = [line for line in execution.splitlines() if "run-acceptance" in line]
+
+    assert separator and execution
+    assert len(commands) == 1
+    command = commands[0]
+    assert '--authority-state-root ".phase6-authority-state"' in command
+    assert '--authority-state-commit-sha "$PHASE6_AUTHORITY_STATE_COMMIT_SHA"' in command
+    assert (
+        '--authority-state-root-digest "$PHASE6_AUTHORITY_STATE_ROOT_DIGEST"'
+        in command
+    )
+
+
 def test_live_resume_uses_no_mutable_commit_or_root_variables() -> None:
     source = _source(required=False)
     preflight = _job(source, "live_authority_preflight")
