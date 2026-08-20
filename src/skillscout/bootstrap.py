@@ -2240,10 +2240,6 @@ def _verify_live_execution_admission_source(admission: object) -> None:
             canonical_json_bytes(manifest),
             canonical_json_bytes(manifest) + b"\n",
         }
-        or query_bytes not in {
-            canonical_json_bytes(query_set),
-            canonical_json_bytes(query_set) + b"\n",
-        }
         or manifest != admission.lock.selection_manifest
         or authority.acceptance_workflow_sha256
         != "sha256:" + hashlib.sha256(workflow_bytes).hexdigest()
