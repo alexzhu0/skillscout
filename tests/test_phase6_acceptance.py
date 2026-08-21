@@ -1927,6 +1927,137 @@ def test_fixed_runner_rejects_legacy_schema_without_migration(
     assert closed == [True]
 
 
+def test_fixed_runner_resolves_nomination_from_rebind_before_live_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rebound campaign reaches its locked live-read boundary without a direct nomination."""
+
+    import skillscout.adapters.github as github_adapter
+    import skillscout.adapters.operations_state as operations_state
+    import skillscout.application.acceptance as acceptance
+    import skillscout.bootstrap as bootstrap
+    from skillscout.application.acceptance import LiveRepositoryAuthority
+    from skillscout.domain.acceptance import LiveAcceptanceAuthorityV2
+
+    nomination, manifest, source_snapshot = _fresh_lock_inputs()
+    receipt = _fresh_lock_receipt()
+    source_lock = acceptance.bind_fresh_benchmark_lock(
+        snapshot=source_snapshot,
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="b" * 40,
+        parent_state_root_digest="sha256:" + ("c" * 64),
+        expected_nomination_authority_digest=nomination.search_run_authority_digest,
+        approval_receipt=receipt,
+    )
+    source_snapshot = operations_state.AcceptanceRunSnapshot(
+        acceptance_run_id=source_snapshot.acceptance_run_id,
+        facts=(
+            *source_snapshot.facts,
+            operations_state.AcceptanceFactRecord(
+                acceptance_run_id=source_snapshot.acceptance_run_id,
+                kind="acceptance_benchmark_lock",
+                fact_digest=source_lock.lock_digest,
+                fact=source_lock,
+            ),
+        ),
+    )
+    target_run_id = "fresh-campaign-rebound-runner"
+    rebound = acceptance.rebind_benchmark_lock_v2(
+        source_snapshot=source_snapshot,
+        target_acceptance_run_id=target_run_id,
+        selection_manifest=manifest,
+        state_repository_id=9001,
+        state_repository_full_name="octo-org/skillscout-state",
+        parent_state_commit_sha="d" * 40,
+        parent_state_root_digest="sha256:" + ("e" * 64),
+        approval_receipt=receipt,
+    )
+    direct_snapshot, direct_authority, _observation = _fresh_live_authority_admission_inputs()
+    del direct_snapshot
+    authority_values = direct_authority.model_dump(
+        mode="python",
+        exclude={"authority_digest"},
+    )
+    authority_values.update(
+        {
+            "benchmark_lock_digest": rebound.lock.lock_digest,
+            "benchmark_lock": rebound.lock,
+            "parent_state_commit_sha": rebound.lock.parent_state_commit_sha,
+            "parent_state_root_digest": rebound.lock.parent_state_root_digest,
+            "source_state_binding_digest": rebound.lock.source_state_binding_digest,
+        }
+    )
+    live_authority = LiveAcceptanceAuthorityV2(**authority_values)
+    operations = operations_state.OperationsStateStore(tmp_path / "operations.sqlite3")
+    operations.record_acceptance_fact(
+        source_snapshot.acceptance_run_id,
+        "acceptance_nomination",
+        nomination,
+    )
+    operations.record_acceptance_fact(
+        source_snapshot.acceptance_run_id,
+        "acceptance_benchmark_lock",
+        source_lock,
+    )
+    operations.record_benchmark_rebind_pair(
+        target_run_id,
+        rebound.reference,
+        rebound.lock,
+    )
+    operations.record_acceptance_fact(
+        target_run_id,
+        "acceptance_live_authority",
+        live_authority,
+    )
+
+    class ReachedLiveRead(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        github_adapter,
+        "GitHubReadClient",
+        lambda **_kwargs: (_ for _ in ()).throw(ReachedLiveRead),
+    )
+
+    class LocalBarrier:
+        def sync_discovery(self, *, observed_head: str, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                commit_sha="f" * 40,
+                root_digest="sha256:" + ("1" * 64),
+                previous_head=observed_head,
+                status="verified",
+            )
+
+    runner = object.__new__(bootstrap._FixedRepositoryAcceptanceRunner)
+    runner._operations = operations
+    runner._acceptance_run_id = target_run_id
+    runner._config = SimpleNamespace(manifest=manifest)
+    runner._live_authority = live_authority
+    runner._barrier = LocalBarrier()
+    runner._state_head = live_authority.state_commit_sha
+    runner._state_root = live_authority.state_root_digest
+    runner._source = {"SKILLSCOUT_SOURCE_GITHUB_TOKEN": "bounded-test-token"}
+    entry = rebound.lock.entries[0]
+    repository_authority = LiveRepositoryAuthority(
+        repository_full_name=entry.repository_full_name,
+        repository_id=entry.repository_id,
+        exact_commit_sha=entry.exact_commit_sha,
+        license_spdx=entry.license_spdx,
+        nomination_entry_digest=entry.nomination_entry_digest,
+        entry_digest=entry.entry_digest,
+        selection_evidence_digests=entry.selection_evidence_digests,
+    )
+
+    try:
+        with pytest.raises(ReachedLiveRead):
+            runner.run(repository_authority)
+    finally:
+        operations.close()
+
+
 def test_live_authority_verifier_requires_approved_state_fact_and_trusted_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

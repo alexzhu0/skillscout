@@ -4938,15 +4938,16 @@ class _FixedRepositoryAcceptanceRunner:
     def run(self, authority: object) -> object:
         from skillscout.adapters.github import GitHubReadClient
         from skillscout.application.acceptance import (
+            AcceptanceApplicationError,
             FixedAcceptanceCandidate,
             LiveRepositoryAuthority,
             LiveScenarioObservation,
+            re_admit_fresh_benchmark_lock_v2,
         )
         from skillscout.domain.acceptance import (
             AcceptanceBudgetReservationV1,
             AcceptanceFixedCandidateAdmissionV1,
             AcceptanceSemanticTelemetryV1,
-            NominationSetV1,
         )
         from skillscout.domain.canonical import sha256_digest
         from skillscout.domain.discovery import SearchRepositoryObservationV1
@@ -4954,19 +4955,19 @@ class _FixedRepositoryAcceptanceRunner:
         if type(authority) is not LiveRepositoryAuthority:
             raise ValueError("locked repository authority rejected")
         snapshot = self._operations.acceptance_snapshot(self._acceptance_run_id)
-        nominations = tuple(
-            record.fact
-            for record in snapshot.facts
-            if record.kind == "acceptance_nomination"
-            and record.fact_digest == self._config.manifest.nomination_set_digest
-            and isinstance(record.fact, NominationSetV1)
-        )
-        if len(nominations) != 1:
+        try:
+            nomination = re_admit_fresh_benchmark_lock_v2(
+                snapshot=snapshot,
+                lock_digest=self._live_authority.benchmark_lock_digest,
+            ).nomination
+        except AcceptanceApplicationError:
+            raise ValueError("locked repository nomination missing") from None
+        if nomination.nomination_set_digest != self._config.manifest.nomination_set_digest:
             raise ValueError("locked repository nomination missing")
         nominated = tuple(
             entry
             for entry in (
-                nominations[0].search_derived_entries + nominations[0].user_nominated_entries
+                nomination.search_derived_entries + nomination.user_nominated_entries
             )
             if entry.entry_digest == authority.nomination_entry_digest
         )
