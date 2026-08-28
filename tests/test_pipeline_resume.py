@@ -2031,7 +2031,7 @@ def test_concurrent_publication_write_fails_closed_until_lock_holder_exits(
 
 class _SemanticOwner:
     def __init__(self) -> None:
-        self.records: list[tuple[str, int, str, str, int, str, str]] = []
+        self.records: list[tuple[str, int, str, str, int, str, str, str | None]] = []
 
     def record_semantic_attempt(
         self,
@@ -2043,6 +2043,7 @@ class _SemanticOwner:
         attempt_no: int,
         status: str,
         recorded_at: str,
+        provider_disposition: str | None = None,
     ):
         key = (
             run_id,
@@ -2057,7 +2058,7 @@ class _SemanticOwner:
                 recorded_at = existing[6]
             else:
                 self.records.remove(existing)
-        value = (*key, status, recorded_at)
+        value = (*key, status, recorded_at, provider_disposition)
         if value not in self.records:
             self.records.append(value)
         return type("Record", (), {"recorded_at": recorded_at})()
@@ -2446,3 +2447,35 @@ def test_extractor_post_result_barrier_failure_reconfirms_without_replay(
         "result_outcome_unknown",
         "result_outcome_unknown",
     ]
+
+
+def test_generic_permanent_extractor_failure_cannot_mint_provider_rejection_on_restart(
+    tmp_path: Path,
+) -> None:
+    class GenericPermanentProcessor(_SemanticPhaseTwoProcessor):
+        def process(self, stage_input: StageInput, context) -> StageOutcome:
+            if stage_input.stage is PipelineStage.EXTRACTOR:
+                self.extractor_requests += 1
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            return super().process(stage_input, context)
+
+    processor = GenericPermanentProcessor([])
+    barrier = _RecordingBarrier()
+    store = SQLiteStateStore(tmp_path / "generic-permanent.sqlite3")
+    try:
+        with pytest.raises(SafeFailure) as first:
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "generic-permanent-first")
+        assert first.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+        with pytest.raises(SafeFailure) as resumed:
+            PipelineRunner(
+                store, processor, semantic_durability=_semantic_guard(barrier)
+            ).run(_repository_subject(), tmp_path / "generic-permanent-second")
+        assert resumed.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    finally:
+        store.close()
+
+    assert processor.extractor_requests == 1
+    assert [item.transition for item in barrier.transitions] == ["attempt_started"]

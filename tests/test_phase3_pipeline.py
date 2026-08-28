@@ -3521,7 +3521,9 @@ def test_resume_budgets_429_500_one_request_per_runner_attempt(
 
 class _PhaseThreeSemanticOwner:
     def __init__(self) -> None:
-        self.records: list[tuple[str, int, str, str, int, str, str]] = []
+        self.records: list[
+            tuple[str, int, str, str, int, str, str | None, str]
+        ] = []
 
     def record_semantic_attempt(
         self,
@@ -3533,6 +3535,7 @@ class _PhaseThreeSemanticOwner:
         attempt_no: int,
         status: str,
         recorded_at: str,
+        provider_disposition: str | None = None,
     ):
         key = (
             run_id,
@@ -3543,11 +3546,11 @@ class _PhaseThreeSemanticOwner:
         )
         existing = next((item for item in self.records if item[:5] == key), None)
         if existing is not None:
-            if existing[5] == status:
-                recorded_at = existing[6]
+            if existing[5:7] == (status, provider_disposition):
+                recorded_at = existing[7]
             else:
                 self.records.remove(existing)
-        value = (*key, status, recorded_at)
+        value = (*key, status, provider_disposition, recorded_at)
         if value not in self.records:
             self.records.append(value)
         return SimpleNamespace(recorded_at=recorded_at)
@@ -3593,10 +3596,11 @@ def _phase_three_guard(
     barrier: _PhaseThreeBarrier,
     *,
     provider: str = "deepseek",
+    owner: _PhaseThreeSemanticOwner | None = None,
 ) -> SemanticDurabilityGuard:
     return SemanticDurabilityGuard(
         barrier=barrier,
-        operations_store=_PhaseThreeSemanticOwner(),
+        operations_store=owner or _PhaseThreeSemanticOwner(),
         publication_store=_PhaseThreeStaticOwner(),
         repository_id=123,
         workflow_authority_digest=_digest("2"),
@@ -3652,6 +3656,55 @@ def test_generator_confirmed_retry_crosses_barriers_before_second_request(
         "attempt_started",
         "result_decided",
     ]
+
+
+def test_generator_permanent_provider_rejection_records_closed_disposition(
+    tmp_path: Path,
+) -> None:
+    """A generic permanent stage failure cannot impersonate a provider rejection."""
+
+    calls: list[str] = []
+
+    class PermanentGenerator(_CascadeGenerator):
+        def generate(self, *, request):
+            del request
+            self.calls.append("generator")
+            raise SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.PERMANENT,
+                code="semantic_request_rejected",
+            )
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    barrier = _PhaseThreeBarrier()
+    owner = _PhaseThreeSemanticOwner()
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=PhaseThreeDependencies(
+            completed_projector_factory=lambda: Miss(),
+            mutable_state_factory=lambda: SQLiteStateStore(
+                tmp_path / "generator-permanent-provider.sqlite3"
+            ),
+            generator_factory=lambda: PermanentGenerator("unused", calls),
+            validator_factory=lambda: pytest.fail("validator must not run"),
+            reviewer_factory=lambda: pytest.fail("reviewer must not run"),
+            artifact_projector_factory=lambda: pytest.fail("output must not run"),
+            run_id_factory=lambda: "generator-permanent-provider",
+            semantic_durability=_phase_three_guard(barrier, owner=owner),
+        ),
+    )
+
+    with pytest.raises(SafeFailure) as rejected:
+        application.run(_write_composition_descriptor(tmp_path))
+
+    assert rejected.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert calls == ["generator"]
+    assert tuple((item[5], item[6]) for item in owner.records) == (
+        ("decided", "permanent_rejection"),
+    )
 
 
 @pytest.mark.parametrize("provider", ("openai", "deepseek"))

@@ -2795,6 +2795,75 @@ def test_semantic_attempt_identity_isolated_per_workflow_authority(
         assert first.attempt_digest != second.attempt_digest
 
 
+def test_permanent_provider_disposition_round_trips_and_rejects_fact_tampering(
+    tmp_path: Path,
+) -> None:
+    module = _operations_module()
+    source = tmp_path / "operations-source.sqlite3"
+    with module.OperationsStateStore(source) as store:
+        store.seed_test_reservations(
+            run_id="discovery-permanent-provider",
+            repository_id=910001,
+        )
+        store.record_semantic_attempt(
+            run_id="discovery-permanent-provider",
+            repository_id=910001,
+            stage="extractor",
+            attempt_no=1,
+            status="started",
+            recorded_at="2026-07-27T12:00:00.000000Z",
+        )
+        store.record_semantic_attempt(
+            run_id="discovery-permanent-provider",
+            repository_id=910001,
+            stage="extractor",
+            attempt_no=1,
+            status="decided",
+            recorded_at="2026-07-27T12:00:01.000000Z",
+            provider_disposition="permanent_rejection",
+        )
+        exported = store.export_owned_state()
+
+    semantic_fact = next(fact for fact in exported.facts if fact.kind == "semantic_attempt")
+    semantic_payload = json.loads(semantic_fact.payload_json)
+    assert semantic_payload["value"]["provider_disposition"] == "permanent_rejection"
+
+    rebuilt = tmp_path / "operations-rebuilt.sqlite3"
+    module.OperationsStateStore.rebuild_owned_state(rebuilt, exported)
+    with module.OperationsStateStore(rebuilt) as store:
+        restored = store.record_semantic_attempt(
+            run_id="discovery-permanent-provider",
+            repository_id=910001,
+            stage="extractor",
+            attempt_no=1,
+            status="decided",
+            recorded_at="2026-07-27T12:00:01.000000Z",
+            provider_disposition="permanent_rejection",
+        )
+    assert restored.provider_disposition == "permanent_rejection"
+    assert restored.attempt_digest == semantic_payload["value"]["attempt_digest"]
+
+    semantic_payload["value"].pop("provider_disposition")
+    tampered_fact = semantic_fact.model_copy(
+        update={
+            "payload_json": json.dumps(
+                semantic_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        }
+    )
+    tampered_facts = tuple(
+        tampered_fact if fact is semantic_fact else fact for fact in exported.facts
+    )
+    tampered_export = exported.model_copy(update={"facts": tampered_facts})
+    with pytest.raises(module.OperationsIntegrityError):
+        module.OperationsStateStore.rebuild_owned_state(
+            tmp_path / "operations-tampered.sqlite3",
+            tampered_export,
+        )
+
+
 def test_workflow_terminals_and_run_snapshot_preserve_exact_eligible_set(
     tmp_path: Path,
 ) -> None:
