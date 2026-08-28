@@ -366,6 +366,7 @@ class SemanticDurabilityGuard:
             "confirmed_retryable",
             "semantic_outcome_unknown",
         ],
+        provider_disposition: Literal["permanent_rejection"] | None = None,
     ) -> bool:
         """Report an exact durable attempt without creating another transition."""
 
@@ -386,7 +387,11 @@ class SemanticDurabilityGuard:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
         if len(matches) > 1:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-        return len(matches) == 1 and matches[0].status == status
+        return (
+            len(matches) == 1
+            and matches[0].status == status
+            and getattr(matches[0], "provider_disposition", None) == provider_disposition
+        )
 
     def confirm(
         self,
@@ -402,6 +407,7 @@ class SemanticDurabilityGuard:
             "semantic_outcome_unknown",
         ],
         recorded_at: str,
+        provider_disposition: Literal["permanent_rejection"] | None = None,
     ) -> DurabilityReceipt:
         """Persist one owner fact and return only an exact barrier receipt."""
 
@@ -422,15 +428,18 @@ class SemanticDurabilityGuard:
                     raise TypeError("invalid semantic request reservation receipt")
                 self._expected_prior_state_head = request_receipt.verified_state_head
                 self._expected_prior_root_digest = request_receipt.state_root_digest
-            record = self._operations_store.record_semantic_attempt(
-                run_id=operations_run_id,
-                repository_id=self._repository_id,
-                workflow_authority_digest=self._workflow_authority_digest,
-                stage=stage,
-                attempt_no=attempt_no,
-                status=status,
-                recorded_at=recorded_at,
-            )
+            record_arguments: dict[str, object] = {
+                "run_id": operations_run_id,
+                "repository_id": self._repository_id,
+                "workflow_authority_digest": self._workflow_authority_digest,
+                "stage": stage,
+                "attempt_no": attempt_no,
+                "status": status,
+                "recorded_at": recorded_at,
+            }
+            if provider_disposition is not None:
+                record_arguments["provider_disposition"] = provider_disposition
+            record = self._operations_store.record_semantic_attempt(**record_arguments)
             prepare_transition = getattr(
                 self._barrier,
                 "prepare_acceptance_transition",
@@ -681,18 +690,6 @@ class PipelineRunner:
                                 disposition=(SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
                                 code="semantic_provider_outcome_unknown",
                             )
-                        elif prior_error == ErrorCode.STAGE_PERMANENT_FAILURE.value:
-                            if not self.semantic_durability.already_durable(
-                                run_id=run_id,
-                                stage="extractor",
-                                attempt_no=prior_attempt_no,
-                                status="decided",
-                            ):
-                                self._confirm_semantic(
-                                    run_id=run_id,
-                                    attempt_no=prior_attempt_no,
-                                    status="decided",
-                                )
             self.state.abandon_stale_running(run_id, stage, self.clock.now())
             if self.state.has_permanent_failure(reusable_digest):
                 failure = SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
@@ -772,6 +769,9 @@ class PipelineRunner:
                 else:
                     closed = SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
                     status = "decided"
+                    provider_disposition = "permanent_rejection"
+                if failure.disposition is not SemanticTransportDisposition.PERMANENT:
+                    provider_disposition = None
                 self.state.fail_attempt(
                     attempt_id,
                     run_id,
@@ -786,6 +786,7 @@ class PipelineRunner:
                         run_id=run_id,
                         attempt_no=attempt_no,
                         status=status,
+                        provider_disposition=provider_disposition,
                     )
                 if failure.disposition is SemanticTransportDisposition.CONFIRMED_RETRYABLE:
                     raise closed from None
@@ -973,6 +974,7 @@ class PipelineRunner:
             "confirmed_retryable",
             "semantic_outcome_unknown",
         ],
+        provider_disposition: Literal["permanent_rejection"] | None = None,
     ) -> DurabilityReceipt:
         guard = self.semantic_durability
         if guard is None:
@@ -984,6 +986,7 @@ class PipelineRunner:
             attempt_no=attempt_no,
             status=status,
             recorded_at=self.clock.now(),
+            provider_disposition=provider_disposition,
         )
 
     def _close_started_attempt(

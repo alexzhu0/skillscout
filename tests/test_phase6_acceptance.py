@@ -7017,9 +7017,52 @@ def test_fixed_runner_never_replays_unknown_or_completed_phase2(
     assert calls == 1
 
 
+def test_permanent_terminal_does_not_excuse_missing_success_telemetry() -> None:
+    """Only an explicitly identified provider rejection may omit success telemetry."""
+
+    import skillscout.bootstrap as bootstrap
+
+    authority_digest = "sha256:" + ("a" * 64)
+    execution = SimpleNamespace(
+        terminal=SimpleNamespace(outcome="permanent_failure"),
+        semantic_telemetry=(),
+    )
+    semantic_attempts = (
+        SimpleNamespace(
+            stage="extractor",
+            workflow_authority_digest=authority_digest,
+            attempt_no=1,
+            status="decided",
+            provider_disposition=None,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="semantic provider telemetry is incomplete"):
+        bootstrap._validate_acceptance_semantic_telemetry_linkage(
+            execution,
+            semantic_attempts,
+        )
+
+
+@pytest.mark.parametrize(
+    (
+        "first_extractor_response",
+        "expected_first_outcome",
+        "expected_extractor_constructions",
+        "expected_retryable_attempts",
+    ),
+    (
+        ("retryable", "eligible_local_candidate", 6, 1),
+        ("permanent", "harness_failed", 1, 0),
+    ),
+)
 def test_production_five_repo_benchmark_restores_and_replays_without_live_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    first_extractor_response: str,
+    expected_first_outcome: str,
+    expected_extractor_constructions: int,
+    expected_retryable_attempts: int,
 ) -> None:
     """Run five real local Phase 2/3 chains, restore the bundle, then replay."""
 
@@ -7470,8 +7513,25 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         nonlocal extractor_constructions
         extractor_constructions += 1
         if extractor_constructions == 1:
+            first_response = (
+                recorded_openai_fixture("openai_429")
+                if first_extractor_response == "retryable"
+                else RecordedResponse(
+                    status=400,
+                    headers={"content-type": "application/json"},
+                    body=json.dumps(
+                        {
+                            "error": {
+                                "message": "recorded",
+                                "type": "invalid_request_error",
+                                "code": "recorded",
+                            }
+                        }
+                    ).encode(),
+                )
+            )
             recording = RecordedTransport(
-                {("POST", "/chat/completions"): recorded_openai_fixture("openai_429")}
+                {("POST", "/chat/completions"): first_response}
             )
             semantic_recordings.append(recording)
             return original_extract(
@@ -7603,29 +7663,62 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
             acceptance_run_id=run_id,
         )
 
+    dependencies = acceptance_application.LockedCampaignDependencies(
+        discovery_factory=discovery_factory,
+        operations_store_factory=lambda: operations_state.OperationsStateStore(operations_path),
+        state_sync=cas.sync_discovery,
+    )
+    if first_extractor_response == "permanent":
+        with pytest.raises(
+            acceptance_application.AcceptanceApplicationError,
+            match="harness_failed",
+        ):
+            acceptance_application.run_locked_benchmark(
+                dependencies,
+                manifest=manifest,
+                acceptance_run_id=run_id,
+                observed_head=authority.state_commit_sha,
+                prior_root_digest=authority.state_root_digest,
+                recorded_at=timestamp,
+            )
+        with operations_state.OperationsStateStore(operations_path) as operations:
+            acceptance_snapshot = operations.acceptance_snapshot(run_id)
+            semantic_snapshot = operations.snapshot_run(f"{run_id}-semantic")
+        scenarios = tuple(
+            record.fact
+            for record in acceptance_snapshot.facts
+            if record.kind == "acceptance_scenario"
+        )
+        assert len(scenarios) == 1
+        assert scenarios[0].outcome == expected_first_outcome
+        assert scenarios[0].reason_code == "pipeline_permanent_failure"
+        assert scenarios[0].semantic_telemetry == ()
+        assert scenarios[0].semantic_request_count == 1
+        assert len(scenarios[0].semantic_attempt_digests) == 1
+        assert len(semantic_snapshot.semantic_attempts) == 1
+        assert semantic_snapshot.semantic_attempts[0].provider_disposition == (
+            "permanent_rejection"
+        )
+        assert extractor_constructions == expected_extractor_constructions
+        return
+
     benchmark = acceptance_application.run_locked_benchmark(
-        acceptance_application.LockedCampaignDependencies(
-            discovery_factory=discovery_factory,
-            operations_store_factory=lambda: operations_state.OperationsStateStore(operations_path),
-            state_sync=cas.sync_discovery,
-        ),
+        dependencies,
         manifest=manifest,
         acceptance_run_id=run_id,
         observed_head=authority.state_commit_sha,
         prior_root_digest=authority.state_root_digest,
         recorded_at=timestamp,
     )
-    entry = next(
-        item for item in manifest.entries if item.repository_full_name == "example/approved-repo"
-    )
+    entry = manifest.entries[0]
     observation = next(
         item for item in benchmark.scenario_results if item.repository_id == entry.repository_id
     )
 
-    assert observation.outcome == "eligible_local_candidate"
+    assert observation.outcome == expected_first_outcome
     assert observation.live_acceptance_authority_digest == authority.authority_digest
     assert len(benchmark.scenario_results) == 5
-    assert extractor_constructions == 6
+    assert extractor_constructions == expected_extractor_constructions
     with operations_state.OperationsStateStore(operations_path) as operations:
         snapshot = operations.snapshot_run(f"{run_id}-semantic")
         acceptance_snapshot = operations.acceptance_snapshot(run_id)
@@ -7641,7 +7734,10 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
     extractor_attempts = tuple(
         item for item in snapshot.semantic_attempts if item.stage == "extractor"
     )
-    assert sum(item.status == "confirmed_retryable" for item in extractor_attempts) == 1
+    assert (
+        sum(item.status == "confirmed_retryable" for item in extractor_attempts)
+        == expected_retryable_attempts
+    )
     assert sum(item.status == "decided" for item in extractor_attempts) == 5
     assert {item.repository_id for item in extractor_attempts} == {
         item.repository_id for item in manifest.entries

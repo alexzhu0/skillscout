@@ -1209,6 +1209,7 @@ class PhaseThreeRunner:
             outcome_code = failure.code.value
             attempt_status = "failed"
             durability_status = None
+            provider_disposition = None
             if semantic_failure is not None:
                 if (
                     semantic_failure.disposition
@@ -1225,6 +1226,7 @@ class PhaseThreeRunner:
                     durability_status = "semantic_outcome_unknown"
                 else:
                     durability_status = "decided"
+                    provider_disposition = "permanent_rejection"
             failure_payload = {
                 "attempt_no": attempt,
                 "error_code": outcome_code,
@@ -1244,6 +1246,7 @@ class PhaseThreeRunner:
                     stage=PhaseThreeStageV1.GENERATOR,
                     attempt_no=attempt,
                     status=durability_status,
+                    provider_disposition=provider_disposition,
                 )
             if (
                 semantic_failure is not None
@@ -1382,6 +1385,7 @@ class PhaseThreeRunner:
             outcome_code = failure.code.value
             attempt_status = "failed"
             durability_status = None
+            provider_disposition = None
             if semantic_failure is not None:
                 if (
                     semantic_failure.disposition
@@ -1398,6 +1402,7 @@ class PhaseThreeRunner:
                     durability_status = "semantic_outcome_unknown"
                 else:
                     durability_status = "decided"
+                    provider_disposition = "permanent_rejection"
             failure_payload = {
                 "attempt_no": attempt,
                 "error_code": outcome_code,
@@ -1417,6 +1422,7 @@ class PhaseThreeRunner:
                     stage=PhaseThreeStageV1.REVIEWER,
                     attempt_no=attempt,
                     status=durability_status,
+                    provider_disposition=provider_disposition,
                 )
             if (
                 semantic_failure is not None
@@ -1443,6 +1449,7 @@ class PhaseThreeRunner:
         stage: PhaseThreeStageV1,
         attempt_no: int,
         status: str,
+        provider_disposition: str | None = None,
     ) -> None:
         guard = self.semantic_durability
         if guard is None:
@@ -1453,6 +1460,7 @@ class PhaseThreeRunner:
             stage=stage.value,  # type: ignore[arg-type]
             attempt_no=attempt_no,
             status=status,  # type: ignore[arg-type]
+            provider_disposition=provider_disposition,  # type: ignore[arg-type]
             recorded_at=(
                 datetime.now(UTC)
                 .isoformat(timespec="microseconds")

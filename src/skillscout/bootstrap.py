@@ -4737,6 +4737,62 @@ def _acceptance_reason_code(outcome: str) -> str:
         raise ValueError("unsupported normalized acceptance outcome") from None
 
 
+def _validate_acceptance_semantic_telemetry_linkage(
+    execution: object,
+    semantic_attempts: tuple[object, ...],
+) -> None:
+    telemetry_keys = {
+        (
+            item.stage,
+            item.workflow_authority_digest,
+            item.attempt_no,
+        )
+        for item in execution.semantic_telemetry
+    }
+    attempt_keys = {
+        (
+            item.stage,
+            item.workflow_authority_digest,
+            item.attempt_no,
+        )
+        for item in semantic_attempts
+    }
+    missing_decided_telemetry = {
+        (
+            attempt.stage,
+            attempt.workflow_authority_digest,
+            attempt.attempt_no,
+        )
+        for attempt in semantic_attempts
+        if attempt.status == "decided"
+        and (
+            attempt.stage,
+            attempt.workflow_authority_digest,
+            attempt.attempt_no,
+        )
+        not in telemetry_keys
+    }
+    permanent_rejection_keys = {
+        (
+            attempt.stage,
+            attempt.workflow_authority_digest,
+            attempt.attempt_no,
+        )
+        for attempt in semantic_attempts
+        if getattr(attempt, "provider_disposition", None) == "permanent_rejection"
+    }
+    if (
+        not telemetry_keys.issubset(attempt_keys)
+        or not permanent_rejection_keys.issubset(attempt_keys)
+        or missing_decided_telemetry != permanent_rejection_keys
+        or (
+            permanent_rejection_keys
+            and execution.terminal.outcome != "permanent_failure"
+        )
+    ):
+        raise ValueError("semantic provider telemetry is incomplete")
+
+
 def _phase3_safe_failure_outcome(error_code: object) -> tuple[str, str]:
     """Normalize Phase 3 system failures without converting exhaustion to harness."""
 
@@ -5258,33 +5314,10 @@ class _FixedRepositoryAcceptanceRunner:
             and record.fact.repository_id == authority.repository_id
             and record.fact.fixed_candidate_admission_digest == admission.admission_digest
         )
-        telemetry_keys = {
-            (
-                item.stage,
-                item.workflow_authority_digest,
-                item.attempt_no,
-            )
-            for item in execution.semantic_telemetry
-        }
-        attempt_keys = {
-            (
-                item.stage,
-                item.workflow_authority_digest,
-                item.attempt_no,
-            )
-            for item in semantic_attempts
-        }
-        if not telemetry_keys.issubset(attempt_keys) or any(
-            attempt.status == "decided"
-            and (
-                attempt.stage,
-                attempt.workflow_authority_digest,
-                attempt.attempt_no,
-            )
-            not in telemetry_keys
-            for attempt in semantic_attempts
-        ):
-            raise ValueError("semantic provider telemetry is incomplete")
+        _validate_acceptance_semantic_telemetry_linkage(
+            execution,
+            semantic_attempts,
+        )
         semantic_telemetry = tuple(
             AcceptanceSemanticTelemetryV1(
                 schema_version="acceptance-semantic-telemetry-v1",

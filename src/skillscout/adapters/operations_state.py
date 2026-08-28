@@ -139,6 +139,7 @@ class SemanticAttemptRecord:
         "confirmed_retryable",
         "semantic_outcome_unknown",
     ]
+    provider_disposition: Literal["permanent_rejection"] | None
     recorded_at: str
     attempt_digest: str
 
@@ -2500,6 +2501,14 @@ class OperationsStateStore:
                 "status": row["status"],
                 "recorded_at": raw.get("recorded_at"),
             }
+            provider_disposition = raw.get("provider_disposition")
+            if provider_disposition is not None:
+                if (
+                    provider_disposition != "permanent_rejection"
+                    or row["status"] != "decided"
+                ):
+                    raise OperationsIntegrityError("invalid semantic attempt disposition")
+                expected_fields["provider_disposition"] = provider_disposition
             digest = sha256_digest(expected_fields)
             expected = {**expected_fields, "attempt_digest": digest}
             if raw != expected or row["attempt_digest"] != digest:
@@ -3484,6 +3493,7 @@ class OperationsStateStore:
                         stage=str(row["stage"]),  # type: ignore[arg-type]
                         attempt_no=int(row["attempt_no"]),
                         status=str(row["status"]),  # type: ignore[arg-type]
+                        provider_disposition=raw.get("provider_disposition"),  # type: ignore[arg-type]
                         recorded_at=str(raw["recorded_at"]),
                         attempt_digest=str(row["attempt_digest"]),
                     )
@@ -3918,6 +3928,7 @@ class OperationsStateStore:
             "semantic_outcome_unknown",
         ],
         recorded_at: str,
+        provider_disposition: Literal["permanent_rejection"] | None = None,
     ) -> SemanticAttemptRecord:
         if (
             stage not in {"extractor", "generator", "reviewer"}
@@ -3930,6 +3941,13 @@ class OperationsStateStore:
             }
             or type(attempt_no) is not int
             or not 1 <= attempt_no <= 16
+            or (
+                provider_disposition is not None
+                and not (
+                    provider_disposition == "permanent_rejection"
+                    and status == "decided"
+                )
+            )
         ):
             raise ValueError("invalid semantic attempt transition")
 
@@ -3977,6 +3995,8 @@ class OperationsStateStore:
             elif existing["status"] == status:
                 raw = _decoded_json(existing["attempt_json"])
                 assert isinstance(raw, dict)
+                if raw.get("provider_disposition") != provider_disposition:
+                    raise OperationsIntegrityError("semantic attempt disposition conflict")
                 return SemanticAttemptRecord(
                     run_id=run_id,
                     repository_id=repository_id,
@@ -3984,6 +4004,7 @@ class OperationsStateStore:
                     stage=stage,
                     attempt_no=attempt_no,
                     status=status,
+                    provider_disposition=provider_disposition,
                     recorded_at=str(raw["recorded_at"]),
                     attempt_digest=str(existing["attempt_digest"]),
                 )
@@ -4000,6 +4021,8 @@ class OperationsStateStore:
                 "status": status,
                 "recorded_at": recorded_at,
             }
+            if provider_disposition is not None:
+                values["provider_disposition"] = provider_disposition
             values["attempt_digest"] = sha256_digest(values)
             if existing is None:
                 connection.execute(
@@ -4044,6 +4067,7 @@ class OperationsStateStore:
                 stage=stage,
                 attempt_no=attempt_no,
                 status=status,
+                provider_disposition=provider_disposition,
                 recorded_at=recorded_at,
                 attempt_digest=str(values["attempt_digest"]),
             )
