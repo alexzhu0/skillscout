@@ -18,6 +18,7 @@ from skillscout.application.pipeline import (
     PHASE_TWO_STAGE_SEQUENCE,
     PhaseTwoRuntime,
     PipelineRunner,
+    RetryPolicy,
     build_dry_run_runtime,
     build_phase_two_runtime,
 )
@@ -398,6 +399,30 @@ def test_phase_two_root_constructs_the_closed_seven_registration_registry(
         )
         assert runtime.runner.processor is processor
         assert runtime.runner.state is state
+        assert runtime.runner.retry_policy.version == "retry-v1"
+    finally:
+        state.close()
+        client.close()
+        openai_client.close()
+
+
+def test_phase_two_root_passes_explicit_retry_authority_to_runner(
+    tmp_path: Path,
+) -> None:
+    client = GitHubReadClient()
+    openai_client = OpenAIExtractionClient(api_key="sk-phase-two-retry-scope-test")
+    processor = PhaseTwoProcessor(client, openai_client)
+    state = SQLiteStateStore(tmp_path / "state.db")
+    retry_policy = RetryPolicy(
+        version="retry-v1-acceptance-" + ("a" * 64),
+    )
+    try:
+        runtime = build_phase_two_runtime(
+            state,
+            processor,
+            retry_policy=retry_policy,
+        )
+        assert runtime.runner.retry_policy is retry_policy
     finally:
         state.close()
         client.close()

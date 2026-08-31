@@ -2417,6 +2417,20 @@ def _is_digest(value: object) -> bool:
     return all(character in "0123456789abcdef" for character in value[7:])
 
 
+def _acceptance_phase2_retry_policy_version(
+    phase2_authority_digest: str | None,
+) -> str | None:
+    """Namespace Phase 2 reuse to one immutable acceptance campaign authority."""
+
+    if phase2_authority_digest is None:
+        return None
+    if not _is_digest(phase2_authority_digest):
+        raise ValueError("phase2 retry authority rejected")
+    from skillscout.application.pipeline import RETRY_POLICY_VERSION
+
+    return f"{RETRY_POLICY_VERSION}-acceptance-{phase2_authority_digest[7:]}"
+
+
 def _configured_state_lineage_anchor(config: object) -> object | None:
     """Build one externally verified state anchor from closed runtime config."""
 
@@ -3356,6 +3370,7 @@ def build_discovery_application(
                 _execution_authority,
             )
             from skillscout.application.pipeline import (
+                RetryPolicy,
                 SemanticDurabilityGuard,
                 SemanticReservationReceipt,
                 build_phase_two_runtime,
@@ -3468,6 +3483,9 @@ def build_discovery_application(
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             fixed_admission = (
                 candidate.admission if type(candidate) is FixedAcceptanceCandidate else None
+            )
+            retry_policy_version = _acceptance_phase2_retry_policy_version(
+                phase2_authority_digest if fixed_admission is not None else None
             )
             if semantic_reservation is not None and (
                 type(semantic_reservation) is not SemanticReservationV1
@@ -3625,6 +3643,11 @@ def build_discovery_application(
                     phase2_state,
                     PhaseTwoProcessor(github, extractor),
                     semantic_durability=phase2_guard,
+                    retry_policy=(
+                        RetryPolicy(version=retry_policy_version)
+                        if retry_policy_version is not None
+                        else None
+                    ),
                     _allow_lazy_dependencies=True,
                 )
                 subject = RepositorySubject(

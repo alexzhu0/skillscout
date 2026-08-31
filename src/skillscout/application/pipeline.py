@@ -1237,6 +1237,7 @@ def build_phase_two_runtime(
     processor: PhaseTwoProcessor,
     *,
     semantic_durability: SemanticDurabilityGuard | None = None,
+    retry_policy: RetryPolicy | None = None,
     _allow_lazy_dependencies: bool = False,
 ) -> PhaseTwoRuntime:
     """Construct the closed phase-two runtime under its remote-read ceiling."""
@@ -1306,6 +1307,7 @@ def build_phase_two_runtime(
         processor,
         clock=resolved_clock,
         ids=resolved_ids,
+        retry_policy=retry_policy,
         extraction_writer=extraction_writer,
         semantic_durability=semantic_durability,
     )

@@ -7668,6 +7668,19 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         operations_store_factory=lambda: operations_state.OperationsStateStore(operations_path),
         state_sync=cas.sync_discovery,
     )
+
+    def persisted_retry_policy_versions() -> tuple[str, ...]:
+        connection = sqlite3.connect(pipeline_path)
+        try:
+            return tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT retry_policy_version FROM runs ORDER BY retry_policy_version"
+                ).fetchall()
+            )
+        finally:
+            connection.close()
+
     if first_extractor_response == "permanent":
         with pytest.raises(
             acceptance_application.AcceptanceApplicationError,
@@ -7699,6 +7712,9 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         assert semantic_snapshot.semantic_attempts[0].provider_disposition == (
             "permanent_rejection"
         )
+        retry_versions = persisted_retry_policy_versions()
+        assert len(retry_versions) == 1
+        assert re.fullmatch(r"retry-v1-acceptance-[0-9a-f]{64}", retry_versions[0])
         assert extractor_constructions == expected_extractor_constructions
         return
 
@@ -7719,6 +7735,12 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
     assert observation.live_acceptance_authority_digest == authority.authority_digest
     assert len(benchmark.scenario_results) == 5
     assert extractor_constructions == expected_extractor_constructions
+    retry_versions = persisted_retry_policy_versions()
+    assert len(retry_versions) == 5
+    assert all(
+        re.fullmatch(r"retry-v1-acceptance-[0-9a-f]{64}", version)
+        for version in retry_versions
+    )
     with operations_state.OperationsStateStore(operations_path) as operations:
         snapshot = operations.snapshot_run(f"{run_id}-semantic")
         acceptance_snapshot = operations.acceptance_snapshot(run_id)
