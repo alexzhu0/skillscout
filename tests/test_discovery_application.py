@@ -52,6 +52,21 @@ def test_outcome_matrix_keeps_business_quarantine_and_fatal_classes_distinct() -
     assert "semantic_outcome_unknown" in CONTINUABLE_OUTCOMES
 
 
+def test_acceptance_phase2_retry_policy_version_is_campaign_scoped() -> None:
+    bootstrap = importlib.import_module("skillscout.bootstrap")
+    first_authority = "sha256:" + ("a" * 64)
+    second_authority = "sha256:" + ("b" * 64)
+
+    first = bootstrap._acceptance_phase2_retry_policy_version(first_authority)
+
+    assert first == "retry-v1-acceptance-" + ("a" * 64)
+    assert bootstrap._acceptance_phase2_retry_policy_version(first_authority) == first
+    assert bootstrap._acceptance_phase2_retry_policy_version(second_authority) != first
+    assert bootstrap._acceptance_phase2_retry_policy_version(None) is None
+    with pytest.raises(ValueError, match="phase2 retry authority rejected"):
+        bootstrap._acceptance_phase2_retry_policy_version("sha256:not-a-digest")
+
+
 @pytest.mark.parametrize(
     ("extractor_outcome", "terminal_outcome", "acceptance_outcome"),
     (
