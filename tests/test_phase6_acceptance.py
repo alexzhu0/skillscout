@@ -61,6 +61,58 @@ def test_hard_gate_registry_is_exact_blocking_and_current() -> None:
     assert tuple(gate.identifier for gate in gates)[-1] == "all_44_requirements"
 
 
+def test_production_manifest_matches_the_approved_fresh_nomination() -> None:
+    """Reject a stale or role-drifted five-repository production benchmark."""
+
+    from skillscout.application.acceptance import load_locked_benchmark_manifest
+
+    manifest = load_locked_benchmark_manifest(
+        ROOT / "config/acceptance/phase6/benchmark-manifest.json"
+    )
+
+    assert manifest.manifest_version == 7
+    assert manifest.prior_manifest_digest == (
+        "sha256:64b38ee1e08782a717e80c66d0efcfee8bd8e040edb55dc796bb66caf22e88cb"
+    )
+    assert manifest.nomination_set_digest == (
+        "sha256:c19141eb21ce926506e74bf4ced1d52db06ef37a2a3d15d639caa0700e7722c3"
+    )
+    assert {
+        entry.repository_full_name: (
+            entry.exact_commit_sha,
+            entry.license_spdx,
+            entry.coverage_role,
+        )
+        for entry in manifest.entries
+    } == {
+        "TencentCloudBase/CloudBase-AI-Toolkit": (
+            "1938cad8f9fac50c346e48d096ce2b90d80992b7",
+            "MIT",
+            "positive_multi_workflow",
+        ),
+        "samber/cc-skills-golang": (
+            "0944f801aab5169fcd0981d66f8013cba4ed2c16",
+            "MIT",
+            "positive",
+        ),
+        "restatedev/examples": (
+            "f339b97a8cd0e14bae51f242d9957e68a0f4ca14",
+            "MIT",
+            "borderline",
+        ),
+        "janosh/pymatviz": (
+            "7a3c37ef26421ce82994028488c1da2ce3621930",
+            "MIT",
+            "negative",
+        ),
+        "CHAITANYA-2002/machine-learning-projects": (
+            "e8cc34197e83d0ef55d95435ba7591a4575be2b9",
+            "MIT",
+            "negative",
+        ),
+    }
+
+
 @pytest.fixture
 def acceptance_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repository"
