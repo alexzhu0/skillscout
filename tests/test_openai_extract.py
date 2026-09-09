@@ -352,6 +352,25 @@ def test_deepseek_extraction_fails_closed(response: RecordedResponse, status: st
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
 
 
+@pytest.mark.parametrize("content", [None, '{"unexpected":true}'])
+def test_deepseek_explicit_refusal_is_not_correctable_schema_failure(content) -> None:
+    response = _deepseek_response(content)
+    body = json.loads(response.body)
+    body["choices"][0]["message"]["refusal"] = "untrusted refusal text"
+    recorded = RecordedTransport({CHAT_COMPLETIONS: RecordedResponse(
+        status=200, headers=response.headers, body=json.dumps(body).encode(),
+    )})
+
+    result = _deepseek_client(recorded).extract(user_payload=USER_PAYLOAD)
+
+    assert result.status == "refused"
+    assert result.response is None
+    assert result.request_id == "chatcmpl-extract-1"
+    assert result.usage == TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30)
+    assert result.refusal_text is None
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     (

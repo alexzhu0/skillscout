@@ -141,6 +141,7 @@ def _verify_extraction_correction_attempts(attempts: list[PersistedAttemptRecord
             or not attempt.retryable
             or attempt.prompt_version != "extract-prompt-v1"
             or attempt.policy_version != "extract-policy-v1"
+            or attempt.model_id != "deepseek-v4-flash"
             or any(
                 value is None
                 for value in (

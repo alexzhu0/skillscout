@@ -2334,7 +2334,13 @@ def test_successful_correction_result_barrier_failure_preserves_result(tmp_path,
     [
         "request_id = NULL",
         "prompt_version = 'other'",
+        "policy_version = 'other'",
+        "model_id = 'deepseek-v4-pro'",
+        "model_id = 'deepseek-chat'",
+        "model_id = NULL",
+        "total_tokens = NULL",
         "retryable = 0",
+        "status = 'succeeded'",
         "error_code = 'stage_transient_failure', error_summary = 'Stage processing failed temporarily.'",
     ],
 )
@@ -2386,6 +2392,194 @@ def test_response_telemetry_without_eligibility_recovers_as_unknown(tmp_path, mo
             runner.run(_repository_subject(), tmp_path / "out")
         assert processor.extractor_requests == 1
         store.verify_run_chain(attempt["run_id"])
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("boundary", ["reservation", "started", "response"])
+def test_correction_crash_boundaries_never_repeat_a_provider_request(
+    tmp_path, monkeypatch, boundary,
+):
+    processor = _CorrectionProcessor(["invalid", "valid"])
+    store = SQLiteStateStore(tmp_path / "correction-crash.sqlite3")
+    barrier = _RecordingBarrier()
+
+    def reserve_request(**kwargs):
+        if boundary == "reservation" and kwargs["attempt_no"] == 2:
+            raise KeyboardInterrupt("recorded reservation crash")
+        return SemanticReservationReceipt(
+            reservation_digest=sha256_digest({"attempt": kwargs["attempt_no"]}),
+            verified_state_head="b" * 40,
+            state_root_digest=sha256_digest({"reserved": kwargs["attempt_no"]}),
+        )
+
+    guard = _semantic_guard(
+        barrier, provider="deepseek", request_reservation_hook=reserve_request,
+    )
+    runner = PipelineRunner(store, processor, semantic_durability=guard)
+    original_process = processor.process
+    original_record = store.record_attempt_telemetry
+
+    def process(stage_input, context):
+        if boundary == "started" and context.scratch.get("extraction_correction"):
+            raise KeyboardInterrupt("recorded started crash")
+        return original_process(stage_input, context)
+
+    def record(*args, **kwargs):
+        result = original_record(*args, **kwargs)
+        if boundary == "response" and processor.extractor_requests == 2:
+            raise KeyboardInterrupt("recorded response-persisted crash")
+        return result
+
+    try:
+        with pytest.raises(SafeFailure):
+            runner.run(_repository_subject(), tmp_path / "out")
+        monkeypatch.setattr(processor, "process", process)
+        monkeypatch.setattr(store, "record_attempt_telemetry", record)
+        with pytest.raises(KeyboardInterrupt):
+            runner.run(_repository_subject(), tmp_path / "out")
+        count = processor.extractor_requests
+        monkeypatch.setattr(processor, "process", original_process)
+        monkeypatch.setattr(store, "record_attempt_telemetry", original_record)
+        for _ in range(2):
+            with pytest.raises(SemanticProviderFailure) as failure:
+                runner.run(_repository_subject(), tmp_path / "out")
+            assert failure.value.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+        assert processor.extractor_requests == count == (2 if boundary == "response" else 1)
+        attempts = store.connection.execute(
+            "SELECT * FROM stage_attempts WHERE stage='extractor' ORDER BY attempt_no"
+        ).fetchall()
+        assert len(attempts) == 2
+        assert attempts[-1]["retryable"] == 0
+        assert attempts[0]["request_id"] == "request-1"
+        if boundary == "response":
+            assert attempts[1]["request_id"] == "request-2"
+            assert attempts[1]["total_tokens"] == 12
+    finally:
+        store.close()
+
+
+def test_correction_reservation_budget_rejection_prevents_dispatch_and_replay(tmp_path):
+    processor = _CorrectionProcessor(["invalid", "valid"])
+    store = SQLiteStateStore(tmp_path / "correction-budget.sqlite3")
+    reservations = []
+
+    def reserve_request(**kwargs):
+        reservations.append(kwargs["attempt_no"])
+        if kwargs["attempt_no"] == 2:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        return SemanticReservationReceipt(
+            reservation_digest=sha256_digest({"request": 20}),
+            verified_state_head="b" * 40,
+            state_root_digest=sha256_digest({"reserved": 20}),
+        )
+
+    runner = PipelineRunner(store, processor, semantic_durability=_semantic_guard(
+        _RecordingBarrier(), provider="deepseek", request_reservation_hook=reserve_request,
+    ))
+    try:
+        for _ in range(3):
+            with pytest.raises((SafeFailure, SemanticProviderFailure)):
+                runner.run(_repository_subject(), tmp_path / "out")
+        assert reservations == [1, 2]
+        assert processor.extractor_requests == 1
+    finally:
+        store.close()
+
+
+def test_fabricated_decided_owner_fact_cannot_authorize_correction(tmp_path):
+    processor = _CorrectionProcessor(["invalid", "valid"])
+    store = SQLiteStateStore(tmp_path / "decided-predecessor.sqlite3")
+    operations = OperationsStateStore(tmp_path / "decided-owner.sqlite3")
+    try:
+        with pytest.raises(SafeFailure):
+            PipelineRunner(store, processor).run(_repository_subject(), tmp_path / "out")
+        operations.seed_test_reservations(run_id="fabricated-decided", repository_id=101)
+        for status in ("started", "decided"):
+            operations.record_semantic_attempt(
+                run_id="fabricated-decided", repository_id=101,
+                workflow_authority_digest=sha256_digest({"workflow": 101}),
+                stage="extractor", attempt_no=1, status=status,
+                recorded_at="2026-09-09T00:00:00.000000Z",
+            )
+        reservations = []
+        guard = SemanticDurabilityGuard(
+            barrier=_RecordingBarrier(), operations_store=operations,
+            publication_store=_StaticOwner("publication"), repository_id=101,
+            workflow_authority_digest=sha256_digest({"workflow": 101}),
+            provider="deepseek", expected_prior_state_head="a" * 40,
+            expected_prior_root_digest=sha256_digest({"prior": 101}),
+            operations_run_id="fabricated-decided",
+            request_reservation_hook=lambda **kwargs: reservations.append(kwargs),
+        )
+        with pytest.raises(SafeFailure):
+            PipelineRunner(store, processor, semantic_durability=guard).run(
+                _repository_subject(), tmp_path / "out",
+            )
+        assert processor.extractor_requests == 1
+        assert reservations == []
+        with sqlite3.connect(tmp_path / "decided-owner.sqlite3") as connection:
+            assert connection.execute(
+                "SELECT status FROM operations_semantic_attempts"
+            ).fetchall() == [("decided",)]
+    finally:
+        operations.close()
+        store.close()
+
+
+@pytest.mark.parametrize("profile", ["openai", "unspecified"])
+def test_correction_disabled_profiles_reuse_one_shot_schema_failure(tmp_path, profile):
+    from skillscout.adapters.semantic_provider import SemanticProvider
+
+    processor = _CorrectionProcessor(["invalid"])
+    processor.extraction_correction_provider = (
+        SemanticProvider.OPENAI if profile == "openai" else None
+    )
+    store = SQLiteStateStore(tmp_path / "disabled.sqlite3")
+    try:
+        runner = PipelineRunner(store, processor)
+        runner.run(_repository_subject(), tmp_path / "out")
+        runner.run(_repository_subject(), tmp_path / "out")
+        assert processor.extractor_requests == 1
+        assert processor.corrections == [None]
+        assert store.connection.execute(
+            "SELECT DISTINCT retry_policy_version FROM runs"
+        ).fetchall()[0][0] == "retry-v1"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("outcome", ["refused", "incomplete", "no_workflow", "unsafe", "partial"])
+def test_noncorrectable_extraction_outcomes_never_schedule_another_request(tmp_path, outcome):
+    processor = _CorrectionProcessor(["invalid"])
+    original = processor.process
+
+    def process(stage_input, context):
+        result = original(stage_input, context)
+        if stage_input.stage is not PipelineStage.EXTRACTOR:
+            return result
+        payload = dict(result.payload)
+        payload.update(outcome=outcome, diagnostics=[], workflows=[])
+        if outcome == "unsafe":
+            payload.update(
+                outcome="schema_failure", diagnostics=["all_workflows_dropped"],
+                dropped=[{"title": "unsafe", "reasons": ["forbidden_text"]}],
+            )
+        elif outcome == "partial":
+            payload.update(
+                outcome="extracted", workflows=[{"fingerprint": "sha256:" + "a" * 64}],
+                dropped=[{"title": "other", "reasons": ["excerpt_not_verbatim"]}],
+            )
+        return StageOutcome(payload=payload, telemetry=result.telemetry)
+
+    processor.process = process
+    store = SQLiteStateStore(tmp_path / "noncorrectable.sqlite3")
+    try:
+        runner = PipelineRunner(store, processor)
+        runner.run(_repository_subject(), tmp_path / "out")
+        runner.run(_repository_subject(), tmp_path / "out")
+        assert processor.extractor_requests == 1
+        assert processor.corrections == [None]
     finally:
         store.close()
 

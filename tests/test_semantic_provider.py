@@ -208,6 +208,43 @@ def test_default_provider_is_openai_and_secret_free() -> None:
     assert settings.api_key_env == "OPENAI_API_KEY"
     assert settings.base_url is None
     assert settings.extract_model == "gpt-5.6-terra"
+
+
+@pytest.mark.parametrize(
+    ("stage_name", "marker", "expected"),
+    [("EXTRACTION", True, "refused"), ("EXTRACTION", False, "schema_invalid"),
+     ("GENERATION", True, "schema_invalid"), ("REVIEW", True, "schema_invalid")],
+)
+def test_explicit_refusal_handling_is_extraction_only_not_prose_inference(
+    stage_name, marker, expected,
+):
+    stage = _future_provider_symbol("SemanticStage")[stage_name]
+    model = "deepseek-v4-pro" if stage_name == "REVIEW" else "deepseek-v4-flash"
+    response = _chat_response("I refuse to process this repository.", model=model)
+    body = json.loads(response.body)
+    if marker:
+        body["choices"][0]["message"]["refusal"] = "untrusted refusal"
+    recorded = RecordedTransport({CHAT_COMPLETIONS: RecordedResponse(
+        status=200, headers=response.headers, body=json.dumps(body).encode(),
+    )})
+    settings = resolve_semantic_provider({
+        "SKILLSCOUT_LLM_PROVIDER": "deepseek", "DEEPSEEK_BASE_URL": CANARY_BASE_URL,
+    })
+    client = create_semantic_client(
+        settings, sdk=openai, api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+    )
+    try:
+        result = request_deepseek_json(
+            client, sdk=openai, stage=stage, model=model, instructions="trusted instructions",
+            user_payload="untrusted payload", response_model=_Answer, max_tokens=123,
+        )
+    finally:
+        client.close()
+    assert result.status == expected
+    assert result.request_id == "chatcmpl-deepseek-1"
+    assert result.usage.total_tokens == 14
+    assert len(recorded.requests) == 1
     assert "key" not in repr(settings).lower()
 
 
