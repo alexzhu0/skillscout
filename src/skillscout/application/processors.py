@@ -85,7 +85,9 @@ class PhaseTwoProcessor:
     ) -> None:
         if semantic_provider is not None and type(semantic_provider) is not SemanticProvider:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-        actual_provider = getattr(openai, "provider", None)
+        actual_provider = (
+            openai.provider if isinstance(openai, OpenAIExtractionClient) else None
+        )
         if (
             semantic_provider is not None
             and actual_provider is not None

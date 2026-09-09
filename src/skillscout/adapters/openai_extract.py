@@ -62,10 +62,11 @@ Correction reason: {ExtractionCorrectionReason.SCHEMA.value}
 """,
     ExtractionCorrectionReason.EXCERPT: f"""{EXTRACTION_CORRECTION_PROMPT_VERSION}
 
-This is a bounded correction of the extraction response. Every proposed workflow
-was rejected because its cited excerpt was not verbatim in the unchanged user
-snapshot. Re-read that snapshot and cite only exact substrings from it. Do not
-refer to, reconstruct, or rely on the rejected response.
+This is a bounded correction of the extraction response: no workflows survived
+validation, and at least one proposed workflow cited evidence that was not verbatim
+in the unchanged user snapshot. Re-evaluate the fresh original snapshot under all
+existing rules and cite only exact substrings from it. Do not refer to, reconstruct,
+or rely on the rejected response.
 
 Correction reason: {ExtractionCorrectionReason.EXCERPT.value}
 """,

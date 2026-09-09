@@ -39,3 +39,11 @@ Output: `All checks passed!`.
 - No schema or validator was changed; no provider, workflow, secret, candidate, merge, or release action was used.
 - Task 2 must pass the explicit provider identity at both CLI and discovery/bootstrap composition sites; until then the safe property intentionally advertises no correction authority.
 - The pure predicate accepts mixed dropped entries only when at least one entry has the exact nonempty reason set `{excerpt_not_verbatim}`. It rejects malformed containers, an entry that mixes excerpt and unsafe reasons without another excerpt-only entry, unsafe-only drops, partial success, incomplete/refused outcomes, and any diagnostic list other than the two exact admitted forms.
+
+## Review fix round 1
+
+- Removed duck-typed `provider` probing from `PhaseTwoProcessor` construction. Provider agreement is checked only for the known concrete `OpenAIExtractionClient`, so a lazy wrapper is not resolved before skip/durability boundaries; explicit composition metadata remains the runner-facing authority.
+- Corrected the excerpt reminder for mixed drops: no workflows survived, at least one had nonverbatim evidence, and the model must re-evaluate the fresh original snapshot under all existing rules.
+- RED: the two new regressions produced `2 failed in 0.65s`, one from lazy `__getattr__` resolution and one from inaccurate fixed instructions.
+- GREEN: `.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_extraction_correction.py tests/test_extractor_boundary.py tests/test_openai_extract.py tests/test_discovery_application.py::test_lazy_discovery_capability_does_not_resolve_extractor_on_skip` produced `69 passed in 1.02s`.
+- Ruff on all owned source/test files produced `All checks passed!`.

@@ -417,6 +417,20 @@ def test_processor_consumes_typed_deepseek_correction_and_reports_correction_ver
     assert outcome.telemetry.policy_version == EXTRACTION_CORRECTION_POLICY_VERSION
 
 
+def test_explicit_correction_capability_does_not_probe_lazy_extractor() -> None:
+    class LazyExtractor:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"lazy extractor was resolved for {name}")
+
+    processor = PhaseTwoProcessor(
+        object(),
+        LazyExtractor(),  # type: ignore[arg-type]
+        semantic_provider=SemanticProvider.DEEPSEEK,
+    )
+
+    assert processor.extraction_correction_provider is SemanticProvider.DEEPSEEK
+
+
 @pytest.mark.parametrize("count", [1, 3])
 def test_one_and_three_workflow_responses_produce_contract_valid_payloads(
     count: int,

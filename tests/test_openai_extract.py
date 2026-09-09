@@ -396,6 +396,9 @@ def test_deepseek_correction_is_one_fixed_instruction_request_with_identical_use
     assert correction["messages"][0]["content"] != initial["messages"][0]["content"]
     assert "extract-correction-prompt-v1" in correction["messages"][0]["content"]
     assert "extraction_correction_excerpt" in correction["messages"][0]["content"]
+    assert "no workflows survived" in correction["messages"][0]["content"]
+    assert "at least one" in correction["messages"][0]["content"]
+    assert "every proposed workflow" not in correction["messages"][0]["content"]
     assert "tools" not in correction
 
 
