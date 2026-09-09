@@ -3800,10 +3800,20 @@ def build_discovery_application(
 
             candidate_source = SQLitePhaseTwoCandidateSource(config.pipeline_state)
             try:
-                descriptors = derive_candidate_subject_descriptors(
-                    candidate_source,
-                    phase2_run_id=phase2_summary.run_id,
-                )
+                # A verified terminal extraction has no candidate to admit. The
+                # candidate source intentionally accepts only successful sources
+                # or business rejections, so asking it to resolve a system
+                # failure would discard the precise outcome and its telemetry.
+                if (
+                    extractor_result is not None
+                    and extractor_result.payload.get("outcome") == "schema_failure"
+                ):
+                    descriptors = ()
+                else:
+                    descriptors = derive_candidate_subject_descriptors(
+                        candidate_source,
+                        phase2_run_id=phase2_summary.run_id,
+                    )
             except CandidateSourceUnavailable:
                 terminal_values = {
                     "schema_version": "discovery-candidate-terminal-v1",

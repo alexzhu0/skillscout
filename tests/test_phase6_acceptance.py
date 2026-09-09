@@ -7096,6 +7096,37 @@ def test_permanent_terminal_does_not_excuse_missing_success_telemetry() -> None:
         )
 
 
+def test_live_benchmark_cli_preserves_closed_schema_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A persisted schema terminal must not be reported as corrupt local state."""
+
+    import skillscout.bootstrap as bootstrap
+    import skillscout.cli as cli
+    from skillscout.application.acceptance import AcceptanceApplicationError
+    from skillscout.application.ports import SafeFailure
+
+    def exhausted() -> object:
+        raise AcceptanceApplicationError("schema_exhausted")
+
+    monkeypatch.setattr(
+        bootstrap,
+        "build_live_acceptance_execution",
+        lambda **_: SimpleNamespace(run=exhausted),
+    )
+    with pytest.raises(SafeFailure) as failure:
+        cli._run_live_benchmark(
+            config=object(),
+            restored=object(),
+            acceptance_run_id="synthetic-schema-failure",
+            live_admission=object(),
+        )
+    assert failure.value.as_dict() == {
+        "code": "schema_exhausted",
+        "summary": "Extraction output failed schema or evidence validation.",
+    }
+
+
 @pytest.mark.parametrize(
     (
         "first_extractor_response",
@@ -7106,6 +7137,9 @@ def test_permanent_terminal_does_not_excuse_missing_success_telemetry() -> None:
     (
         ("retryable", "eligible_local_candidate", 6, 1),
         ("permanent", "harness_failed", 1, 0),
+        ("schema", "schema_exhausted", 1, 0),
+        ("malformed_json", "schema_exhausted", 1, 0),
+        ("bad_evidence", "schema_exhausted", 1, 0),
     ),
 )
 def test_production_five_repo_benchmark_restores_and_replays_without_live_effects(
@@ -7565,6 +7599,25 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         nonlocal extractor_constructions
         extractor_constructions += 1
         if extractor_constructions == 1:
+            if first_extractor_response in {"schema", "malformed_json", "bad_evidence"}:
+                content = (
+                    '{"unfinished":'
+                    if first_extractor_response == "malformed_json"
+                    else '{"unexpected": true}'
+                )
+                if first_extractor_response == "bad_evidence":
+                    invalid = json.loads(extractor_payload)
+                    for workflow in invalid["workflows"]:
+                        for evidence in workflow["evidence"]:
+                            evidence["excerpt"] = "This sentence is not present in the source."
+                    content = json.dumps(invalid)
+                return semantic_client(
+                    original_extract,
+                    content,
+                    "deepseek-v4-flash",
+                    "chatcmpl-invalid-extraction-1",
+                    **kwargs,
+                )
             first_response = (
                 recorded_openai_fixture("openai_429")
                 if first_extractor_response == "retryable"
@@ -7733,10 +7786,10 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         finally:
             connection.close()
 
-    if first_extractor_response == "permanent":
+    if first_extractor_response in {"permanent", "schema", "malformed_json", "bad_evidence"}:
         with pytest.raises(
             acceptance_application.AcceptanceApplicationError,
-            match="harness_failed",
+            match=expected_first_outcome,
         ):
             acceptance_application.run_locked_benchmark(
                 dependencies,
@@ -7756,17 +7809,47 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         )
         assert len(scenarios) == 1
         assert scenarios[0].outcome == expected_first_outcome
-        assert scenarios[0].reason_code == "pipeline_permanent_failure"
-        assert scenarios[0].semantic_telemetry == ()
+        assert scenarios[0].reason_code == (
+            "pipeline_permanent_failure"
+            if first_extractor_response == "permanent"
+            else "provider_schema_exhausted"
+        )
+        if first_extractor_response == "permanent":
+            assert scenarios[0].semantic_telemetry == ()
+        else:
+            assert len(scenarios[0].semantic_telemetry) == 1
+            telemetry = scenarios[0].semantic_telemetry[0]
+            assert telemetry.request_id == "chatcmpl-invalid-extraction-1"
+            assert telemetry.actual_model == "deepseek-v4-flash"
+            assert telemetry.total_tokens == 60
+            assert semantic_snapshot.semantic_attempts[0].status == "decided"
+            assert len(semantic_snapshot.candidate_terminals) == 1
+            assert semantic_snapshot.candidate_terminals[0].outcome == "permanent_failure"
+            assert semantic_snapshot.workflow_terminals == ()
         assert scenarios[0].semantic_request_count == 1
         assert len(scenarios[0].semantic_attempt_digests) == 1
         assert len(semantic_snapshot.semantic_attempts) == 1
         assert semantic_snapshot.semantic_attempts[0].provider_disposition == (
-            "permanent_rejection"
+            "permanent_rejection" if first_extractor_response == "permanent" else None
         )
         retry_versions = persisted_retry_policy_versions()
         assert len(retry_versions) == 1
         assert re.fullmatch(r"retry-v1-acceptance-[0-9a-f]{64}", retry_versions[0])
+        assert extractor_constructions == expected_extractor_constructions
+        request_count = sum(len(recording.requests) for recording in semantic_recordings)
+        with pytest.raises(
+            acceptance_application.AcceptanceApplicationError,
+            match=expected_first_outcome,
+        ):
+            acceptance_application.run_locked_benchmark(
+                dependencies,
+                manifest=manifest,
+                acceptance_run_id=run_id,
+                observed_head=authority.state_commit_sha,
+                prior_root_digest=authority.state_root_digest,
+                recorded_at=timestamp,
+            )
+        assert sum(len(recording.requests) for recording in semantic_recordings) == request_count
         assert extractor_constructions == expected_extractor_constructions
         return
 

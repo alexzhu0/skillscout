@@ -97,6 +97,13 @@ These checks prove only the offline contracts for the ordered `rebind-benchmark-
 
 The Phase 6 fixed-candidate integration tests also inspect the persisted pipeline runs. They require acceptance executions to use authority-derived retry-policy namespaces, ordinary Phase 2 execution to retain `retry-v1`, same-identity permanent failures to remain non-replayed, and a changed retry identity to start with a fresh deterministic budget. These are offline recorded-transport checks; they do not call a live model.
 
+The same production-composition tests now cover malformed extraction JSON and
+non-verbatim evidence. Both must persist `schema_exhausted`, retain the completed
+request's model and token telemetry, produce no candidate workflow, and make no
+additional semantic request when the failed campaign is invoked again. A CLI
+regression checks the closed public diagnostic. These checks validate failure
+handling; they do not demonstrate improved live extraction quality.
+
 ## Suite categories
 
 The tests are named `tests/test_*.py` and are grouped by behavior rather than by separate unit and integration directories:

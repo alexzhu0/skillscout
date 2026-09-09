@@ -2,7 +2,15 @@
 
 SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turns bounded, read-only evidence from public GitHub repositories into validated Agent Skill candidates and, through a separately controlled publication boundary, human-reviewable Draft Pull Requests.
 
-This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including a fresh exact-byte **Gate B4** for the reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. The historical V2 five-repository benchmark lock is being rebound through a new state-only target run, but this implementation has not yet been merged or used live. Fresh authority, a real benchmark, replay, fresh Gate B4, and Draft PR acceptance remain pending before whole-product production readiness.
+This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
+
+## September 9 status and extraction-terminal repair
+
+The [September 3 live benchmark](https://github.com/alexzhu0/skillscout/actions/runs/33734530468), on source `bec2eeda2363d2fea639af5a68bca9d394cd16ec`, passed authority preflight and failed in the benchmark job. The recorded investigation found a Flash extraction response rejected by deterministic evidence validation. It did not produce a successful Skill acceptance result; replay was skipped.
+
+The current repair preserves a verified extractor `schema_failure` through the coordinator as `schema_exhausted`, retaining request telemetry and the permanent candidate terminal. The CLI reports a closed `schema_exhausted` diagnostic rather than describing this known failure as local-state corruption. Offline regressions cover malformed provider JSON, non-verbatim evidence, and repeated invocation without another semantic request.
+
+This repair adds no correction request, changes no validator, and grants no live execution authority. A one-correction extraction policy remains a separate evaluated follow-up because it must account for each request and preserve decided results across recovery. Successful real extraction, controlled Skill-use comparison, five-repository acceptance, exact replay, and the separately authorized publication evidence remain open. See the [direction review](docs/project/2026-09-09-direction-review.md).
 
 ## Implemented preview scope
 
@@ -55,7 +63,7 @@ The V2 five-repository benchmark lock was successfully persisted for source comm
 - Nomination digest: `sha256:46535e6ce499a710c2ecf5b9cd0db8134682dbac2429b8e3d7af4035130297ea`
 - Lock digest: `sha256:3c1a9b2737ee79c58696e5e601b61e49b35549630f5826ac9fef3c694feaffa6`
 
-Persisting this historical lock is not a live-authority grant or an adversarial acceptance result. The next, still-unperformed sequence is `rebind-benchmark-lock → record-live-authority → run-benchmark → run-replay`: a fresh target acceptance run reuses the five unchanged entries but binds final source/workflow bytes. Rebind receives no model or catalog credential and produces only a sanitized state receipt. Each state-only approval and the subsequent authority carrier is single-use; any code or workflow change after merge invalidates every approval in the sequence. A real benchmark execution, exact replay, fresh Gate B4, and Draft PR acceptance are still pending; SkillScout remains not production-ready.
+Persisting this historical lock is not a live-authority grant or an adversarial acceptance result. The controlled sequence is `rebind-benchmark-lock → record-live-authority → run-benchmark → run-replay`: a fresh target acceptance run can reuse unchanged entries while binding final source/workflow bytes. Rebind receives no model or catalog credential and produces only a sanitized state receipt. Each state-only approval and the subsequent authority carrier is single-use; changed bindings invalidate the old approval. Later live execution has occurred as noted above, but successful benchmark acceptance, exact replay, fresh applicable Gate B4 evidence, and Draft PR acceptance remain open.
 
 ## Security posture
 
@@ -87,7 +95,7 @@ Do not enable `publish-candidate` from an ordinary developer shell. Follow [Conf
 
 - Gate B4 evidence is identity- and byte-bound; any workflow, App scope, catalog, ruleset, reviewer, or installation change requires a fresh canary before publication is credited.
 - Phase 5 implements and verifies versioned GitHub Search, daily and manual triggers, hard limits of 100 candidates and 20 semantic reservations per run, three-store state-branch recovery with non-force CAS, and credential-zone isolation. The fresh Gate B4 evidence is bound to the current workflow SHA-256 digests: discover `8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd`, publish `96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0`, and canary `9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d`; changing any bound workflow or control-plane identity invalidates that evidence.
-- The V2 five-repository benchmark lock is persisted, but the adversarial MVP acceptance run across those pinned real repositories has not been completed. Live authority, a real benchmark execution, replay, and Draft PR acceptance remain pending.
+- V2 benchmark locks and live authority have been persisted, and a real benchmark has been attempted. A successful five-repository benchmark, replay, and Draft PR acceptance remain pending.
 - Publication supports configured individual reviewers only. Team reviewer targets fail closed to manual handling.
 - Live canary cleanup is intentionally not automated and must use separate human or administrator authority.
 - The normal test suite is offline. Passing recorded-transport tests does not prove current third-party service availability or real catalog control-plane configuration.
