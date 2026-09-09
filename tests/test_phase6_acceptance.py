@@ -7137,9 +7137,9 @@ def test_live_benchmark_cli_preserves_closed_schema_failure(
     (
         ("retryable", "eligible_local_candidate", 6, 1),
         ("permanent", "harness_failed", 1, 0),
-        ("schema", "schema_exhausted", 1, 0),
-        ("malformed_json", "schema_exhausted", 1, 0),
-        ("bad_evidence", "schema_exhausted", 1, 0),
+        ("schema", "schema_exhausted", 2, 1),
+        ("malformed_json", "schema_exhausted", 2, 1),
+        ("bad_evidence", "schema_exhausted", 2, 1),
     ),
 )
 def test_production_five_repo_benchmark_restores_and_replays_without_live_effects(
@@ -7417,6 +7417,14 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         replay_publication_effect_count=0,
         approved_at=timestamp,
     )
+    authority = type(authority).model_validate(
+        {
+            **authority.model_dump(exclude={"authority_digest"}),
+            "policy_versions": tuple(
+                sorted((*authority.policy_versions, "extract-correction-policy-v1"))
+            ),
+        }
+    )
     run_id = "acceptance-production-fixed-runner"
     with operations_state.OperationsStateStore(operations_path) as operations:
         operations.record_acceptance_fact(run_id, "acceptance_nomination", nomination)
@@ -7598,7 +7606,10 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
     def extractor_client(**kwargs: object) -> object:
         nonlocal extractor_constructions
         extractor_constructions += 1
-        if extractor_constructions == 1:
+        if extractor_constructions == 1 or (
+            extractor_constructions == 2
+            and first_extractor_response in {"schema", "malformed_json", "bad_evidence"}
+        ):
             if first_extractor_response in {"schema", "malformed_json", "bad_evidence"}:
                 content = (
                     '{"unfinished":'
@@ -7615,7 +7626,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
                     original_extract,
                     content,
                     "deepseek-v4-flash",
-                    "chatcmpl-invalid-extraction-1",
+                    f"chatcmpl-invalid-extraction-{extractor_constructions}",
                     **kwargs,
                 )
             first_response = (
@@ -7817,24 +7828,32 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
         if first_extractor_response == "permanent":
             assert scenarios[0].semantic_telemetry == ()
         else:
-            assert len(scenarios[0].semantic_telemetry) == 1
+            assert len(scenarios[0].semantic_telemetry) == 2
             telemetry = scenarios[0].semantic_telemetry[0]
             assert telemetry.request_id == "chatcmpl-invalid-extraction-1"
             assert telemetry.actual_model == "deepseek-v4-flash"
             assert telemetry.total_tokens == 60
-            assert semantic_snapshot.semantic_attempts[0].status == "decided"
+            assert semantic_snapshot.semantic_attempts[0].status == "confirmed_retryable"
+            assert semantic_snapshot.semantic_attempts[1].status == "decided"
+            assert scenarios[0].semantic_telemetry[1].request_id == "chatcmpl-invalid-extraction-2"
+            assert (
+                scenarios[0].semantic_telemetry[1].prompt_version == "extract-correction-prompt-v1"
+            )
+            assert scenarios[0].semantic_telemetry[1].total_tokens == 60
             assert len(semantic_snapshot.candidate_terminals) == 1
             assert semantic_snapshot.candidate_terminals[0].outcome == "permanent_failure"
             assert semantic_snapshot.workflow_terminals == ()
-        assert scenarios[0].semantic_request_count == 1
-        assert len(scenarios[0].semantic_attempt_digests) == 1
-        assert len(semantic_snapshot.semantic_attempts) == 1
+        assert scenarios[0].semantic_request_count == expected_extractor_constructions
+        assert len(scenarios[0].semantic_attempt_digests) == expected_extractor_constructions
+        assert len(semantic_snapshot.semantic_attempts) == expected_extractor_constructions
         assert semantic_snapshot.semantic_attempts[0].provider_disposition == (
             "permanent_rejection" if first_extractor_response == "permanent" else None
         )
         retry_versions = persisted_retry_policy_versions()
         assert len(retry_versions) == 1
-        assert re.fullmatch(r"retry-v1-acceptance-[0-9a-f]{64}", retry_versions[0])
+        assert re.fullmatch(
+            r"retry-v1-acceptance-[0-9a-f]{64}\+extract-correction-policy-v1", retry_versions[0]
+        )
         assert extractor_constructions == expected_extractor_constructions
         request_count = sum(len(recording.requests) for recording in semantic_recordings)
         with pytest.raises(
@@ -7873,7 +7892,7 @@ def test_production_five_repo_benchmark_restores_and_replays_without_live_effect
     retry_versions = persisted_retry_policy_versions()
     assert len(retry_versions) == 5
     assert all(
-        re.fullmatch(r"retry-v1-acceptance-[0-9a-f]{64}", version)
+        re.fullmatch(r"retry-v1-acceptance-[0-9a-f]{64}\+extract-correction-policy-v1", version)
         for version in retry_versions
     )
     with operations_state.OperationsStateStore(operations_path) as operations:

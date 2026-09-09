@@ -14,6 +14,7 @@ from typing import Callable, Final, Iterable, Literal, Mapping, Protocol
 from skillscout.adapters.fixtures import FixtureProcessor, FixtureSubject
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.adapters.semantic_provider import (
+    SemanticProvider,
     SemanticProviderFailure,
     SemanticTransportDisposition,
 )
@@ -66,6 +67,12 @@ from skillscout.domain.models import (
     VerifiedRunChain,
 )
 from skillscout.domain.subjects import RepositorySubject
+from skillscout.domain.extraction_correction import (
+    EXTRACTION_CORRECTION_POLICY_VERSION,
+    EXTRACTION_CORRECTION_PROMPT_VERSION,
+    ExtractionCorrectionReason,
+    extraction_correction_reason,
+)
 
 _DIGEST_PATTERN: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
 _STATE_SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
@@ -316,6 +323,11 @@ class SemanticDurabilityGuard:
         self._reservation_hook = reservation_hook
         self._request_reservation_hook = request_reservation_hook
         self._operations_run_id = operations_run_id
+        self._verified_transitions: set[tuple[str, str, int, str]] = set()
+
+    def has_verified_receipt(self, run_id: str, stage: str, attempt_no: int, status: str) -> bool:
+        """Only receipts verified by this guard prove local facts durable."""
+        return (run_id, stage, attempt_no, status) in self._verified_transitions
 
     def reserve_before_extractor(
         self,
@@ -413,6 +425,28 @@ class SemanticDurabilityGuard:
 
         try:
             operations_run_id = self._operations_run_id or run_id
+            if stage == "extractor":
+                chain = pipeline_store.verify_run_chain(run_id)
+                extractor_attempts = [
+                    a for a in chain.attempts if a.stage is PipelineStage.EXTRACTOR
+                ]
+                current = next((a for a in extractor_attempts if a.attempt_no == attempt_no), None)
+                if current is None:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                if current.prompt_version == EXTRACTION_CORRECTION_PROMPT_VERSION:
+                    if self._provider != "deepseek":
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    if status == "started" and not self.has_verified_receipt(
+                        run_id, stage, attempt_no - 1, "confirmed_retryable"
+                    ):
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                if current.error_code in set(ExtractionCorrectionReason):
+                    if (
+                        self._provider != "deepseek"
+                        or status != "confirmed_retryable"
+                        or provider_disposition is not None
+                    ):
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
             if status == "started" and self._request_reservation_hook is not None:
                 request_receipt = self._request_reservation_hook(
                     pipeline_store=pipeline_store,
@@ -495,6 +529,7 @@ class SemanticDurabilityGuard:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
         self._expected_prior_state_head = receipt.verified_state_head
         self._expected_prior_root_digest = receipt.state_root_digest
+        self._verified_transitions.add((run_id, stage, attempt_no, status))
         return receipt
 
 
@@ -519,6 +554,15 @@ class PipelineRunner:
         self.clock = clock or SystemClock()
         self.ids = ids or UUIDIdProvider()
         self.retry_policy = retry_policy or RetryPolicy()
+        self.correction_enabled = (
+            getattr(processor, "extraction_correction_provider", None) is SemanticProvider.DEEPSEEK
+        )
+        if self.correction_enabled:
+            self.retry_policy = RetryPolicy(
+                version=f"{self.retry_policy.version}+{EXTRACTION_CORRECTION_POLICY_VERSION}",
+                max_attempts=min(self.retry_policy.max_attempts, 3),
+                transient_error_codes=self.retry_policy.transient_error_codes,
+            )
         self.publication_writer = publication_writer or _LocalPublicationPlanner(filesystem_seam)
         self.extraction_writer = extraction_writer or _ExtractionSummaryWriter(filesystem_seam)
         self.semantic_durability = semantic_durability
@@ -564,6 +608,7 @@ class PipelineRunner:
             completed = self.state.find_completed_run(current_identity)
             if completed is not None:
                 chain = self.state.verify_run_chain(completed.run_id, current_identity)
+                self._reconcile_extractor_result(chain)
                 self.extraction_writer.write(
                     output_directory, _build_extraction_summary(chain, subject)
                 )
@@ -598,7 +643,9 @@ class PipelineRunner:
 
         prior_payloads: dict[str, Mapping[str, object]] = {}
         if profile.uses_context and resumable is not None and start_index > 0:
-            for envelope in self.state.verify_run_chain(run_id).results:
+            resumed_chain = self.state.verify_run_chain(run_id)
+            self._reconcile_extractor_result(resumed_chain)
+            for envelope in resumed_chain.results:
                 prior_payloads[envelope.stage.value] = envelope.payload
 
         for stage_index, stage in enumerate(profile.stages):
@@ -625,6 +672,12 @@ class PipelineRunner:
                 and profile.uses_context
                 and stage is PipelineStage.EXTRACTOR
             )
+            correction = None
+            if self.correction_enabled and stage is PipelineStage.EXTRACTOR:
+                chain = self.state.verify_run_chain(run_id)
+                prior = [a for a in chain.attempts if a.stage is stage]
+                if prior and prior[-1].error_code in set(ExtractionCorrectionReason):
+                    correction = ExtractionCorrectionReason(prior[-1].error_code)
             if semantic_stage:
                 requires_request = getattr(self.processor, "semantic_request_required", None)
                 if callable(requires_request):
@@ -662,12 +715,18 @@ class PipelineRunner:
                             code="semantic_provider_outcome_unknown",
                         )
                     if prior_status == "failed":
-                        if prior_error == ErrorCode.STAGE_TRANSIENT_FAILURE.value:
-                            if not self.semantic_durability.already_durable(
-                                run_id=run_id,
-                                stage="extractor",
-                                attempt_no=prior_attempt_no,
-                                status="confirmed_retryable",
+                        if (
+                            prior_error == ErrorCode.STAGE_TRANSIENT_FAILURE.value
+                            or correction is not None
+                        ):
+                            if (
+                                correction is not None
+                                or not self.semantic_durability.already_durable(
+                                    run_id=run_id,
+                                    stage="extractor",
+                                    attempt_no=prior_attempt_no,
+                                    status="confirmed_retryable",
+                                )
                             ):
                                 self._confirm_semantic(
                                     run_id=run_id,
@@ -719,8 +778,8 @@ class PipelineRunner:
                 reusable_key_digest=reusable_digest,
                 started_at=self.clock.now(),
                 finished_at=None,
-                prompt_version=None,
-                policy_version=None,
+                prompt_version=EXTRACTION_CORRECTION_PROMPT_VERSION if correction else None,
+                policy_version=EXTRACTION_CORRECTION_POLICY_VERSION if correction else None,
                 model_id=None,
                 request_id=None,
                 latency_ms=None,
@@ -748,7 +807,7 @@ class PipelineRunner:
                     context = StageContext(
                         subject=subject,
                         prior_payloads=dict(prior_payloads),
-                        scratch={},
+                        scratch={"extraction_correction": correction} if correction else {},
                     )
                     outcome: StageOutcome | Mapping[str, object] = self.processor.process(  # type: ignore[call-arg]
                         stage_input,
@@ -779,6 +838,7 @@ class PipelineRunner:
                     self.clock.now(),
                     retryable=(
                         failure.disposition is SemanticTransportDisposition.CONFIRMED_RETRYABLE
+                        and correction is None
                     ),
                 )
                 if semantic_stage:
@@ -789,6 +849,8 @@ class PipelineRunner:
                         provider_disposition=provider_disposition,
                     )
                 if failure.disposition is SemanticTransportDisposition.CONFIRMED_RETRYABLE:
+                    if correction is not None:
+                        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE) from None
                     raise closed from None
                 if failure.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN:
                     raise
@@ -826,6 +888,40 @@ class PipelineRunner:
                 raise failure
 
             telemetry = outcome.telemetry
+            reason = extraction_correction_reason(outcome.payload)
+            if (
+                self.correction_enabled
+                and stage is PipelineStage.EXTRACTOR
+                and correction is None
+                and reason is not None
+                and attempt_no < self.retry_policy.max_attempts
+            ):
+                if (
+                    telemetry is None
+                    or telemetry.prompt_version != "extract-prompt-v1"
+                    or telemetry.policy_version != "extract-policy-v1"
+                    or telemetry.model_id is None
+                    or telemetry.request_id is None
+                    or telemetry.latency_ms is None
+                    or telemetry.token_usage is None
+                ):
+                    self._close_started_attempt(
+                        attempt_id=attempt_id,
+                        run_id=run_id,
+                        failure=SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID),
+                    )
+                    raise SafeFailure(ErrorCode.STAGE_OUTPUT_INVALID)
+                self.state.record_attempt_telemetry(attempt_id, telemetry)
+                scheduled = SafeFailure(ErrorCode(reason.value))
+                self.state.fail_attempt(
+                    attempt_id, run_id, scheduled, self.clock.now(), retryable=True
+                )
+                self.state.verify_run_chain(run_id)
+                if semantic_stage:
+                    self._confirm_semantic(
+                        run_id=run_id, attempt_no=attempt_no, status="confirmed_retryable"
+                    )
+                raise scheduled
             try:
                 payload = StagePayload.model_validate(outcome.payload).root
                 output_hash = stage_output_hash(
@@ -886,12 +982,6 @@ class PipelineRunner:
                 if telemetry is not None:
                     self.state.record_attempt_telemetry(attempt_id, telemetry)
                 self.state.complete_stage(envelope)
-                if semantic_stage:
-                    self._confirm_semantic(
-                        run_id=run_id,
-                        attempt_no=attempt_no,
-                        status="decided",
-                    )
             except SafeFailure as failure:
                 self._close_started_attempt(
                     attempt_id=attempt_id,
@@ -907,6 +997,8 @@ class PipelineRunner:
                     failure=failure,
                 )
                 raise failure from None
+            if semantic_stage:
+                self._confirm_semantic(run_id=run_id, attempt_no=attempt_no, status="decided")
             previous_output_hash = output_hash
             if profile.uses_context:
                 prior_payloads[stage.value] = payload
@@ -962,6 +1054,18 @@ class PipelineRunner:
         except Exception:
             raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
         return row
+
+    def _reconcile_extractor_result(self, chain: VerifiedRunChain) -> None:
+        if self.semantic_durability is None or not self.correction_enabled:
+            return
+        result = next((r for r in chain.results if r.stage is PipelineStage.EXTRACTOR), None)
+        if result is not None and result.request_id is not None:
+            if not self.semantic_durability.has_verified_receipt(
+                result.run_id, "extractor", result.attempt_no, "decided"
+            ):
+                self._confirm_semantic(
+                    run_id=result.run_id, attempt_no=result.attempt_no, status="decided"
+                )
 
     def _confirm_semantic(
         self,

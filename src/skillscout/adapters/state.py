@@ -16,6 +16,11 @@ from typing import Annotated, Any, Callable, Iterable, Literal, Mapping, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
+from skillscout.domain.extraction_correction import (
+    EXTRACTION_CORRECTION_POLICY_VERSION,
+    EXTRACTION_CORRECTION_PROMPT_VERSION,
+    ExtractionCorrectionReason,
+)
 from skillscout.application.ports import (
     ERROR_SUMMARIES,
     ErrorCode,
@@ -92,6 +97,79 @@ from skillscout.domain.review import (
     review_attestation_bytes,
 )
 from skillscout.domain.validation import ValidationReportV1
+
+
+def _verify_extraction_correction_attempts(attempts: list[PersistedAttemptRecord]) -> None:
+    """Validate correction authorization using existing immutable attempt facts."""
+    corrections = 0
+    for index, attempt in enumerate(attempts):
+        enabled = (
+            re.fullmatch(
+                r"retry-v1(?:-acceptance-[0-9a-f]{64})?\+extract-correction-policy-v1",
+                attempt.retry_policy_version,
+            )
+            is not None
+        )
+        eligible = attempt.error_code in set(ExtractionCorrectionReason)
+        correction = (
+            attempt.prompt_version == EXTRACTION_CORRECTION_PROMPT_VERSION
+            or attempt.policy_version == EXTRACTION_CORRECTION_POLICY_VERSION
+        )
+        if (
+            enabled
+            and attempt.stage is PipelineStage.EXTRACTOR
+            and attempt.status is AttemptStatus.FAILED
+            and attempt.request_id is not None
+            and not eligible
+            and not (
+                attempt.error_code == ErrorCode.PIPELINE_INTERRUPTED.value
+                and not attempt.retryable
+            )
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        if not eligible and not correction:
+            if index and attempts[index - 1].error_code in set(ExtractionCorrectionReason):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+            continue
+        if not enabled or attempt.stage is not PipelineStage.EXTRACTOR:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        if eligible and (
+            correction
+            or corrections
+            or attempt.attempt_no >= 3
+            or attempt.status is not AttemptStatus.FAILED
+            or not attempt.retryable
+            or attempt.prompt_version != "extract-prompt-v1"
+            or attempt.policy_version != "extract-policy-v1"
+            or any(
+                value is None
+                for value in (
+                    attempt.model_id,
+                    attempt.request_id,
+                    attempt.latency_ms,
+                    attempt.prompt_tokens,
+                    attempt.completion_tokens,
+                    attempt.total_tokens,
+                )
+            )
+        ):
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        if correction:
+            corrections += 1
+            if (
+                corrections != 1
+                or index == 0
+                or attempt.attempt_no > 3
+                or attempt.prompt_version != EXTRACTION_CORRECTION_PROMPT_VERSION
+                or attempt.policy_version != EXTRACTION_CORRECTION_POLICY_VERSION
+                or attempts[index - 1].error_code not in set(ExtractionCorrectionReason)
+                or attempt.input_hash != attempts[index - 1].input_hash
+                or (attempt.status is AttemptStatus.FAILED and attempt.retryable)
+            ):
+                raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        if corrections and index != len(attempts) - 1:
+            raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+
 
 SCHEMA_VERSION = 3
 MAX_STATE_DB_BYTES = 67_108_864
@@ -2706,6 +2784,7 @@ class SQLiteStateStore:
                 )
                 if succeeded != (1 if stage_index < completed_count else 0):
                     raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                _verify_extraction_correction_attempts(stage_attempts)
             if any(index not in attempts_by_stage for index in range(completed_count)):
                 raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
 

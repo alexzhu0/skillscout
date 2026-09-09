@@ -79,3 +79,30 @@ def test_one_excerpt_only_drop_makes_mixed_dropped_entries_correctable() -> None
 )
 def test_every_non_closed_or_malformed_payload_is_ineligible(payload: object) -> None:
     assert extraction_correction_reason(payload) is None
+
+
+def test_acceptance_admits_only_exact_correction_telemetry_pair():
+    from skillscout.domain.acceptance import AcceptanceSemanticTelemetryV1
+
+    values = dict(
+        stage="extractor",
+        workflow_spec_authority_digest="sha256:" + "a" * 64,
+        attempt_no=2,
+        request_id="response-2",
+        actual_model="deepseek-v4-flash",
+        prompt_version="extract-correction-prompt-v1",
+        output_schema_version="workflow-spec-v1",
+        policy_version="extract-correction-policy-v1",
+        prompt_tokens=10,
+        completion_tokens=2,
+        total_tokens=12,
+        latency_ms=5,
+    )
+    values.update(
+        schema_version="acceptance-semantic-telemetry-v1",
+        live_acceptance_authority_digest="sha256:" + "b" * 64,
+    )
+    assert AcceptanceSemanticTelemetryV1(**values).total_tokens == 12
+    values["policy_version"] = "extract-policy-v1"
+    with pytest.raises(ValueError):
+        AcceptanceSemanticTelemetryV1(**values)
