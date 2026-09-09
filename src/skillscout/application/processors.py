@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from skillscout.adapters.github import GitHubReadClient, LicenseResponse, TreeEntry
 from skillscout.adapters.openai_extract import OpenAIExtractionClient
+from skillscout.adapters.semantic_provider import SemanticProvider
 from skillscout.application.ports import (
     ErrorCode,
     SafeFailure,
@@ -32,6 +33,11 @@ from skillscout.domain.extraction import (
     WorkflowSpecStep,
     validate_workflow_boundaries,
     workflow_fingerprint,
+)
+from skillscout.domain.extraction_correction import (
+    EXTRACTION_CORRECTION_POLICY_VERSION,
+    EXTRACTION_CORRECTION_PROMPT_VERSION,
+    ExtractionCorrectionReason,
 )
 from skillscout.domain.filtering import (
     ALLOWED_LICENSE_SPDX,
@@ -74,9 +80,21 @@ class PhaseTwoProcessor:
         self,
         github: GitHubReadClient,
         openai: OpenAIExtractionClient | None = None,
+        *,
+        semantic_provider: SemanticProvider | None = None,
     ) -> None:
+        if semantic_provider is not None and type(semantic_provider) is not SemanticProvider:
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        actual_provider = getattr(openai, "provider", None)
+        if (
+            semantic_provider is not None
+            and actual_provider is not None
+            and actual_provider is not semantic_provider
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         self._github = github
         self._openai = openai
+        self._semantic_provider = semantic_provider
 
     @property
     def effect_scope(self) -> EffectScope:
@@ -89,6 +107,14 @@ class PhaseTwoProcessor:
     @property
     def openai(self) -> OpenAIExtractionClient | None:
         return self._openai
+
+    @property
+    def extraction_correction_provider(self) -> SemanticProvider | None:
+        """Return explicit correction capability without resolving a lazy client."""
+
+        if self._semantic_provider is SemanticProvider.DEEPSEEK:
+            return self._semantic_provider
+        return None
 
     def process(self, stage_input: StageInput, context: StageContext) -> StageOutcome:
         if stage_input.stage is PipelineStage.SCOUT:
@@ -455,12 +481,32 @@ class PhaseTwoProcessor:
         ):
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
 
-        result = self._openai.extract(
-            user_payload=_serialize_extraction_payload(ordered, bundle)
+        user_payload = _serialize_extraction_payload(ordered, bundle)
+        correction = context.scratch.get("extraction_correction")
+        correction_requested = (
+            type(correction) is ExtractionCorrectionReason
+            and self._semantic_provider is SemanticProvider.DEEPSEEK
+        )
+        if correction_requested:
+            result = self._openai.extract(
+                user_payload=user_payload,
+                correction=correction,
+            )
+        else:
+            result = self._openai.extract(user_payload=user_payload)
+        prompt_version = (
+            EXTRACTION_CORRECTION_PROMPT_VERSION
+            if correction_requested
+            else EXTRACT_PROMPT_VERSION
+        )
+        policy_version = (
+            EXTRACTION_CORRECTION_POLICY_VERSION
+            if correction_requested
+            else EXTRACT_POLICY_VERSION
         )
         telemetry = StageTelemetry(
-            prompt_version=EXTRACT_PROMPT_VERSION,
-            policy_version=EXTRACT_POLICY_VERSION,
+            prompt_version=prompt_version,
+            policy_version=policy_version,
             model_id=result.model,
             request_id=result.request_id,
             latency_ms=result.latency_ms,
@@ -471,7 +517,7 @@ class PhaseTwoProcessor:
             "output_schema_version": WORKFLOW_SPEC_SCHEMA_VERSION,
             "stage": stage_input.stage.value,
             "subject_id": stage_input.subject_id,
-            "prompt_version": EXTRACT_PROMPT_VERSION,
+            "prompt_version": prompt_version,
             "model_configured": self._openai.model,
             "model_actual": result.model,
         }

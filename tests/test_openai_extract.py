@@ -26,6 +26,7 @@ from skillscout.adapters.semantic_provider import (
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.extraction import EXTRACT_PROMPT_VERSION, ExtractorResponse
+from skillscout.domain.extraction_correction import ExtractionCorrectionReason
 from skillscout.domain.models import TokenUsage
 
 CANARY_KEY = "sk-CANARY-DO-NOT-DISCLOSE-0123456789"
@@ -373,3 +374,44 @@ def test_deepseek_extraction_preserves_transport_disposition(
     assert failure.value.disposition is expected
     assert "recorded" not in str(failure.value)
     assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+def test_deepseek_correction_is_one_fixed_instruction_request_with_identical_user_content() -> None:
+    response = _deepseek_response(
+        '{"repository_summary":"none","rejection_reason":"none","workflows":[]}'
+    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: response})
+    client = _deepseek_client(recorded)
+
+    client.extract(user_payload=USER_PAYLOAD)
+    client.extract(
+        user_payload=USER_PAYLOAD,
+        correction=ExtractionCorrectionReason.EXCERPT,
+    )
+
+    assert len(recorded.requests) == 2
+    initial = json.loads(recorded.requests[0].content.decode())
+    correction = json.loads(recorded.requests[1].content.decode())
+    assert correction["messages"][-1] == initial["messages"][-1]
+    assert correction["messages"][0]["content"] != initial["messages"][0]["content"]
+    assert "extract-correction-prompt-v1" in correction["messages"][0]["content"]
+    assert "extraction_correction_excerpt" in correction["messages"][0]["content"]
+    assert "tools" not in correction
+
+
+def test_openai_and_invalid_corrections_fail_before_network_io() -> None:
+    openai_recorded = RecordedTransport({RESPONSES: recorded_openai_fixture("parsed_2_workflows")})
+    with pytest.raises(SafeFailure):
+        _client(openai_recorded).extract(
+            user_payload=USER_PAYLOAD,
+            correction=ExtractionCorrectionReason.SCHEMA,
+        )
+    assert openai_recorded.requests == []
+
+    deepseek_recorded = RecordedTransport({CHAT_COMPLETIONS: _deepseek_response("{}")})
+    with pytest.raises(SafeFailure):
+        _deepseek_client(deepseek_recorded).extract(
+            user_payload=USER_PAYLOAD,
+            correction="extraction_correction_schema",  # type: ignore[arg-type]
+        )
+    assert deepseek_recorded.requests == []

@@ -22,8 +22,10 @@ from skillscout.adapters.github import GitHubReadClient
 from skillscout.adapters.openai_extract import (
     DEFAULT_EXTRACT_MODEL,
     EXTRACT_INSTRUCTIONS_V1,
+    ExtractionResult,
     OpenAIExtractionClient,
 )
+from skillscout.adapters.semantic_provider import SemanticProvider
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.adapters.subjects import load_subject
 from skillscout.application.pipeline import PipelineRunner
@@ -40,6 +42,11 @@ from skillscout.domain.extraction import (
     FINGERPRINT_VERSION,
     MAX_EVIDENCE_EXCERPT_CHARS,
     WORKFLOW_SPEC_SCHEMA_VERSION,
+)
+from skillscout.domain.extraction_correction import (
+    EXTRACTION_CORRECTION_POLICY_VERSION,
+    EXTRACTION_CORRECTION_PROMPT_VERSION,
+    ExtractionCorrectionReason,
 )
 from skillscout.domain.models import StageInput, TokenUsage
 
@@ -373,6 +380,41 @@ def test_zero_workflows_yields_the_no_workflow_outcome() -> None:
     )
     assert payload["repository_summary"].startswith("The repository holds")
     assert openai_rec.call_count(*RESPONSES) == 1
+
+
+def test_processor_consumes_typed_deepseek_correction_and_reports_correction_versions() -> None:
+    class Extractor:
+        model = "deepseek-v4-flash"
+        provider = SemanticProvider.DEEPSEEK
+
+        def extract(self, *, user_payload: str, correction: ExtractionCorrectionReason | None = None):
+            assert user_payload.startswith("UNTRUSTED repository snapshot follows")
+            assert correction is ExtractionCorrectionReason.SCHEMA
+            return ExtractionResult(
+                status="schema_invalid",
+                response=None,
+                refusal_text=None,
+                incomplete_reason=None,
+                request_id="req-correction",
+                model="deepseek-v4-flash",
+                usage=TokenUsage(prompt_tokens=2, completion_tokens=1, total_tokens=3),
+                latency_ms=1,
+            )
+
+    context = StageContext(subject=SUBJECT, prior_payloads={}, scratch={})
+    original, _, _, _ = _direct(_github_routes(), recorded_openai_fixture("parsed_2_workflows"))
+    context.prior_payloads.update({key: value.payload for key, value in original.items() if key != "extractor"})
+    context.scratch["read_bundle"] = {"README.md": "x", "docs/guide.md": "y"}
+    context.scratch["extraction_correction"] = ExtractionCorrectionReason.SCHEMA
+    processor = PhaseTwoProcessor(object(), Extractor(), semantic_provider=SemanticProvider.DEEPSEEK)
+
+    outcome = processor.process(_stage_input(PipelineStage.EXTRACTOR), context)
+
+    assert processor.extraction_correction_provider is SemanticProvider.DEEPSEEK
+    assert outcome.payload["prompt_version"] == EXTRACTION_CORRECTION_PROMPT_VERSION
+    assert outcome.telemetry is not None
+    assert outcome.telemetry.prompt_version == EXTRACTION_CORRECTION_PROMPT_VERSION
+    assert outcome.telemetry.policy_version == EXTRACTION_CORRECTION_POLICY_VERSION
 
 
 @pytest.mark.parametrize("count", [1, 3])
