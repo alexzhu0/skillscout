@@ -690,7 +690,9 @@ class PipelineRunner:
                             )
                         )
                     )
-            if semantic_stage:
+            # Local unknown-outcome recovery also applies to CLI extraction,
+            # where correction is enabled without a remote durability guard.
+            if semantic_stage or (self.correction_enabled and stage is PipelineStage.EXTRACTOR):
                 prior_attempt = self._latest_attempt(run_id, stage)
                 if prior_attempt is not None:
                     prior_status = str(prior_attempt["status"])
@@ -705,11 +707,12 @@ class PipelineRunner:
                             self.clock.now(),
                             retryable=False,
                         )
-                        self._confirm_semantic(
-                            run_id=run_id,
-                            attempt_no=prior_attempt_no,
-                            status="semantic_outcome_unknown",
-                        )
+                        if semantic_stage:
+                            self._confirm_semantic(
+                                run_id=run_id,
+                                attempt_no=prior_attempt_no,
+                                status="semantic_outcome_unknown",
+                            )
                         raise SemanticProviderFailure(
                             disposition=(SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN),
                             code="semantic_provider_outcome_unknown",
@@ -719,7 +722,7 @@ class PipelineRunner:
                             prior_error == ErrorCode.STAGE_TRANSIENT_FAILURE.value
                             or correction is not None
                         ):
-                            if (
+                            if semantic_stage and (
                                 correction is not None
                                 or not self.semantic_durability.already_durable(
                                     run_id=run_id,
@@ -734,7 +737,7 @@ class PipelineRunner:
                                     status="confirmed_retryable",
                                 )
                         elif prior_error == ErrorCode.PIPELINE_INTERRUPTED.value:
-                            if not self.semantic_durability.already_durable(
+                            if semantic_stage and not self.semantic_durability.already_durable(
                                 run_id=run_id,
                                 stage="extractor",
                                 attempt_no=prior_attempt_no,

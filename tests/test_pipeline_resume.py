@@ -2396,6 +2396,78 @@ def test_response_telemetry_without_eligibility_recovers_as_unknown(tmp_path, mo
         store.close()
 
 
+@pytest.mark.parametrize("guarded", [False, True])
+@pytest.mark.parametrize("crash_request", [1, 2])
+@pytest.mark.parametrize("abandoned", [False, True])
+def test_correction_enabled_extraction_unknown_is_terminal_without_remote_guard(
+    tmp_path, monkeypatch, guarded, crash_request, abandoned,
+):
+    processor = _CorrectionProcessor(["invalid", "valid", "valid"])
+    database = tmp_path / "cli-correction-crash.sqlite3"
+    store = SQLiteStateStore(database)
+
+    def runner():
+        return PipelineRunner(
+            store, processor,
+            semantic_durability=(
+                _semantic_guard(_RecordingBarrier(), provider="deepseek")
+                if guarded else None
+            ),
+        )
+
+    original_process = processor.process
+
+    def crash_after_dispatch(stage_input, context):
+        result = original_process(stage_input, context)
+        if (
+            stage_input.stage is PipelineStage.EXTRACTOR
+            and processor.extractor_requests == crash_request
+        ):
+            raise KeyboardInterrupt("recorded provider dispatch crash")
+        return result
+
+    try:
+        if crash_request == 2:
+            with pytest.raises(SafeFailure) as eligible:
+                runner().run(_repository_subject(), tmp_path / "out")
+            assert eligible.value.code.value == "extraction_correction_schema"
+        with monkeypatch.context() as patch:
+            patch.setattr(processor, "process", crash_after_dispatch)
+            with pytest.raises(KeyboardInterrupt):
+                runner().run(_repository_subject(), tmp_path / "out")
+        assert processor.extractor_requests == crash_request
+        run_id = store.connection.execute("SELECT run_id FROM runs").fetchone()[0]
+        if abandoned:
+            store.abandon_stale_running(
+                run_id, PipelineStage.EXTRACTOR, runner().clock.now()
+            )
+        store.close()
+        store = SQLiteStateStore(database)
+        for _ in range(2):
+            with pytest.raises((SafeFailure, SemanticProviderFailure)) as terminal:
+                runner().run(_repository_subject(), tmp_path / "out")
+            assert processor.extractor_requests == crash_request
+            assert isinstance(terminal.value, SemanticProviderFailure)
+            assert terminal.value.disposition is (
+                SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+            )
+        chain = store.verify_run_chain(run_id)
+        attempts = [a for a in chain.attempts if a.stage is PipelineStage.EXTRACTOR]
+        assert len(attempts) == crash_request
+        assert attempts[-1].status is AttemptStatus.FAILED
+        assert attempts[-1].error_code == "pipeline_interrupted"
+        assert attempts[-1].retryable is False
+        inspection = store.inspect_run(run_id)
+        assert inspection["attempts"][-1]["status"] == "failed"
+        assert inspection["attempts"][-1]["error_code"] == "pipeline_interrupted"
+        if crash_request == 2:
+            assert attempts[0].request_id == "request-1"
+            assert attempts[-1].prompt_version == "extract-correction-prompt-v1"
+            assert processor.corrections == [None, "extraction_correction_schema"]
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("boundary", ["reservation", "started", "response"])
 def test_correction_crash_boundaries_never_repeat_a_provider_request(
     tmp_path, monkeypatch, boundary,
