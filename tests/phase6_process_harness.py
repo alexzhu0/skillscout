@@ -916,6 +916,7 @@ def _live_authority(
         ),
         policy_versions=(
             "discovery-budget-policy-v1",
+            "extract-correction-policy-v1",
             "extract-policy-v1",
             "generator-policy-v1",
             "qualification-policy-v1",

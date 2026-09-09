@@ -1154,17 +1154,22 @@ class AcceptanceSemanticTelemetryV1(_SelfDigestedModel):
                 "reviewer-policy-v1",
             ),
         }[self.stage]
-        if (
-            (
-                self.actual_model,
-                self.prompt_version,
-                self.output_schema_version,
-                self.policy_version,
+        allowed = {expected}
+        if self.stage == "extractor":
+            allowed.add(
+                (
+                    "deepseek-v4-flash",
+                    "extract-correction-prompt-v1",
+                    "workflow-spec-v1",
+                    "extract-correction-policy-v1",
+                )
             )
-            != expected
-            or self.total_tokens
-            != self.prompt_tokens + self.completion_tokens
-        ):
+        if (
+            self.actual_model,
+            self.prompt_version,
+            self.output_schema_version,
+            self.policy_version,
+        ) not in allowed or self.total_tokens != self.prompt_tokens + self.completion_tokens:
             raise ValueError("acceptance semantic telemetry is incoherent")
         return self
 

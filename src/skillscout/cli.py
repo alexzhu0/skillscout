@@ -2075,6 +2075,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 PhaseTwoProcessor(
                     GitHubReadClient(),
                     extractor,
+                    semantic_provider=provider.provider,
                 ),
             )
             payload = runtime.runner.run(

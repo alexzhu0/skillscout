@@ -387,6 +387,11 @@ def verify_live_acceptance_authority(
                     (
                         budget.budget_policy_version,
                         EXTRACT_POLICY_VERSION,
+                        *(
+                            ("extract-correction-policy-v1",)
+                            if _authority_schema == "live-acceptance-authority-v2"
+                            else ()
+                        ),
                         GENERATOR_POLICY_VERSION,
                         QUALIFICATION_POLICY_VERSION,
                         READER_POLICY_VERSION,
@@ -1973,6 +1978,7 @@ def record_live_acceptance_authority_v2(
                     (
                         budget.budget_policy_version,
                         EXTRACT_POLICY_VERSION,
+                        "extract-correction-policy-v1",
                         GENERATOR_POLICY_VERSION,
                         QUALIFICATION_POLICY_VERSION,
                         READER_POLICY_VERSION,
@@ -3638,10 +3644,62 @@ def build_discovery_application(
                 ),
                 operations_run_id=discovery_authority.run_id,
             )
+
+            def collect_extractor_telemetry() -> None:
+                """Keep each durable provider response, including correction predecessors."""
+                if runtime is None:
+                    return
+                rows = phase2_state.connection.execute(
+                    "SELECT run_id FROM runs WHERE subject_id = ? AND retry_policy_version = ? AND fixture_hash = ?",
+                    (
+                        subject.subject_id,
+                        runtime.runner.retry_policy.version,
+                        sha256_digest(subject.model_dump(mode="json", exclude_none=False)),
+                    ),
+                ).fetchall()
+                if not rows:
+                    return
+                if len(rows) != 1:
+                    raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                verified = phase2_state.verify_run_chain(str(rows[0]["run_id"]))
+                for attempt in verified.attempts:
+                    if attempt.stage.value != "extractor" or attempt.request_id is None:
+                        continue
+                    if any(
+                        value is None
+                        for value in (
+                            attempt.model_id,
+                            attempt.prompt_version,
+                            attempt.policy_version,
+                            attempt.prompt_tokens,
+                            attempt.completion_tokens,
+                            attempt.total_tokens,
+                            attempt.latency_ms,
+                        )
+                    ):
+                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+                    semantic_telemetry.append(
+                        DiscoverySemanticTelemetry(
+                            stage="extractor",
+                            workflow_authority_digest=phase2_authority_digest,
+                            attempt_no=attempt.attempt_no,
+                            request_id=attempt.request_id,
+                            actual_model=attempt.model_id,
+                            prompt_version=attempt.prompt_version,
+                            schema_version="workflow-spec-v1",
+                            policy_version=attempt.policy_version,
+                            prompt_tokens=attempt.prompt_tokens,
+                            completion_tokens=attempt.completion_tokens,
+                            total_tokens=attempt.total_tokens,
+                            latency_ms=attempt.latency_ms,
+                        )
+                    )
+
+            runtime = None
             try:
                 runtime = build_phase_two_runtime(
                     phase2_state,
-                    PhaseTwoProcessor(github, extractor),
+                    PhaseTwoProcessor(github, extractor, semantic_provider=provider.provider),
                     semantic_durability=phase2_guard,
                     retry_policy=(
                         RetryPolicy(version=retry_policy_version)
@@ -3679,44 +3737,11 @@ def build_discovery_application(
                             total_bytes=int(reader_budgets["total_bytes"]),
                             estimated_tokens=int(reader_budgets["estimated_input_tokens"]),
                         )
-                for attempt in getattr(chain, "attempts", ()):
-                    if attempt.stage.value != "extractor":
-                        continue
-                    if attempt.status.value == "failed":
-                        continue
-                    if (
-                        attempt.status.value != "succeeded"
-                        or attempt.request_id is None
-                        or attempt.model_id is None
-                        or attempt.prompt_version is None
-                        or attempt.policy_version is None
-                        or attempt.prompt_tokens is None
-                        or attempt.completion_tokens is None
-                        or attempt.total_tokens is None
-                        or attempt.latency_ms is None
-                    ):
-                        raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
-                    semantic_telemetry.append(
-                        DiscoverySemanticTelemetry(
-                            stage="extractor",
-                            workflow_authority_digest=phase2_authority_digest,
-                            attempt_no=attempt.attempt_no,
-                            request_id=attempt.request_id,
-                            actual_model=attempt.model_id,
-                            prompt_version=attempt.prompt_version,
-                            schema_version=str(extractor_result.payload["output_schema_version"])
-                            if extractor_result is not None
-                            else "",
-                            policy_version=attempt.policy_version,
-                            prompt_tokens=attempt.prompt_tokens,
-                            completion_tokens=attempt.completion_tokens,
-                            total_tokens=attempt.total_tokens,
-                            latency_ms=attempt.latency_ms,
-                        )
-                    )
+                collect_extractor_telemetry()
                 state_head = phase2_guard.verified_state_head
                 state_root = phase2_guard.state_root_digest
             except SemanticProviderFailure as failure:
+                collect_extractor_telemetry()
                 state_head = phase2_guard.verified_state_head
                 state_root = phase2_guard.state_root_digest
                 if failure.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN:
@@ -3745,8 +3770,10 @@ def build_discovery_application(
                     eligible_candidates=(),
                     state_commit_sha=state_head,
                     state_root_digest=state_root,
+                    semantic_telemetry=tuple(semantic_telemetry),
                 )
             except SafeFailure as failure:
+                collect_extractor_telemetry()
                 state_head = phase2_guard.verified_state_head
                 state_root = phase2_guard.state_root_digest
                 outcome = (
@@ -3755,6 +3782,8 @@ def build_discovery_application(
                     in {
                         ErrorCode.STAGE_TRANSIENT_FAILURE,
                         ErrorCode.RETRY_EXHAUSTED,
+                        ErrorCode.EXTRACTION_CORRECTION_SCHEMA,
+                        ErrorCode.EXTRACTION_CORRECTION_EXCERPT,
                     }
                     else "state_integrity_conflict"
                     if failure.code
@@ -3789,6 +3818,7 @@ def build_discovery_application(
                     acceptance_system_outcome=(
                         "provider_exhausted" if failure.code is ErrorCode.RETRY_EXHAUSTED else None
                     ),
+                    semantic_telemetry=tuple(semantic_telemetry),
                 )
             finally:
                 _close_discovery_resources(
@@ -4773,6 +4803,7 @@ def _acceptance_reason_code(outcome: str) -> str:
 def _validate_acceptance_semantic_telemetry_linkage(
     execution: object,
     semantic_attempts: tuple[object, ...],
+    required_response_attempts: frozenset[tuple[str, str, int]] = frozenset(),
 ) -> None:
     telemetry_keys = {
         (
@@ -4816,6 +4847,7 @@ def _validate_acceptance_semantic_telemetry_linkage(
     }
     if (
         not telemetry_keys.issubset(attempt_keys)
+        or not required_response_attempts.issubset(telemetry_keys)
         or not permanent_rejection_keys.issubset(attempt_keys)
         or missing_decided_telemetry != permanent_rejection_keys
         or (
@@ -4883,6 +4915,7 @@ class _FixedRepositoryAcceptanceRunner:
             raise ValueError("fresh V2 live acceptance authority is required")
         if (
             self._live_authority.manifest_digest != config.manifest.manifest_digest
+            or "extract-correction-policy-v1" not in self._live_authority.policy_versions
             or self._live_authority.semantic_provider != config.semantic_provider
             or self._live_authority.stage_models
             != (
@@ -5347,9 +5380,32 @@ class _FixedRepositoryAcceptanceRunner:
             and record.fact.repository_id == authority.repository_id
             and record.fact.fixed_candidate_admission_digest == admission.admission_digest
         )
+        required_response_attempts: set[tuple[str, str, int]] = set()
+        if semantic_reservations:
+            from skillscout.adapters.state import SQLiteStateStore
+
+            phase2_authority_digest = semantic_reservations[0].phase2_run_authority_digest
+            policy_version = f"{_acceptance_phase2_retry_policy_version(phase2_authority_digest)}+extract-correction-policy-v1"
+            pipeline = SQLiteStateStore(self._discovery_config.pipeline_state)
+            try:
+                rows = pipeline.connection.execute(
+                    "SELECT run_id FROM runs WHERE retry_policy_version = ?",
+                    (policy_version,),
+                ).fetchall()
+                if len(rows) != 1:
+                    raise ValueError("acceptance extraction state linkage missing")
+                chain = pipeline.verify_run_chain(str(rows[0]["run_id"]))
+                required_response_attempts.update(
+                    ("extractor", phase2_authority_digest, attempt.attempt_no)
+                    for attempt in chain.attempts
+                    if attempt.stage.value == "extractor" and attempt.request_id is not None
+                )
+            finally:
+                pipeline.close()
         _validate_acceptance_semantic_telemetry_linkage(
             execution,
             semantic_attempts,
+            frozenset(required_response_attempts),
         )
         semantic_telemetry = tuple(
             AcceptanceSemanticTelemetryV1(

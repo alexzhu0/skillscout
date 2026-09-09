@@ -179,7 +179,7 @@ class SemanticProviderSettings:
 class DeepSeekJSONResult(Generic[_ResponseModel]):
     """One locally decoded, schema-bounded Chat Completions response."""
 
-    status: Literal["parsed", "incomplete", "schema_invalid"]
+    status: Literal["parsed", "refused", "incomplete", "schema_invalid"]
     parsed: _ResponseModel | None
     request_id: object | None = field(default=None, repr=False)
     model: object | None = field(default=None, repr=False)
@@ -327,6 +327,12 @@ def request_deepseek_json(
     choice = choices[0]
     if choice.finish_reason != "stop":
         return _closed_deepseek_result("incomplete", response)
+    if (
+        stage is SemanticStage.EXTRACTION
+        and getattr(choice.message, "refusal", None) is not None
+    ):
+        # An explicit provider marker is terminal; never interpret or retain its text.
+        return _closed_deepseek_result("refused", response)
     content = choice.message.content
     if type(content) is not str or not content:
         return _closed_deepseek_result("schema_invalid", response)
@@ -344,7 +350,7 @@ def request_deepseek_json(
 
 
 def _closed_deepseek_result(
-    status: Literal["incomplete", "schema_invalid"],
+    status: Literal["refused", "incomplete", "schema_invalid"],
     response: object,
 ) -> DeepSeekJSONResult[Any]:
     return DeepSeekJSONResult(

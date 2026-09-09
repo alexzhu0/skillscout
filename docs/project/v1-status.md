@@ -4,9 +4,12 @@
 
 The [September 3 real benchmark](https://github.com/alexzhu0/skillscout/actions/runs/33734530468)
 passed authority preflight but failed during extraction; replay was skipped.
-The extraction-terminal repair preserves schema/evidence failure classification
-and request telemetry. It does not add model retries or establish successful
-real-Skill acceptance. The immediate product priority is one useful Skill and a
+The earlier terminal-only repair preserved schema/evidence failure classification
+and request telemetry without adding model retries. The separate September 9
+offline correction milestone now adds at most one application-scheduled DeepSeek
+extraction correction within the existing three-attempt/twenty-campaign-request
+limits, with independent telemetry and fail-closed recovery. It does not establish
+successful real-Skill acceptance or complete Phase 6. The immediate product priority is one useful Skill and a
 controlled task comparison, followed by the remaining five-repository and
 publication acceptance. See [release status](../../RELEASE.md) and the
 [direction review](2026-09-09-direction-review.md). The dated progress figures
