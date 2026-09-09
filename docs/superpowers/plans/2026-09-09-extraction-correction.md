@@ -60,6 +60,7 @@ Files:
 - Modify `src/skillscout/application/pipeline.py`, `src/skillscout/application/ports.py`.
 - Modify `src/skillscout/adapters/state.py`, `src/skillscout/adapters/operations_state.py` only where verification/ledger semantics need to change.
 - Modify `src/skillscout/bootstrap.py` for lazy policy selection, reusable identity, retry classification, and telemetry gathering/linkage.
+- Modify `src/skillscout/domain/acceptance.py` and existing authority construction/verification call sites as required to bind the new correction policy and admit exactly its prompt/policy telemetry pair; preserve historical authority readability and existing schema shape.
 - Add focused tests in `tests/test_extraction_correction.py`, `tests/test_semantic_durability.py`, `tests/test_pipeline_resume.py`, `tests/test_state_integrity.py` as needed.
 
 Consume Task 1's enum/versions/predicate and processor context. Preserve the old one-shot policy for OpenAI and historical state. Do not broaden generic retry authority to any failed/decided result.
