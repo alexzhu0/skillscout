@@ -10,7 +10,15 @@ The [September 3 live benchmark](https://github.com/alexzhu0/skillscout/actions/
 
 The current repair preserves a verified extractor `schema_failure` through the coordinator as `schema_exhausted`, retaining request telemetry and the permanent candidate terminal. The CLI reports a closed `schema_exhausted` diagnostic rather than describing this known failure as local-state corruption. Offline regressions cover malformed provider JSON, non-verbatim evidence, and repeated invocation without another semantic request.
 
-This repair adds no correction request, changes no validator, and grants no live execution authority. A one-correction extraction policy remains a separate evaluated follow-up because it must account for each request and preserve decided results across recovery. Successful real extraction, controlled Skill-use comparison, five-repository acceptance, exact replay, and the separately authorized publication evidence remain open. See the [direction review](docs/project/2026-09-09-direction-review.md).
+That terminal-only repair added no correction request, changed no validator, and granted no live execution authority. Its separately scoped correction follow-up is described below. Successful real extraction, controlled Skill-use comparison, five-repository acceptance, exact replay, and the separately authorized publication evidence remain open. See the [direction review](docs/project/2026-09-09-direction-review.md).
+
+### September 9 bounded-correction offline milestone
+
+DeepSeek extraction now has one durable correction opportunity for invalid structured output or zero surviving workflows where at least one rejected workflow has only non-verbatim excerpt errors. It uses the same pinned input, fixed trusted feedback, unchanged validators, and a distinct versioned prompt/policy. Every response keeps its own request ID and usage; each request consumes the existing limits of three extraction attempts and twenty acceptance-campaign semantic requests. A prior transport retry consumes a slot. No request is retried after correction, including a correction rejected with HTTP 429.
+
+Explicit provider refusal markers are terminal for extraction, without interpreting free-text refusal claims or changing generation/review handling. Missing telemetry, stale/wrong predecessor model identity, changed correction policy, and fabricated decided predecessors cannot authorize correction. Recorded tests cover successful schema/excerpt correction, twice-invalid `schema_exhausted`, budget rejection, crash recovery, and replay without another request. Fresh V2 acceptance authority must bind `extract-correction-policy-v1`; historical V1 facts remain readable and grant no new authority.
+
+Correction is application-scheduled, not an SDK retry: the fixed benchmark coordinator owns the bounded invocation loop, whereas `extract-repo` calls the runner once and requires a subsequent same-input/state invocation for a scheduled correction. This milestone does not change workflows, execute candidate code, call a live provider, or prove real Skill usefulness. The next product milestone remains one useful Skill and a controlled task-alone/README/Skill comparison, before wider campaign and publication acceptance.
 
 ## Implemented preview scope
 

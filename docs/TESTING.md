@@ -95,7 +95,20 @@ git diff --check
 
 These checks prove only the offline contracts for the ordered `rebind-benchmark-lock → record-live-authority → run-benchmark → run-replay` route. They do not consume the one-shot human approvals, write canonical state, call DeepSeek, or create a candidate, catalog branch, or Draft PR. Live-only tests may skip when their complete protected configuration is absent; a skip is not live acceptance evidence.
 
-The Phase 6 fixed-candidate integration tests also inspect the persisted pipeline runs. They require acceptance executions to use authority-derived retry-policy namespaces, ordinary Phase 2 execution to retain `retry-v1`, same-identity permanent failures to remain non-replayed, and a changed retry identity to start with a fresh deterministic budget. These are offline recorded-transport checks; they do not call a live model.
+The Phase 6 fixed-candidate integration tests also inspect the persisted pipeline runs. They require acceptance executions to use authority-derived retry-policy namespaces, correction-disabled Phase 2 execution to retain `retry-v1`, same-identity permanent failures to remain non-replayed, and a changed retry identity to start with a fresh deterministic budget. Correction-enabled DeepSeek extraction adds `+extract-correction-policy-v1` to its retry identity, including the acceptance-specific namespace. These are offline recorded-transport checks; they do not call a live model.
+
+### Bounded extraction correction
+
+The recorded five-repository production composition covers schema-invalid and non-verbatim responses followed by either a valid correction or terminal `schema_exhausted`, plus `429 → schema-invalid → valid` within three extraction requests. It asserts original user-message preservation, distinct response IDs/usage, fixed correction instructions, and no new request on replay. The pipeline suite injects interruption at reservation, started, response-persisted, and final-result durability boundaries; it also rejects tampered policy, missing telemetry, stale/wrong model identity, and fabricated decided predecessors before another dispatch. Operations-state tests separately enforce the hard twenty-request campaign ledger ceiling. Adapter and domain tests retain refusal, incomplete, partial-success, legitimate-negative, and unsafe-workflow exclusions and unchanged OpenAI/generation/review behavior.
+
+Focused offline commands (use the pinned repository toolchain):
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_pipeline_resume.py tests/test_extraction_correction.py tests/test_openai_extract.py tests/test_semantic_provider.py tests/test_extractor_boundary.py tests/test_operations_state.py tests/test_state_integrity.py tests/test_semantic_durability.py
+.tools/uv-0.11.29/bin/uv run --locked pytest -q tests/test_phase6_acceptance.py -k production_five_repo
+```
+
+Run the existing twelve cross-process recovery cases once in final full-suite validation, not after each local edit. The correction-specific crash tests are deterministic in-process fault injections, not a claim of additional cross-process/live evidence. `extract-repo` invokes the runner once; only the fixed benchmark coordinator owns an in-call correction/resume loop. Passing these tests proves bounded offline behavior, not useful real Skill generation or Phase 6 completion.
 
 The same production-composition tests now cover malformed extraction JSON and
 non-verbatim evidence. Both must persist `schema_exhausted`, retain the completed

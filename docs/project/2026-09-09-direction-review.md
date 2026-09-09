@@ -150,3 +150,28 @@ correction and controlled Skill-use evaluation remain follow-ups. Review also
 identified pre-existing loss of classification for refused/incomplete extraction
 and generic CLI mapping of other acceptance failures; those are not fixed by
 the schema-only change and must not be described as resolved.
+
+## Subsequent bounded-correction offline milestone — September 9
+
+The separately scoped implementation now supplies the one-correction policy
+proposed above for DeepSeek extraction only. Recorded production composition
+covers schema/non-verbatim failure followed by valid correction and twice-invalid
+terminal failure. Each response retains independent telemetry; correction uses
+the unchanged pinned user input and deterministic validators, fixed trusted
+feedback, and the existing three-attempt extraction/twenty-request campaign
+limits. It never retries after the correction. Explicit provider refusal markers
+are excluded without interpreting prose as provider authority. Refused/incomplete
+acceptance classification beyond that narrow exclusion remains outside this work.
+
+Offline recovery tests cover reservation, started, response-persisted, and terminal
+boundaries, plus altered policy/model identity and fabricated decided predecessor
+rejection. Scheduling belongs to the application: the fixed benchmark coordinator
+loops within its budget, while `extract-repo` requires a subsequent same-input/state
+invocation after a scheduled correction. Historical authority stays readable;
+fresh V2 live authority must bind the correction policy. No live run, candidate
+execution, workflow change, publication, or human-use comparison was performed.
+
+This is an implementation milestone, not a revised assessment of the inspected
+live failure or proof of product value. The next milestone remains one useful
+Skill and the controlled task-alone/source-README/generated-Skill comparison,
+before broader five-repository and publication acceptance. Phase 6 remains open.

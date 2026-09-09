@@ -1448,6 +1448,7 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
     operations_module = importlib.import_module("skillscout.adapters.operations_state")
     pipeline_module = importlib.import_module("skillscout.application.pipeline")
     importlib.import_module("skillscout.adapters.phase2_state")
+    original_state = importlib.import_module("skillscout.adapters.state").SQLiteStateStore
     monkeypatch.chdir(tmp_path)
     config = _runtime_config(bootstrap, tmp_path)
     authority = bootstrap.discovery_run_authority(config)
@@ -1473,9 +1474,15 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
     class FakePhaseTwoState(Resource):
         def __init__(self, _path: Path) -> None:
             super().__init__("phase2_state")
+            self._state = original_state(_path)
+            self.connection = self._state.connection
 
         def verify_run_chain(self, _run_id: str) -> object:
             return SimpleNamespace(results=())
+
+        def close(self) -> None:
+            self._state.close()
+            super().close()
 
     class Barrier:
         def confirm(self, **_kwargs: object) -> object:
@@ -1490,6 +1497,8 @@ def test_default_phase2_factory_cleanup_cannot_mask_classified_outcome(
         semantic_durability._publication_store.export_owned_state()
 
         class Runner:
+            retry_policy = _kwargs.get("retry_policy") or pipeline_module.RetryPolicy()
+
             def run(self, _subject, _output):
                 if primary_outcome == "exception":
                     raise PrimaryFailure("SECRET primary failure")

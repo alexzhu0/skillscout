@@ -918,7 +918,9 @@ def test_phase3_acceptance_protects_repository_subject_and_loader_contract(
 
 def test_phase3_acceptance_protects_phase_two_processor_contract() -> None:
     signature = inspect.signature(PhaseTwoProcessor)
-    assert tuple(signature.parameters) == ("github", "openai")
+    assert tuple(signature.parameters) == ("github", "openai", "semantic_provider")
+    assert signature.parameters["semantic_provider"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["semantic_provider"].default is None
     assert PhaseTwoProcessor.producer_version == "phase2-v1"
     assert PhaseTwoProcessor.effect_scope.fget is not None
     process = inspect.signature(PhaseTwoProcessor.process)
