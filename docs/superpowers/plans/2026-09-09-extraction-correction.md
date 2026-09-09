@@ -89,6 +89,7 @@ assert len(requests_after_resume) == len(requests_before_resume)
 Files:
 - Modify `tests/test_phase6_acceptance.py` using its existing recorded DeepSeek production composition.
 - Modify `tests/phase6_process_harness.py` or create a focused correction crash harness only if required to prove process recovery (reuse fixtures, no new framework).
+- Modify `src/skillscout/adapters/semantic_provider.py` and extraction adapter only for explicit extraction refusal exclusion if recorded negative tests confirm the existing helper misclassifies it; generation/review behavior remains unchanged.
 - Update `README.md`, `RELEASE.md`, `docs/TESTING.md`, `docs/project/v1-status.md`, and `docs/project/2026-09-09-direction-review.md` only for delivered behavior and remaining real-use validation.
 
 - [ ] Add recorded production cases for schema→valid and nonverbatim→valid with independently traceable response usage, plus twice invalid terminal `schema_exhausted`.
