@@ -208,6 +208,7 @@ def test_default_provider_is_openai_and_secret_free() -> None:
     assert settings.api_key_env == "OPENAI_API_KEY"
     assert settings.base_url is None
     assert settings.extract_model == "gpt-5.6-terra"
+    assert "key" not in repr(settings).lower()
 
 
 @pytest.mark.parametrize(
