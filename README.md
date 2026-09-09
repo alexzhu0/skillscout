@@ -4,7 +4,7 @@ SkillScout is an auditable Python pipeline for maintainers who turn reusable wor
 
 SkillScout 面向中央 Agent Skills 仓库的维护者：它以只读、可追溯的方式发现和分析公开 GitHub 仓库，并把通过安全门禁的工作流生成为仅供人工审核的 Draft PR。
 
-> **Preview:** The bounded daily/manual discovery path, deterministic and semantic pipeline, durable state recovery, and controlled Draft publication boundary are implemented and independently verified. A fresh Gate B4 canary approved the exact reviewed workflow and hosted identities. The V2 five-repository benchmark lock was successfully persisted for source commit `7bab6abcb89b5287e8d32077333fd4383331d6e5`, but persistence is not acceptance: live authority, a real benchmark, replay, and Draft PR acceptance remain pending. SkillScout is therefore not yet production-ready. Any workflow, GitHub App scope, catalog, ruleset, reviewer, protected-environment, or installation-identity change invalidates that live evidence and requires a new Gate B4 run. See [RELEASE.md](RELEASE.md) for the current release scope and gates.
+> **Preview — September 2026:** The discovery, extraction, candidate-generation, durable-state, and controlled Draft-publication paths are implemented. The [September 3 real benchmark](https://github.com/alexzhu0/skillscout/actions/runs/33734530468) passed authority preflight but failed during extraction; replay and successful real-Skill acceptance remain pending. SkillScout is not yet production-ready. Historical Gate B4 approvals apply only to their exact reviewed workflows and identities. See [RELEASE.md](RELEASE.md) for release evidence and the [direction review](docs/project/2026-09-09-direction-review.md) for the next priority: demonstrate one useful Skill with a controlled task comparison.
 
 ## Safety model
 

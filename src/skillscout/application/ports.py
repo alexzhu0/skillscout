@@ -377,6 +377,7 @@ class ErrorCode(StrEnum):
     STAGE_TRANSIENT_FAILURE = "stage_transient_failure"
     STAGE_PERMANENT_FAILURE = "stage_permanent_failure"
     STAGE_OUTPUT_INVALID = "stage_output_invalid"
+    SCHEMA_EXHAUSTED = "schema_exhausted"
     FORBIDDEN_EFFECT_SCOPE = "forbidden_effect_scope"
     INVALID_SUBJECT = "invalid_subject"
     CANDIDATE_SOURCE_UNAVAILABLE = "candidate_source_unavailable"
@@ -396,6 +397,7 @@ ERROR_SUMMARIES: dict[ErrorCode, str] = {
     ErrorCode.STAGE_TRANSIENT_FAILURE: "Stage processing failed temporarily.",
     ErrorCode.STAGE_PERMANENT_FAILURE: "Stage processing failed permanently.",
     ErrorCode.STAGE_OUTPUT_INVALID: "Stage output violated its closed contract.",
+    ErrorCode.SCHEMA_EXHAUSTED: "Extraction output failed schema or evidence validation.",
     ErrorCode.FORBIDDEN_EFFECT_SCOPE: "Dry-run adapter authority was rejected.",
     ErrorCode.INVALID_SUBJECT: "Subject input was rejected.",
     ErrorCode.CANDIDATE_SOURCE_UNAVAILABLE: "Candidate source is unavailable.",

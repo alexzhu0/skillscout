@@ -1155,6 +1155,7 @@ def _run_live_benchmark(
 ) -> dict[str, object]:
     """Execute the benchmark through the protected production composition."""
 
+    from skillscout.application.acceptance import AcceptanceApplicationError
     from skillscout.bootstrap import build_live_acceptance_execution
 
     runtime = build_live_acceptance_execution(
@@ -1164,7 +1165,12 @@ def _run_live_benchmark(
         acceptance_run_id=acceptance_run_id,
         live_admission=live_admission,
     )
-    result = runtime.run()
+    try:
+        result = runtime.run()
+    except AcceptanceApplicationError as failure:
+        if failure.code == "schema_exhausted":
+            raise SafeFailure(ErrorCode.SCHEMA_EXHAUSTED) from None
+        raise
     if type(result) is not dict or result.get("status") != "benchmark_complete":
         raise ValueError("invalid benchmark execution result")
     return result
