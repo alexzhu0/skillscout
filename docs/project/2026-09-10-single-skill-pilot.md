@@ -46,6 +46,40 @@ do not relabel an unrelated workflow or weaken retrieval/evidence validation.
    workflow dispatch, canonical remote state updates, publication, or merge.
    Do not install the Skill globally or run source-repository code.
 
+## Starting the first live extraction safely on macOS
+
+Run the following in your own **zsh terminal**, from the checkout containing this
+change. This makes at most one extraction request, not the full comparison. Paste
+the current key only at the hidden prompt; do not paste it as a shell command or
+into chat. GitHub Environment secrets do not automatically populate a local
+terminal. The subshell keeps this injection scoped to the invocation; no key file
+is read or written. No shell tracing is enabled. The printed workspace path and
+sanitized CLI result are safe to share; the key is not.
+
+```zsh
+(
+  set +x
+  umask 077
+  read -rs 'DEEPSEEK_API_KEY?DeepSeek key (hidden input): ' || exit 1
+  printf '\n'
+  [[ -n "$DEEPSEEK_API_KEY" ]] || exit 1
+  export DEEPSEEK_API_KEY
+  export SKILLSCOUT_LLM_PROVIDER=deepseek
+  export DEEPSEEK_BASE_URL=https://api.deepseek.com
+  mkdir -p .tmp
+  pilot_dir="$(mktemp -d "$PWD/.tmp/single-skill.XXXXXX")" || exit 1
+  printf 'Pilot workspace: %s\n' "$pilot_dir"
+  .tools/uv-0.11.29/bin/uv run --locked skillscout extract-repo \
+    --subject config/previews/restate-rag-subject.json \
+    --state "$pilot_dir/phase2.db" \
+    --output "$pilot_dir/phase2-output"
+)
+```
+
+Do not rerun this whole snippet after a failure: it creates fresh state. Share
+only the sanitized result and workspace path so recovery can use the **same**
+state and the recorded retry decision. Unknown completion must not be retried.
+
 ## Comparison defined before running
 
 Use the same Flash model, same token ceiling and tool-free capabilities for all
