@@ -24,6 +24,11 @@ All of these inspectors use only the Python standard library. Their mutation sui
 
 ## Running tests
 
+The local export boundary is covered by `tests/test_cli_export_candidates.py`:
+canonical descriptors round-trip through the real read-only candidate source;
+source bytes remain unchanged; invalid/incomplete state and unsafe output paths
+fail closed; the command works without provider configuration or network access.
+
 Run the complete locked suite:
 
 ```bash

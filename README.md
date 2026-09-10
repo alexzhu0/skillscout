@@ -54,6 +54,11 @@ The lock file is authoritative; keep `--locked` enabled so dependency resolution
 
 ## Quick start
 
+For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
+`export-candidates` bridges verified extraction state into canonical local build
+inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)
+defines the next real-use comparison; it is not completed live acceptance.
+
 1. Create an isolated working directory:
 
    ```bash

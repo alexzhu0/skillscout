@@ -22,6 +22,16 @@ Correction is application-scheduled, not an SDK retry: the fixed benchmark coord
 
 ## Implemented preview scope
 
+### September 10 local candidate export
+
+`export-candidates` now exposes the existing verified Phase 2-to-Phase 3 bridge
+for local use. It writes up to three canonical descriptors into a fresh private
+directory, retaining source provenance in its inventory. It needs no model key,
+performs no network access, does not change source state, and grants no publication
+authority. Invalid state and unsafe destinations fail closed. The
+[single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md) is prepared;
+real generation and the three-condition usefulness comparison are still pending.
+
 ### Auditable dry-run
 
 The `skillscout dry-run` command exercises the versioned pipeline spine against a frozen local fixture. It records durable SQLite state, canonical manifests, stage checkpoints, lineage, and a local publication plan. The terminal result is `planned_not_published`, and the dry-run runtime admits no remote-write adapter.

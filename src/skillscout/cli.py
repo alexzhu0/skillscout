@@ -65,6 +65,10 @@ from skillscout.adapters.state import (
     SQLiteStateStore,
 )
 from skillscout.adapters.subjects import load_subject
+from skillscout.application.candidate_source import (
+    MAX_CANDIDATE_DESCRIPTOR_BYTES,
+    derive_candidate_subject_descriptors,
+)
 from skillscout.application.phase3 import (
     PHASE_THREE_STAGE_SEQUENCE,
     PhaseThreeApplication,
@@ -127,6 +131,10 @@ def build_parser() -> SafeArgumentParser:
     extract_repo.add_argument("--state", required=True, type=Path)
     extract_repo.add_argument("--output", required=True, type=Path)
     extract_repo.add_argument("--fail-after", choices=PHASE_TWO_STAGE_SEQUENCE)
+    export_candidates = commands.add_parser("export-candidates")
+    export_candidates.add_argument("--phase2-state", required=True, type=Path)
+    export_candidates.add_argument("--run-id", required=True)
+    export_candidates.add_argument("--output", required=True, type=Path)
     build_candidate = commands.add_parser("build-candidate")
     build_candidate.add_argument("--candidate", required=True, type=Path)
     build_candidate.add_argument("--phase2-state", required=True, type=Path)
@@ -488,6 +496,59 @@ def _require_mutable_output_ready(path: Path) -> None:
         raise
     except OSError:
         raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+
+
+def _run_export_candidates(arguments: argparse.Namespace) -> dict[str, object]:
+    """Export canonical descriptors from verified state, without provider authority."""
+
+    state_path = Path(os.path.abspath(os.fspath(arguments.phase2_state)))
+    output = Path(os.path.abspath(os.fspath(arguments.output)))
+    manifests = state_path.with_suffix(".manifests")
+    if output == state_path or output == manifests or manifests in output.parents:
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+    source = SQLitePhaseTwoCandidateSource(state_path)
+    descriptors = derive_candidate_subject_descriptors(source, phase2_run_id=arguments.run_id)
+    prepared: list[tuple[str, bytes]] = []
+    candidates: list[dict[str, object]] = []
+    for descriptor in descriptors:
+        # Re-admit each exported descriptor and retain its verified provenance.
+        projection = source.resolve(descriptor)
+        name = f"candidate-{descriptor.selected_workflow_fingerprint.removeprefix('sha256:')}.json"
+        prepared.append((name, canonical_json_bytes(descriptor)))
+        candidates.append(
+            {
+                "descriptor_path": name,
+                "workflow_fingerprint": descriptor.selected_workflow_fingerprint,
+                "repository_url": projection.repository_url,
+                "pinned_commit_sha": projection.pinned_commit_sha,
+                "license_spdx": projection.license_spdx,
+            }
+        )
+    if prepared:
+        # An exclusive fresh child prevents overwrite/reuse of prior exports.
+        # Anchored traversal rejects symlinks in every path component.
+        parent = AnchoredDirectory.open(output.parent, create=False)
+        try:
+            os.mkdir(
+                AnchoredDirectory.validate_child_name(output.name), 0o700, dir_fd=parent.descriptor
+            )
+            directory = parent.open_child_directory(output.name)
+            try:
+                os.fsync(parent.descriptor)
+                for name, payload in prepared:
+                    directory.atomic_write(name, payload, max_bytes=MAX_CANDIDATE_DESCRIPTOR_BYTES)
+            finally:
+                directory.close()
+        finally:
+            parent.close()
+    return {
+        "schema_version": "local-candidate-export-v1",
+        "status": "exported" if prepared else "no_candidates",
+        "phase2_run_id": arguments.run_id,
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "remote_writes_attempted": 0,
+    }
 
 
 def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
@@ -2017,6 +2078,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "inspect-run":
             state = SQLiteStateStore(arguments.state)
             payload = state.inspect_run(arguments.run_id)
+        elif arguments.command == "export-candidates":
+            payload = _run_export_candidates(arguments)
         elif arguments.command == "build-candidate":
             payload = _run_build_candidate(arguments)
         elif arguments.command == "verify-publication-admission":

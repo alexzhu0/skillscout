@@ -16,6 +16,7 @@ Pass state, evidence, and output locations explicitly. The CLI does not define d
 |---|---|
 | `skillscout dry-run` | `--fixture`, `--state`, `--output` |
 | `skillscout extract-repo` | `--subject`, `--state`, `--output` |
+| `skillscout export-candidates` | `--phase2-state`, `--run-id`, `--output` (offline; fresh output directory) |
 | `skillscout build-candidate` | `--candidate`, `--phase2-state`, `--state`, `--output` |
 | `skillscout inspect-run` | `--state` |
 | `skillscout verify-publication-admission` | `--candidate`, `--phase2-state`, `--phase3-state` |
