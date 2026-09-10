@@ -1,6 +1,6 @@
 # Local evidence selection design
 
-状态：总体方向已获同意；本文等待书面设计确认，尚未实施。
+状态：用户已确认书面设计；进入离线实现，尚未声称修复或真实提取成功。
 基线：`723ad512938cd376481492f6727a46fb3b824aca`，现有 PR #40。
 范围：本地单 README 提取；不扩大到生产发现、发布或 Phase 6 campaign。
 
