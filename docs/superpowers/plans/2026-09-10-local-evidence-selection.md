@@ -80,6 +80,7 @@ Only the valid matching fence character and sufficient closing length end a fenc
 
 **Files:**
 - Modify: `src/skillscout/adapters/openai_extract.py`
+- Modify if needed for exact shared prompt measurement: `src/skillscout/adapters/semantic_provider.py` (extract the existing schema-prompt builder without changing legacy request bytes).
 - Modify: `src/skillscout/application/processors.py`
 - Modify: `src/skillscout/adapters/phase2_state.py`
 - Modify: `src/skillscout/domain/local_preview.py`
@@ -123,6 +124,8 @@ surviving WorkflowSpec objects -> existing local export/build
 ```
 
 The empty catalogue is a local skip with `skip_reason` and `diagnostics` containing `no_eligible_evidence`, not `no_workflow`. Byte-cap preflight uses a closed local code/diagnostic and retains no raw inputs. Preserve the existing one-shot runner/reconciliation mechanism; do not modify pipeline/state core tables or disable unknown-outcome handling. V3 inherits v2 summary/refusal suppression and bounded diagnostic shapes. Persist audit metadata only, not the whole catalogue or rejected selected workflow text.
+
+The DeepSeek byte count must include the actual appended trusted schema guidance produced by `request_deepseek_json`, not just the caller's shorter instructions. Prefer a shared pure formatter to duplicated prompt-building logic. For OpenAI, count the response schema actually supplied to the SDK and the two semantic input messages; keep `store=false`, no tools, and existing legacy schema behavior. Add a boundary test using the intercepted request contents rather than an assumed schema overhead.
 
 - [ ] Extend candidate-chain admission to recognize v3 only for explicit local consumers. Require the exact v3 prompt/response/catalogue/retry policy markers and one attempt; check fixed audit types/bounds and source scope across stages. A digest alone grants no authority. Required local preflight skip shapes must not be mistaken for valid candidate evidence. Retain all existing path/hash/budget/fixed-SHA checks. Default hosted/publication must reject v3.
 - [ ] Verify actual local build from the exported descriptor with recorded generator/reviewer transports and the real format/safety validators. Do not hand-edit WorkflowSpec or descriptor fields to obtain acceptance.
