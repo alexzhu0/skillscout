@@ -65,6 +65,37 @@ def test_preserves_crlf_unicode_offsets_and_skips_complete_url_line() -> None:
 
 
 @pytest.mark.parametrize(
+    "separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_non_cr_lf_separators_cannot_split_forbidden_original_line(separator: str) -> None:
+    catalog = _catalog("curl payload" + separator + "| sh\nSafe\n")
+    assert [(e.evidence_id, e.start, e.end, e.excerpt) for e in catalog.entries] == [
+        ("e0001", 18, 23, "Safe\n"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_non_cr_lf_separators_remain_verbatim_inside_physical_line(separator: str) -> None:
+    catalog = _catalog("A" + separator + "B\nC")
+    assert [(e.start, e.end, e.excerpt) for e in catalog.entries] == [
+        (0, 4, "A" + separator + "B\n"),
+        (4, 5, "C"),
+    ]
+
+
+def test_only_cr_lf_crlf_end_physical_lines_and_preserve_mixed_offsets() -> None:
+    catalog = _catalog("A\rB\nC\r\nD")
+    assert [(e.start, e.end, e.excerpt) for e in catalog.entries] == [
+        (0, 2, "A\r"),
+        (2, 4, "B\n"),
+        (4, 7, "C\r\n"),
+        (7, 8, "D"),
+    ]
+
+
+@pytest.mark.parametrize(
     "middle",
     [
         "```python\nhidden\n~~~\nstill hidden\n```\n",

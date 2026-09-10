@@ -33,6 +33,7 @@ MAX_EVIDENCE_CATALOG_ENTRIES = 128
 
 _EvidenceId = Annotated[str, Field(pattern=r"^e[0-9]{4}$")]
 _Fence = re.compile(r"^[ \t]*(`{3,}|~{3,})([^\r\n]*)")
+_PhysicalLine = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 _SelectionErrorCode = Literal["unknown_evidence_id", "step_evidence_not_declared"]
 
 
@@ -153,13 +154,14 @@ def build_evidence_catalog(
         raise ValueError("invalid evidence catalogue source") from None
 
     entries: list[EvidenceCatalogEntry] = []
-    offset = 0
     fence_character: str | None = None
     fence_length = 0
     truncated = False
-    for line in text.splitlines(keepends=True):
-        start = offset
-        offset += len(line)
+    # Only CR/LF delimit physical lines. Other separators must remain present
+    # during whole-line safety filtering; str.splitlines() would split them too.
+    for physical_line in _PhysicalLine.finditer(text):
+        line = physical_line.group()
+        start = physical_line.start()
         fence = _Fence.match(line)
         if fence_character is not None:
             if (
