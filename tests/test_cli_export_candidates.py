@@ -114,7 +114,9 @@ def test_no_workflow_is_empty_export_not_an_error(
     assert not output.exists()
 
 
-@pytest.mark.parametrize("destination", ["existing", "symlink", "ancestor-symlink", "manifest"])
+@pytest.mark.parametrize(
+    "destination", ["existing", "symlink", "ancestor-symlink", "manifest", "manifest-case-alias"]
+)
 def test_export_never_overwrites_or_writes_into_source_state(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -131,6 +133,11 @@ def test_export_never_overwrites_or_writes_into_source_state(
         link = tmp_path / "link"
         link.symlink_to(tmp_path, target_is_directory=True)
         output = link / "candidates"
+    elif destination == "manifest-case-alias":
+        alias = state.with_suffix(".manifests").with_name("PHASE2.MANIFESTS")
+        if not alias.exists():
+            pytest.skip("filesystem is case sensitive")
+        output = alias / "candidates"
     else:
         output = state.with_suffix(".manifests") / "candidates"
     before = _all_persisted_bytes(state)

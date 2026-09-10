@@ -525,6 +525,13 @@ def _run_export_candidates(arguments: argparse.Namespace) -> dict[str, object]:
             }
         )
     if prepared:
+        # Case-insensitive filesystems can alias the manifest directory with a
+        # different spelling. Exclude actual ancestors, not only lexical paths.
+        manifest_identity = _path_identity(manifests)
+        if manifest_identity is None:
+            raise CandidateSourceUnavailable()
+        if any(_path_identity(ancestor) == manifest_identity for ancestor in output.parents):
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
         # An exclusive fresh child prevents overwrite/reuse of prior exports.
         # Anchored traversal rejects symlinks in every path component.
         parent = AnchoredDirectory.open(output.parent, create=False)
