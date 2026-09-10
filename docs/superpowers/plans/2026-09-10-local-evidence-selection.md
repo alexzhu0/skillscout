@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** Both implementation tasks and task-scoped reviews passed. Full offline suite: 2,854 passed, 3 skipped; final whole-branch review and Draft PR update remain pending.
+
 **Goal:** Remove model-authored evidence copying from the local preview while preserving exact source binding and all existing safety checks.
 
 **Architecture:** A pure bounded catalogue supplies inert, exact source snippets. A separate strict response selects identifiers; deterministic materialization creates the unchanged extractor/workflow contracts before the existing validator. Explicit v3 CLI activation isolates new semantics from historical v1/v2 and hosted publication.
@@ -39,7 +41,7 @@
 - Produce `materialize_workflow(workflow: SelectedWorkflow, catalog: EvidenceCatalog) -> ExtractorWorkflow`; raise `EvidenceSelectionError` with closed `.code` (`unknown_evidence_id` or `step_evidence_not_declared`) for reference failures. No strings from rejected output in error messages.
 - Produce `EVIDENCE_CATALOG_POLICY_VERSION` and `EVIDENCE_SELECTION_SCHEMA_VERSION` with global constraint values.
 
-- [ ] Write focused tests with independently derived expected excerpts and offsets. Required example:
+- [x] Write focused tests with independently derived expected excerpts and offsets. Required example:
 
 ```python
 text = "Alpha\r\nhttps://blocked.invalid\r\n  第二段  \r\n"
@@ -56,8 +58,8 @@ assert catalog.entries[1].evidence_id == "e0002"
 
 Add tests for mixed backtick/tilde fences, unclosed/mismatched fences, long lines, full-line forbidden patterns crossing a 280-character boundary, blank chunks, Unicode, exactly 128 and >128 eligible pieces, digest changes on changed scope/source/position, strict extra-field rejection, exact materialization, unknown IDs and undeclared step IDs. Confirm safety of original whole line is checked before segmentation. Do not assert product helper output against itself.
 
-- [ ] Run `pytest -q tests/test_evidence_selection.py` via the locked prefix; record expected RED from the missing feature before production implementation.
-- [ ] Implement frozen domain values and pure functions. The catalogue algorithm is:
+- [x] Run `pytest -q tests/test_evidence_selection.py` via the locked prefix; record expected RED from the missing feature before production implementation.
+- [x] Implement frozen domain values and pure functions. The catalogue algorithm is:
 
 ```text
 for each original line, preserving line endings and absolute character offset:
@@ -73,8 +75,8 @@ digest canonical scope + catalogue policy + ordered entries (+ truncation fact)
 
 Only the valid matching fence character and sufficient closing length end a fence; a different fence marker inside it is not a closer. Materialization derives every mechanical field from the entry map, never from model fields. Semantic limits must match the legacy workflow and evidence support contracts.
 
-- [ ] Run the focused file plus `tests/test_extraction_diagnostics.py`; run scoped Ruff; self-review source equality, boundedness and no raw error propagation.
-- [ ] Commit only these domain/test files and write the implementation report with RED/GREEN outputs and exact public interfaces.
+- [x] Run the focused file plus `tests/test_extraction_diagnostics.py`; run scoped Ruff; self-review source equality, boundedness and no raw error propagation.
+- [x] Commit only these domain/test files and write the implementation report with RED/GREEN outputs and exact public interfaces.
 
 ### Task 2: V3 adapter, pipeline, state admission, CLI and documentation
 
@@ -95,7 +97,7 @@ Only the valid matching fence character and sufficient closing length end a fenc
 - Add `OpenAIExtractionClient.extract(..., evidence_selection: bool = False)` as a mutually exclusive mode with `local_preview=True` or any correction. Reject non-booleans before request. Use `EvidenceSelectionResponse` only for this mode, keeping legacy response schemas unchanged.
 - Result parsing may carry a strictly typed selection response until the processor resolves it; do not weaken existing response validation or coerce arbitrary mappings into a valid workflow. Keep telemetry identical to existing handling.
 
-- [ ] Write recorded-transport production-composition tests first. Reuse the existing selected-reader Github fixtures and synthetic semantic response helper; transform evidence refs into IDs in the synthetic response, then assert actual output source values:
+- [x] Write recorded-transport production-composition tests first. Reuse the existing selected-reader Github fixtures and synthetic semantic response helper; transform evidence refs into IDs in the synthetic response, then assert actual output source values:
 
 ```python
 argv = _argv(tmp_path) + ["--deepseek-current-flash", "--evidence-selection"]
@@ -110,8 +112,8 @@ assert semantic.call_count(*CHAT_COMPLETIONS) == 1
 
 Use a hand-checked source line/ID; never compute the expected materialized excerpt with the new catalogue helper. Cover empty catalogue, byte budget boundary, forbidden authored output, unknown/extra model fields, undeclared step references, model refusal/incomplete/unknown/429, lost response and second invocation, stage scope/identity tampering, unchanged old state, export/build and publication denial. Verify ignored source text and fake instructions never enter trusted messages. In the empty/preflight branches assert zero semantic transport requests and a distinct fixed diagnostic, not a model no-workflow result.
 
-- [ ] Run the new file for RED and record specific missing CLI/mode behavior.
-- [ ] Wire v3 explicitly through the existing flow:
+- [x] Run the new file for RED and record specific missing CLI/mode behavior.
+- [x] Wire v3 explicitly through the existing flow:
 
 ```text
 CLI selection flag + selected README -> v3 subject + one-attempt retry policy
@@ -127,8 +129,8 @@ The empty catalogue is a local skip with `skip_reason` and `diagnostics` contain
 
 The DeepSeek byte count must include the actual appended trusted schema guidance produced by `request_deepseek_json`, not just the caller's shorter instructions. Prefer a shared pure formatter to duplicated prompt-building logic. For OpenAI, count the response schema actually supplied to the SDK and the two semantic input messages; keep `store=false`, no tools, and existing legacy schema behavior. Add a boundary test using the intercepted request contents rather than an assumed schema overhead.
 
-- [ ] Extend candidate-chain admission to recognize v3 only for explicit local consumers. Require the exact v3 prompt/response/catalogue/retry policy markers and one attempt; check fixed audit types/bounds and source scope across stages. A digest alone grants no authority. Required local preflight skip shapes must not be mistaken for valid candidate evidence. Retain all existing path/hash/budget/fixed-SHA checks. Default hosted/publication must reject v3.
-- [ ] Verify actual local build from the exported descriptor with recorded generator/reviewer transports and the real format/safety validators. Do not hand-edit WorkflowSpec or descriptor fields to obtain acceptance.
-- [ ] Run locked focused tests including all local preview files, provider, extraction and candidate-source/build tests. Fix regressions without changing legacy v1/v2/default meaning. Run Ruff, three existing Phase 6 inspection scripts and a final complete offline suite in disjoint partitions (slow Phase 6 recovery tests separately if needed).
-- [ ] Update docs with exact new command, local-only constraints, offline result and the still-exhausted real pilot budget. Mark this as an offline mechanical repair, not a real successful extraction or useful Skill. Do not reset historical facts.
+- [x] Extend candidate-chain admission to recognize v3 only for explicit local consumers. Require the exact v3 prompt/response/catalogue/retry policy markers and one attempt; check fixed audit types/bounds and source scope across stages. A digest alone grants no authority. Required local preflight skip shapes must not be mistaken for valid candidate evidence. Retain all existing path/hash/budget/fixed-SHA checks. Default hosted/publication must reject v3.
+- [x] Verify actual local build from the exported descriptor with recorded generator/reviewer transports and the real format/safety validators. Do not hand-edit WorkflowSpec or descriptor fields to obtain acceptance.
+- [x] Run locked focused tests including all local preview files, provider, extraction and candidate-source/build tests. Fix regressions without changing legacy v1/v2/default meaning. Run Ruff, three existing Phase 6 inspection scripts and a final complete offline suite in disjoint partitions (slow Phase 6 recovery tests separately if needed).
+- [x] Update docs with exact new command, local-only constraints, offline result and the still-exhausted real pilot budget. Mark this as an offline mechanical repair, not a real successful extraction or useful Skill. Do not reset historical facts.
 - [ ] Commit scoped code, tests and docs; report RED/GREEN, complete final evidence, remaining issues and no live calls. Controller performs independent review, then updates the existing Draft PR only after verification; no merge.
