@@ -137,6 +137,7 @@ Phases 1–5 are implemented and verified. Phase 4 controlled publication includ
 
 - OpenAI is the default provider. Extraction, generation, and review use the Responses API with `gpt-5.6-terra`, strict Pydantic response models, `store=false`, and no tools.
 - DeepSeek is an explicit opt-in selected with `SKILLSCOUT_LLM_PROVIDER=deepseek` and the exact official base URL. It uses `deepseek-v4-flash` through the guarded Chat Completions compatibility path.
+- Only local `extract-repo` and `build-candidate` accept `--deepseek-current-flash`, selecting `deepseek-flash` for extraction/generation while keeping the independent `deepseek-v4-pro` reviewer. Hosted profiles stay unchanged. Use separate private state for a changed model profile; never erase a failure or retry an unknown provider outcome.
 - DeepSeek JSON is never trusted as provider-validated structured output. Each response is decoded and validated locally against the same strict Pydantic schemas, and extra or malformed fields fail closed.
 - Both provider clients are constructed with SDK retries disabled (`max_retries=0`). Retry authority remains in the deterministic pipeline policy so one semantic-stage attempt produces exactly one provider request.
 - Semantic calls never receive tool authority, code execution, shell access, or permission to follow instructions embedded in repository content.

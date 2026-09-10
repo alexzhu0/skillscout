@@ -32,6 +32,22 @@ authority. Invalid state and unsafe destinations fail closed. The
 [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md) is prepared;
 real generation and the three-condition usefulness comparison are still pending.
 
+### September 10 local current-Flash compatibility
+
+Local `extract-repo` and `build-candidate` now accept the explicit
+`--deepseek-current-flash` option. It requests `deepseek-flash` for extraction and
+generation, retains the independent Pro reviewer, and preserves strict response
+model identity, local schema validation, zero SDK retries, and unknown-outcome
+quarantine. Default and hosted model profiles are unchanged.
+
+Read-only credential recovery passed. The subsequent current-Flash invocation
+stopped in the GitHub scout stage with no semantic request: a diagnostic confirmed
+the anonymous GitHub rate limit was exhausted. This is not a successful extraction
+or generated Skill, and does not change Phase 6 release status. A separate offline
+check confirmed that the intended nested RAG README is outside the current reader
+path allowlist. Local state is preserved; the pilot is paused rather than spending
+another request on input that does not include its intended example.
+
 ### Auditable dry-run
 
 The `skillscout dry-run` command exercises the versioned pipeline spine against a frozen local fixture. It records durable SQLite state, canonical manifests, stage checkpoints, lineage, and a local publication plan. The terminal result is `planned_not_published`, and the dry-run runtime admits no remote-write adapter.

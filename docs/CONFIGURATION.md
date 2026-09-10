@@ -86,6 +86,22 @@ export DEEPSEEK_BASE_URL='https://api.deepseek.com'
 
 The implementation pins the official base URL instead of accepting arbitrary compatible endpoints. Semantic SDK clients use zero SDK retries. Provider identity and model names may be persisted for audit, but credential values are deliberately excluded from the settings representation.
 
+For a **local preview only**, `extract-repo` and `build-candidate` accept
+`--deepseek-current-flash`. With the DeepSeek provider selected, this binds
+extraction and generation to `deepseek-flash` and keeps the separately contextualized
+reviewer on `deepseek-v4-pro`. It rejects the OpenAI provider. Other commands do not
+accept the flag, and hosted defaults and historical Phase 6 model bindings are
+unchanged. Arbitrary model IDs, mixed legacy/current generation profiles, and a
+response whose model ID differs from the requested ID remain rejected.
+
+Use separate private state/output paths when changing model profiles; do not reuse
+legacy evidence as current-model results. Keep the selected flag on any authorized
+resume. Never retry an unknown provider outcome or erase a permanent failure.
+The [DeepSeek model documentation](https://api-docs.deepseek.com/quick_start/pricing/)
+reported on September 10, 2026 that current Flash is V4.1 and legacy Flash aliases
+route to it; an API name is not an immutable model snapshot. This local opt-in
+does not renew publication or acceptance authority.
+
 ## Limits and fixed defaults
 
 These limits are defined in source and are not environment-variable overrides.

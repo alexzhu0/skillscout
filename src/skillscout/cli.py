@@ -57,7 +57,10 @@ from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.adapters.openai_extract import OpenAIExtractionClient
 from skillscout.adapters.openai_generate import OpenAIGenerationClient
 from skillscout.adapters.openai_review import OpenAIReviewClient
-from skillscout.adapters.semantic_provider import resolve_semantic_provider
+from skillscout.adapters.semantic_provider import (
+    resolve_local_preview_semantic_provider,
+    resolve_semantic_provider,
+)
 from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
 from skillscout.adapters.skills_ref import validate_with_official_validator
 from skillscout.adapters.state import (
@@ -144,6 +147,12 @@ def build_parser() -> SafeArgumentParser:
         "--fail-after",
         choices=PHASE_THREE_STAGE_SEQUENCE,
     )
+    for local_command in (extract_repo, build_candidate):
+        local_command.add_argument(
+            "--deepseek-current-flash",
+            action="store_true",
+            help="Opt in to current DeepSeek Flash for a local preview; hosted defaults stay unchanged.",
+        )
     inspect_run = commands.add_parser("inspect-run")
     inspect_run.add_argument("run_id")
     inspect_run.add_argument("--state", required=True, type=Path)
@@ -561,7 +570,11 @@ def _run_export_candidates(arguments: argparse.Namespace) -> dict[str, object]:
 def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     _validate_candidate_paths(arguments)
     clients: list[object] = []
-    provider = resolve_semantic_provider()
+    provider = (
+        resolve_local_preview_semantic_provider(current_flash=True)
+        if arguments.deepseek_current_flash
+        else resolve_semantic_provider()
+    )
     profile = PhaseThreeRuntimeProfile.from_configured_models(
         generator_model_id=provider.generator_model,
         reviewer_model_id=provider.reviewer_model,
@@ -2129,7 +2142,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "publish-discovered":
             payload = _run_publish_discovered(arguments)
         elif arguments.command == "extract-repo":
-            provider = resolve_semantic_provider()
+            provider = (
+                resolve_local_preview_semantic_provider(current_flash=True)
+                if arguments.deepseek_current_flash
+                else resolve_semantic_provider()
+            )
             subject = load_subject(arguments.subject)
             state = SQLiteStateStore(arguments.state)
             extractor = (

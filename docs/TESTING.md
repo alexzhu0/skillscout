@@ -29,6 +29,19 @@ canonical descriptors round-trip through the real read-only candidate source;
 source bytes remain unchanged; invalid/incomplete state and unsafe output paths
 fail closed; the command works without provider configuration or network access.
 
+The local current-Flash option is covered by `tests/test_cli_current_flash.py`
+and `tests/test_semantic_provider.py`: unchanged legacy/hosted defaults, exact
+current-Flash request/response identity, separate Pro review, rejection of mixed
+or arbitrary models, and no second request after an unknown model mismatch.
+These are recorded-transport tests, not evidence of live model quality.
+
+September 10 local current-Flash verification observed `2698 passed, 3 skipped`
+across disjoint final runs: 2518 non-Phase-6 cases; 160 ordinary Phase 6 cases;
+8 production five-repository cases; and 12 cross-process recovery cases. The three
+skips are not live acceptance evidence. Ruff, the Phase 6 source-execution check,
+validation map, hard-gate registry, and `git diff --check` also passed. This is a
+dated observation of the local preview tree, not a permanent pass-count contract.
+
 Run the complete locked suite:
 
 ```bash

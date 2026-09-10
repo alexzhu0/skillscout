@@ -266,6 +266,47 @@ def test_deepseek_requires_exact_official_origin_and_stage_models() -> None:
     assert CANARY_BASE_URL not in repr(settings)
 
 
+def test_local_preview_explicitly_selects_current_flash_without_changing_legacy() -> None:
+    resolve_local_preview = _future_provider_symbol(
+        "resolve_local_preview_semantic_provider",
+        skip_if_missing=False,
+    )
+    current_flash_model = _future_provider_symbol(
+        "DEEPSEEK_CURRENT_FLASH_MODEL",
+        skip_if_missing=False,
+    )
+    environ = {
+        "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+        "DEEPSEEK_BASE_URL": CANARY_BASE_URL,
+    }
+
+    legacy = resolve_local_preview(environ)
+    preview = resolve_local_preview(environ, current_flash=True)
+
+    assert legacy.extract_model == "deepseek-v4-flash"
+    assert legacy.generator_model == "deepseek-v4-flash"
+    assert legacy.reviewer_model == "deepseek-v4-pro"
+    assert current_flash_model == "deepseek-flash"
+    assert preview.provider is SemanticProvider.DEEPSEEK
+    assert preview.api_key_env == "DEEPSEEK_API_KEY"
+    assert preview.extract_model == "deepseek-flash"
+    assert preview.generator_model == "deepseek-flash"
+    assert preview.reviewer_model == "deepseek-v4-pro"
+    assert preview.base_url == CANARY_BASE_URL
+
+
+def test_local_preview_current_flash_rejects_openai_selection() -> None:
+    resolve_local_preview = _future_provider_symbol(
+        "resolve_local_preview_semantic_provider",
+        skip_if_missing=False,
+    )
+
+    with pytest.raises(SafeFailure) as failure:
+        resolve_local_preview({}, current_flash=True)
+
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+
 def test_deepseek_profile_admission_precedes_credential_lookup() -> None:
     invalid_settings = (
         SemanticProviderSettings(
@@ -292,6 +333,35 @@ def test_deepseek_profile_admission_precedes_credential_lookup() -> None:
             create_semantic_client(settings, sdk=openai, environ=environ)
         assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
         assert "DEEPSEEK_API_KEY" not in environ.lookups
+
+
+@pytest.mark.parametrize(
+    ("extract_model", "generator_model"),
+    (
+        ("deepseek-flash", "deepseek-v4-flash"),
+        ("deepseek-v4-flash", "deepseek-flash"),
+        ("deepseek-current-flash", "deepseek-current-flash"),
+    ),
+)
+def test_deepseek_rejects_mixed_or_freeform_flash_profiles_before_secret_lookup(
+    extract_model: str,
+    generator_model: str,
+) -> None:
+    settings = SemanticProviderSettings(
+        provider=SemanticProvider.DEEPSEEK,
+        api_key_env="DEEPSEEK_API_KEY",
+        extract_model=extract_model,
+        generator_model=generator_model,
+        reviewer_model="deepseek-v4-pro",
+        base_url=CANARY_BASE_URL,
+    )
+    environ = _LookupSpy({"DEEPSEEK_API_KEY": CANARY_KEY})
+
+    with pytest.raises(SafeFailure) as failure:
+        create_semantic_client(settings, sdk=openai, environ=environ)
+
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+    assert "DEEPSEEK_API_KEY" not in environ.lookups
 
 
 @pytest.mark.parametrize(
@@ -598,6 +668,116 @@ def test_each_exact_stage_model_pair_makes_one_strict_request(
     assert "tool_choice" not in body
 
 
+@pytest.mark.parametrize("stage_name", ("extraction", "generation"))
+def test_current_flash_preview_stage_makes_one_strict_recorded_request(
+    stage_name: str,
+) -> None:
+    stage = _future_provider_symbol("SemanticStage")
+    current_flash_model = _future_provider_symbol(
+        "DEEPSEEK_CURRENT_FLASH_MODEL",
+        skip_if_missing=False,
+    )
+    resolve_local_preview = _future_provider_symbol(
+        "resolve_local_preview_semantic_provider",
+        skip_if_missing=False,
+    )
+    recorded = RecordedTransport(
+        {
+            CHAT_COMPLETIONS: _chat_response(
+                '{"value":"ok"}',
+                model="deepseek-flash",
+            )
+        }
+    )
+    settings = resolve_local_preview(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": CANARY_BASE_URL,
+        },
+        current_flash=True,
+    )
+    client = create_semantic_client(
+        settings,
+        sdk=openai,
+        api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+    )
+
+    try:
+        result = request_deepseek_json(
+            client,
+            sdk=openai,
+            stage=stage(stage_name),
+            model=current_flash_model,
+            instructions="trusted",
+            user_payload="untrusted",
+            response_model=_Answer,
+            max_tokens=32,
+        )
+    finally:
+        client.close()
+
+    assert result.status == "parsed"
+    assert result.model == "deepseek-flash"
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+    body = json.loads(recorded.requests[0].content)
+    assert body["model"] == "deepseek-flash"
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["stream"] is False
+    assert body["thinking"] == {"type": "disabled"}
+    assert "tools" not in body
+    assert "tool_choice" not in body
+
+
+def test_current_flash_response_with_different_model_is_unknown() -> None:
+    stage = _future_provider_symbol("SemanticStage")
+    current_flash_model = _future_provider_symbol(
+        "DEEPSEEK_CURRENT_FLASH_MODEL",
+        skip_if_missing=False,
+    )
+    recorded = RecordedTransport(
+        {
+            CHAT_COMPLETIONS: _chat_response(
+                '{"value":"ok"}',
+                model="deepseek-v4-flash",
+            )
+        }
+    )
+    settings = SemanticProviderSettings(
+        provider=SemanticProvider.DEEPSEEK,
+        api_key_env="DEEPSEEK_API_KEY",
+        extract_model="deepseek-flash",
+        generator_model="deepseek-flash",
+        reviewer_model="deepseek-v4-pro",
+        base_url=CANARY_BASE_URL,
+    )
+    client = create_semantic_client(
+        settings,
+        sdk=openai,
+        api_key=CANARY_KEY,
+        http_client=httpx.Client(transport=recorded.transport()),
+    )
+
+    try:
+        with pytest.raises(SemanticProviderFailure) as failure:
+            request_deepseek_json(
+                client,
+                sdk=openai,
+                stage=stage.EXTRACTION,
+                model=current_flash_model,
+                instructions="trusted",
+                user_payload="untrusted",
+                response_model=_Answer,
+                max_tokens=32,
+            )
+    finally:
+        client.close()
+
+    assert failure.value.disposition is SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+    assert failure.value.code == "semantic_provider_outcome_unknown"
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
 @pytest.mark.parametrize(
     ("stage_name", "model"),
     (
@@ -626,6 +806,29 @@ def test_wrong_stage_model_pair_fails_before_transport(stage_name: str, model: s
             response_model=_Answer,
             max_tokens=32,
         )
+    assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
+
+
+def test_unhashable_model_fails_closed_before_transport() -> None:
+    stage = _future_provider_symbol("SemanticStage")
+
+    class RejectingClient:
+        @property
+        def chat(self) -> object:
+            raise AssertionError("invalid model reached HTTP transport")
+
+    with pytest.raises(SafeFailure) as failure:
+        request_deepseek_json(
+            RejectingClient(),
+            sdk=openai,
+            stage=stage.EXTRACTION,
+            model=[],  # type: ignore[arg-type]
+            instructions="trusted",
+            user_payload="untrusted",
+            response_model=_Answer,
+            max_tokens=32,
+        )
+
     assert failure.value.code is ErrorCode.STAGE_PERMANENT_FAILURE
 
 

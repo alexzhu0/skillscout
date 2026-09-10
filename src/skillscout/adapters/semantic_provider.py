@@ -16,6 +16,7 @@ from skillscout.application.ports import ErrorCode, SafeFailure
 
 OPENAI_MODEL = "gpt-5.6-terra"
 DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"
+DEEPSEEK_CURRENT_FLASH_MODEL = "deepseek-flash"
 DEEPSEEK_PRO_MODEL = "deepseek-v4-pro"
 # Historical public name retained for existing all-Flash evidence and callers.
 DEEPSEEK_MODEL = DEEPSEEK_FLASH_MODEL
@@ -218,6 +219,28 @@ def resolve_semantic_provider(
     )
 
 
+def resolve_local_preview_semantic_provider(
+    environ: Mapping[str, str] | None = None,
+    *,
+    current_flash: bool = False,
+) -> SemanticProviderSettings:
+    """Resolve an explicitly local-only current-Flash preview profile."""
+
+    settings = resolve_semantic_provider(environ)
+    if not current_flash:
+        return settings
+    if settings.provider is not SemanticProvider.DEEPSEEK:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+    return SemanticProviderSettings(
+        provider=SemanticProvider.DEEPSEEK,
+        api_key_env="DEEPSEEK_API_KEY",
+        extract_model=DEEPSEEK_CURRENT_FLASH_MODEL,
+        generator_model=DEEPSEEK_CURRENT_FLASH_MODEL,
+        reviewer_model=DEEPSEEK_PRO_MODEL,
+        base_url=DEEPSEEK_OFFICIAL_BASE_URL,
+    )
+
+
 def _validate_semantic_provider_settings(
     settings: SemanticProviderSettings,
 ) -> None:
@@ -234,9 +257,23 @@ def _validate_semantic_provider_settings(
     elif settings.provider is SemanticProvider.DEEPSEEK:
         valid = (
             settings.api_key_env == "DEEPSEEK_API_KEY"
-            and settings.extract_model == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.EXTRACTION]
-            and settings.generator_model == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.GENERATION]
-            and settings.reviewer_model == DEEPSEEK_MODEL_BY_STAGE[SemanticStage.REVIEW]
+            and (
+                settings.extract_model,
+                settings.generator_model,
+                settings.reviewer_model,
+            )
+            in {
+                (
+                    DEEPSEEK_FLASH_MODEL,
+                    DEEPSEEK_FLASH_MODEL,
+                    DEEPSEEK_PRO_MODEL,
+                ),
+                (
+                    DEEPSEEK_CURRENT_FLASH_MODEL,
+                    DEEPSEEK_CURRENT_FLASH_MODEL,
+                    DEEPSEEK_PRO_MODEL,
+                ),
+            }
             and settings.base_url == DEEPSEEK_OFFICIAL_BASE_URL
         )
     else:
@@ -285,7 +322,12 @@ def request_deepseek_json(
 
     if (
         type(stage) is not SemanticStage
-        or model != DEEPSEEK_MODEL_BY_STAGE[stage]
+        or type(model) is not str
+        or (
+            stage in (SemanticStage.EXTRACTION, SemanticStage.GENERATION)
+            and model not in {DEEPSEEK_FLASH_MODEL, DEEPSEEK_CURRENT_FLASH_MODEL}
+        )
+        or (stage is SemanticStage.REVIEW and model != DEEPSEEK_PRO_MODEL)
         or not instructions
         or type(user_payload) is not str
         or max_tokens < 1
