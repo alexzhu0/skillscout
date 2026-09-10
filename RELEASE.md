@@ -29,8 +29,9 @@ for local use. It writes up to three canonical descriptors into a fresh private
 directory, retaining source provenance in its inventory. It needs no model key,
 performs no network access, does not change source state, and grants no publication
 authority. Invalid state and unsafe destinations fail closed. The
-[single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md) is prepared;
-real generation and the three-condition usefulness comparison are still pending.
+[single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md) has now reached
+its extraction ceiling with zero admissible workflows; real generation and the
+three-condition usefulness comparison have not run.
 
 ### September 10 local current-Flash compatibility
 
@@ -83,11 +84,29 @@ are unchanged.
 V2 uses one attempt per stage, without correction or transport retry, while
 preserving unknown-outcome no-replay handling. The distinct subject/retry identity
 prevents reuse of historical v1 success or failure; v1 evidence remains readable
-and usable by the existing local bridge. This repair was verified offline only:
-no further DeepSeek call, generated Skill, or comparison result is claimed.
+and usable by the existing local bridge. The repair checkpoint was offline;
+the subsequently approved real trial is recorded separately below.
 Final disjoint regression runs: 2,748 passed, 3 skipped. Full Ruff, the three
 Phase 6 inspectors, and whitespace checks passed; independent review found no
 remaining issue. Skips are not live acceptance evidence.
+
+### September 10 local v2 live outcome — stopped
+
+The separately approved v2 trial used software `e490f5a8238f17c1de3cffd5723cfaa9a2435427`
+and the same exact source README. It made one real `deepseek-flash` request
+(2,338 input + 2,300 output = 4,638 tokens). Both proposed workflows were dropped:
+one for non-verbatim evidence, one for URLs in three evidence-excerpt fields.
+The terminal remains `schema_failure`, zero workflows; offline export failed
+closed. Rejected raw text was not retained, so diagnostics establish the rule
+and field failures, not the exact offending text.
+
+The original possible request plus the two confirmed selected-README requests
+exhaust the three-extraction ceiling. No correction, generation, review,
+comparison, or publication followed; historical failed facts were verified
+unchanged. The prompt repair did not establish a useful Skill. Further work
+starts with offline evidence-boundary investigation, not automatic retries or
+weakened validation. PR #40 remains a development Draft, not a generated Skill
+or release-acceptance result.
 
 ### Auditable dry-run
 

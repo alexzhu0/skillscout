@@ -48,7 +48,7 @@ skips are not live acceptance evidence. Ruff, the Phase 6 source-execution check
 validation map, hard-gate registry, and `git diff --check` also passed. This is a
 dated observation of the local preview tree, not a permanent pass-count contract.
 
-The separate live selected-README trial made one `deepseek-flash` request and
+The first live selected-README trial made one `deepseek-flash` request and
 recorded a terminal `schema_failure` / `forbidden_text`, not a usable candidate.
 See the [pilot evidence](project/2026-09-10-single-skill-pilot.md#selected-readme-trial-result).
 
@@ -60,6 +60,14 @@ and retry evidence rejection, all nine forbidden patterns, every schema text fie
 bounded diagnostic order, and no rejected text in durable state. These are offline
 recorded-transport checks; they do not establish that the revised prompt improves
 real model output.
+
+The subsequently approved v2 live trial made one `deepseek-flash` request (4,638
+tokens) and also ended in `schema_failure`, with non-verbatim evidence and URL
+matches in evidence excerpts. There were zero workflows and no generated Skill;
+export failed closed. This exhausts the pilot's conservative three-extraction
+ceiling. The 50 focused local-output/diagnostic/selected-reader tests passed before
+dispatch; passing those tests did not predict real extraction quality. See the
+[v2 result](project/2026-09-10-single-skill-pilot.md#selected-readme-v2-trial-result).
 
 Run the complete locked suite:
 

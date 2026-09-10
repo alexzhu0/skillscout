@@ -57,7 +57,10 @@ The lock file is authoritative; keep `--locked` enabled so dependency resolution
 For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
 `export-candidates` bridges verified extraction state into canonical local build
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)
-defines the next real-use comparison; it is not completed live acceptance.
+defines the intended real-use comparison; it is not completed live acceptance.
+Its latest real Flash trial produced zero admissible workflows (non-verbatim
+evidence and URLs in evidence); no Skill was generated. The trial's extraction
+budget is exhausted, so investigation continues offline, without automatic retry.
 
 For a nested example, local `extract-repo --readme-path path/to/README.md`
 reads only that selected file at the subject's exact 40-character commit SHA.

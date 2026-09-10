@@ -1,12 +1,14 @@
 # Single-Skill pilot — September 10, 2026
 
-Status: local export, current-Flash compatibility, and an explicitly selected
-README input are implemented. After credential/rate-limit recovery, one real
-`deepseek-flash` request read the intended nested example and proposed a RAG
-workflow. Deterministic safety validation dropped it for `forbidden_text`, leaving
-zero workflows and a terminal `schema_failure`. No suitable Skill exists;
-generation, review, and comparison have not run. This is development validation,
-not Phase 6 release evidence. Prior failures remain unchanged.
+Status: the approved local v2 trial completed one real `deepseek-flash` request
+against the intended nested README, but both proposed workflows failed evidence
+validation: one for `excerpt_not_verbatim`, one for URLs inside evidence excerpts.
+The extractor recorded `schema_failure` with zero workflows; export failed closed.
+The conservative three-extraction budget is exhausted. No suitable Skill exists;
+generation, review, comparison, and publication have not run. Stop live calls and
+review the evidence-construction boundary offline before proposing another trial.
+This is development validation, not Phase 6 release evidence. Prior failures
+remain unchanged.
 
 ## Fixed source and intended task
 
@@ -154,17 +156,59 @@ offline, with no additional model invocation:
 - Default and hosted prompts, existing validators, legacy correction rules,
   publication authority, and historical state are unchanged.
 
-This does not reveal which pattern caused the old rejection and does not prove
-the new prompt will yield a useful Skill. A separately bounded v2 trial remains
-next; the previous terminal run must not be silently retried. There is one unused
-slot under the original three-extraction ceiling, but unused budget alone is not
-permission to invoke a changed prompt. No generation/review/comparison ran here.
+At the repair checkpoint, this did not reveal which pattern caused the old
+rejection or prove the new prompt would yield a useful Skill. One slot remained
+under the original three-extraction ceiling; the operator subsequently approved
+the separately bounded v2 trial below. The previous terminal run was not retried.
+
+### Selected README v2 trial result
+
+- Software commit: `e490f5a8238f17c1de3cffd5723cfaa9a2435427`, verified clean
+  before dispatch. Run: `d3aaeaddcc944809b148fa7b72f87246`, in the same existing
+  current-Flash database, with `local-readme-v2` bound through all four stages.
+- GitHub preflight returned HTTP 200 with 48 anonymous requests remaining.
+  Source commit, selected README, MIT license, blob, byte count, and content
+  digest matched the preceding selected-README trial. Source files loaded: 0.
+- Exactly one extractor attempt/request, no correction or transport retry.
+  Configured and returned model: `deepseek-flash`;
+  prompt: `extract-local-output-prompt-v1`;
+  request ID: `c2a1a3a1-5793-46f9-8d8c-3dceb650c158`;
+  2,338 input + 2,300 output = 4,638 tokens; recorded latency: 9,635 ms.
+- Extractor terminal: `schema_failure`, `all_workflows_dropped`, `workflows=[]`.
+  Workflow index 0 was dropped for `excerpt_not_verbatim`. Workflow index 1 was
+  dropped for `forbidden_text`, with closed diagnostic rule `url` at
+  `evidence[0].excerpt`, `steps[0].evidence[0].excerpt`, and
+  `steps[1].evidence[0].excerpt`. No diagnostic truncation occurred.
+- These diagnostics locate rule failures, not rejected source text. No rejected
+  title, excerpt, summary, or refusal prose was retained. The precise non-verbatim
+  difference and actual URL cannot be reconstructed from this evidence. Do not
+  infer a secret leak, harmless URL, or source-side injection from the rule IDs.
+- CLI exit 0 / run `completed` means that the terminal result was recorded.
+  `export-candidates` returned `candidate_source_unavailable`; no descriptor or
+  Skill package was created. No generator, reviewer, comparison, publication,
+  workflow dispatch, or canonical remote state update followed.
+- Independent read-only audit confirmed input identity, one request, token use,
+  zero surviving workflows, and zero Phase 3 runs/attempts. The original failed
+  database SHA-256 and ordered v1 stage-output SHA-256 matched their pre-trial
+  checks; prior facts were preserved.
+- Conservative extraction budget: one original possible request + two confirmed
+  selected-README requests = **3/3**. Confirmed selected-README usage totals 8,946
+  tokens; original request usage is unknown. No extraction slot remains, and
+  unused generation/review slots must not be reassigned to another extraction.
+
+The real request reached the intended input and returned a recorded response;
+the observed blocker is evidence/output validity, not credential recovery or
+source selection. Prompt alignment alone did not produce an admissible workflow.
+The next investigation is offline review of evidence construction and validation,
+not another prompt variation, model call, or relaxed validator. Any changed design
+and new live budget need explicit approval; this trial is terminal.
 
 ## Optional manual launch on macOS
 
-The active pilot uses the separately authorized runtime-only credential loader;
-the operator does not need to enter the key again. The following is an alternative
-for a future approved trial, not a command to rerun the current experiment. The
+The active pilot used the separately authorized runtime-only credential loader;
+the operator did not need to enter the key again. Its extraction budget is now
+exhausted. The following is an alternative for a future separately approved trial
+with a new budget, not a command to rerun the current experiment. The
 new CLI selects v2; the old v1 launchers and their one-shot markers must remain
 untouched.
 
