@@ -116,6 +116,59 @@ def test_unclosed_or_mismatched_fence_excludes_remainder(fence: str) -> None:
     assert [e.excerpt for e in _catalog("Before\n" + fence + "End\n").entries] == ["Before\n"]
 
 
+@pytest.mark.parametrize(
+    "middle",
+    [
+        "> ```text\n> This content is inside a fenced code block.\n> ```\n",
+        ">~~~text\n> Hidden\n>~~~~\n",
+        "- ```text\n  Hidden\n  ```\n",
+        "+ ~~~text\n  Hidden\n  ~~~\n",
+        "* ```text\n  Hidden\n  ```\n",
+        "10. ```text\n    Hidden\n    ```\n",
+        "2) ~~~text\n   Hidden\n   ~~~\n",
+        "> > ```text\n> > Hidden\n> > ```\n",
+        "> - ```text\n>   Hidden\n>   ```\n",
+        "- > ```text\n  > Hidden\n  > ```\n",
+        "> 1. > - ~~~~text\n>    >   Hidden\n>    >   ~~~~~\n",
+        "> ````text\n> ~~~~\n> ```\n> ```` trailing\n> Hidden\n> ````\n",
+    ],
+)
+def test_container_fences_exclude_code_and_resume_after_valid_closure(middle: str) -> None:
+    assert [e.excerpt for e in _catalog("Before\n" + middle + "After\n").entries] == [
+        "Before\n",
+        "After\n",
+    ]
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [
+        "> ```text\n> Hidden\n",
+        "- ~~~~text\n  Hidden\n  ~~~\n",
+        "> - ```text\n>   Hidden\n>   ~~~\n",
+        "> > ```text\n> > Hidden\n> ```\n",
+        "> ```text\n> Hidden\n```\n",
+        "- ```text\n  Hidden\n```\n",
+        "- ```text\n  Hidden\n- ```\n",
+        "> ```text\n> Hidden\n> ``` trailing\n",
+        "- > ```text\n  > Hidden\n> ```\n",
+        "- > ```text\n  > Hidden\n>   ```\n",
+        "> - > ```text\n>   > Hidden\n> >   ```\n",
+    ],
+)
+def test_unclosed_or_ambiguous_container_fences_exclude_through_eof(middle: str) -> None:
+    assert [e.excerpt for e in _catalog("Before\n" + middle + "End\n").entries] == ["Before\n"]
+
+
+def test_container_fences_preserve_original_prose_prefixes_and_mixed_offsets() -> None:
+    catalog = _catalog("前\r> ```\r\n> hidden\n> ```\r> 后\r\n- Next\n")
+    assert [(e.evidence_id, e.start, e.end, e.excerpt) for e in catalog.entries] == [
+        ("e0001", 0, 2, "前\r"),
+        ("e0002", 24, 29, "> 后\r\n"),
+        ("e0003", 29, 36, "- Next\n"),
+    ]
+
+
 def test_long_line_slices_are_consecutive_unmodified_character_ranges() -> None:
     catalog = _catalog("界" * 281 + "  \r\n")
     assert [(e.start, e.end, e.excerpt) for e in catalog.entries] == [

@@ -86,6 +86,14 @@ The recovery run was repartitioned for latency; its interrupted partial result
 was excluded from totals. Full Ruff and the three Phase 6 inspectors passed.
 These are dated offline results, not live acceptance or a permanent test count.
 
+The final scoped container-fence fix added 24 catalogue regressions for blockquote,
+list and nested fences, conservative closure/EOF handling, and exact source offsets.
+Its fresh disjoint offline runs observed **2,878 passed, 3 skipped**: 2,698
+non-Phase-6 tests, 160 ordinary Phase 6 tests, 8 five-repository replay cases, and
+12 cross-process recovery cases run as three concurrent four-case partitions.
+Full Ruff, scoped formatting, the three Phase 6 inspectors, and `git diff --check`
+passed. These results do not authorize another live trial or establish Skill quality.
+
 ```bash
 .tools/uv-0.11.29/bin/uv run --locked --no-env-file pytest -q \
   tests/test_evidence_selection.py tests/test_local_evidence_preview.py \

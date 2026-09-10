@@ -32,7 +32,14 @@ EVIDENCE_SELECTION_SCHEMA_VERSION = "extractor-evidence-selection-v1"
 MAX_EVIDENCE_CATALOG_ENTRIES = 128
 
 _EvidenceId = Annotated[str, Field(pattern=r"^e[0-9]{4}$")]
-_Fence = re.compile(r"^[ \t]*(`{3,}|~{3,})([^\r\n]*)")
+# Recognize only leading container tokens, not general Markdown structure.
+# Possessive prefix repetition avoids backtracking over long untrusted prefixes.
+_Fence = re.compile(
+    r"^((?:[ \t]*+(?:>|(?:[-+*]|[0-9]{1,9}[.)])[ \t]++))*+[ \t]*+)"
+    r"(`{3,}|~{3,})([^\r\n]*)"
+)
+_QuotePrefix = re.compile(r">[ \t]?")
+_ListMarker = re.compile(r"[-+*0-9]")
 _PhysicalLine = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 _SelectionErrorCode = Literal["unknown_evidence_id", "step_evidence_not_declared"]
 
@@ -156,6 +163,8 @@ def build_evidence_catalog(
     entries: list[EvidenceCatalogEntry] = []
     fence_character: str | None = None
     fence_length = 0
+    fence_quote_depth = 0
+    fence_list_indents: tuple[int, ...] = ()
     truncated = False
     # Only CR/LF delimit physical lines. Other separators must remain present
     # during whole-line safety filtering; str.splitlines() would split them too.
@@ -163,18 +172,36 @@ def build_evidence_catalog(
         line = physical_line.group()
         start = physical_line.start()
         fence = _Fence.match(line)
+        prefix = fence.group(1) if fence is not None else ""
+        # This view is ONLY for fence detection, never filtering or source slices.
+        # Do not let a different quote depth or a new/unindented list item close
+        # a container fence. Ambiguous changes stay excluded through a close/EOF.
+        quote_depth = prefix.count(">")
+        has_list_marker = _ListMarker.search(prefix) is not None
+        prefix_levels = _QuotePrefix.split(prefix)
         if fence_character is not None:
             if (
                 fence is not None
-                and fence.group(1)[0] == fence_character
-                and len(fence.group(1)) >= fence_length
-                and not fence.group(2).strip()
+                and fence.group(2)[0] == fence_character
+                and len(fence.group(2)) >= fence_length
+                and not fence.group(3).strip()
+                and quote_depth == fence_quote_depth
+                and not has_list_marker
+                and all(
+                    len(level.expandtabs(4)) >= required
+                    for level, required in zip(prefix_levels, fence_list_indents, strict=True)
+                )
             ):
                 fence_character = None
             continue
         if fence is not None:
-            fence_character = fence.group(1)[0]
-            fence_length = len(fence.group(1))
+            fence_character = fence.group(2)[0]
+            fence_length = len(fence.group(2))
+            fence_quote_depth = quote_depth
+            fence_list_indents = tuple(
+                len(level.expandtabs(4)) if _ListMarker.search(level) is not None else 0
+                for level in prefix_levels
+            )
             continue
         # Whole-line filtering MUST precede segmentation: slicing cannot wash a pattern.
         if not line.strip() or find_forbidden_text(line):
