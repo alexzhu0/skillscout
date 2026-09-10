@@ -70,6 +70,25 @@ Offline verification: 2,725 passed, 3 skipped, Ruff and the three Phase 6 inspec
 passed. This milestone proves a bounded input path and records a real failure;
 it does not complete the useful-Skill milestone or Phase 6 acceptance.
 
+### September 10 local extraction-output alignment
+
+The selected-README CLI now binds `local-readme-v2` and a separately versioned
+safe-output prompt. HTTP links, unsafe shell forms, and credential-like values
+remain forbidden; exact evidence must never be rewritten to pass validation.
+Rejected workflows expose only bounded rule/field diagnostics (32 findings max),
+not rejected titles or matching text. V2 also suppresses unvalidated model summary,
+refusal, and incomplete prose. The underlying validator and legacy/hosted prompt
+are unchanged.
+
+V2 uses one attempt per stage, without correction or transport retry, while
+preserving unknown-outcome no-replay handling. The distinct subject/retry identity
+prevents reuse of historical v1 success or failure; v1 evidence remains readable
+and usable by the existing local bridge. This repair was verified offline only:
+no further DeepSeek call, generated Skill, or comparison result is claimed.
+Final disjoint regression runs: 2,748 passed, 3 skipped. Full Ruff, the three
+Phase 6 inspectors, and whitespace checks passed; independent review found no
+remaining issue. Skips are not live acceptance evidence.
+
 ### Auditable dry-run
 
 The `skillscout dry-run` command exercises the versioned pipeline spine against a frozen local fixture. It records durable SQLite state, canonical manifests, stage checkpoints, lineage, and a local publication plan. The terminal result is `planned_not_published`, and the dry-run runtime admits no remote-write adapter.

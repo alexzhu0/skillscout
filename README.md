@@ -64,6 +64,9 @@ reads only that selected file at the subject's exact 40-character commit SHA.
 It retains the normal license/content limits and never follows links or executes
 code. Its candidates can be exported and built locally, but publication rejects
 this preview-only source. See [configuration](docs/CONFIGURATION.md#selected-readme-local-preview).
+This command now uses a separately identified v2 local output profile: one attempt
+per stage, explicit safe-output instructions, and content-free rejection diagnostics.
+Historical v1 runs remain readable; reissuing an old command is not a v1 resume.
 
 1. Create an isolated working directory:
 

@@ -124,9 +124,25 @@ to another document. Root README metadata may still be used by deterministic
 repository filtering; its contents are not read in this mode.
 
 The selected path and fixed ref form a versioned local input identity propagated
-through all stages. Changing the selection creates a distinct scoped run; it
-does not reset old failures or authorize additional model calls. Preserve the
-same flag, subject, state, and budget for an authorized resume. Ordinary inputs
+through all stages. The CLI now constructs `local-readme-v2`, using trusted prompt
+`extract-local-output-prompt-v1` and retry identity `retry-local-readme-v2-once`
+(the existing DeepSeek capability suffix is also recorded for DeepSeek). This
+profile allows one attempt per stage, including read stages, with no correction
+or transport retry. A stage may make several normal bounded GitHub requests;
+the semantic stage makes at most one model request. Unknown responses never retry.
+
+V2 emits up to 32 closed rule IDs and schema field locations per rejected workflow,
+plus a truncation flag. It does not retain rejected titles, matching text, model
+summaries, or provider refusal prose. Evidence quotes still must be exact unchanged
+source substrings; the validator is not relaxed. A safe supporting quote must
+exist or the workflow must be omitted.
+
+Historical `local-readme-v1` evidence remains inspectable/exportable/buildable.
+The new CLI does not resume that older input identity: reissuing its command
+selects v2 and may consume a new request. Do not rerun an old launcher without an
+explicitly bounded trial. Changing selection/profile does not erase old failures
+or authorize additional calls. Preserve the same flag, subject, state, and budget
+for an authorized v2 resume. Ordinary inputs
 and hosted reader policy are unchanged. `export-candidates` and `build-candidate`
 can consume this verified local chain, but publication and hosted discovery
 reject it. This is a local preview, not publication or acceptance authority.

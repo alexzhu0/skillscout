@@ -63,6 +63,7 @@ from skillscout.domain.reading import (
 )
 from skillscout.domain.subjects import RepositorySubject
 from skillscout.domain.local_preview import (
+    LOCAL_EXTRACTION_PROMPT_VERSION,
     LOCAL_README_POLICY_VERSION,
     LOCAL_README_SCOPE_KEY,
     LocalReadmeSubject,
@@ -129,10 +130,19 @@ class PhaseTwoProcessor:
     def process(self, stage_input: StageInput, context: StageContext) -> StageOutcome:
         outcome = self._dispatch(stage_input, context)
         if type(context.subject) is LocalReadmeSubject:
+            payload = dict(outcome.payload)
+            if context.subject.scope_version == "local-readme-v2" and stage_input.stage is PipelineStage.EXTRACTOR:
+                # Never persist unvalidated model summaries or refusal text in
+                # this local diagnostic profile, including non-workflow exits.
+                for field in ("repository_summary", "rejection_reason"):
+                    if field in payload:
+                        payload[field] = None
+                if "incomplete_reason" in payload:
+                    payload["incomplete_reason"] = "incomplete"
             # Preserve scoped input through Filter too: downstream retry identities
             # depend on the preceding output, not directly on the subject hash.
             return StageOutcome(
-                payload=dict(outcome.payload) | {
+                payload=payload | {
                     LOCAL_README_SCOPE_KEY: context.subject.model_dump(mode="json", exclude_none=False),
                 },
                 telemetry=outcome.telemetry,
@@ -526,7 +536,12 @@ class PhaseTwoProcessor:
             type(correction) is ExtractionCorrectionReason
             and self._semantic_provider is SemanticProvider.DEEPSEEK
         )
-        if correction_requested:
+        local_preview = type(subject) is LocalReadmeSubject and subject.scope_version == "local-readme-v2"
+        if local_preview:
+            if correction_requested:
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            result = self._openai.extract(user_payload=user_payload, local_preview=True)
+        elif correction_requested:
             result = self._openai.extract(
                 user_payload=user_payload,
                 correction=correction,
@@ -534,6 +549,7 @@ class PhaseTwoProcessor:
         else:
             result = self._openai.extract(user_payload=user_payload)
         prompt_version = (
+            LOCAL_EXTRACTION_PROMPT_VERSION if local_preview else
             EXTRACTION_CORRECTION_PROMPT_VERSION
             if correction_requested
             else EXTRACT_PROMPT_VERSION
@@ -616,12 +632,21 @@ class PhaseTwoProcessor:
 
         survivors: list[dict[str, object]] = []
         dropped: list[dict[str, object]] = []
-        for workflow in response.workflows:
+        for workflow_index, workflow in enumerate(response.workflows):
             reasons = validate_workflow_boundaries(
                 workflow, bundle_texts=bundle, recorded=recorded
             )
             if reasons:
-                dropped.append({"title": workflow.title, "reasons": list(reasons)})
+                if local_preview:
+                    from skillscout.domain.extraction_diagnostics import forbidden_text_diagnostics
+
+                    dropped.append({
+                        "workflow_index": workflow_index,
+                        "reasons": list(reasons),
+                        "boundary_diagnostics": forbidden_text_diagnostics(workflow),
+                    })
+                else:
+                    dropped.append({"title": workflow.title, "reasons": list(reasons)})
                 continue
             survivors.append(
                 _build_workflow_spec(

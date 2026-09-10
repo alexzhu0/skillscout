@@ -41,8 +41,8 @@ denials, path-bound retry isolation, completed replay without another request,
 tampered scoped-chain rejection, zero-candidate export for a missing commit,
 and actual local build composition followed by publication-source denial.
 
-September 10 selected-README verification observed `2725 passed, 3 skipped`
-across disjoint final runs: 2545 non-Phase-6 cases; 160 ordinary Phase 6 cases;
+September 10 local output-profile verification observed `2748 passed, 3 skipped`
+across disjoint final runs: 2568 non-Phase-6 cases; 160 ordinary Phase 6 cases;
 8 production five-repository cases; and 12 cross-process recovery cases. The three
 skips are not live acceptance evidence. Ruff, the Phase 6 source-execution check,
 validation map, hard-gate registry, and `git diff --check` also passed. This is a
@@ -51,6 +51,15 @@ dated observation of the local preview tree, not a permanent pass-count contract
 The separate live selected-README trial made one `deepseek-flash` request and
 recorded a terminal `schema_failure` / `forbidden_text`, not a usable candidate.
 See the [pilot evidence](project/2026-09-10-single-skill-pilot.md#selected-readme-trial-result).
+
+The follow-up local output profile is covered by `tests/test_local_extraction_output.py`
+and `tests/test_extraction_diagnostics.py`: v1/v2 success/failure identity isolation,
+historical candidate export, no second request after schema/excerpt/429/unknown
+failures or lost responses, strict local/correction exclusion, mismatched prompt
+and retry evidence rejection, all nine forbidden patterns, every schema text field,
+bounded diagnostic order, and no rejected text in durable state. These are offline
+recorded-transport checks; they do not establish that the revised prompt improves
+real model output.
 
 Run the complete locked suite:
 

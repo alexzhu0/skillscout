@@ -25,9 +25,10 @@ from skillscout.application.ports import (
 from skillscout.domain.candidate_authority import CandidateSubjectDescriptorV1
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.enums import PipelineStage, RunStatus
-from skillscout.domain.extraction import WorkflowSpec
+from skillscout.domain.extraction import EXTRACT_POLICY_VERSION, WorkflowSpec
 from skillscout.domain.filtering import ALLOWED_LICENSE_SPDX
 from skillscout.domain.local_preview import (
+    LOCAL_EXTRACTION_PROMPT_VERSION, LOCAL_EXTRACTION_RETRY_VERSION,
     LOCAL_README_POLICY_VERSION, LOCAL_README_SCOPE_KEY, LocalReadmeSubject,
 )
 from skillscout.domain.models import VerifiedRunChain
@@ -257,6 +258,21 @@ def _validate_local_readme_chain(
         )
     ):
         raise ValueError("local README input identity mismatch")
+    if subject.scope_version == "local-readme-v2":
+        if chain.identity.retry_policy_version not in {
+            LOCAL_EXTRACTION_RETRY_VERSION,
+            LOCAL_EXTRACTION_RETRY_VERSION + "+extract-correction-policy-v1",
+        }:
+            raise ValueError("local extraction retry identity mismatch")
+        extractor = results[3]
+        if extractor.attempt_no != 1:
+            raise ValueError("local extraction exceeded one-shot authority")
+        if extractor.payload.get("outcome") != "skipped" and (
+            extractor.prompt_version != LOCAL_EXTRACTION_PROMPT_VERSION
+            or extractor.payload.get("prompt_version") != LOCAL_EXTRACTION_PROMPT_VERSION
+            or extractor.policy_version != EXTRACT_POLICY_VERSION
+        ):
+            raise ValueError("local extraction prompt identity mismatch")
     reader = results[2]
     if reader.payload.get("outcome") != "accepted":
         return None

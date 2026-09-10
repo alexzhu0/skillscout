@@ -131,16 +131,42 @@ Do not assert that this was a URL false positive or a secret leak. The prompt
 requires exact evidence but does not spell out every closed forbidden-text rule;
 that is a concrete prompt/validator alignment gap to investigate separately.
 
-Recommended next bounded change: add non-content rule/field diagnostics and align
-the trusted extraction output instructions with existing prohibitions, without
-loosening validators or retaining rejected raw text. A changed prompt and fresh
-trial need explicit input/budget identity; do not silently rerun this terminal run.
+### Local output repair after the trial
+
+The operator approved the next bounded repair. It is implemented and tested
+offline, with no additional model invocation:
+
+- CLI selected reads now construct `local-readme-v2`. The historical v1 subject
+  is still parseable, and old verified candidates remain usable locally. Each
+  stage binds the new scope; v2 cannot reuse the old completed/failed input.
+- Trusted prompt `extract-local-output-prompt-v1` states the existing forbidden
+  output categories explicitly, including their application inside warnings and
+  evidence. It requires an unchanged safe supporting excerpt or omission of the
+  workflow; it never permits quote rewriting or validator bypass.
+- Rejections now carry fixed rule IDs and model-schema field locations, at most
+  32 findings per workflow, with a truncation flag. No rejected title, matching
+  text, model summary, or refusal prose is retained in v2 output.
+- `retry-local-readme-v2-once` allows one attempt per stage, without correction
+  or transport retry. DeepSeek retains its existing capability suffix in the
+  recorded retry identity; the one-attempt cap prevents correction scheduling.
+  Existing unknown-outcome reconciliation remains enabled. This deliberately
+  trades read-stage retries for a small, closed local preview implementation.
+- Default and hosted prompts, existing validators, legacy correction rules,
+  publication authority, and historical state are unchanged.
+
+This does not reveal which pattern caused the old rejection and does not prove
+the new prompt will yield a useful Skill. A separately bounded v2 trial remains
+next; the previous terminal run must not be silently retried. There is one unused
+slot under the original three-extraction ceiling, but unused budget alone is not
+permission to invoke a changed prompt. No generation/review/comparison ran here.
 
 ## Optional manual launch on macOS
 
 The active pilot uses the separately authorized runtime-only credential loader;
 the operator does not need to enter the key again. The following is an alternative
-for a future approved trial, not a command to rerun the current experiment.
+for a future approved trial, not a command to rerun the current experiment. The
+new CLI selects v2; the old v1 launchers and their one-shot markers must remain
+untouched.
 
 Run it in your own **zsh terminal**, from the checkout containing this
 change. This makes at most one extraction request, not the full comparison. Paste
