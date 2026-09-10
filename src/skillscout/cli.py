@@ -61,7 +61,7 @@ from skillscout.adapters.semantic_provider import (
     resolve_local_preview_semantic_provider,
     resolve_semantic_provider,
 )
-from skillscout.domain.local_preview import LOCAL_EXTRACTION_RETRY_VERSION, LocalReadmeSubject
+from skillscout.domain.local_preview import LOCAL_EVIDENCE_RETRY_VERSION, LOCAL_EXTRACTION_RETRY_VERSION, LocalReadmeSubject
 from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
 from skillscout.adapters.skills_ref import validate_with_official_validator
 from skillscout.adapters.state import (
@@ -137,6 +137,7 @@ def build_parser() -> SafeArgumentParser:
     extract_repo.add_argument("--output", required=True, type=Path)
     extract_repo.add_argument("--fail-after", choices=PHASE_TWO_STAGE_SEQUENCE)
     extract_repo.add_argument("--readme-path", help="Read only this repository-relative README.md at the subject's exact commit SHA (local preview only).")
+    extract_repo.add_argument("--evidence-selection", action="store_true", help="Select bounded evidence IDs for a local v3 preview; requires --readme-path.")
     export_candidates = commands.add_parser("export-candidates")
     export_candidates.add_argument("--phase2-state", required=True, type=Path)
     export_candidates.add_argument("--run-id", required=True)
@@ -2145,6 +2146,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "publish-discovered":
             payload = _run_publish_discovered(arguments)
         elif arguments.command == "extract-repo":
+            if arguments.evidence_selection and arguments.readme_path is None:
+                raise SafeFailure(ErrorCode.INVALID_SUBJECT)
             provider = (
                 resolve_local_preview_semantic_provider(current_flash=True)
                 if arguments.deepseek_current_flash
@@ -2155,7 +2158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 try:
                     subject = LocalReadmeSubject.model_validate(
                         subject.model_dump(mode="json", exclude_none=False)
-                        | {"readme_path": arguments.readme_path, "scope_version": "local-readme-v2"}, strict=True,
+                        | {"readme_path": arguments.readme_path, "scope_version": "local-readme-v3" if arguments.evidence_selection else "local-readme-v2"}, strict=True,
                     )
                 except ValueError:
                     raise SafeFailure(ErrorCode.INVALID_SUBJECT) from None
@@ -2177,11 +2180,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 retry_policy=(
                     RetryPolicy(
-                        version=LOCAL_EXTRACTION_RETRY_VERSION,
+                        version=LOCAL_EVIDENCE_RETRY_VERSION if arguments.evidence_selection else LOCAL_EXTRACTION_RETRY_VERSION,
                         max_attempts=1,
                         transient_error_codes=frozenset(),
                     )
-                    if type(subject) is LocalReadmeSubject and subject.scope_version == "local-readme-v2"
+                    if type(subject) is LocalReadmeSubject and subject.scope_version in {"local-readme-v2", "local-readme-v3"}
                     else None
                 ),
             )

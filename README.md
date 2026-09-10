@@ -71,6 +71,15 @@ This command now uses a separately identified v2 local output profile: one attem
 per stage, explicit safe-output instructions, and content-free rejection diagnostics.
 Historical v1 runs remain readable; reissuing an old command is not a v1 resume.
 
+Explicit `--evidence-selection` (requires `--readme-path`) selects local v3:
+the model chooses bounded evidence IDs and deterministic code restores the exact
+source excerpts before the unchanged safety validator. Empty catalogues and
+semantic inputs over 65,536 UTF-8 bytes stop before a model request. Without the
+flag, selected-README commands remain v2. This is an offline mechanical repair,
+not a successful real extraction or useful Skill; the existing pilot remains
+terminal at 3/3 extraction requests. A new live trial needs a separately approved
+budget. See the [v3 command](docs/CONFIGURATION.md#local-v3-evidence-selection).
+
 1. Create an isolated working directory:
 
    ```bash

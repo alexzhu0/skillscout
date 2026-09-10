@@ -307,6 +307,19 @@ def create_semantic_client(
     return sdk.OpenAI(**arguments)
 
 
+def deepseek_json_instructions(instructions: str, response_model: type[_ResponseModel]) -> str:
+    """Format the exact trusted schema guidance used in the provider request."""
+
+    schema = json.dumps(
+        response_model.model_json_schema(), sort_keys=True, separators=(",", ":"),
+    )
+    return (
+        f"{instructions}\n\n"
+        "Return one JSON object only. It must conform exactly to this trusted "
+        f"{response_model.__name__} JSON Schema:\n{schema}"
+    )
+
+
 def request_deepseek_json(
     client: Any,
     *,
@@ -333,16 +346,7 @@ def request_deepseek_json(
         or max_tokens < 1
     ):
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-    schema = json.dumps(
-        response_model.model_json_schema(),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    trusted = (
-        f"{instructions}\n\n"
-        "Return one JSON object only. It must conform exactly to this trusted "
-        f"{response_model.__name__} JSON Schema:\n{schema}"
-    )
+    trusted = deepseek_json_instructions(instructions, response_model)
     try:
         response = client.chat.completions.create(
             model=model,

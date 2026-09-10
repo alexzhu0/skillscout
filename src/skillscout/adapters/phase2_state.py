@@ -28,9 +28,11 @@ from skillscout.domain.enums import PipelineStage, RunStatus
 from skillscout.domain.extraction import EXTRACT_POLICY_VERSION, WorkflowSpec
 from skillscout.domain.filtering import ALLOWED_LICENSE_SPDX
 from skillscout.domain.local_preview import (
+    LOCAL_EVIDENCE_PROMPT_VERSION, LOCAL_EVIDENCE_RETRY_VERSION,
     LOCAL_EXTRACTION_PROMPT_VERSION, LOCAL_EXTRACTION_RETRY_VERSION,
     LOCAL_README_POLICY_VERSION, LOCAL_README_SCOPE_KEY, LocalReadmeSubject,
 )
+from skillscout.domain.evidence_selection import EVIDENCE_CATALOG_POLICY_VERSION, EVIDENCE_SELECTION_SCHEMA_VERSION
 from skillscout.domain.models import VerifiedRunChain
 from skillscout.domain.reading import READER_ORG_MAX_FILE_BYTES, estimate_tokens
 
@@ -273,6 +275,44 @@ def _validate_local_readme_chain(
             or extractor.policy_version != EXTRACT_POLICY_VERSION
         ):
             raise ValueError("local extraction prompt identity mismatch")
+    if subject.scope_version == "local-readme-v3":
+        extractor = results[3]
+        if chain.identity.retry_policy_version not in {
+            LOCAL_EVIDENCE_RETRY_VERSION,
+            LOCAL_EVIDENCE_RETRY_VERSION + "+extract-correction-policy-v1",
+        } or extractor.attempt_no != 1:
+            raise ValueError("local evidence retry identity mismatch")
+        empty_catalog = extractor.payload.get("skip_reason") == "no_eligible_evidence"
+        if extractor.payload.get("outcome") != "skipped" or empty_catalog:
+            audit = extractor.payload.get("evidence_catalog")
+            if (
+                extractor.prompt_version != LOCAL_EVIDENCE_PROMPT_VERSION
+                or extractor.payload.get("prompt_version") != LOCAL_EVIDENCE_PROMPT_VERSION
+                or extractor.policy_version != EXTRACT_POLICY_VERSION
+                or extractor.payload.get("response_schema_version") != EVIDENCE_SELECTION_SCHEMA_VERSION
+                or not isinstance(audit, Mapping)
+                or set(audit) != {"policy_version", "digest", "entry_count", "truncated"}
+                or audit.get("policy_version") != EVIDENCE_CATALOG_POLICY_VERSION
+                or type(audit.get("digest")) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", audit["digest"]) is None
+                or type(audit.get("entry_count")) is not int
+                or not (0 if empty_catalog else 1) <= audit["entry_count"] <= 128
+                or type(audit.get("truncated")) is not bool
+            ):
+                raise ValueError("local evidence execution identity mismatch")
+            if empty_catalog and (
+                audit["entry_count"] != 0
+                or audit["truncated"] is not False
+                or extractor.payload.get("outcome") != "skipped"
+                or extractor.payload.get("diagnostics") != ["no_eligible_evidence"]
+                or extractor.payload.get("workflows") != []
+                or extractor.payload.get("dropped") != []
+                or extractor.payload.get("repository_summary") is not None
+                or extractor.payload.get("rejection_reason") is not None
+                or extractor.request_id is not None
+                or extractor.model_id is not None
+            ):
+                raise ValueError("invalid empty evidence preflight")
     reader = results[2]
     if reader.payload.get("outcome") != "accepted":
         return None

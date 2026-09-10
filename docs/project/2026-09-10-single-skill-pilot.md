@@ -246,6 +246,27 @@ Do not rerun this whole snippet after a failure: it creates fresh state. Share
 only the sanitized result and workspace path so recovery can use the **same**
 state and the recorded retry decision. Unknown completion must not be retried.
 
+## Offline v3 mechanical repair (not a new trial)
+
+The approved evidence-selection design is implemented as explicit
+`extract-repo --readme-path ... --evidence-selection`; see the
+[exact future-trial command](../CONFIGURATION.md#local-v3-evidence-selection).
+Without the new flag, the selected-README command remains v2. The local v3
+catalogue excludes forbidden whole lines and fences, keeps at most 128 exact
+280-character snippets, and lets the model select IDs. Deterministic
+materialization precedes unchanged boundary validation. Empty catalogues and
+full semantic inputs over 65,536 UTF-8 bytes make zero provider requests.
+
+Recorded transports passed extraction → canonical descriptor export → local
+generation/build → real format/safety validation → independent review, and the
+publication source rejected this local chain. This verifies offline composition
+only. No live GitHub/model call, generation, comparison, publication or acceptance
+campaign was performed as part of the repair; no useful real Skill is claimed.
+Historical failed states and all preceding live outcomes remain unchanged.
+The conservative extraction budget is still exhausted at **3/3**. Do not run the
+historical launcher above, replay unknown outcomes, or create replacement state.
+A future real Flash trial requires its own explicit budget approval.
+
 ## Comparison defined before running
 
 Use the same Flash model, same token ceiling and tool-free capabilities for all

@@ -124,7 +124,7 @@ to another document. Root README metadata may still be used by deterministic
 repository filtering; its contents are not read in this mode.
 
 The selected path and fixed ref form a versioned local input identity propagated
-through all stages. The CLI now constructs `local-readme-v2`, using trusted prompt
+through all stages. Without `--evidence-selection`, the CLI constructs `local-readme-v2`, using trusted prompt
 `extract-local-output-prompt-v1` and retry identity `retry-local-readme-v2-once`
 (the existing DeepSeek capability suffix is also recorded for DeepSeek). This
 profile allows one attempt per stage, including read stages, with no correction
@@ -146,6 +146,46 @@ for an authorized v2 resume. Ordinary inputs
 and hosted reader policy are unchanged. `export-candidates` and `build-candidate`
 can consume this verified local chain, but publication and hosted discovery
 reject it. This is a local preview, not publication or acceptance authority.
+
+### Local v3 evidence selection
+
+The following command is for a separately authorized future trial, **not** a
+retry of the exhausted September 10 pilot. Do not execute an old launcher or
+create replacement state to obtain an extra extraction request.
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked --no-env-file skillscout extract-repo \
+  --subject config/previews/restate-rag-subject.json \
+  --readme-path python/end-to-end-applications/rag-ingestion/README.md \
+  --evidence-selection --deepseek-current-flash \
+  --state /absolute/approved-v3-trial/phase2.db \
+  --output /absolute/approved-v3-trial/output
+```
+
+`--evidence-selection` requires `--readme-path`. V3 has distinct scope, prompt,
+response-schema and retry identities: `local-readme-v3`,
+`extract-local-evidence-select-v1`, `extractor-evidence-selection-v1`, and
+`retry-local-readme-v3-once`. DeepSeek retains its existing capability suffix.
+The unchanged single-file reader supplies the immutable source. A deterministic
+`evidence-catalog-v1` catalogue excludes whole forbidden lines and fenced code,
+then retains at most 128 exact contiguous snippets of at most 280 characters.
+Only this catalogue reaches the untrusted user message; the full README is not
+duplicated. The model supplies IDs and semantic claims, never source metadata or
+excerpts. Unknown IDs and undeclared step references reject the workflow; resolved
+workflows still pass the unchanged boundary validator.
+
+The fixed input cap is 65,536 UTF-8 bytes, counting trusted instructions, the user
+payload and actual response schema (including DeepSeek's appended schema guidance).
+Over-budget input yields `evidence_input_budget_exceeded`; empty catalogues yield
+the distinct local skip `no_eligible_evidence`. Both make zero provider requests.
+V3 persists catalogue audit metadata only, plus surviving WorkflowSpecs; it does
+not retain the catalogue or rejected model prose. It inherits v2's bounded,
+content-free diagnostics and one-shot/no-correction/no-replay handling.
+
+Verified v1/v2 evidence stays readable. Only explicitly local export/build admits
+v3; hosted/publication sources reject it. Offline recorded-transport extraction,
+export and real-validator build checks do not demonstrate real model quality or
+a useful Skill. Existing pilot facts and the exhausted 3/3 budget are unchanged.
 
 ## Limits and fixed defaults
 

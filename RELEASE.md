@@ -108,6 +108,26 @@ starts with offline evidence-boundary investigation, not automatic retries or
 weakened validation. PR #40 remains a development Draft, not a generated Skill
 or release-acceptance result.
 
+### September 10 local v3 evidence selection — offline repair
+
+Explicit `extract-repo --readme-path ... --evidence-selection` now selects a
+separate v3 profile. A bounded, safe-line evidence catalogue reaches only the
+untrusted message; the model selects IDs and deterministic code restores exact
+source excerpts before unchanged safety validation. Strict schema, source-scope,
+catalogue-audit and one-attempt identities are checked at the local state bridge.
+Empty catalogues and full semantic input over 65,536 UTF-8 bytes stop with fixed
+diagnostics and no provider request. Legacy/default/hosted behavior is unchanged;
+publication does not admit this local source.
+
+Recorded transports exercise extraction, canonical export, generation, real
+official/local validators, independent review and publication denial. This is an
+offline mechanical repair, not a successful real extraction or evidence of a
+useful Skill. No live call was made for this implementation. The earlier pilot
+remains stopped at 3/3; a new real trial requires separately approved budget.
+Final disjoint offline verification observed **2,854 passed, 3 skipped**, with
+Ruff and all three Phase 6 inspectors passing. Independent review is separate
+from these implementation checks; skipped tests are not live acceptance evidence.
+
 ### Auditable dry-run
 
 The `skillscout dry-run` command exercises the versioned pipeline spine against a frozen local fixture. It records durable SQLite state, canonical manifests, stage checkpoints, lineage, and a local publication plan. The terminal result is `planned_not_published`, and the dry-run runtime admits no remote-write adapter.

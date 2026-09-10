@@ -13,12 +13,14 @@ LOCAL_README_SCOPE_KEY = "local_readme_scope"
 LOCAL_README_POLICY_VERSION = "reader-selected-readme-v1"
 LOCAL_EXTRACTION_PROMPT_VERSION = "extract-local-output-prompt-v1"
 LOCAL_EXTRACTION_RETRY_VERSION = "retry-local-readme-v2-once"
+LOCAL_EVIDENCE_PROMPT_VERSION = "extract-local-evidence-select-v1"
+LOCAL_EVIDENCE_RETRY_VERSION = "retry-local-readme-v3-once"
 
 
 class LocalReadmeSubject(RepositorySubject):
     """One operator-selected inert README at an immutable public repository SHA."""
 
-    scope_version: Literal["local-readme-v1", "local-readme-v2"] = "local-readme-v1"
+    scope_version: Literal["local-readme-v1", "local-readme-v2", "local-readme-v3"] = "local-readme-v1"
     readme_path: str
 
     @model_validator(mode="after")

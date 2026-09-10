@@ -69,6 +69,29 @@ ceiling. The 50 focused local-output/diagnostic/selected-reader tests passed bef
 dispatch; passing those tests did not predict real extraction quality. See the
 [v2 result](project/2026-09-10-single-skill-pilot.md#selected-readme-v2-trial-result).
 
+Local v3 is covered by `tests/test_local_evidence_preview.py` and the pure
+`tests/test_evidence_selection.py` tests. Recorded production composition verifies
+literal source materialization, catalogue-only untrusted input, zero-request
+empty/over-budget preflight, the actual request's 65,536-byte boundary for both
+providers, strict selected-output rejection, one-shot terminal/lost-response
+handling, v2 state isolation, scoped audit admission, canonical export and build
+with real official/local validators followed by publication denial. These are
+offline mechanics, not real extraction or useful-Skill acceptance. The exhausted
+3/3 live pilot budget is unchanged.
+
+The v3 integration's final disjoint offline runs observed **2,854 passed,
+3 skipped**: 2,674 non-Phase-6 tests, 160 ordinary Phase 6 tests, 8 five-repository
+replay cases, and 12 cross-process recovery cases (four per semantic stage).
+The recovery run was repartitioned for latency; its interrupted partial result
+was excluded from totals. Full Ruff and the three Phase 6 inspectors passed.
+These are dated offline results, not live acceptance or a permanent test count.
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked --no-env-file pytest -q \
+  tests/test_evidence_selection.py tests/test_local_evidence_preview.py \
+  tests/test_local_readme_preview.py tests/test_local_extraction_output.py
+```
+
 Run the complete locked suite:
 
 ```bash

@@ -63,11 +63,20 @@ from skillscout.domain.reading import (
 )
 from skillscout.domain.subjects import RepositorySubject
 from skillscout.domain.local_preview import (
+    LOCAL_EVIDENCE_PROMPT_VERSION,
     LOCAL_EXTRACTION_PROMPT_VERSION,
     LOCAL_README_POLICY_VERSION,
     LOCAL_README_SCOPE_KEY,
     LocalReadmeSubject,
 )
+from skillscout.domain.evidence_selection import (
+    EVIDENCE_SELECTION_SCHEMA_VERSION,
+    EvidenceSelectionResponse,
+    EvidenceSelectionError,
+    build_evidence_catalog,
+    materialize_workflow,
+)
+from skillscout.adapters.openai_extract import EvidenceSelectionInputTooLarge
 
 SCOUT_MAX_CANDIDATE_ENTRIES = 512
 
@@ -131,7 +140,7 @@ class PhaseTwoProcessor:
         outcome = self._dispatch(stage_input, context)
         if type(context.subject) is LocalReadmeSubject:
             payload = dict(outcome.payload)
-            if context.subject.scope_version == "local-readme-v2" and stage_input.stage is PipelineStage.EXTRACTOR:
+            if context.subject.scope_version in {"local-readme-v2", "local-readme-v3"} and stage_input.stage is PipelineStage.EXTRACTOR:
                 # Never persist unvalidated model summaries or refusal text in
                 # this local diagnostic profile, including non-workflow exits.
                 for field in ("repository_summary", "rejection_reason"):
@@ -536,8 +545,47 @@ class PhaseTwoProcessor:
             type(correction) is ExtractionCorrectionReason
             and self._semantic_provider is SemanticProvider.DEEPSEEK
         )
-        local_preview = type(subject) is LocalReadmeSubject and subject.scope_version == "local-readme-v2"
-        if local_preview:
+        local_preview = type(subject) is LocalReadmeSubject and subject.scope_version in {"local-readme-v2", "local-readme-v3"}
+        evidence_selection = local_preview and subject.scope_version == "local-readme-v3"
+        catalog = None
+        if evidence_selection:
+            if correction_requested or len(ordered) != 1 or ordered[0][1] != subject.readme_path:
+                raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+            path = subject.readme_path
+            catalog = build_evidence_catalog(
+                scope=subject.model_dump(mode="json", exclude_none=False),
+                path=path, blob_sha=recorded[path], content_hash=content_hashes[path],
+                text=bundle[path],
+            )
+            user_payload = catalog.user_payload()
+            preflight_code = None
+            if not catalog.entries:
+                preflight_code = "no_eligible_evidence"
+            else:
+                try:
+                    result = self._openai.extract(user_payload=user_payload, evidence_selection=True)
+                except EvidenceSelectionInputTooLarge:
+                    preflight_code = "evidence_input_budget_exceeded"
+            if preflight_code is not None:
+                payload = {
+                    "schema_version": stage_input.schema_version,
+                    "output_schema_version": WORKFLOW_SPEC_SCHEMA_VERSION,
+                    "stage": stage_input.stage.value,
+                    "subject_id": stage_input.subject_id,
+                    "prompt_version": LOCAL_EVIDENCE_PROMPT_VERSION,
+                    "response_schema_version": EVIDENCE_SELECTION_SCHEMA_VERSION,
+                    "evidence_catalog": catalog.audit(),
+                    "outcome": "skipped" if not catalog.entries else "schema_failure",
+                    "repository_summary": None, "rejection_reason": None,
+                    "workflows": [], "dropped": [], "diagnostics": [preflight_code],
+                }
+                if not catalog.entries:
+                    payload["skip_reason"] = preflight_code
+                return StageOutcome(payload=payload, telemetry=StageTelemetry(
+                    prompt_version=LOCAL_EVIDENCE_PROMPT_VERSION,
+                    policy_version=EXTRACT_POLICY_VERSION,
+                ))
+        elif local_preview:
             if correction_requested:
                 raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
             result = self._openai.extract(user_payload=user_payload, local_preview=True)
@@ -549,6 +597,7 @@ class PhaseTwoProcessor:
         else:
             result = self._openai.extract(user_payload=user_payload)
         prompt_version = (
+            LOCAL_EVIDENCE_PROMPT_VERSION if evidence_selection else
             LOCAL_EXTRACTION_PROMPT_VERSION if local_preview else
             EXTRACTION_CORRECTION_PROMPT_VERSION
             if correction_requested
@@ -576,6 +625,9 @@ class PhaseTwoProcessor:
             "model_configured": self._openai.model,
             "model_actual": result.model,
         }
+        if catalog is not None:
+            base |= {"response_schema_version": EVIDENCE_SELECTION_SCHEMA_VERSION,
+                     "evidence_catalog": catalog.audit()}
 
         if result.status == "refused":
             return StageOutcome(
@@ -632,7 +684,19 @@ class PhaseTwoProcessor:
 
         survivors: list[dict[str, object]] = []
         dropped: list[dict[str, object]] = []
-        for workflow_index, workflow in enumerate(response.workflows):
+        if evidence_selection != isinstance(response, EvidenceSelectionResponse):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        for workflow_index, selected_workflow in enumerate(response.workflows):
+            if isinstance(response, EvidenceSelectionResponse):
+                if catalog is None:
+                    raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+                try:
+                    workflow = materialize_workflow(selected_workflow, catalog)
+                except EvidenceSelectionError as error:
+                    dropped.append({"workflow_index": workflow_index, "reasons": [error.code]})
+                    continue
+            else:
+                workflow = selected_workflow
             reasons = validate_workflow_boundaries(
                 workflow, bundle_texts=bundle, recorded=recorded
             )

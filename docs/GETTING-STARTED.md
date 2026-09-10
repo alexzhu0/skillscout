@@ -73,6 +73,14 @@ Never clone a candidate repository for SkillScout, install its dependencies, imp
 
 ## Optional Semantic-Provider Smoke
 
+For the separately versioned local evidence-selection mode, see the exact
+[v3 command and limits](CONFIGURATION.md#local-v3-evidence-selection). Add
+`--evidence-selection` only with `--readme-path`; omitting it preserves v2.
+The September 10 pilot is stopped at its 3/3 extraction budget. This offline
+repair does not authorize running a new live extraction or replaying its launcher.
+Recorded extraction → export → local build tests pass through the real format
+and safety validators, but no useful real Skill has been demonstrated.
+
 This step is not offline: it reads a public GitHub repository and makes a billed semantic-provider request. Use only a subject JSON file that you created or reviewed yourself. The `extract-repo` command reads repository content as data; it does not execute source-repository code.
 
 The default provider is OpenAI. `SKILLSCOUT_LLM_PROVIDER=deepseek` selects the closed DeepSeek profile: extraction and generation use `deepseek-v4-flash`, while independent review uses `deepseek-v4-pro`. DeepSeek also requires `DEEPSEEK_BASE_URL` to normalize exactly to `https://api.deepseek.com`; other endpoints fail closed.
