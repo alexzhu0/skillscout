@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Both implementation tasks and task-scoped reviews passed. Full offline suite: 2,854 passed, 3 skipped; final whole-branch review and Draft PR update remain pending.
+**Status:** Implementation, task reviews and final whole-branch review/fix re-review passed. Final offline suite: 2,878 passed, 3 skipped. Delivery remains the existing Draft PR #40; no merge or live trial is authorized by this result.
 
 **Goal:** Remove model-authored evidence copying from the local preview while preserving exact source binding and all existing safety checks.
 
@@ -133,4 +133,20 @@ The DeepSeek byte count must include the actual appended trusted schema guidance
 - [x] Verify actual local build from the exported descriptor with recorded generator/reviewer transports and the real format/safety validators. Do not hand-edit WorkflowSpec or descriptor fields to obtain acceptance.
 - [x] Run locked focused tests including all local preview files, provider, extraction and candidate-source/build tests. Fix regressions without changing legacy v1/v2/default meaning. Run Ruff, three existing Phase 6 inspection scripts and a final complete offline suite in disjoint partitions (slow Phase 6 recovery tests separately if needed).
 - [x] Update docs with exact new command, local-only constraints, offline result and the still-exhausted real pilot budget. Mark this as an offline mechanical repair, not a real successful extraction or useful Skill. Do not reset historical facts.
-- [ ] Commit scoped code, tests and docs; report RED/GREEN, complete final evidence, remaining issues and no live calls. Controller performs independent review, then updates the existing Draft PR only after verification; no merge.
+- [x] Commit scoped code, tests and docs; report RED/GREEN, complete final evidence, remaining issues and no live calls. Controller performs independent review, then updates the existing Draft PR only after verification; no merge.
+
+## Execution record
+
+- Domain contracts: `e114ca9`; physical-line filtering fix: `4497ec3`.
+- V3 integration: `dada8b9`; final container-fence fix: `d399c71`.
+- Final whole-branch review found one container-fence exclusion defect; its single fix wave and scoped re-review passed. No outstanding Critical, Important or Minor finding remained.
+- Final mutually exclusive suite: 2,698 non-Phase-6, 160 ordinary Phase 6, eight five-repository and twelve recovery tests passed; three live-only/conditional tests skipped. Full Ruff and all three offline inspectors passed. A prior scheduling-interrupted partial run is excluded from totals.
+- No live semantic-provider request, source-repository execution, campaign, catalog publication or merge occurred during this implementation. The earlier pilot remains terminal at 3/3.
+
+### Execution rulings and costs
+
+1. Use explicit `--evidence-selection` with `--readme-path`, preserving v2 defaults; cost: one extra user-facing flag.
+2. Invoke bundled coordination scripts through bash with explicit output paths because executable bits were absent; cost: invocation inconvenience, no product behavior change.
+3. Replace a preparation-only implementation worker after it confirmed no changes and no RED; cost: additional agent preparation time.
+4. Replace an initially serial recovery run with three disjoint stage partitions; cost: three passed fixture cases and an interrupted in-flight case were repeated, with the partial run excluded from final totals. Subsequent final verification started parallel directly.
+5. Use bounded container-prefix recognition and conservative fence closure instead of adding a Markdown parser; cost: ambiguous container transitions can exclude some later safe prose instead of admitting uncertain code.
