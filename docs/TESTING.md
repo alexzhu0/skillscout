@@ -35,12 +35,22 @@ current-Flash request/response identity, separate Pro review, rejection of mixed
 or arbitrary models, and no second request after an unknown model mismatch.
 These are recorded-transport tests, not evidence of live model quality.
 
-September 10 local current-Flash verification observed `2698 passed, 3 skipped`
-across disjoint final runs: 2518 non-Phase-6 cases; 160 ordinary Phase 6 cases;
+The selected-README boundary is covered by `tests/test_local_readme_preview.py`:
+single-file reads and exact evidence identity, unsafe/missing/indirect input
+denials, path-bound retry isolation, completed replay without another request,
+tampered scoped-chain rejection, zero-candidate export for a missing commit,
+and actual local build composition followed by publication-source denial.
+
+September 10 selected-README verification observed `2725 passed, 3 skipped`
+across disjoint final runs: 2545 non-Phase-6 cases; 160 ordinary Phase 6 cases;
 8 production five-repository cases; and 12 cross-process recovery cases. The three
 skips are not live acceptance evidence. Ruff, the Phase 6 source-execution check,
 validation map, hard-gate registry, and `git diff --check` also passed. This is a
 dated observation of the local preview tree, not a permanent pass-count contract.
+
+The separate live selected-README trial made one `deepseek-flash` request and
+recorded a terminal `schema_failure` / `forbidden_text`, not a usable candidate.
+See the [pilot evidence](project/2026-09-10-single-skill-pilot.md#selected-readme-trial-result).
 
 Run the complete locked suite:
 

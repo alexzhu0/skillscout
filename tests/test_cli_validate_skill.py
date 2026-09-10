@@ -198,7 +198,7 @@ def _patch_phase3_ports(
     monkeypatch.setattr(
         cli,
         "SQLitePhaseTwoCandidateSource",
-        lambda _path: _CompositionSource(workflow=workflow),
+        lambda _path, *, allow_local_readme: _CompositionSource(workflow=workflow),
     )
     monkeypatch.setattr(
         cli,

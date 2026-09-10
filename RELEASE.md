@@ -45,8 +45,30 @@ stopped in the GitHub scout stage with no semantic request: a diagnostic confirm
 the anonymous GitHub rate limit was exhausted. This is not a successful extraction
 or generated Skill, and does not change Phase 6 release status. A separate offline
 check confirmed that the intended nested RAG README is outside the current reader
-path allowlist. Local state is preserved; the pilot is paused rather than spending
-another request on input that does not include its intended example.
+path allowlist. That run and its state remain preserved. The separately approved
+selected-input experiment below does not relabel it as a successful extraction.
+
+### September 10 selected-README local trial
+
+`extract-repo --readme-path` now accepts one explicitly selected repository-relative
+README at an exact commit SHA. A versioned local subject binds the path through
+all stage outputs and retry identities without changing ordinary subject bytes or
+hosted reading policy. Existing content/license limits remain enforced. Local
+export/build can consume the verified chain; publication and hosted candidate
+sources reject it by default.
+
+The controlled trial read the intended 2,821-byte RAG README, verified MIT at the
+pinned SHA, and completed one real `deepseek-flash` request (4,308 total tokens).
+The proposed workflow was dropped for `forbidden_text`; the extractor recorded
+`schema_failure`, with no surviving workflows. Export failed closed. No correction,
+generation, review, comparison, or publication followed. The CLI's run-level
+`completed` status is not candidate success. Exact offending text is unavailable
+because rejected model content was not retained; the diagnostic does not establish
+which forbidden pattern matched. See the [pilot record](docs/project/2026-09-10-single-skill-pilot.md).
+
+Offline verification: 2,725 passed, 3 skipped, Ruff and the three Phase 6 inspectors
+passed. This milestone proves a bounded input path and records a real failure;
+it does not complete the useful-Skill milestone or Phase 6 acceptance.
 
 ### Auditable dry-run
 

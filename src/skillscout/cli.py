@@ -61,6 +61,7 @@ from skillscout.adapters.semantic_provider import (
     resolve_local_preview_semantic_provider,
     resolve_semantic_provider,
 )
+from skillscout.domain.local_preview import LocalReadmeSubject
 from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
 from skillscout.adapters.skills_ref import validate_with_official_validator
 from skillscout.adapters.state import (
@@ -134,6 +135,7 @@ def build_parser() -> SafeArgumentParser:
     extract_repo.add_argument("--state", required=True, type=Path)
     extract_repo.add_argument("--output", required=True, type=Path)
     extract_repo.add_argument("--fail-after", choices=PHASE_TWO_STAGE_SEQUENCE)
+    extract_repo.add_argument("--readme-path", help="Read only this repository-relative README.md at the subject's exact commit SHA (local preview only).")
     export_candidates = commands.add_parser("export-candidates")
     export_candidates.add_argument("--phase2-state", required=True, type=Path)
     export_candidates.add_argument("--run-id", required=True)
@@ -515,7 +517,7 @@ def _run_export_candidates(arguments: argparse.Namespace) -> dict[str, object]:
     manifests = state_path.with_suffix(".manifests")
     if output == state_path or output == manifests or manifests in output.parents:
         raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
-    source = SQLitePhaseTwoCandidateSource(state_path)
+    source = SQLitePhaseTwoCandidateSource(state_path, allow_local_readme=True)
     descriptors = derive_candidate_subject_descriptors(source, phase2_run_id=arguments.run_id)
     prepared: list[tuple[str, bytes]] = []
     candidates: list[dict[str, object]] = []
@@ -631,7 +633,7 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
 
     try:
         result = PhaseThreeApplication(
-            source=SQLitePhaseTwoCandidateSource(arguments.phase2_state),
+            source=SQLitePhaseTwoCandidateSource(arguments.phase2_state, allow_local_readme=True),
             profile=profile,
             dependencies=PhaseThreeDependencies(
                 completed_projector_factory=lambda: DescriptorAnchoredCompletedCandidateProjector(
@@ -2148,6 +2150,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else resolve_semantic_provider()
             )
             subject = load_subject(arguments.subject)
+            if arguments.readme_path is not None:
+                try:
+                    subject = LocalReadmeSubject.model_validate(
+                        subject.model_dump(mode="json", exclude_none=False)
+                        | {"readme_path": arguments.readme_path}, strict=True,
+                    )
+                except ValueError:
+                    raise SafeFailure(ErrorCode.INVALID_SUBJECT) from None
             state = SQLiteStateStore(arguments.state)
             extractor = (
                 OpenAIExtractionClient()

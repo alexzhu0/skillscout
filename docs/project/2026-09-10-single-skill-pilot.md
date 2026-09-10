@@ -1,13 +1,12 @@
 # Single-Skill pilot — September 10, 2026
 
-Status: local export implemented; first real extraction invocation failed, and
-credential recovery passed read-only verification. Current-Flash compatibility
-is implemented. Its controlled invocation stopped at GitHub scout before any
-semantic request; a subsequent diagnostic found exhausted anonymous read quota.
-An offline reader-policy check also confirmed the intended nested example is
-outside the current path allowlist. This pilot is paused without a suitable
-source-grounded Skill; generation and comparison have not run. This is development
-validation, not Phase 6 release evidence.
+Status: local export, current-Flash compatibility, and an explicitly selected
+README input are implemented. After credential/rate-limit recovery, one real
+`deepseek-flash` request read the intended nested example and proposed a RAG
+workflow. Deterministic safety validation dropped it for `forbidden_text`, leaving
+zero workflows and a terminal `schema_failure`. No suitable Skill exists;
+generation, review, and comparison have not run. This is development validation,
+not Phase 6 release evidence. Prior failures remain unchanged.
 
 ## Fixed source and intended task
 
@@ -26,8 +25,8 @@ instructions remain untrusted data and are not executed.
 
 The target task is **reviewing a proposed document-ingestion workflow and producing
 a source-grounded plan/checklist**, not running a vector database or proving a
-deployed RAG service works. The bounded repository reader may not select this
-nested example. If extraction produces no suitable workflow, record that outcome;
+deployed RAG service works. The ordinary reader does not select this nested
+example; the approved local selection below does. If extraction produces no suitable workflow, record that outcome;
 do not relabel an unrelated workflow or weaken retrieval/evidence validation.
 
 ## Execution boundary
@@ -92,10 +91,50 @@ and is excluded by scout candidate projection before reading. This is not a toke
 budget issue. The prior real reader result, containing only the root README,
 agrees with this policy; it does not establish that the nested workflow was read.
 
-Do not spend another semantic request to infer that missing example. A possible
-follow-up is an explicitly selected, exact-SHA, single-file local read capability,
-retaining all path/content/license/evidence checks. That is a separate design
-decision, not an implemented feature or permission to broaden this pilot's input.
+No further request was spent inferring the absent input. The operator subsequently
+approved an explicitly selected, exact-SHA, single-file local read capability,
+retaining the existing content/license/evidence checks. `--readme-path` now binds
+that selection through a distinct local subject and all stage outputs. Only local
+export/build admit its evidence; hosted/publication consumers reject it. Ordinary
+subjects and reader behavior are unchanged.
+
+### Selected README trial result
+
+- Run: `c7aa10207ea740cf9654689389a0bfdd`, in the existing current-Flash database;
+  old failed runs were retained, not reset. The changed selected input has its own
+  scoped identity and does not reuse the ordinary reader's retry identity.
+- Anonymous GitHub access recovered (HTTP 200, remaining 47 observed before the
+  trial). No GitHub credential was injected.
+- Exact commit: `f339b97a8cd0e14bae51f242d9957e68a0f4ca14`; license: MIT,
+  confirmed through the pinned license endpoint.
+- Read exactly the selected README, 2,821 bytes; source files loaded: 0.
+  Blob: `32abb2d883da33a8f794edb1f24aed1a92ce4fe3`;
+  content digest: `sha256:0a64862343e1e28f51c62ca13f3a72d9aff37c41050e46f33bb257a19be31cd6`.
+- One actual model request, configured and returned model `deepseek-flash`;
+  request ID `63a26fa4-5e23-4b45-846b-98256684a4e7`;
+  2,056 input + 2,252 output = 4,308 total tokens.
+- Proposed title: “RAG document ingestion from S3 upload webhook”. The model
+  identified the intended class of workflow, but all workflows were dropped for
+  `forbidden_text`. The extractor result is `schema_failure`, not a usable Skill.
+  The run-level CLI reports `completed` because it recorded that terminal result.
+- `export-candidates` returned `candidate_source_unavailable`, preserving the
+  closed failure boundary. It wrote no candidate descriptor.
+- No correction is permitted for this failure under `extract-correction-policy-v1`.
+  No further extraction, generation, review, comparison, or publication was run.
+  Conservatively counted preparation calls: the original possible request plus
+  this confirmed request = 2. Unused budget does not authorize a new retry.
+
+The existing diagnostic collapses URLs, unsafe shell forms, and secret-like
+patterns into the same `forbidden_text` reason. Rejected raw model content is not
+retained, so the exact field/pattern cannot be reconstructed from this result.
+Do not assert that this was a URL false positive or a secret leak. The prompt
+requires exact evidence but does not spell out every closed forbidden-text rule;
+that is a concrete prompt/validator alignment gap to investigate separately.
+
+Recommended next bounded change: add non-content rule/field diagnostics and align
+the trusted extraction output instructions with existing prohibitions, without
+loosening validators or retaining rejected raw text. A changed prompt and fresh
+trial need explicit input/budget identity; do not silently rerun this terminal run.
 
 ## Optional manual launch on macOS
 
@@ -126,6 +165,7 @@ sanitized CLI result are safe to share; the key is not.
   printf 'Pilot workspace: %s\n' "$pilot_dir"
   .tools/uv-0.11.29/bin/uv run --locked --no-env-file skillscout extract-repo \
     --deepseek-current-flash \
+    --readme-path python/end-to-end-applications/rag-ingestion/README.md \
     --subject config/previews/restate-rag-subject.json \
     --state "$pilot_dir/phase2.db" \
     --output "$pilot_dir/phase2-output"

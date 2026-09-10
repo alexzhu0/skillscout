@@ -27,6 +27,11 @@ from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.enums import PipelineStage, RunStatus
 from skillscout.domain.extraction import WorkflowSpec
 from skillscout.domain.filtering import ALLOWED_LICENSE_SPDX
+from skillscout.domain.local_preview import (
+    LOCAL_README_POLICY_VERSION, LOCAL_README_SCOPE_KEY, LocalReadmeSubject,
+)
+from skillscout.domain.models import VerifiedRunChain
+from skillscout.domain.reading import READER_ORG_MAX_FILE_BYTES, estimate_tokens
 
 PHASE_TWO_PROFILE_VERSION = "phase2-v1"
 _PHASE_TWO_STAGES = (
@@ -223,11 +228,95 @@ def _is_verified_rejection_chain(
     return vector in _VERIFIED_REJECTION_VECTORS
 
 
+def _validate_local_readme_chain(
+    chain: VerifiedRunChain, *, allow: bool,
+) -> Mapping[str, object] | None:
+    """Recognize scoped evidence and deny it outside explicit local consumers."""
+    results = chain.results
+    if not any(
+        LOCAL_README_SCOPE_KEY in result.payload
+        or result.policy_version == LOCAL_README_POLICY_VERSION
+        or result.payload.get("policy_version") == LOCAL_README_POLICY_VERSION
+        for result in results
+    ):
+        return None
+    if not allow or len(results) != 4:
+        raise ValueError("local README evidence is not admitted")
+    scope = results[0].payload.get(LOCAL_README_SCOPE_KEY)
+    subject = LocalReadmeSubject.model_validate(scope, strict=True)
+    canonical_scope = subject.model_dump(mode="json", exclude_none=False)
+    if (
+        scope != canonical_scope
+        or sha256_digest(canonical_scope) != chain.identity.fixture_hash
+        or subject.subject_id != chain.identity.subject_id
+        or any(result.payload.get(LOCAL_README_SCOPE_KEY) != scope for result in results)
+        or results[0].payload.get("ref_requested") != subject.ref
+        or (
+            results[0].payload.get("outcome") == "accepted"
+            and results[0].payload.get("pinned_commit_sha") != subject.ref
+        )
+    ):
+        raise ValueError("local README input identity mismatch")
+    reader = results[2]
+    if reader.payload.get("outcome") != "accepted":
+        return None
+    files = reader.payload.get("files")
+    if (
+        reader.policy_version != LOCAL_README_POLICY_VERSION
+        or reader.payload.get("policy_version") != LOCAL_README_POLICY_VERSION
+        or not isinstance(files, list)
+        or len(files) != 1
+    ):
+        raise ValueError("invalid local README read plan")
+    selected = _mapping(files[0])
+    if (
+        selected.get("path") != subject.readme_path
+        or selected.get("tier") != "readme"
+        or type(selected.get("read_order")) is not int
+        or selected.get("read_order") != 1
+        or type(selected.get("size")) is not int
+        or not 0 <= selected["size"] <= READER_ORG_MAX_FILE_BYTES
+        or not isinstance(selected.get("blob_sha"), str)
+        or _COMMIT_SHA.fullmatch(selected["blob_sha"]) is None
+        or not isinstance(selected.get("content_hash"), str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", selected["content_hash"]) is None
+        or reader.payload.get("source_code_loaded") is not False
+    ):
+        raise ValueError("invalid local README file identity")
+    budgets = _mapping(reader.payload.get("budgets"))
+    if (
+        any(type(value) is not int for value in budgets.values())
+        or budgets != {
+            "files_read": 1, "source_files_read": 0,
+            "total_bytes": selected["size"],
+            "estimated_input_tokens": estimate_tokens(selected["size"]),
+        }
+    ):
+        raise ValueError("local README budgets disagree with the selected file")
+    tree = _mapping(results[0].payload.get("tree"))
+    candidates = tree.get("candidates")
+    if not isinstance(candidates, list):
+        raise ValueError("invalid local README tree")
+    matches = [item for item in candidates if isinstance(item, Mapping) and item.get("path") == subject.readme_path]
+    if (
+        len(matches) != 1
+        or matches[0].get("type") != "blob"
+        or matches[0].get("mode") not in {"100644", "100755"}
+        or matches[0].get("sha") != selected["blob_sha"]
+        or matches[0].get("size") != selected["size"]
+    ):
+        raise ValueError("local README tree and read plan disagree")
+    return selected
+
+
 class SQLitePhaseTwoCandidateSource:
     """Resolve one strict descriptor without exposing a writable state handle."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, allow_local_readme: bool = False) -> None:
+        if type(allow_local_readme) is not bool:
+            raise ValueError("invalid local preview permission")
         self._path = Path(path)
+        self._allow_local_readme = allow_local_readme
 
     def resolve(
         self,
@@ -300,6 +389,7 @@ class SQLitePhaseTwoCandidateSource:
                 raise ValueError("invalid Phase 2 identity")
             verifier = _open_read_only_verifier(self._path)
             chain = verifier.verify_run_chain(phase2_run_id)
+            local_file = _validate_local_readme_chain(chain, allow=self._allow_local_readme)
             if (
                 chain.run.run_id != phase2_run_id
                 or chain.run.status is not RunStatus.COMPLETED
@@ -343,6 +433,14 @@ class SQLitePhaseTwoCandidateSource:
                     raise ValueError("invalid workflow projection")
                 stored_bytes = canonical_json_bytes(dict(candidate))
                 workflow = WorkflowSpec.model_validate_json(stored_bytes, strict=True)
+                if local_file is not None:
+                    evidence = (*workflow.evidence, *(item for step in workflow.steps for item in step.evidence))
+                    if any(
+                        (item.path, item.blob_sha, item.content_hash)
+                        != (local_file["path"], local_file["blob_sha"], local_file["content_hash"])
+                        for item in evidence
+                    ):
+                        raise ValueError("local README evidence escaped its input")
                 canonical_bytes = canonical_json_bytes(
                     workflow.model_dump(mode="json", exclude_none=False)
                 )

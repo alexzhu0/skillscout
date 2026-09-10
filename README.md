@@ -59,6 +59,12 @@ For the real single-repository route, see the [extract → export → build guid
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)
 defines the next real-use comparison; it is not completed live acceptance.
 
+For a nested example, local `extract-repo --readme-path path/to/README.md`
+reads only that selected file at the subject's exact 40-character commit SHA.
+It retains the normal license/content limits and never follows links or executes
+code. Its candidates can be exported and built locally, but publication rejects
+this preview-only source. See [configuration](docs/CONFIGURATION.md#selected-readme-local-preview).
+
 1. Create an isolated working directory:
 
    ```bash

@@ -102,6 +102,35 @@ reported on September 10, 2026 that current Flash is V4.1 and legacy Flash alias
 route to it; an API name is not an immutable model snapshot. This local opt-in
 does not renew publication or acceptance authority.
 
+### Selected README local preview
+
+Local `extract-repo` optionally accepts `--readme-path`:
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked --no-env-file skillscout extract-repo \
+  --subject config/previews/restate-rag-subject.json \
+  --readme-path python/end-to-end-applications/rag-ingestion/README.md \
+  --deepseek-current-flash \
+  --state .tmp/selected-preview/phase2.db \
+  --output .tmp/selected-preview/output
+```
+
+Inject the approved provider credential into this process's environment first.
+The subject must specify a lowercase 40-hex commit SHA, not a branch. The path
+must be safe, repository-relative, and end in `README.md` (case-insensitive).
+Only that exact regular blob is read, subject to existing license, size, UTF-8,
+binary, Git LFS, and evidence validation. Missing/rejected files do not fall back
+to another document. Root README metadata may still be used by deterministic
+repository filtering; its contents are not read in this mode.
+
+The selected path and fixed ref form a versioned local input identity propagated
+through all stages. Changing the selection creates a distinct scoped run; it
+does not reset old failures or authorize additional model calls. Preserve the
+same flag, subject, state, and budget for an authorized resume. Ordinary inputs
+and hosted reader policy are unchanged. `export-candidates` and `build-candidate`
+can consume this verified local chain, but publication and hosted discovery
+reject it. This is a local preview, not publication or acceptance authority.
+
 ## Limits and fixed defaults
 
 These limits are defined in source and are not environment-variable overrides.
