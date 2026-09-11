@@ -58,9 +58,11 @@ For the real single-repository route, see the [extract → export → build guid
 `export-candidates` bridges verified extraction state into canonical local build
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)
 defines the intended real-use comparison; it is not completed live acceptance.
-Its latest real Flash trial produced zero admissible workflows (non-verbatim
-evidence and URLs in evidence); no Skill was generated. The trial's extraction
-budget is exhausted, so investigation continues offline, without automatic retry.
+The September 10 trial produced zero admissible workflows. A separately approved
+[September 11 v3 trial](docs/project/2026-09-11-local-v3-extraction.md) extracted and
+exported one real workflow, but offline qualification rejected it for dependency
+installation and missing approval controls. No Skill was generated. Both trial
+budgets are exhausted; there is no automatic retry.
 
 For a nested example, local `extract-repo --readme-path path/to/README.md`
 reads only that selected file at the subject's exact 40-character commit SHA.
@@ -75,10 +77,11 @@ Explicit `--evidence-selection` (requires `--readme-path`) selects local v3:
 the model chooses bounded evidence IDs and deterministic code restores the exact
 source excerpts before the unchanged safety validator. Empty catalogues and
 semantic inputs over 65,536 UTF-8 bytes stop before a model request. Without the
-flag, selected-README commands remain v2. This is an offline mechanical repair,
-not a successful real extraction or useful Skill; the existing pilot remains
-terminal at 3/3 extraction requests. A new live trial needs a separately approved
-budget. See the [v3 command](docs/CONFIGURATION.md#local-v3-evidence-selection).
+flag, selected-README commands remain v2. The mechanical repair has now produced
+one real extracted workflow, but not a qualified or useful Skill. The old pilot
+remains terminal at 3/3; the separate v3 trial is terminal at 1/1. Another live
+trial needs a separately approved budget. See the
+[v3 command](docs/CONFIGURATION.md#local-v3-evidence-selection).
 
 1. Create an isolated working directory:
 

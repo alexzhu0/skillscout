@@ -148,6 +148,16 @@ Phases 1–5 are implemented and verified. Phase 4 controlled publication includ
 
 ## Repository Commands and Secret Handling
 
+The separately authorized September 11 v3 trial `cadb2de7fbaf47cf8f5588034f3ad784`
+made exactly one real `deepseek-flash` request and exported one source-bound local
+workflow. Pure offline qualification rejected it for `dependency_installation`,
+`approval_required_without_named_step`, and `safety_controls_incomplete`; no
+Phase 3 run or generated Skill exists. Its budget is exhausted at 1/1, separately
+from the historical 3/3 pilot. Preserve both states; do not replay launchers,
+borrow model slots, or weaken validators. The runtime-only key-file exception was
+for that one invocation and does not authorize future credential reads. See
+`docs/project/2026-09-11-local-v3-extraction.md` for evidence and next-decision scope.
+
 Use the repository-local locked toolchain for tests:
 
 ```bash

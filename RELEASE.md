@@ -4,6 +4,18 @@ SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turn
 
 This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
 
+## September 11 local v3 extraction milestone
+
+One separately authorized real `deepseek-flash` request produced one surviving,
+source-bound WorkflowSpec and one canonical local descriptor. A second proposed
+workflow was rejected for `step_evidence_not_declared`. Existing offline
+qualification rejected the surviving demo setup/run/teardown workflow for
+dependency installation and missing approval controls, despite a numerical score
+of 95. No generator, semantic Reviewer, comparison, publication or merge ran.
+The new trial is exhausted at 1/1; the historical pilot stays at 3/3. This is an
+extraction milestone, not useful-Skill or Phase 6 acceptance. See the
+[exact evidence and limitations](docs/project/2026-09-11-local-v3-extraction.md).
+
 ## September 9 status and extraction-terminal repair
 
 The [September 3 live benchmark](https://github.com/alexzhu0/skillscout/actions/runs/33734530468), on source `bec2eeda2363d2fea639af5a68bca9d394cd16ec`, passed authority preflight and failed in the benchmark job. The recorded investigation found a Flash extraction response rejected by deterministic evidence validation. It did not produce a successful Skill acceptance result; replay was skipped.
