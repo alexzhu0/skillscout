@@ -24,6 +24,16 @@ All of these inspectors use only the Python standard library. Their mutation sui
 
 ## Running tests
 
+September 14 low-risk cleanup verification: **2,902 passed, 3 skipped** across
+disjoint runs (2,890 ordinary cases plus four cross-process recovery cases per
+semantic stage). Twelve new pure response-usage/refusal cases passed after RED;
+two retired V1 writer tests were removed and their malformed-input sibling was
+ported to the still-supported V1 read verifier. Production code decreased by
+239 lines without changing prompts, provider profiles, retry or publication
+rules. Full Ruff, diff checks, the three Phase 6 structural inspectors and
+independent review passed. This is offline regression evidence, not live
+acceptance. See the [cleanup record](superpowers/plans/2026-09-14-low-risk-cleanup.md).
+
 `tests/test_workflow_selection_eval.py` executes the standalone offline label
 comparator against explicit complete, missing, malformed and adversarial inputs.
 The seven [workflow-selection examples](WORKFLOW-SELECTION-EVAL.md) carry
