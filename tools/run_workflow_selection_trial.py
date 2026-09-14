@@ -405,6 +405,13 @@ def reserve_slot(
             is not None
         ):
             raise ValueError("slot already reserved")
+        if (
+            connection.execute(
+                "SELECT 1 FROM reservations WHERE state = 'in_flight' LIMIT 1"
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("campaign has in-flight reservation")
         profile, case_key, expected_input = allowed
         if expected_input is not None and input_digest != expected_input:
             raise ValueError("input identity mismatch")

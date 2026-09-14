@@ -15,7 +15,10 @@ import pytest
 
 from recorded_transport import RecordedResponse, RecordedTransport
 from skillscout.adapters.openai_extract import OpenAIExtractionClient
-from skillscout.adapters.semantic_provider import resolve_local_preview_semantic_provider
+from skillscout.adapters.semantic_provider import (
+    SemanticProviderFailure,
+    resolve_local_preview_semantic_provider,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/run_workflow_selection_trial.py"
@@ -120,6 +123,21 @@ def _reservation_count(root: Path) -> int:
         return connection.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
 
 
+def _decide(module, root: Path, slot: str) -> None:
+    module._finalize(
+        root,
+        slot,
+        "synthetic_test_decided",
+        {
+            "experiment_only": True,
+            "outcome": "synthetic_test_decided",
+            "workflows": [],
+            "usage": None,
+            "digests": {},
+        },
+    )
+
+
 def test_prepare_case_sends_only_source_derived_catalogue_fields() -> None:
     module = _runner()
     case = {
@@ -205,6 +223,7 @@ def test_profile_prompt_and_case_input_are_immutable_across_slots(tmp_path: Path
     module.reserve_slot(
         root, "development", "baseline:d01", first_input, baseline_prompt, "deepseek-flash"
     )
+    _decide(module, root, "baseline:d01")
 
     with pytest.raises(ValueError, match="prompt identity"):
         module.reserve_slot(
@@ -258,6 +277,7 @@ def test_allocation_exhaustion_is_persistent_across_connections(tmp_path: Path) 
                 profile_digest,
                 "deepseek-flash",
             )
+            _decide(module, root, f"{profile}:{case['id']}")
 
     with pytest.raises(ValueError, match="allocation exhausted"):
         _runner().reserve_slot(
@@ -324,6 +344,56 @@ def test_missing_key_and_unfrozen_revision_stop_before_reservation(tmp_path: Pat
     with pytest.raises(ValueError, match="profile not frozen"):
         module.run_case(root, case, "r1", api_key=CANARY_KEY)
     assert _reservation_count(root) == 0
+
+
+def test_unknown_dispatch_outcome_blocks_every_later_slot_and_request(tmp_path: Path) -> None:
+    module, root = _campaign(tmp_path)
+    cases = _cases()
+    failure = RecordedResponse(
+        status=500,
+        headers={"content-type": "application/json"},
+        body=json.dumps(
+            {"error": {"message": "provider failure", "type": "server_error"}}
+        ).encode(),
+    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: failure})
+
+    with httpx.Client(transport=recorded.transport()) as first_http:
+        with pytest.raises(SemanticProviderFailure):
+            module.run_case(
+                root,
+                cases[0],
+                "baseline",
+                http_client=first_http,
+                api_key=CANARY_KEY,
+            )
+
+    second_input = module.prepare_case(cases[1]).digest
+    prompt_digest = module.profile_prompt_digest("baseline")
+    with pytest.raises(ValueError, match="campaign has in-flight reservation"):
+        module.reserve_slot(
+            root,
+            "development",
+            "baseline:d02",
+            second_input,
+            prompt_digest,
+            "deepseek-flash",
+        )
+    with httpx.Client(transport=recorded.transport()) as second_http:
+        with pytest.raises(ValueError, match="campaign has in-flight reservation"):
+            module.run_case(
+                root,
+                cases[1],
+                "baseline",
+                http_client=second_http,
+                api_key=CANARY_KEY,
+            )
+
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        assert connection.execute("SELECT slot, state FROM reservations").fetchall() == [
+            ("baseline:d01", "in_flight")
+        ]
 
 
 def test_baseline_request_bytes_match_existing_evidence_selection_client(tmp_path: Path) -> None:
