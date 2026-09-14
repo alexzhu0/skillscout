@@ -73,6 +73,14 @@ Never clone a candidate repository for SkillScout, install its dependencies, imp
 
 ## Optional Semantic-Provider Smoke
 
+For the separately versioned local evidence-selection mode, see the exact
+[v3 command and limits](CONFIGURATION.md#local-v3-evidence-selection). Add
+`--evidence-selection` only with `--readme-path`; omitting it preserves v2.
+The September 10 pilot is stopped at its 3/3 extraction budget. This offline
+repair does not authorize running a new live extraction or replaying its launcher.
+Recorded extraction → export → local build tests pass through the real format
+and safety validators, but no useful real Skill has been demonstrated.
+
 This step is not offline: it reads a public GitHub repository and makes a billed semantic-provider request. Use only a subject JSON file that you created or reviewed yourself. The `extract-repo` command reads repository content as data; it does not execute source-repository code.
 
 The default provider is OpenAI. `SKILLSCOUT_LLM_PROVIDER=deepseek` selects the closed DeepSeek profile: extraction and generation use `deepseek-v4-flash`, while independent review uses `deepseek-v4-pro`. DeepSeek also requires `DEEPSEEK_BASE_URL` to normalize exactly to `https://api.deepseek.com`; other endpoints fail closed.
@@ -148,9 +156,36 @@ On success, the result reports `status: "completed"`, `last_stage: "extractor"`,
 
 The projection contains sanitized run, attempt, stage-result, and artifact metadata. It is intended for audit and recovery diagnosis, not as a source of publication authority.
 
+### Export verified candidate descriptors (offline)
+
+After extraction completes, export canonical descriptors directly from its verified
+state. This command needs no provider credential, makes no network calls, and does
+not mutate Phase 2 state. It reuses the coordinator's existing derivation and
+re-admission checks, with at most three candidates in fingerprint order.
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked skillscout export-candidates \
+  --phase2-state "$repo_run_dir/phase2.db" \
+  --run-id "$phase2_run_id" \
+  --output "$repo_run_dir/candidates"
+```
+
+The output's parent must already exist and be owned by the current user without
+group/world write permission. The output directory itself must not exist; it is
+created with mode `0700`, and descriptors have mode `0600`. Symlinks and writes
+inside the source manifest directory are rejected. The JSON inventory lists each
+descriptor filename, workflow fingerprint, source repository, pinned SHA, and
+license. Choose one descriptor after inspecting its workflow using `inspect-run`.
+
+`no_candidates` with an empty list is a valid result, not permission to fabricate
+a workflow. Missing, incomplete, or tampered state fails closed. If export fails
+after writing some files, it emits no success inventory; leave the partial directory
+unused and retry into a different fresh directory. Existing exports are never
+overwritten. Descriptors are local generation inputs, not publication grants.
+
 ### Build an admitted candidate
 
-`build-candidate` requires a canonical candidate descriptor that binds one extracted workflow to the exact Phase 2 run and chain evidence. `extract-repo` writes the extraction summary but does not turn that summary into a trusted candidate descriptor for the shell. Use a descriptor produced by the reviewed coordinator or a controlled test harness; do not hand-edit an extraction result into one.
+`build-candidate` requires a canonical candidate descriptor that binds one extracted workflow to the exact Phase 2 run and chain evidence. Use a file produced by `export-candidates` above or by the reviewed coordinator; do not hand-edit an extraction result into one. The build command independently re-verifies the descriptor against the Phase 2 state.
 
 ```bash
 .tools/uv-0.11.29/bin/uv run --locked skillscout build-candidate \

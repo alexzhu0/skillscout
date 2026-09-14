@@ -129,7 +129,7 @@ evidence only and must not be rewritten to alter historical facts.
 
 ## Current Implementation Status
 
-The repository contains an installed Python 3.13 CLI exposed as `skillscout`. Its current commands are `dry-run`, `extract-repo`, `build-candidate`, `inspect-run`, `verify-publication-admission`, `publish-candidate`, `discover`, and `publish-discovered`.
+The repository contains an installed Python 3.13 CLI exposed as `skillscout`. Its core commands are `dry-run`, `extract-repo`, `export-candidates`, `build-candidate`, `inspect-run`, `verify-publication-admission`, `publish-candidate`, `discover`, and `publish-discovered`; additional controlled acceptance commands are documented separately. `export-candidates` is an offline, read-only source-state bridge that writes canonical local candidate descriptors into a fresh private directory. It grants no publication or live-acceptance authority.
 
 Phases 1–5 are implemented and verified. Phase 4 controlled publication includes strict admission, dedicated publication state, bounded GitHub publishing, recovery, Draft-only handling, and a protected workflow. The 2026-07-27 Gate B4 result against workflow SHA-256 `224c843ad1211bd3fa250e055e4040417d58bb5ecd837ed0fd8f148af6c0ca8c` is historical Phase 4 evidence only. Fresh Gate B4 authority was recorded on 2026-07-28 against the exact current discover workflow SHA-256 `8157cb686b9bf18bfa800811b1fe1529ed9a15ec371fe36ec1708233052b7cfd`, publish workflow SHA-256 `96ce9f39db49ce647a88b83ec4db3cb0135e5cf51c1eb2f11961cfd243b23cf0`, and canary workflow SHA-256 `9c59cd9822eecec913f82d24c7880a443ba9416795b8996c6201f33c4df5805d`, with causal denial probes, unchanged default branch, and separate human/admin cleanup. Any change to a bound workflow, App scope, catalog, ruleset, protected environment, reviewer configuration, or installation identity invalidates that evidence and requires a fresh Gate B4 run. This does not make the whole product production-ready; Phase 6 adversarial acceptance remains pending.
 
@@ -137,11 +137,26 @@ Phases 1–5 are implemented and verified. Phase 4 controlled publication includ
 
 - OpenAI is the default provider. Extraction, generation, and review use the Responses API with `gpt-5.6-terra`, strict Pydantic response models, `store=false`, and no tools.
 - DeepSeek is an explicit opt-in selected with `SKILLSCOUT_LLM_PROVIDER=deepseek` and the exact official base URL. It uses `deepseek-v4-flash` through the guarded Chat Completions compatibility path.
+- Only local `extract-repo` and `build-candidate` accept `--deepseek-current-flash`, selecting `deepseek-flash` for extraction/generation while keeping the independent `deepseek-v4-pro` reviewer. Hosted profiles stay unchanged. Use separate private state for a changed model profile; never erase a failure or retry an unknown provider outcome.
+- Local `extract-repo --readme-path` accepts one safe repository-relative `README.md` only with an exact commit SHA. The versioned local subject and every stage output bind the selection into input/retry identities; ordinary subjects remain byte-compatible. Only local export/build admit this source; hosted and publication candidate sources reject it by default. Never use this preview route as release evidence or broaden it to execute source code.
+- The selected-README CLI now explicitly constructs `local-readme-v2` with `extract-local-output-prompt-v1` and `retry-local-readme-v2-once`: one attempt per stage, no correction or transport retry, and no replay of an unknown semantic outcome. V1 remains parseable for historical inspection/export/build. V2 drops unvalidated summary/refusal text and emits at most 32 fixed rule/field diagnostics per rejected workflow, never matching text or rejected titles. Never rerun an old v1 launcher as an implicit v2 trial; a changed prompt/input needs an explicitly bounded new trial.
+- The September 10 approved v2 pilot run `d3aaeaddcc944809b148fa7b72f87246` made one real `deepseek-flash` request and ended with zero workflows: `excerpt_not_verbatim` and evidence-field `url` rejection. Its conservative extraction budget is exhausted (3/3 including the original possible request). Preserve all prior state; do not rerun launchers, create replacement state, or borrow generator/reviewer slots for extraction. No Skill exists from this pilot; next work is offline evidence-boundary investigation, not a live retry. See the single-Skill pilot record.
+- Explicit local `extract-repo --readme-path ... --evidence-selection` selects `local-readme-v3`, `extract-local-evidence-select-v1`, `extractor-evidence-selection-v1`, `evidence-catalog-v1`, and `retry-local-readme-v3-once` (plus the existing DeepSeek capability suffix). No flag still means v2. V3 sends only a bounded safe-line catalogue as untrusted input, resolves IDs deterministically, then uses unchanged WorkflowSpec boundaries. At most 128 snippets of 280 characters; empty catalogue or full semantic input over 65,536 UTF-8 bytes means zero provider requests. Only exact verified local chains enter export/build; publication remains denied. V3 has no correction, retry, or unknown-response replay. Offline recorded build success is not real extraction, useful-Skill evidence, or renewal of the exhausted 3/3 pilot budget.
 - DeepSeek JSON is never trusted as provider-validated structured output. Each response is decoded and validated locally against the same strict Pydantic schemas, and extra or malformed fields fail closed.
 - Both provider clients are constructed with SDK retries disabled (`max_retries=0`). Retry authority remains in the deterministic pipeline policy so one semantic-stage attempt produces exactly one provider request.
 - Semantic calls never receive tool authority, code execution, shell access, or permission to follow instructions embedded in repository content.
 
 ## Repository Commands and Secret Handling
+
+The separately authorized September 11 v3 trial `cadb2de7fbaf47cf8f5588034f3ad784`
+made exactly one real `deepseek-flash` request and exported one source-bound local
+workflow. Pure offline qualification rejected it for `dependency_installation`,
+`approval_required_without_named_step`, and `safety_controls_incomplete`; no
+Phase 3 run or generated Skill exists. Its budget is exhausted at 1/1, separately
+from the historical 3/3 pilot. Preserve both states; do not replay launchers,
+borrow model slots, or weaken validators. The runtime-only key-file exception was
+for that one invocation and does not authorize future credential reads. See
+`docs/project/2026-09-11-local-v3-extraction.md` for evidence and next-decision scope.
 
 Use the repository-local locked toolchain for tests:
 

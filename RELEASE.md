@@ -4,6 +4,29 @@ SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turn
 
 This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
 
+## September 14 offline selection-evaluation groundwork
+
+The exact v3 catalogue reconstruction retained core RAG information; the surviving
+candidate selected demo operations. Seven assistant-proposed examples and a
+standalone explicit-label comparator now make that distinction reviewable. They
+cover core AI tasks, mixed documents, setup-only candidates, unsupported claims,
+injection and the provenance-preserving real-failure derivative. This is offline
+evaluation groundwork, not a new prompt, provider request, human-validated
+benchmark, useful Skill or renewed trial budget. See the
+[usage and limitations](docs/WORKFLOW-SELECTION-EVAL.md).
+
+## September 11 local v3 extraction milestone
+
+One separately authorized real `deepseek-flash` request produced one surviving,
+source-bound WorkflowSpec and one canonical local descriptor. A second proposed
+workflow was rejected for `step_evidence_not_declared`. Existing offline
+qualification rejected the surviving demo setup/run/teardown workflow for
+dependency installation and missing approval controls, despite a numerical score
+of 95. No generator, semantic Reviewer, comparison, publication or merge ran.
+The new trial is exhausted at 1/1; the historical pilot stays at 3/3. This is an
+extraction milestone, not useful-Skill or Phase 6 acceptance. See the
+[exact evidence and limitations](docs/project/2026-09-11-local-v3-extraction.md).
+
 ## September 9 status and extraction-terminal repair
 
 The [September 3 live benchmark](https://github.com/alexzhu0/skillscout/actions/runs/33734530468), on source `bec2eeda2363d2fea639af5a68bca9d394cd16ec`, passed authority preflight and failed in the benchmark job. The recorded investigation found a Flash extraction response rejected by deterministic evidence validation. It did not produce a successful Skill acceptance result; replay was skipped.
@@ -21,6 +44,112 @@ Explicit provider refusal markers are terminal for extraction, without interpret
 Correction is application-scheduled, not an SDK retry: the fixed benchmark coordinator owns the bounded invocation loop, whereas `extract-repo` calls the runner once and requires a subsequent same-input/state invocation for a scheduled correction. This milestone does not change workflows, execute candidate code, call a live provider, or prove real Skill usefulness. The next product milestone remains one useful Skill and a controlled task-alone/README/Skill comparison, before wider campaign and publication acceptance.
 
 ## Implemented preview scope
+
+### September 10 local candidate export
+
+`export-candidates` now exposes the existing verified Phase 2-to-Phase 3 bridge
+for local use. It writes up to three canonical descriptors into a fresh private
+directory, retaining source provenance in its inventory. It needs no model key,
+performs no network access, does not change source state, and grants no publication
+authority. Invalid state and unsafe destinations fail closed. The
+[single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md) has now reached
+its extraction ceiling with zero admissible workflows; real generation and the
+three-condition usefulness comparison have not run.
+
+### September 10 local current-Flash compatibility
+
+Local `extract-repo` and `build-candidate` now accept the explicit
+`--deepseek-current-flash` option. It requests `deepseek-flash` for extraction and
+generation, retains the independent Pro reviewer, and preserves strict response
+model identity, local schema validation, zero SDK retries, and unknown-outcome
+quarantine. Default and hosted model profiles are unchanged.
+
+Read-only credential recovery passed. The subsequent current-Flash invocation
+stopped in the GitHub scout stage with no semantic request: a diagnostic confirmed
+the anonymous GitHub rate limit was exhausted. This is not a successful extraction
+or generated Skill, and does not change Phase 6 release status. A separate offline
+check confirmed that the intended nested RAG README is outside the current reader
+path allowlist. That run and its state remain preserved. The separately approved
+selected-input experiment below does not relabel it as a successful extraction.
+
+### September 10 selected-README local trial
+
+`extract-repo --readme-path` now accepts one explicitly selected repository-relative
+README at an exact commit SHA. A versioned local subject binds the path through
+all stage outputs and retry identities without changing ordinary subject bytes or
+hosted reading policy. Existing content/license limits remain enforced. Local
+export/build can consume the verified chain; publication and hosted candidate
+sources reject it by default.
+
+The controlled trial read the intended 2,821-byte RAG README, verified MIT at the
+pinned SHA, and completed one real `deepseek-flash` request (4,308 total tokens).
+The proposed workflow was dropped for `forbidden_text`; the extractor recorded
+`schema_failure`, with no surviving workflows. Export failed closed. No correction,
+generation, review, comparison, or publication followed. The CLI's run-level
+`completed` status is not candidate success. Exact offending text is unavailable
+because rejected model content was not retained; the diagnostic does not establish
+which forbidden pattern matched. See the [pilot record](docs/project/2026-09-10-single-skill-pilot.md).
+
+Offline verification: 2,725 passed, 3 skipped, Ruff and the three Phase 6 inspectors
+passed. This milestone proves a bounded input path and records a real failure;
+it does not complete the useful-Skill milestone or Phase 6 acceptance.
+
+### September 10 local extraction-output alignment
+
+The selected-README CLI now binds `local-readme-v2` and a separately versioned
+safe-output prompt. HTTP links, unsafe shell forms, and credential-like values
+remain forbidden; exact evidence must never be rewritten to pass validation.
+Rejected workflows expose only bounded rule/field diagnostics (32 findings max),
+not rejected titles or matching text. V2 also suppresses unvalidated model summary,
+refusal, and incomplete prose. The underlying validator and legacy/hosted prompt
+are unchanged.
+
+V2 uses one attempt per stage, without correction or transport retry, while
+preserving unknown-outcome no-replay handling. The distinct subject/retry identity
+prevents reuse of historical v1 success or failure; v1 evidence remains readable
+and usable by the existing local bridge. The repair checkpoint was offline;
+the subsequently approved real trial is recorded separately below.
+Final disjoint regression runs: 2,748 passed, 3 skipped. Full Ruff, the three
+Phase 6 inspectors, and whitespace checks passed; independent review found no
+remaining issue. Skips are not live acceptance evidence.
+
+### September 10 local v2 live outcome — stopped
+
+The separately approved v2 trial used software `e490f5a8238f17c1de3cffd5723cfaa9a2435427`
+and the same exact source README. It made one real `deepseek-flash` request
+(2,338 input + 2,300 output = 4,638 tokens). Both proposed workflows were dropped:
+one for non-verbatim evidence, one for URLs in three evidence-excerpt fields.
+The terminal remains `schema_failure`, zero workflows; offline export failed
+closed. Rejected raw text was not retained, so diagnostics establish the rule
+and field failures, not the exact offending text.
+
+The original possible request plus the two confirmed selected-README requests
+exhaust the three-extraction ceiling. No correction, generation, review,
+comparison, or publication followed; historical failed facts were verified
+unchanged. The prompt repair did not establish a useful Skill. Further work
+starts with offline evidence-boundary investigation, not automatic retries or
+weakened validation. PR #40 remains a development Draft, not a generated Skill
+or release-acceptance result.
+
+### September 10 local v3 evidence selection — offline repair
+
+Explicit `extract-repo --readme-path ... --evidence-selection` now selects a
+separate v3 profile. A bounded, safe-line evidence catalogue reaches only the
+untrusted message; the model selects IDs and deterministic code restores exact
+source excerpts before unchanged safety validation. Strict schema, source-scope,
+catalogue-audit and one-attempt identities are checked at the local state bridge.
+Empty catalogues and full semantic input over 65,536 UTF-8 bytes stop with fixed
+diagnostics and no provider request. Legacy/default/hosted behavior is unchanged;
+publication does not admit this local source.
+
+Recorded transports exercise extraction, canonical export, generation, real
+official/local validators, independent review and publication denial. This is an
+offline mechanical repair, not a successful real extraction or evidence of a
+useful Skill. No live call was made for this implementation. The earlier pilot
+remains stopped at 3/3; a new real trial requires separately approved budget.
+Final disjoint offline verification observed **2,854 passed, 3 skipped**, with
+Ruff and all three Phase 6 inspectors passing. Independent review is separate
+from these implementation checks; skipped tests are not live acceptance evidence.
 
 ### Auditable dry-run
 

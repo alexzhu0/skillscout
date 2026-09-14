@@ -54,6 +54,42 @@ The lock file is authoritative; keep `--locked` enabled so dependency resolution
 
 ## Quick start
 
+For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
+`export-candidates` bridges verified extraction state into canonical local build
+inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)
+defines the intended real-use comparison; it is not completed live acceptance.
+The September 10 trial produced zero admissible workflows. A separately approved
+[September 11 v3 trial](docs/project/2026-09-11-local-v3-extraction.md) extracted and
+exported one real workflow, but offline qualification rejected it for dependency
+installation and missing approval controls. No Skill was generated. Both trial
+budgets are exhausted; there is no automatic retry.
+The [September 14 offline diagnosis](docs/project/2026-09-14-local-v3-diagnosis.md)
+reconstructed the exact evidence catalogue: core RAG information was retained,
+but the surviving candidate selected demo operations. The next focus is semantic
+workflow selection and usefulness evaluation, not relaxing safety rules.
+The [offline selection examples](docs/WORKFLOW-SELECTION-EVAL.md) now provide
+seven assistant-proposed positive/negative cases and an explicit-label comparison
+tool. They are not a human-validated benchmark or proof of model improvement.
+
+For a nested example, local `extract-repo --readme-path path/to/README.md`
+reads only that selected file at the subject's exact 40-character commit SHA.
+It retains the normal license/content limits and never follows links or executes
+code. Its candidates can be exported and built locally, but publication rejects
+this preview-only source. See [configuration](docs/CONFIGURATION.md#selected-readme-local-preview).
+This command now uses a separately identified v2 local output profile: one attempt
+per stage, explicit safe-output instructions, and content-free rejection diagnostics.
+Historical v1 runs remain readable; reissuing an old command is not a v1 resume.
+
+Explicit `--evidence-selection` (requires `--readme-path`) selects local v3:
+the model chooses bounded evidence IDs and deterministic code restores the exact
+source excerpts before the unchanged safety validator. Empty catalogues and
+semantic inputs over 65,536 UTF-8 bytes stop before a model request. Without the
+flag, selected-README commands remain v2. The mechanical repair has now produced
+one real extracted workflow, but not a qualified or useful Skill. The old pilot
+remains terminal at 3/3; the separate v3 trial is terminal at 1/1. Another live
+trial needs a separately approved budget. See the
+[v3 command](docs/CONFIGURATION.md#local-v3-evidence-selection).
+
 1. Create an isolated working directory:
 
    ```bash
@@ -85,7 +121,7 @@ The exact output also includes a generated `run_id`, reuse count, and publicatio
 
 OpenAI is the default provider. Extraction, generation, and review use the OpenAI Responses API with the configured `gpt-5.6-terra` model.
 
-SkillScout also has an explicit DeepSeek provider path. Selecting `deepseek` fixes extraction and generation to `deepseek-v4-flash`, and independent review to `deepseek-v4-pro`. It uses the official DeepSeek Chat Completions endpoint with thinking disabled, no tools, one JSON response per adapter invocation, and strict local schema validation. Provider selection and credentials are documented in [Configuration](docs/CONFIGURATION.md).
+SkillScout also has an explicit DeepSeek provider path. By default, selecting `deepseek` fixes extraction and generation to `deepseek-v4-flash`, and independent review to `deepseek-v4-pro`. Local `extract-repo` and `build-candidate` runs may explicitly select current `deepseek-flash` with `--deepseek-current-flash`; hosted defaults and historical acceptance bindings are unchanged. It uses the official DeepSeek Chat Completions endpoint with thinking disabled, no tools, one JSON response per adapter invocation, and strict local schema validation. Provider selection and credentials are documented in [Configuration](docs/CONFIGURATION.md).
 
 DeepSeek extraction can schedule one application-level correction for invalid structured output or zero surviving workflows with at least one excerpt-only rejection. The correction keeps the original pinned source input and validators, adds only fixed trusted guidance, and consumes the existing three-attempt extraction limit and twenty-request acceptance-campaign limit. Refusals, incomplete responses, legitimate no-workflow results, partial success, unsafe-only rejections, and ambiguous provider outcomes are not correction opportunities. There is no retry after a correction. The fixed benchmark coordinator runs the bounded scheduling loop; `extract-repo` invokes the runner once, so a scheduled correction requires a subsequent invocation with the same inputs and state. This offline-verified behavior is not evidence of a useful real Skill or completed Phase 6 acceptance.
 

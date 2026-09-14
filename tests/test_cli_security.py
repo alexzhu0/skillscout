@@ -139,6 +139,7 @@ def test_safe_argument_parser_is_used_for_root_and_subparsers() -> None:
         "build-candidate",
         "discover",
         "dry-run",
+        "export-candidates",
         "extract-repo",
         "inspect-run",
         "lock-fresh-campaign",

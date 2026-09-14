@@ -24,6 +24,98 @@ All of these inspectors use only the Python standard library. Their mutation sui
 
 ## Running tests
 
+`tests/test_workflow_selection_eval.py` executes the standalone offline label
+comparator against explicit complete, missing, malformed and adversarial inputs.
+The seven [workflow-selection examples](WORKFLOW-SELECTION-EVAL.md) carry
+assistant-proposed labels, not human-validated ground truth. Passing these tests
+verifies comparison behavior, not extraction quality, Skill usefulness or release
+admission. No provider is invoked and no production prompt is changed.
+
+September 14 verification of this addition: **2,892 passed, 3 skipped** across
+disjoint runs: 2,880 tests excluding the twelve cross-process recovery cases,
+then four recovery cases each for extractor, generator and reviewer. Earlier
+serial runs were interrupted for a review fix and latency repartitioning; their
+partial counts are excluded. The new comparison suite contains 14 tests. Full
+Ruff and diff checks passed; independent review found a misleading summary-field
+name, which was corrected and re-reviewed with no remaining finding. These are
+offline checks, not model-quality or whole-product acceptance evidence.
+
+The local export boundary is covered by `tests/test_cli_export_candidates.py`:
+canonical descriptors round-trip through the real read-only candidate source;
+source bytes remain unchanged; invalid/incomplete state and unsafe output paths
+fail closed; the command works without provider configuration or network access.
+
+The local current-Flash option is covered by `tests/test_cli_current_flash.py`
+and `tests/test_semantic_provider.py`: unchanged legacy/hosted defaults, exact
+current-Flash request/response identity, separate Pro review, rejection of mixed
+or arbitrary models, and no second request after an unknown model mismatch.
+These are recorded-transport tests, not evidence of live model quality.
+
+The selected-README boundary is covered by `tests/test_local_readme_preview.py`:
+single-file reads and exact evidence identity, unsafe/missing/indirect input
+denials, path-bound retry isolation, completed replay without another request,
+tampered scoped-chain rejection, zero-candidate export for a missing commit,
+and actual local build composition followed by publication-source denial.
+
+September 10 local output-profile verification observed `2748 passed, 3 skipped`
+across disjoint final runs: 2568 non-Phase-6 cases; 160 ordinary Phase 6 cases;
+8 production five-repository cases; and 12 cross-process recovery cases. The three
+skips are not live acceptance evidence. Ruff, the Phase 6 source-execution check,
+validation map, hard-gate registry, and `git diff --check` also passed. This is a
+dated observation of the local preview tree, not a permanent pass-count contract.
+
+The first live selected-README trial made one `deepseek-flash` request and
+recorded a terminal `schema_failure` / `forbidden_text`, not a usable candidate.
+See the [pilot evidence](project/2026-09-10-single-skill-pilot.md#selected-readme-trial-result).
+
+The follow-up local output profile is covered by `tests/test_local_extraction_output.py`
+and `tests/test_extraction_diagnostics.py`: v1/v2 success/failure identity isolation,
+historical candidate export, no second request after schema/excerpt/429/unknown
+failures or lost responses, strict local/correction exclusion, mismatched prompt
+and retry evidence rejection, all nine forbidden patterns, every schema text field,
+bounded diagnostic order, and no rejected text in durable state. These are offline
+recorded-transport checks; they do not establish that the revised prompt improves
+real model output.
+
+The subsequently approved v2 live trial made one `deepseek-flash` request (4,638
+tokens) and also ended in `schema_failure`, with non-verbatim evidence and URL
+matches in evidence excerpts. There were zero workflows and no generated Skill;
+export failed closed. This exhausts the pilot's conservative three-extraction
+ceiling. The 50 focused local-output/diagnostic/selected-reader tests passed before
+dispatch; passing those tests did not predict real extraction quality. See the
+[v2 result](project/2026-09-10-single-skill-pilot.md#selected-readme-v2-trial-result).
+
+Local v3 is covered by `tests/test_local_evidence_preview.py` and the pure
+`tests/test_evidence_selection.py` tests. Recorded production composition verifies
+literal source materialization, catalogue-only untrusted input, zero-request
+empty/over-budget preflight, the actual request's 65,536-byte boundary for both
+providers, strict selected-output rejection, one-shot terminal/lost-response
+handling, v2 state isolation, scoped audit admission, canonical export and build
+with real official/local validators followed by publication denial. These are
+offline mechanics, not real extraction or useful-Skill acceptance. The exhausted
+3/3 live pilot budget is unchanged.
+
+The v3 integration's final disjoint offline runs observed **2,854 passed,
+3 skipped**: 2,674 non-Phase-6 tests, 160 ordinary Phase 6 tests, 8 five-repository
+replay cases, and 12 cross-process recovery cases (four per semantic stage).
+The recovery run was repartitioned for latency; its interrupted partial result
+was excluded from totals. Full Ruff and the three Phase 6 inspectors passed.
+These are dated offline results, not live acceptance or a permanent test count.
+
+The final scoped container-fence fix added 24 catalogue regressions for blockquote,
+list and nested fences, conservative closure/EOF handling, and exact source offsets.
+Its fresh disjoint offline runs observed **2,878 passed, 3 skipped**: 2,698
+non-Phase-6 tests, 160 ordinary Phase 6 tests, 8 five-repository replay cases, and
+12 cross-process recovery cases run as three concurrent four-case partitions.
+Full Ruff, scoped formatting, the three Phase 6 inspectors, and `git diff --check`
+passed. These results do not authorize another live trial or establish Skill quality.
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked --no-env-file pytest -q \
+  tests/test_evidence_selection.py tests/test_local_evidence_preview.py \
+  tests/test_local_readme_preview.py tests/test_local_extraction_output.py
+```
+
 Run the complete locked suite:
 
 ```bash

@@ -57,7 +57,11 @@ from skillscout.adapters.localfs import AnchoredDirectory, DurableWriteError
 from skillscout.adapters.openai_extract import OpenAIExtractionClient
 from skillscout.adapters.openai_generate import OpenAIGenerationClient
 from skillscout.adapters.openai_review import OpenAIReviewClient
-from skillscout.adapters.semantic_provider import resolve_semantic_provider
+from skillscout.adapters.semantic_provider import (
+    resolve_local_preview_semantic_provider,
+    resolve_semantic_provider,
+)
+from skillscout.domain.local_preview import LOCAL_EVIDENCE_RETRY_VERSION, LOCAL_EXTRACTION_RETRY_VERSION, LocalReadmeSubject
 from skillscout.adapters.phase2_state import SQLitePhaseTwoCandidateSource
 from skillscout.adapters.skills_ref import validate_with_official_validator
 from skillscout.adapters.state import (
@@ -65,6 +69,10 @@ from skillscout.adapters.state import (
     SQLiteStateStore,
 )
 from skillscout.adapters.subjects import load_subject
+from skillscout.application.candidate_source import (
+    MAX_CANDIDATE_DESCRIPTOR_BYTES,
+    derive_candidate_subject_descriptors,
+)
 from skillscout.application.phase3 import (
     PHASE_THREE_STAGE_SEQUENCE,
     PhaseThreeApplication,
@@ -72,6 +80,7 @@ from skillscout.application.phase3 import (
     PhaseThreeRuntimeProfile,
 )
 from skillscout.application.pipeline import (
+    RetryPolicy,
     PHASE_TWO_STAGE_SEQUENCE,
     STAGE_SEQUENCE,
     build_dry_run_runtime,
@@ -127,6 +136,12 @@ def build_parser() -> SafeArgumentParser:
     extract_repo.add_argument("--state", required=True, type=Path)
     extract_repo.add_argument("--output", required=True, type=Path)
     extract_repo.add_argument("--fail-after", choices=PHASE_TWO_STAGE_SEQUENCE)
+    extract_repo.add_argument("--readme-path", help="Read only this repository-relative README.md at the subject's exact commit SHA (local preview only).")
+    extract_repo.add_argument("--evidence-selection", action="store_true", help="Select bounded evidence IDs for a local v3 preview; requires --readme-path.")
+    export_candidates = commands.add_parser("export-candidates")
+    export_candidates.add_argument("--phase2-state", required=True, type=Path)
+    export_candidates.add_argument("--run-id", required=True)
+    export_candidates.add_argument("--output", required=True, type=Path)
     build_candidate = commands.add_parser("build-candidate")
     build_candidate.add_argument("--candidate", required=True, type=Path)
     build_candidate.add_argument("--phase2-state", required=True, type=Path)
@@ -136,6 +151,12 @@ def build_parser() -> SafeArgumentParser:
         "--fail-after",
         choices=PHASE_THREE_STAGE_SEQUENCE,
     )
+    for local_command in (extract_repo, build_candidate):
+        local_command.add_argument(
+            "--deepseek-current-flash",
+            action="store_true",
+            help="Opt in to current DeepSeek Flash for a local preview; hosted defaults stay unchanged.",
+        )
     inspect_run = commands.add_parser("inspect-run")
     inspect_run.add_argument("run_id")
     inspect_run.add_argument("--state", required=True, type=Path)
@@ -490,10 +511,74 @@ def _require_mutable_output_ready(path: Path) -> None:
         raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
 
 
+def _run_export_candidates(arguments: argparse.Namespace) -> dict[str, object]:
+    """Export canonical descriptors from verified state, without provider authority."""
+
+    state_path = Path(os.path.abspath(os.fspath(arguments.phase2_state)))
+    output = Path(os.path.abspath(os.fspath(arguments.output)))
+    manifests = state_path.with_suffix(".manifests")
+    if output == state_path or output == manifests or manifests in output.parents:
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+    source = SQLitePhaseTwoCandidateSource(state_path, allow_local_readme=True)
+    descriptors = derive_candidate_subject_descriptors(source, phase2_run_id=arguments.run_id)
+    prepared: list[tuple[str, bytes]] = []
+    candidates: list[dict[str, object]] = []
+    for descriptor in descriptors:
+        # Re-admit each exported descriptor and retain its verified provenance.
+        projection = source.resolve(descriptor)
+        name = f"candidate-{descriptor.selected_workflow_fingerprint.removeprefix('sha256:')}.json"
+        prepared.append((name, canonical_json_bytes(descriptor)))
+        candidates.append(
+            {
+                "descriptor_path": name,
+                "workflow_fingerprint": descriptor.selected_workflow_fingerprint,
+                "repository_url": projection.repository_url,
+                "pinned_commit_sha": projection.pinned_commit_sha,
+                "license_spdx": projection.license_spdx,
+            }
+        )
+    if prepared:
+        # Case-insensitive filesystems can alias the manifest directory with a
+        # different spelling. Exclude actual ancestors, not only lexical paths.
+        manifest_identity = _path_identity(manifests)
+        if manifest_identity is None:
+            raise CandidateSourceUnavailable()
+        if any(_path_identity(ancestor) == manifest_identity for ancestor in output.parents):
+            raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED)
+        # An exclusive fresh child prevents overwrite/reuse of prior exports.
+        # Anchored traversal rejects symlinks in every path component.
+        parent = AnchoredDirectory.open(output.parent, create=False)
+        try:
+            os.mkdir(
+                AnchoredDirectory.validate_child_name(output.name), 0o700, dir_fd=parent.descriptor
+            )
+            directory = parent.open_child_directory(output.name)
+            try:
+                os.fsync(parent.descriptor)
+                for name, payload in prepared:
+                    directory.atomic_write(name, payload, max_bytes=MAX_CANDIDATE_DESCRIPTOR_BYTES)
+            finally:
+                directory.close()
+        finally:
+            parent.close()
+    return {
+        "schema_version": "local-candidate-export-v1",
+        "status": "exported" if prepared else "no_candidates",
+        "phase2_run_id": arguments.run_id,
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "remote_writes_attempted": 0,
+    }
+
+
 def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     _validate_candidate_paths(arguments)
     clients: list[object] = []
-    provider = resolve_semantic_provider()
+    provider = (
+        resolve_local_preview_semantic_provider(current_flash=True)
+        if arguments.deepseek_current_flash
+        else resolve_semantic_provider()
+    )
     profile = PhaseThreeRuntimeProfile.from_configured_models(
         generator_model_id=provider.generator_model,
         reviewer_model_id=provider.reviewer_model,
@@ -550,7 +635,7 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
 
     try:
         result = PhaseThreeApplication(
-            source=SQLitePhaseTwoCandidateSource(arguments.phase2_state),
+            source=SQLitePhaseTwoCandidateSource(arguments.phase2_state, allow_local_readme=True),
             profile=profile,
             dependencies=PhaseThreeDependencies(
                 completed_projector_factory=lambda: DescriptorAnchoredCompletedCandidateProjector(
@@ -2017,6 +2102,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "inspect-run":
             state = SQLiteStateStore(arguments.state)
             payload = state.inspect_run(arguments.run_id)
+        elif arguments.command == "export-candidates":
+            payload = _run_export_candidates(arguments)
         elif arguments.command == "build-candidate":
             payload = _run_build_candidate(arguments)
         elif arguments.command == "verify-publication-admission":
@@ -2059,8 +2146,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "publish-discovered":
             payload = _run_publish_discovered(arguments)
         elif arguments.command == "extract-repo":
-            provider = resolve_semantic_provider()
+            if arguments.evidence_selection and arguments.readme_path is None:
+                raise SafeFailure(ErrorCode.INVALID_SUBJECT)
+            provider = (
+                resolve_local_preview_semantic_provider(current_flash=True)
+                if arguments.deepseek_current_flash
+                else resolve_semantic_provider()
+            )
             subject = load_subject(arguments.subject)
+            if arguments.readme_path is not None:
+                try:
+                    subject = LocalReadmeSubject.model_validate(
+                        subject.model_dump(mode="json", exclude_none=False)
+                        | {"readme_path": arguments.readme_path, "scope_version": "local-readme-v3" if arguments.evidence_selection else "local-readme-v2"}, strict=True,
+                    )
+                except ValueError:
+                    raise SafeFailure(ErrorCode.INVALID_SUBJECT) from None
             state = SQLiteStateStore(arguments.state)
             extractor = (
                 OpenAIExtractionClient()
@@ -2076,6 +2177,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     GitHubReadClient(),
                     extractor,
                     semantic_provider=provider.provider,
+                ),
+                retry_policy=(
+                    RetryPolicy(
+                        version=LOCAL_EVIDENCE_RETRY_VERSION if arguments.evidence_selection else LOCAL_EXTRACTION_RETRY_VERSION,
+                        max_attempts=1,
+                        transient_error_codes=frozenset(),
+                    )
+                    if type(subject) is LocalReadmeSubject and subject.scope_version in {"local-readme-v2", "local-readme-v3"}
+                    else None
                 ),
             )
             payload = runtime.runner.run(

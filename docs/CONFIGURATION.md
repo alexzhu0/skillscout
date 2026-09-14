@@ -16,6 +16,7 @@ Pass state, evidence, and output locations explicitly. The CLI does not define d
 |---|---|
 | `skillscout dry-run` | `--fixture`, `--state`, `--output` |
 | `skillscout extract-repo` | `--subject`, `--state`, `--output` |
+| `skillscout export-candidates` | `--phase2-state`, `--run-id`, `--output` (offline; fresh output directory) |
 | `skillscout build-candidate` | `--candidate`, `--phase2-state`, `--state`, `--output` |
 | `skillscout inspect-run` | `--state` |
 | `skillscout verify-publication-admission` | `--candidate`, `--phase2-state`, `--phase3-state` |
@@ -84,6 +85,107 @@ export DEEPSEEK_BASE_URL='https://api.deepseek.com'
 ```
 
 The implementation pins the official base URL instead of accepting arbitrary compatible endpoints. Semantic SDK clients use zero SDK retries. Provider identity and model names may be persisted for audit, but credential values are deliberately excluded from the settings representation.
+
+For a **local preview only**, `extract-repo` and `build-candidate` accept
+`--deepseek-current-flash`. With the DeepSeek provider selected, this binds
+extraction and generation to `deepseek-flash` and keeps the separately contextualized
+reviewer on `deepseek-v4-pro`. It rejects the OpenAI provider. Other commands do not
+accept the flag, and hosted defaults and historical Phase 6 model bindings are
+unchanged. Arbitrary model IDs, mixed legacy/current generation profiles, and a
+response whose model ID differs from the requested ID remain rejected.
+
+Use separate private state/output paths when changing model profiles; do not reuse
+legacy evidence as current-model results. Keep the selected flag on any authorized
+resume. Never retry an unknown provider outcome or erase a permanent failure.
+The [DeepSeek model documentation](https://api-docs.deepseek.com/quick_start/pricing/)
+reported on September 10, 2026 that current Flash is V4.1 and legacy Flash aliases
+route to it; an API name is not an immutable model snapshot. This local opt-in
+does not renew publication or acceptance authority.
+
+### Selected README local preview
+
+Local `extract-repo` optionally accepts `--readme-path`:
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked --no-env-file skillscout extract-repo \
+  --subject config/previews/restate-rag-subject.json \
+  --readme-path python/end-to-end-applications/rag-ingestion/README.md \
+  --deepseek-current-flash \
+  --state .tmp/selected-preview/phase2.db \
+  --output .tmp/selected-preview/output
+```
+
+Inject the approved provider credential into this process's environment first.
+The subject must specify a lowercase 40-hex commit SHA, not a branch. The path
+must be safe, repository-relative, and end in `README.md` (case-insensitive).
+Only that exact regular blob is read, subject to existing license, size, UTF-8,
+binary, Git LFS, and evidence validation. Missing/rejected files do not fall back
+to another document. Root README metadata may still be used by deterministic
+repository filtering; its contents are not read in this mode.
+
+The selected path and fixed ref form a versioned local input identity propagated
+through all stages. Without `--evidence-selection`, the CLI constructs `local-readme-v2`, using trusted prompt
+`extract-local-output-prompt-v1` and retry identity `retry-local-readme-v2-once`
+(the existing DeepSeek capability suffix is also recorded for DeepSeek). This
+profile allows one attempt per stage, including read stages, with no correction
+or transport retry. A stage may make several normal bounded GitHub requests;
+the semantic stage makes at most one model request. Unknown responses never retry.
+
+V2 emits up to 32 closed rule IDs and schema field locations per rejected workflow,
+plus a truncation flag. It does not retain rejected titles, matching text, model
+summaries, or provider refusal prose. Evidence quotes still must be exact unchanged
+source substrings; the validator is not relaxed. A safe supporting quote must
+exist or the workflow must be omitted.
+
+Historical `local-readme-v1` evidence remains inspectable/exportable/buildable.
+The new CLI does not resume that older input identity: reissuing its command
+selects v2 and may consume a new request. Do not rerun an old launcher without an
+explicitly bounded trial. Changing selection/profile does not erase old failures
+or authorize additional calls. Preserve the same flag, subject, state, and budget
+for an authorized v2 resume. Ordinary inputs
+and hosted reader policy are unchanged. `export-candidates` and `build-candidate`
+can consume this verified local chain, but publication and hosted discovery
+reject it. This is a local preview, not publication or acceptance authority.
+
+### Local v3 evidence selection
+
+The following command is for a separately authorized future trial, **not** a
+retry of the exhausted September 10 pilot. Do not execute an old launcher or
+create replacement state to obtain an extra extraction request.
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked --no-env-file skillscout extract-repo \
+  --subject config/previews/restate-rag-subject.json \
+  --readme-path python/end-to-end-applications/rag-ingestion/README.md \
+  --evidence-selection --deepseek-current-flash \
+  --state /absolute/approved-v3-trial/phase2.db \
+  --output /absolute/approved-v3-trial/output
+```
+
+`--evidence-selection` requires `--readme-path`. V3 has distinct scope, prompt,
+response-schema and retry identities: `local-readme-v3`,
+`extract-local-evidence-select-v1`, `extractor-evidence-selection-v1`, and
+`retry-local-readme-v3-once`. DeepSeek retains its existing capability suffix.
+The unchanged single-file reader supplies the immutable source. A deterministic
+`evidence-catalog-v1` catalogue excludes whole forbidden lines and fenced code,
+then retains at most 128 exact contiguous snippets of at most 280 characters.
+Only this catalogue reaches the untrusted user message; the full README is not
+duplicated. The model supplies IDs and semantic claims, never source metadata or
+excerpts. Unknown IDs and undeclared step references reject the workflow; resolved
+workflows still pass the unchanged boundary validator.
+
+The fixed input cap is 65,536 UTF-8 bytes, counting trusted instructions, the user
+payload and actual response schema (including DeepSeek's appended schema guidance).
+Over-budget input yields `evidence_input_budget_exceeded`; empty catalogues yield
+the distinct local skip `no_eligible_evidence`. Both make zero provider requests.
+V3 persists catalogue audit metadata only, plus surviving WorkflowSpecs; it does
+not retain the catalogue or rejected model prose. It inherits v2's bounded,
+content-free diagnostics and one-shot/no-correction/no-replay handling.
+
+Verified v1/v2 evidence stays readable. Only explicitly local export/build admits
+v3; hosted/publication sources reject it. Offline recorded-transport extraction,
+export and real-validator build checks do not demonstrate real model quality or
+a useful Skill. Existing pilot facts and the exhausted 3/3 budget are unchanged.
 
 ## Limits and fixed defaults
 
