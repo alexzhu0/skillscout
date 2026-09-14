@@ -77,7 +77,7 @@ inputs. No dotenv, subprocess, source code execution or remote publishing.
 - [x] Run seven baseline cases once; independently score actual admitted outputs.
 - [x] For each permitted round, record hypothesis then change only selection
   suffix and compare the same seven cases. Stop after two no-improvement rounds.
-- [ ] Freeze eligible prompt, then independently run and score held-out baseline
+- [x] Freeze eligible prompt, then independently run and score held-out baseline
   and candidate once each. Stop on failure; no held-out tuning.
 - [ ] If admitted, use one pinned real repo through existing local extraction,
   qualification, generation and independent review, accounting all three slots.
@@ -161,3 +161,11 @@ transport settings, no retries. Stop immediately on unknown/transport/schema
 failure; otherwise score after completing the frozen comparison. Report both
 profiles under the existing source rubric, without changing labels or candidate.
 An ineligible candidate ends this campaign, even when budget remains unused.
+
+## Terminal checkpoint — 2026-09-14
+
+The frozen candidate failed held-out h06; candidate5/6 vs baseline3/6. Stop rule
+applied at26/49 actual requests. Artifact and usefulness steps are not executed
+and are no longer authorized by this campaign. Goal remains unachieved.
+See `../specs/2026-09-14-useful-skill-loop-result.md` for actual counts, failure
+evidence, independent-score correction and the narrow proposed follow-up.
