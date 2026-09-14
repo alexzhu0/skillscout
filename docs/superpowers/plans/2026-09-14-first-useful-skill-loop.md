@@ -75,7 +75,7 @@ inputs. No dotenv, subprocess, source code execution or remote publishing.
 - [x] Confirm held-out manifest and sample-label status; keep source/answers unread.
 - [x] Resolve runtime credential delivery and initialize one ledger; record 0/49.
 - [x] Run seven baseline cases once; independently score actual admitted outputs.
-- [ ] For each permitted round, record hypothesis then change only selection
+- [x] For each permitted round, record hypothesis then change only selection
   suffix and compare the same seven cases. Stop after two no-improvement rounds.
 - [ ] Freeze eligible prompt, then independently run and score held-out baseline
   and candidate once each. Stop on failure; no held-out tuning.
@@ -123,3 +123,34 @@ d01 proposes processing authority instead of a non-executing review; d03 also
 admits a demo lifecycle and unsupported approvals. Baseline is ineligible;
 no held-out, real-artifact, usefulness or publication step has run.
 Round 1 is preregistered in `../specs/2026-09-14-useful-skill-r1.md`.
+
+## Candidate freeze — 2026-09-14
+
+R1 independently passes 7/7 semantic cases (positives 3/3, negatives 4/4),
+versus baseline 5/7. R1 uses 14,558 tokens and 18,622 ms summed latency.
+All 14 cumulative requests are decided. Freeze r1 before opening held-out
+sources; binding is `../specs/2026-09-14-useful-skill-frozen-candidate.json`.
+No r2/r3 or held-out-based tuning is now permitted in this campaign.
+
+Separate deterministic qualification still blocks synthetic r1:d01: only two
+steps, confidence below the floor, safety-controls and named-approval checks.
+Semantic promotion is not artifact admission. Keep all existing rules unchanged;
+later real extraction must pass qualification before generation or review.
+
+### Task 3: Minimal frozen held-out route
+
+Modify only the existing experiment runner and its tests. Reuse its guarded
+request/materialization path, adding explicit held-out dispatch after a strict
+candidate-freeze binding. Existing ledger must not be reset or slots added.
+Bind the checked-in freeze marker once into campaign_meta, validate identities
+against existing metadata and decided development rows, reject outstanding
+requests, and prohibit all new development reservations after freeze.
+Held-out execution reads the bounded file only after binding, checks its exact
+frozen dataset hash and h01..h06 IDs, selects by opaque ID, and sends source only.
+Both baseline and candidate use the exact reviewed requests; candidate resolves
+to r1's frozen instructions, never a free-form prompt. Preserve existing
+global unknown-outcome halt and per-slot no-replay accounting. No real calls
+by implementer, no artifact/usefulness adapter, no new dependencies or CLI.
+Use synthetic temporary held-out files in TDD tests; never open real held-out
+sources or credentials during implementation/review. Controller dispatches
+only after task review and fresh regression checks.

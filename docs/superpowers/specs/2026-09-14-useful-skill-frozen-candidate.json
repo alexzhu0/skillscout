@@ -1,0 +1,15 @@
+{
+  "schema_version": "useful-skill-frozen-candidate-v1",
+  "campaign_id": "useful-skill-loop-20260914",
+  "candidate_profile": "r1",
+  "model": "deepseek-flash",
+  "candidate_prompt_digest": "sha256:14f240c426adebf6116d8811a591a71e49e59bf023efd59bfb72c4ab5e0098cb",
+  "baseline_prompt_digest": "sha256:067e4da3b7f45718a73aa1fec52e038222e7447bb13dae7cff76975888b5b1ac",
+  "development_dataset_digest": "sha256:bd32e2ec30ddc8e420c1a3aaa910fe52d3e10cec532f97a7c611548bbb0a897a",
+  "heldout_dataset_digest": "sha256:efd0d9eba47ff92ec8777bf0121d7980b3929e5042ff0c32ff3a9ef477eb5164",
+  "heldout_manifest_digest": "sha256:2983f914289a0297525ff5ebee093ef970ba33a77f88c04e289afd61c859c0ba",
+  "development_result": {"baseline_passed": 5, "candidate_passed": 7, "case_count": 7, "requests_consumed": 14},
+  "selection_reason": "Only eligible development profile; two fewer semantic errors under unchanged rubric. This is not artifact qualification.",
+  "controller_heldout_sources_read": false,
+  "no_further_development_tuning": true
+}
