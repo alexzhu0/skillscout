@@ -4,6 +4,17 @@ SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turn
 
 This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
 
+## September 14 offline selection-evaluation groundwork
+
+The exact v3 catalogue reconstruction retained core RAG information; the surviving
+candidate selected demo operations. Seven assistant-proposed examples and a
+standalone explicit-label comparator now make that distinction reviewable. They
+cover core AI tasks, mixed documents, setup-only candidates, unsupported claims,
+injection and the provenance-preserving real-failure derivative. This is offline
+evaluation groundwork, not a new prompt, provider request, human-validated
+benchmark, useful Skill or renewed trial budget. See the
+[usage and limitations](docs/WORKFLOW-SELECTION-EVAL.md).
+
 ## September 11 local v3 extraction milestone
 
 One separately authorized real `deepseek-flash` request produced one surviving,

@@ -67,6 +67,9 @@ The [September 14 offline diagnosis](docs/project/2026-09-14-local-v3-diagnosis.
 reconstructed the exact evidence catalogue: core RAG information was retained,
 but the surviving candidate selected demo operations. The next focus is semantic
 workflow selection and usefulness evaluation, not relaxing safety rules.
+The [offline selection examples](docs/WORKFLOW-SELECTION-EVAL.md) now provide
+seven assistant-proposed positive/negative cases and an explicit-label comparison
+tool. They are not a human-validated benchmark or proof of model improvement.
 
 For a nested example, local `extract-repo --readme-path path/to/README.md`
 reads only that selected file at the subject's exact 40-character commit SHA.

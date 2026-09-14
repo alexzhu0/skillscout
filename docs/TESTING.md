@@ -24,6 +24,22 @@ All of these inspectors use only the Python standard library. Their mutation sui
 
 ## Running tests
 
+`tests/test_workflow_selection_eval.py` executes the standalone offline label
+comparator against explicit complete, missing, malformed and adversarial inputs.
+The seven [workflow-selection examples](WORKFLOW-SELECTION-EVAL.md) carry
+assistant-proposed labels, not human-validated ground truth. Passing these tests
+verifies comparison behavior, not extraction quality, Skill usefulness or release
+admission. No provider is invoked and no production prompt is changed.
+
+September 14 verification of this addition: **2,892 passed, 3 skipped** across
+disjoint runs: 2,880 tests excluding the twelve cross-process recovery cases,
+then four recovery cases each for extractor, generator and reviewer. Earlier
+serial runs were interrupted for a review fix and latency repartitioning; their
+partial counts are excluded. The new comparison suite contains 14 tests. Full
+Ruff and diff checks passed; independent review found a misleading summary-field
+name, which was corrected and re-reviewed with no remaining finding. These are
+offline checks, not model-quality or whole-product acceptance evidence.
+
 The local export boundary is covered by `tests/test_cli_export_candidates.py`:
 canonical descriptors round-trip through the real read-only candidate source;
 source bytes remain unchanged; invalid/incomplete state and unsafe output paths
