@@ -50,6 +50,8 @@ HOLDOUT_MANIFEST_NAME = "holdout-manifest.json"
 LEDGER_NAME = "ledger.sqlite3"
 CAMPAIGN_ID = "useful-skill-loop-20260914"
 LEDGER_SCHEMA_VERSION = "workflow-selection-trial-ledger-v1"
+FROZEN_CANDIDATE_META_KEY = "frozen_candidate_marker_digest"
+FROZEN_CANDIDATE_SCHEMA_VERSION = "useful-skill-frozen-candidate-v1"
 MAX_JSON_BYTES = 65_536
 MODEL = DEEPSEEK_CURRENT_FLASH_MODEL
 PROFILES = ("baseline", "r1", "r2", "r3")
@@ -384,6 +386,129 @@ def _require_digest(value: object) -> str:
     return value
 
 
+def bind_frozen_candidate(root: Path, marker_path: Path) -> None:
+    """Bind one controller-approved candidate without reading held-out source."""
+
+    parsed, marker_digest = _read_bounded_json(
+        Path(marker_path), error_message="invalid frozen candidate marker"
+    )
+    expected_keys = {
+        "schema_version",
+        "campaign_id",
+        "candidate_profile",
+        "model",
+        "candidate_prompt_digest",
+        "baseline_prompt_digest",
+        "development_dataset_digest",
+        "heldout_dataset_digest",
+        "heldout_manifest_digest",
+        "development_result",
+        "selection_reason",
+        "controller_heldout_sources_read",
+        "no_further_development_tuning",
+    }
+    if type(parsed) is not dict or set(parsed) != expected_keys:
+        raise ValueError("invalid frozen candidate marker")
+    try:
+        candidate_profile = parsed["candidate_profile"]
+        candidate_prompt_digest = _require_digest(parsed["candidate_prompt_digest"])
+        baseline_prompt_digest = _require_digest(parsed["baseline_prompt_digest"])
+        development_dataset_digest = _require_digest(parsed["development_dataset_digest"])
+        heldout_dataset_digest = _require_digest(parsed["heldout_dataset_digest"])
+        heldout_manifest_digest = _require_digest(parsed["heldout_manifest_digest"])
+        development_result = parsed["development_result"]
+        if (
+            parsed["schema_version"] != FROZEN_CANDIDATE_SCHEMA_VERSION
+            or parsed["campaign_id"] != CAMPAIGN_ID
+            or type(candidate_profile) is not str
+            or candidate_profile == "baseline"
+            or candidate_profile not in PROFILES
+            or parsed["model"] != MODEL
+            or candidate_prompt_digest != profile_prompt_digest(candidate_profile)
+            or baseline_prompt_digest != profile_prompt_digest("baseline")
+            or type(development_result) is not dict
+            or set(development_result)
+            != {"baseline_passed", "candidate_passed", "case_count", "requests_consumed"}
+            or any(type(value) is not int for value in development_result.values())
+            or not 0 <= development_result["baseline_passed"] < 7
+            or development_result["candidate_passed"] != 7
+            or development_result["case_count"] != 7
+            or development_result["requests_consumed"] != 14
+            or type(parsed["selection_reason"]) is not str
+            or not parsed["selection_reason"].strip()
+            or parsed["controller_heldout_sources_read"] is not False
+            or parsed["no_further_development_tuning"] is not True
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("invalid frozen candidate marker") from None
+    with _transaction(Path(root)) as connection:
+        if (
+            connection.execute(
+                "SELECT 1 FROM campaign_meta WHERE key = ?", (FROZEN_CANDIDATE_META_KEY,)
+            ).fetchone()
+            is not None
+            or connection.execute(
+                "SELECT 1 FROM profile_bindings WHERE profile = 'candidate'"
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("campaign already frozen")
+        metadata = dict(connection.execute("SELECT key, value FROM campaign_meta"))
+        if (
+            metadata.get("campaign_id") != CAMPAIGN_ID
+            or metadata.get("development_dataset_digest") != development_dataset_digest
+            or metadata.get("heldout_dataset_digest") != heldout_dataset_digest
+            or metadata.get("heldout_manifest_digest") != heldout_manifest_digest
+            or metadata.get("baseline_prompt_digest") != baseline_prompt_digest
+        ):
+            raise ValueError("invalid frozen candidate marker")
+        bindings = {
+            profile: (prompt_digest, model)
+            for profile, prompt_digest, model in connection.execute(
+                "SELECT profile, prompt_digest, model FROM profile_bindings"
+            )
+        }
+        expected_bindings = {
+            "baseline": (baseline_prompt_digest, MODEL),
+            candidate_profile: (candidate_prompt_digest, MODEL),
+        }
+        rows = connection.execute(
+            """SELECT r.group_name, a.profile, r.input_digest,
+                      a.expected_input_digest, r.prompt_digest, r.model,
+                      r.state, r.outcome
+                 FROM reservations AS r
+                 JOIN allowed_slots AS a
+                   ON a.group_name = r.group_name AND a.slot = r.slot"""
+        ).fetchall()
+        profile_counts = {
+            profile: sum(row[1] == profile for row in rows)
+            for profile in ("baseline", candidate_profile)
+        }
+        if (
+            len(rows) != 14
+            or profile_counts != {"baseline": 7, candidate_profile: 7}
+            or any(row[0] != "development" for row in rows)
+            or any(row[1] not in expected_bindings for row in rows)
+            or any(row[2] != row[3] or row[3] is None for row in rows)
+            or any((row[4], row[5]) != expected_bindings[row[1]] for row in rows)
+            or any(row[6] != "decided" for row in rows)
+            or any(row[7] not in {"admitted", "no_workflows"} for row in rows)
+            or any(
+                bindings.get(profile) != binding for profile, binding in expected_bindings.items()
+            )
+        ):
+            raise ValueError("invalid development history")
+        connection.execute(
+            "INSERT INTO campaign_meta(key, value) VALUES (?, ?)",
+            (FROZEN_CANDIDATE_META_KEY, marker_digest),
+        )
+        connection.execute(
+            "INSERT INTO profile_bindings(profile, prompt_digest, model) VALUES (?, ?, ?)",
+            ("candidate", candidate_prompt_digest, MODEL),
+        )
+
+
 def reserve_slot(
     root: Path,
     group: str,
@@ -404,6 +529,24 @@ def reserve_slot(
         ).fetchone()
         if allocation is None:
             raise ValueError("unknown allocation")
+        marker_bound = (
+            connection.execute(
+                "SELECT 1 FROM campaign_meta WHERE key = ?", (FROZEN_CANDIDATE_META_KEY,)
+            ).fetchone()
+            is not None
+        )
+        candidate_bound = (
+            connection.execute(
+                "SELECT 1 FROM profile_bindings WHERE profile = 'candidate'"
+            ).fetchone()
+            is not None
+        )
+        if marker_bound != candidate_bound:
+            raise ValueError("candidate freeze invalid")
+        if group == "development" and marker_bound:
+            raise ValueError("development closed after freeze")
+        if group == "heldout" and not marker_bound:
+            raise ValueError("candidate not frozen")
         used = connection.execute(
             "SELECT COUNT(*) FROM reservations WHERE group_name = ?", (group,)
         ).fetchone()[0]
@@ -441,6 +584,8 @@ def reserve_slot(
                 (profile,),
             ).fetchone()
             if binding is None:
+                if group == "heldout":
+                    raise ValueError("prompt identity mismatch")
                 connection.execute(
                     "INSERT INTO profile_bindings(profile, prompt_digest, model) VALUES (?, ?, ?)",
                     (profile, prompt_digest, model),
@@ -484,26 +629,109 @@ def _zero_request_result(
     }
 
 
-def _finalize(root: Path, slot: str, outcome: str, result: dict[str, object]) -> None:
+def _frozen_heldout_profile(root: Path, variant: str) -> tuple[str, str]:
+    if variant not in {"baseline", "candidate"}:
+        raise ValueError("invalid held-out variant")
+    connection = _connect_existing(Path(root))
+    try:
+        marker = connection.execute(
+            "SELECT value FROM campaign_meta WHERE key = ?", (FROZEN_CANDIDATE_META_KEY,)
+        ).fetchone()
+        if marker is None:
+            raise ValueError("candidate not frozen")
+        _require_digest(marker[0])
+        expected_dataset_digest = connection.execute(
+            "SELECT value FROM campaign_meta WHERE key = 'heldout_dataset_digest'"
+        ).fetchone()
+        if expected_dataset_digest is None:
+            raise ValueError("frozen binding invalid")
+        heldout_dataset_digest = _require_digest(expected_dataset_digest[0])
+        bindings = {
+            profile: (prompt_digest, model)
+            for profile, prompt_digest, model in connection.execute(
+                "SELECT profile, prompt_digest, model FROM profile_bindings"
+            )
+        }
+        baseline_digest = profile_prompt_digest("baseline")
+        if bindings.get("baseline") != (baseline_digest, MODEL):
+            raise ValueError("frozen binding invalid")
+        candidate_binding = bindings.get("candidate")
+        matches = [
+            profile
+            for profile in PROFILES
+            if profile != "baseline"
+            and _FROZEN_SUFFIXES[profile] is not None
+            and (profile_prompt_digest(profile), MODEL) == candidate_binding
+            and bindings.get(profile) == candidate_binding
+        ]
+        if len(matches) != 1:
+            raise ValueError("frozen binding invalid")
+        return (
+            ("baseline" if variant == "baseline" else matches[0]),
+            heldout_dataset_digest,
+        )
+    finally:
+        connection.close()
+
+
+def run_heldout_case(
+    root: Path,
+    dataset_path: Path,
+    case_id: str,
+    variant: str,
+    *,
+    http_client: Any = None,
+    api_key: str | None = None,
+) -> dict[str, object]:
+    """Run one frozen held-out case after verifying campaign bindings."""
+
+    profile, expected_dataset_digest = _frozen_heldout_profile(Path(root), variant)
+    cases, dataset_digest = read_dataset(Path(dataset_path))
+    if dataset_digest != expected_dataset_digest:
+        raise ValueError("held-out dataset identity mismatch")
+    if tuple(item["id"] for item in cases) != tuple(f"h{index:02d}" for index in range(1, 7)):
+        raise ValueError("invalid held-out case manifest")
+    case = next((item for item in cases if item["id"] == case_id), None)
+    if case is None:
+        raise ValueError("invalid held-out case")
+    return _run_case(
+        Path(root),
+        case,
+        profile,
+        group="heldout",
+        slot_profile=variant,
+        http_client=http_client,
+        api_key=api_key,
+    )
+
+
+def _finalize(root: Path, group: str, slot: str, outcome: str, result: dict[str, object]) -> None:
     with _transaction(root) as connection:
         cursor = connection.execute(
             """UPDATE reservations SET state = 'decided', outcome = ?, result_json = ?
-               WHERE group_name = 'development' AND slot = ? AND state = 'in_flight'""",
-            (outcome, json.dumps(result, sort_keys=True, separators=(",", ":")), slot),
+               WHERE group_name = ? AND slot = ? AND state = 'in_flight'""",
+            (
+                outcome,
+                json.dumps(result, sort_keys=True, separators=(",", ":")),
+                group,
+                slot,
+            ),
         )
         if cursor.rowcount != 1:
             raise ValueError("reservation state invalid")
 
 
-def run_case(
+def _run_case(
     root: Path,
     case: Mapping[str, object],
     profile: str,
     *,
+    group: str,
+    slot_profile: str,
     http_client: Any = None,
     api_key: str | None = None,
 ) -> dict[str, object]:
-    """Run one named development case with at most one guarded request."""
+    """Run one selected case through the shared guarded request path."""
 
     instructions = _profile_instructions(profile)
     if type(api_key) is not str or not api_key:
@@ -534,9 +762,9 @@ def run_case(
         current_flash=True,
     )
     client = create_semantic_client(settings, sdk=openai, api_key=api_key, http_client=http_client)
-    slot = f"{profile}:{case_id}"
+    slot = f"{slot_profile}:{case_id}"
     try:
-        reserve_slot(root, "development", slot, catalog.digest, prompt_digest, MODEL)
+        reserve_slot(root, group, slot, catalog.digest, prompt_digest, MODEL)
         started = monotonic()
         response = request_deepseek_json(
             client,
@@ -592,8 +820,29 @@ def run_case(
         "model": MODEL,
         "request_id": request_id,
     }
-    _finalize(Path(root), slot, outcome, result)
+    _finalize(Path(root), group, slot, outcome, result)
     return result
+
+
+def run_case(
+    root: Path,
+    case: Mapping[str, object],
+    profile: str,
+    *,
+    http_client: Any = None,
+    api_key: str | None = None,
+) -> dict[str, object]:
+    """Run one named development case with at most one guarded request."""
+
+    return _run_case(
+        Path(root),
+        case,
+        profile,
+        group="development",
+        slot_profile=profile,
+        http_client=http_client,
+        api_key=api_key,
+    )
 
 
 def _preflight() -> dict[str, object]:

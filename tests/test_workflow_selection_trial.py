@@ -52,11 +52,11 @@ def _runner():
     return module
 
 
-def _manifest(parent: Path) -> None:
+def _manifest(parent: Path, *, file_sha256: str = "a" * 64) -> None:
     (parent / "holdout-manifest.json").write_text(
         json.dumps(
             {
-                "file_sha256": "a" * 64,
+                "file_sha256": file_sha256,
                 "byte_count": 1234,
                 "case_count": 6,
                 "class_aggregate_counts": {"select": 3, "reject": 2, "abstain": 1},
@@ -66,9 +66,14 @@ def _manifest(parent: Path) -> None:
     )
 
 
-def _campaign(tmp_path: Path):
+def _campaign(tmp_path: Path, *, heldout_path: Path | None = None):
     module = _runner()
-    _manifest(tmp_path)
+    heldout_digest = (
+        hashlib.sha256(heldout_path.read_bytes()).hexdigest()
+        if heldout_path is not None
+        else "a" * 64
+    )
+    _manifest(tmp_path, file_sha256=heldout_digest)
     root = tmp_path / "runtime"
     module.initialize_campaign(root)
     return module, root
@@ -76,6 +81,33 @@ def _campaign(tmp_path: Path):
 
 def _cases() -> list[dict[str, object]]:
     return json.loads(DEVELOPMENT_DATASET.read_bytes())["cases"]
+
+
+def _heldout_cases() -> list[dict[str, object]]:
+    return [
+        {
+            "id": f"h{index:02d}",
+            "source_text": "Review every model claim against supplied evidence.\n",
+            "expected": f"ANSWER-CANARY-{index}",
+            "rationale": f"RATIONALE-CANARY-{index}",
+        }
+        for index in range(1, 7)
+    ]
+
+
+def _write_heldout_dataset(path: Path, cases: list[dict[str, object]] | None = None) -> Path:
+    path.write_text(json.dumps({"cases": cases or _heldout_cases()}, sort_keys=True))
+    return path
+
+
+def _frozen_campaign(tmp_path: Path, cases: list[dict[str, object]] | None = None):
+    heldout_path = _write_heldout_dataset(tmp_path / "synthetic-heldout.json", cases)
+    module, root = _campaign(tmp_path, heldout_path=heldout_path)
+    _complete_freeze_eligible_development(module, root)
+    marker_path = tmp_path / "frozen-candidate.json"
+    _freeze_marker(module, root, marker_path)
+    module.bind_frozen_candidate(root, marker_path)
+    return module, root, heldout_path
 
 
 def _selection_response(*, workflow: bool = True) -> RecordedResponse:
@@ -142,16 +174,499 @@ def _reservation_count(root: Path) -> int:
 def _decide(module, root: Path, slot: str) -> None:
     module._finalize(
         root,
+        "development",
         slot,
-        "synthetic_test_decided",
+        "admitted",
         {
             "experiment_only": True,
-            "outcome": "synthetic_test_decided",
+            "outcome": "admitted",
             "workflows": [],
             "usage": None,
             "digests": {},
         },
     )
+
+
+def _complete_freeze_eligible_development(module, root: Path) -> None:
+    for profile in ("baseline", "r1"):
+        prompt_digest = module.profile_prompt_digest(profile)
+        for case in _cases():
+            slot = f"{profile}:{case['id']}"
+            module.reserve_slot(
+                root,
+                "development",
+                slot,
+                module.prepare_case(case).digest,
+                prompt_digest,
+                "deepseek-flash",
+            )
+            _decide(module, root, slot)
+
+
+def _freeze_marker(module, root: Path, path: Path, **changes: object) -> dict[str, object]:
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        metadata = dict(connection.execute("SELECT key, value FROM campaign_meta"))
+    marker: dict[str, object] = {
+        "schema_version": "useful-skill-frozen-candidate-v1",
+        "campaign_id": "useful-skill-loop-20260914",
+        "candidate_profile": "r1",
+        "model": "deepseek-flash",
+        "candidate_prompt_digest": module.profile_prompt_digest("r1"),
+        "baseline_prompt_digest": module.profile_prompt_digest("baseline"),
+        "development_dataset_digest": metadata["development_dataset_digest"],
+        "heldout_dataset_digest": metadata["heldout_dataset_digest"],
+        "heldout_manifest_digest": metadata["heldout_manifest_digest"],
+        "development_result": {
+            "baseline_passed": 5,
+            "candidate_passed": 7,
+            "case_count": 7,
+            "requests_consumed": 14,
+        },
+        "selection_reason": "Synthetic scorer declaration for this offline test.",
+        "controller_heldout_sources_read": False,
+        "no_further_development_tuning": True,
+    }
+    marker.update(changes)
+    path.write_text(json.dumps(marker))
+    return marker
+
+
+def _assert_not_frozen(root: Path) -> None:
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        metadata = dict(connection.execute("SELECT key, value FROM campaign_meta"))
+        candidate = connection.execute(
+            "SELECT 1 FROM profile_bindings WHERE profile = 'candidate'"
+        ).fetchone()
+    assert "frozen_candidate_marker_digest" not in metadata
+    assert candidate is None
+
+
+def test_bind_frozen_candidate_records_exact_marker_without_reading_heldout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module, root = _campaign(tmp_path)
+    _complete_freeze_eligible_development(module, root)
+    marker_path = tmp_path / "frozen-candidate.json"
+    marker = _freeze_marker(module, root, marker_path)
+    monkeypatch.setattr(
+        module,
+        "read_dataset",
+        lambda _path: pytest.fail("freeze must not read held-out dataset"),
+    )
+
+    module.bind_frozen_candidate(root, marker_path)
+
+    expected_marker_digest = "sha256:" + hashlib.sha256(marker_path.read_bytes()).hexdigest()
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        metadata = dict(connection.execute("SELECT key, value FROM campaign_meta"))
+        candidate_binding = connection.execute(
+            "SELECT prompt_digest, model FROM profile_bindings WHERE profile = 'candidate'"
+        ).fetchone()
+    assert metadata["frozen_candidate_marker_digest"] == expected_marker_digest
+    assert candidate_binding == (marker["candidate_prompt_digest"], "deepseek-flash")
+
+
+@pytest.mark.parametrize(
+    ("changes"),
+    [
+        {"unexpected": "field"},
+        {"schema_version": "useful-skill-frozen-candidate-v2"},
+        {"campaign_id": "other-campaign"},
+        {"candidate_profile": "baseline"},
+        {"model": "other-model"},
+        {"candidate_prompt_digest": "sha256:" + "c" * 64},
+        {"baseline_prompt_digest": "sha256:" + "b" * 64},
+        {"development_dataset_digest": "sha256:" + "d" * 64},
+        {"heldout_dataset_digest": "sha256:" + "e" * 64},
+        {"heldout_manifest_digest": "sha256:" + "f" * 64},
+        {"development_result": {"baseline_passed": 5}},
+        {
+            "development_result": {
+                "baseline_passed": 5,
+                "candidate_passed": 6,
+                "case_count": 7,
+                "requests_consumed": 14,
+            }
+        },
+        {"selection_reason": ""},
+        {"controller_heldout_sources_read": True},
+        {"no_further_development_tuning": 1},
+    ],
+)
+def test_bind_rejects_strict_marker_schema_or_identity_mismatch_transactionally(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    module, root = _campaign(tmp_path)
+    _complete_freeze_eligible_development(module, root)
+    marker_path = tmp_path / "frozen-candidate.json"
+    _freeze_marker(module, root, marker_path, **changes)
+
+    with pytest.raises(ValueError, match="frozen candidate"):
+        module.bind_frozen_candidate(root, marker_path)
+
+    _assert_not_frozen(root)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "in_flight",
+        "bad_outcome",
+        "input_drift",
+        "prompt_drift",
+        "model_drift",
+        "extra_development",
+        "later_group_used",
+    ],
+)
+def test_bind_requires_exact_completed_admissible_development_history(
+    tmp_path: Path, mutation: str
+) -> None:
+    module, root = _campaign(tmp_path)
+    _complete_freeze_eligible_development(module, root)
+    marker_path = tmp_path / "frozen-candidate.json"
+    _freeze_marker(module, root, marker_path)
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        if mutation == "missing":
+            connection.execute(
+                "DELETE FROM reservations WHERE group_name = 'development' AND slot = 'r1:d07'"
+            )
+        elif mutation == "in_flight":
+            connection.execute("UPDATE reservations SET state = 'in_flight' WHERE slot = 'r1:d07'")
+        elif mutation == "bad_outcome":
+            connection.execute(
+                "UPDATE reservations SET outcome = 'mechanically_rejected' WHERE slot = 'r1:d07'"
+            )
+        elif mutation == "input_drift":
+            connection.execute(
+                "UPDATE reservations SET input_digest = ? WHERE slot = 'r1:d07'",
+                ("sha256:" + "a" * 64,),
+            )
+        elif mutation == "prompt_drift":
+            connection.execute(
+                "UPDATE reservations SET prompt_digest = ? WHERE slot = 'r1:d07'",
+                ("sha256:" + "b" * 64,),
+            )
+        elif mutation == "model_drift":
+            connection.execute(
+                "UPDATE reservations SET model = 'other-model' WHERE slot = 'r1:d07'"
+            )
+        elif mutation == "extra_development":
+            connection.execute(
+                """INSERT INTO reservations(
+                       group_name, slot, input_digest, prompt_digest, model,
+                       state, outcome, result_json
+                   ) SELECT group_name, slot, expected_input_digest, ?, ?,
+                            'decided', 'admitted', '{}'
+                     FROM allowed_slots
+                    WHERE group_name = 'development' AND slot = 'r2:d01'""",
+                ("sha256:" + "c" * 64, "deepseek-flash"),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO reservations(
+                       group_name, slot, input_digest, prompt_digest, model,
+                       state, outcome, result_json
+                   ) VALUES ('artifact', 'extraction', ?, ?, ?, 'decided', 'admitted', '{}')""",
+                ("sha256:" + "a" * 64, "sha256:" + "b" * 64, "not-applicable"),
+            )
+        connection.commit()
+
+    with pytest.raises(ValueError, match="development history"):
+        module.bind_frozen_candidate(root, marker_path)
+
+    _assert_not_frozen(root)
+
+
+def test_bind_rejects_every_rebind_and_preserves_first_binding(tmp_path: Path) -> None:
+    module, root = _campaign(tmp_path)
+    _complete_freeze_eligible_development(module, root)
+    first_path = tmp_path / "first.json"
+    marker = _freeze_marker(module, root, first_path)
+    module.bind_frozen_candidate(root, first_path)
+    second_path = tmp_path / "second.json"
+    _freeze_marker(module, root, second_path, selection_reason="Different scorer explanation.")
+
+    with pytest.raises(ValueError, match="already frozen"):
+        module.bind_frozen_candidate(root, second_path)
+
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        metadata = dict(connection.execute("SELECT key, value FROM campaign_meta"))
+        candidate_binding = connection.execute(
+            "SELECT prompt_digest, model FROM profile_bindings WHERE profile = 'candidate'"
+        ).fetchone()
+    assert metadata["frozen_candidate_marker_digest"] == (
+        "sha256:" + hashlib.sha256(first_path.read_bytes()).hexdigest()
+    )
+    assert candidate_binding == (marker["candidate_prompt_digest"], "deepseek-flash")
+
+
+@pytest.mark.parametrize("variant", ["baseline", "candidate"])
+def test_reserve_slot_enforces_freeze_boundary_and_frozen_heldout_binding(
+    tmp_path: Path, variant: str
+) -> None:
+    module, root = _campaign(tmp_path)
+    _complete_freeze_eligible_development(module, root)
+    input_digest = "sha256:" + "9" * 64
+    prompt_digest = module.profile_prompt_digest("baseline" if variant == "baseline" else "r1")
+
+    with pytest.raises(ValueError, match="not frozen"):
+        module.reserve_slot(
+            root,
+            "heldout",
+            f"{variant}:h01",
+            input_digest,
+            prompt_digest,
+            "deepseek-flash",
+        )
+    _freeze_marker(module, root, tmp_path / "marker.json")
+    module.bind_frozen_candidate(root, tmp_path / "marker.json")
+    with pytest.raises(ValueError, match="development closed"):
+        module.reserve_slot(
+            root,
+            "development",
+            "r2:d01",
+            module.prepare_case(_cases()[0]).digest,
+            "sha256:" + "2" * 64,
+            "deepseek-flash",
+        )
+    with pytest.raises(ValueError, match="prompt identity"):
+        module.reserve_slot(
+            root,
+            "heldout",
+            f"{variant}:h01",
+            input_digest,
+            "sha256:" + "8" * 64,
+            "deepseek-flash",
+        )
+
+    module.reserve_slot(
+        root,
+        "heldout",
+        f"{variant}:h01",
+        input_digest,
+        prompt_digest,
+        "deepseek-flash",
+    )
+
+    assert _reservation_count(root) == 15
+
+
+def test_heldout_fails_before_dataset_read_or_request_without_frozen_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module, root = _campaign(tmp_path)
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _selection_response()})
+    monkeypatch.setattr(
+        module,
+        "read_dataset",
+        lambda _path: pytest.fail("held-out dataset read before freeze verification"),
+    )
+
+    with httpx.Client(transport=recorded.transport()) as http_client:
+        with pytest.raises(ValueError, match="not frozen"):
+            module.run_heldout_case(
+                root,
+                tmp_path / "heldout.json",
+                "h01",
+                "baseline",
+                http_client=http_client,
+                api_key=CANARY_KEY,
+            )
+        with pytest.raises(ValueError, match="campaign state missing"):
+            module.run_heldout_case(
+                tmp_path / "missing",
+                tmp_path / "heldout.json",
+                "h01",
+                "baseline",
+                http_client=http_client,
+                api_key=CANARY_KEY,
+            )
+
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 0
+    assert not (tmp_path / "missing").exists()
+
+
+def test_heldout_rejects_variant_and_tampered_current_candidate_before_dataset_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module, root, heldout_path = _frozen_campaign(tmp_path)
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _selection_response()})
+    monkeypatch.setattr(
+        module,
+        "read_dataset",
+        lambda _path: pytest.fail("invalid binding must stop before dataset read"),
+    )
+
+    with httpx.Client(transport=recorded.transport()) as http_client:
+        with pytest.raises(ValueError, match="variant"):
+            module.run_heldout_case(
+                root,
+                heldout_path,
+                "h01",
+                "r1",
+                http_client=http_client,
+                api_key=CANARY_KEY,
+            )
+        module._FROZEN_SUFFIXES["r1"] += "\nTampered after freeze."
+        with pytest.raises(ValueError, match="frozen binding"):
+            module.run_heldout_case(
+                root,
+                heldout_path,
+                "h01",
+                "candidate",
+                http_client=http_client,
+                api_key=CANARY_KEY,
+            )
+
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 0
+    assert _reservation_count(root) == 14
+
+
+def test_heldout_rejects_dataset_digest_and_id_drift_before_reservation(
+    tmp_path: Path,
+) -> None:
+    module, root, heldout_path = _frozen_campaign(tmp_path)
+    heldout_path.write_bytes(heldout_path.read_bytes() + b"\n")
+
+    with pytest.raises(ValueError, match="dataset identity"):
+        module.run_heldout_case(root, heldout_path, "h01", "baseline", api_key=CANARY_KEY)
+    assert _reservation_count(root) == 14
+
+    drift_root = tmp_path / "id-drift"
+    drift_root.mkdir()
+    drift_cases = _heldout_cases()
+    drift_cases[-1] = {**drift_cases[-1], "id": "h07"}
+    module, root, heldout_path = _frozen_campaign(drift_root, drift_cases)
+
+    with pytest.raises(ValueError, match="case manifest"):
+        module.run_heldout_case(root, heldout_path, "h01", "baseline", api_key=CANARY_KEY)
+    assert _reservation_count(root) == 14
+
+
+@pytest.mark.parametrize(
+    ("variant", "development_profile"),
+    [("baseline", "baseline"), ("candidate", "r1")],
+)
+def test_heldout_reuses_exact_development_request_and_sends_source_only(
+    tmp_path: Path, variant: str, development_profile: str
+) -> None:
+    development_case = _cases()[0]
+    heldout_cases = _heldout_cases()
+    heldout_cases[0] = {
+        "id": "h01",
+        "source_text": development_case["source_text"],
+        "expected": "HELDOUT-ANSWER-CANARY",
+        "rationale": "HELDOUT-RATIONALE-CANARY",
+        "must_cover": ["HELDOUT-SCORING-CANARY"],
+    }
+    heldout_parent = tmp_path / "heldout-campaign"
+    development_parent = tmp_path / "development-campaign"
+    heldout_parent.mkdir()
+    development_parent.mkdir()
+    module, root, heldout_path = _frozen_campaign(heldout_parent, heldout_cases)
+    development_module, development_root = _campaign(development_parent)
+    heldout_transport = RecordedTransport({CHAT_COMPLETIONS: _selection_response()})
+    development_transport = RecordedTransport({CHAT_COMPLETIONS: _selection_response()})
+
+    with httpx.Client(transport=heldout_transport.transport()) as heldout_http:
+        result = module.run_heldout_case(
+            root,
+            heldout_path,
+            "h01",
+            variant,
+            http_client=heldout_http,
+            api_key=CANARY_KEY,
+        )
+    with httpx.Client(transport=development_transport.transport()) as development_http:
+        development_module.run_case(
+            development_root,
+            development_case,
+            development_profile,
+            http_client=development_http,
+            api_key=CANARY_KEY,
+        )
+
+    heldout_request = heldout_transport.requests[0].content
+    assert heldout_request == development_transport.requests[0].content
+    for marker in (
+        "h01",
+        "HELDOUT-ANSWER-CANARY",
+        "HELDOUT-RATIONALE-CANARY",
+        "HELDOUT-SCORING-CANARY",
+    ):
+        assert marker.encode() not in heldout_request
+    assert result["outcome"] == "admitted"
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT state, outcome FROM reservations WHERE group_name = 'heldout' AND slot = ?",
+            (f"{variant}:h01",),
+        ).fetchone() == ("decided", "admitted")
+
+
+def test_heldout_slot_cannot_be_replayed_and_unknown_outcome_halts_campaign(
+    tmp_path: Path,
+) -> None:
+    completed_parent = tmp_path / "completed"
+    completed_parent.mkdir()
+    module, root, heldout_path = _frozen_campaign(completed_parent)
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _selection_response()})
+    with httpx.Client(transport=recorded.transport()) as http_client:
+        module.run_heldout_case(
+            root,
+            heldout_path,
+            "h01",
+            "candidate",
+            http_client=http_client,
+            api_key=CANARY_KEY,
+        )
+        with pytest.raises(ValueError, match="already reserved"):
+            module.run_heldout_case(
+                root,
+                heldout_path,
+                "h01",
+                "candidate",
+                http_client=http_client,
+                api_key=CANARY_KEY,
+            )
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+    unknown_parent = tmp_path / "unknown"
+    unknown_parent.mkdir()
+    module, root, heldout_path = _frozen_campaign(unknown_parent)
+    failure = RecordedResponse(
+        status=500,
+        headers={"content-type": "application/json"},
+        body=json.dumps(
+            {"error": {"message": "provider failure", "type": "server_error"}}
+        ).encode(),
+    )
+    failed_transport = RecordedTransport({CHAT_COMPLETIONS: failure})
+    with httpx.Client(transport=failed_transport.transport()) as http_client:
+        with pytest.raises(SemanticProviderFailure):
+            module.run_heldout_case(
+                root,
+                heldout_path,
+                "h01",
+                "baseline",
+                http_client=http_client,
+                api_key=CANARY_KEY,
+            )
+        with pytest.raises(ValueError, match="in-flight"):
+            module.run_heldout_case(
+                root,
+                heldout_path,
+                "h02",
+                "candidate",
+                http_client=http_client,
+                api_key=CANARY_KEY,
+            )
+    assert failed_transport.call_count(*CHAT_COMPLETIONS) == 1
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT slot, state FROM reservations WHERE group_name = 'heldout'"
+        ).fetchall() == [("baseline:h01", "in_flight")]
 
 
 def test_prepare_case_sends_only_source_derived_catalogue_fields() -> None:
