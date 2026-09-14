@@ -73,8 +73,8 @@ inputs. No dotenv, subprocess, source code execution or remote publishing.
 
 - [x] Review runner and curate development rubric independently of model output.
 - [x] Confirm held-out manifest and sample-label status; keep source/answers unread.
-- [ ] Resolve runtime credential delivery and initialize one ledger; record 0/49.
-- [ ] Run seven baseline cases once; independently score actual admitted outputs.
+- [x] Resolve runtime credential delivery and initialize one ledger; record 0/49.
+- [x] Run seven baseline cases once; independently score actual admitted outputs.
 - [ ] For each permitted round, record hypothesis then change only selection
   suffix and compare the same seven cases. Stop after two no-improvement rounds.
 - [ ] Freeze eligible prompt, then independently run and score held-out baseline
@@ -110,3 +110,16 @@ preparation only; no conclusion about model quality or Skill usefulness.
 
 The experiment and branch remain in progress. Do not merge, delete its private
 state, or mark the useful-Skill objective complete based on this checkpoint.
+
+## Live baseline checkpoint — 2026-09-14
+
+The user separately authorized a runtime-only read of DEEPSEEK_API_KEY from
+the named root repository .env. No value was printed or copied. Seven baseline
+slots completed once with DeepSeek Flash; **7/49 requests**, all decided.
+Usage: 13,351 tokens; summed provider latency 20,779 ms; median 2,362 ms.
+
+Independent source/rubric scoring: **5/7 pass**, positives 1/3, negatives 4/4.
+d01 proposes processing authority instead of a non-executing review; d03 also
+admits a demo lifecycle and unsupported approvals. Baseline is ineligible;
+no held-out, real-artifact, usefulness or publication step has run.
+Round 1 is preregistered in `../specs/2026-09-14-useful-skill-r1.md`.
