@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import importlib
 from collections.abc import Iterator, Mapping
+from types import SimpleNamespace
 
 import httpx
 import openai
 import pytest
+from pydantic import ValidationError
 
 from recorded_transport import RecordedResponse, RecordedTransport
 
@@ -38,6 +40,86 @@ REQUIRED_PHASE6_PROVIDER_CONTRACTS = (
 
 class _Answer(StrictFrozenModel):
     value: str
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "total_tokens": 14,
+            "prompt_tokens": 99,
+            "completion_tokens": 99,
+        },
+    ],
+)
+def test_response_usage_normalizes_both_providers_with_responses_fields_first(usage) -> None:
+    from skillscout.adapters import semantic_provider
+
+    result = semantic_provider.response_token_usage(SimpleNamespace(usage=SimpleNamespace(**usage)))
+
+    assert result.model_dump() == {
+        "prompt_tokens": 10,
+        "completion_tokens": 4,
+        "total_tokens": 14,
+    }
+
+
+@pytest.mark.parametrize("response", [None, SimpleNamespace(usage=None)])
+def test_absent_response_usage_is_not_fabricated(response) -> None:
+    from skillscout.adapters import semantic_provider
+
+    assert semantic_provider.response_token_usage(response) is None
+
+
+@pytest.mark.parametrize("invalid_count", [-1, "10", True])
+def test_response_usage_preserves_strict_token_validation(invalid_count) -> None:
+    from skillscout.adapters import semantic_provider
+
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=invalid_count,
+            output_tokens=4,
+            total_tokens=14,
+        )
+    )
+    with pytest.raises(ValidationError):
+        semantic_provider.response_token_usage(response)
+
+
+def test_response_refusal_skips_non_messages_and_keeps_first_explicit_marker() -> None:
+    from skillscout.adapters import semantic_provider
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                content=[
+                    SimpleNamespace(type="refusal", refusal="not a message"),
+                ],
+            ),
+            SimpleNamespace(type="message", content=None),
+            SimpleNamespace(
+                type="message",
+                content=[
+                    SimpleNamespace(type="output_text", text="I refuse is only prose"),
+                    SimpleNamespace(type="refusal", refusal="first refusal"),
+                    SimpleNamespace(type="refusal", refusal="later refusal"),
+                ],
+            ),
+        ]
+    )
+    assert semantic_provider.first_response_refusal(response) == "first refusal"
+
+
+@pytest.mark.parametrize("output", [None, [], [SimpleNamespace(type="message", content=[])]])
+def test_response_without_refusal_marker_returns_none(output) -> None:
+    from skillscout.adapters import semantic_provider
+
+    assert semantic_provider.first_response_refusal(SimpleNamespace(output=output)) is None
 
 
 class _LookupSpy(Mapping[str, str]):

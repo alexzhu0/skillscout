@@ -16,13 +16,14 @@ from skillscout.adapters.semantic_provider import (
     SemanticStage,
     classify_semantic_provider_failure,
     create_semantic_client,
+    first_response_refusal,
     request_deepseek_json,
     resolve_semantic_provider,
+    response_token_usage,
 )
 from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.extraction import WorkflowSpec
-from skillscout.domain.models import TokenUsage
 from skillscout.domain.review import (
     REVIEW_POLICY_VERSION,
     REVIEW_PROMPT_VERSION,
@@ -193,7 +194,7 @@ class OpenAIReviewClient:
                 response=response,
                 incomplete_reason=(reason or "incomplete")[:MAX_INCOMPLETE_REASON_CHARS],
             )
-        refusal = _first_refusal(response)
+        refusal = first_response_refusal(response)
         if refusal is not None:
             return self._result(
                 "refused",
@@ -217,23 +218,7 @@ class OpenAIReviewClient:
         incomplete_reason: str | None = None,
     ) -> ReviewResult:
         try:
-            usage = None
-            if response is not None and response.usage is not None:
-                prompt_tokens = getattr(
-                    response.usage,
-                    "input_tokens",
-                    getattr(response.usage, "prompt_tokens", None),
-                )
-                completion_tokens = getattr(
-                    response.usage,
-                    "output_tokens",
-                    getattr(response.usage, "completion_tokens", None),
-                )
-                usage = TokenUsage(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=response.usage.total_tokens,
-                )
+            usage = response_token_usage(response)
             return ReviewResult(
                 status=status,
                 judgment=judgment,
@@ -324,13 +309,3 @@ def _fresh_non_colliding_token(sections: tuple[bytes, ...]) -> str:
         if all(encoded not in section for section in sections):
             return token
     raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-
-
-def _first_refusal(response: Any) -> str | None:
-    for item in response.output or ():
-        if getattr(item, "type", None) != "message":
-            continue
-        for content in getattr(item, "content", None) or ():
-            if getattr(content, "type", None) == "refusal":
-                return str(content.refusal)
-    return None

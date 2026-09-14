@@ -15,8 +15,10 @@ from skillscout.adapters.semantic_provider import (
     SemanticStage,
     classify_semantic_provider_failure,
     create_semantic_client,
+    first_response_refusal,
     request_deepseek_json,
     resolve_semantic_provider,
+    response_token_usage,
 )
 from skillscout.domain.candidate_authority import WorkflowSpecAuthorityV1
 from skillscout.domain.canonical import canonical_json_bytes
@@ -232,7 +234,7 @@ class OpenAIGenerationClient:
                 response=response,
                 incomplete_reason=(reason or "incomplete")[:MAX_INCOMPLETE_REASON_CHARS],
             )
-        refusal = _first_refusal(response)
+        refusal = first_response_refusal(response)
         if refusal is not None:
             return self._result(
                 "refused",
@@ -256,23 +258,7 @@ class OpenAIGenerationClient:
         incomplete_reason: str | None = None,
     ) -> GenerationResult:
         try:
-            usage = None
-            if response is not None and response.usage is not None:
-                prompt_tokens = getattr(
-                    response.usage,
-                    "input_tokens",
-                    getattr(response.usage, "prompt_tokens", None),
-                )
-                completion_tokens = getattr(
-                    response.usage,
-                    "output_tokens",
-                    getattr(response.usage, "completion_tokens", None),
-                )
-                usage = TokenUsage(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=response.usage.total_tokens,
-                )
+            usage = response_token_usage(response)
             return GenerationResult(
                 status=status,
                 draft=draft,
@@ -289,13 +275,3 @@ class OpenAIGenerationClient:
             )
         except ValidationError as error:
             raise classify_semantic_provider_failure(error, sdk=openai) from None
-
-
-def _first_refusal(response: Any) -> str | None:
-    for item in response.output or ():
-        if getattr(item, "type", None) != "message":
-            continue
-        for content in getattr(item, "content", None) or ():
-            if getattr(content, "type", None) == "refusal":
-                return str(content.refusal)
-    return None

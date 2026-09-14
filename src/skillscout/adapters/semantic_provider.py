@@ -13,6 +13,7 @@ from typing import Any, Final, Generic, Literal, Mapping, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
+from skillscout.domain.models import TokenUsage
 
 OPENAI_MODEL = "gpt-5.6-terra"
 DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"
@@ -24,6 +25,29 @@ DEEPSEEK_OFFICIAL_BASE_URL = "https://api.deepseek.com"
 
 _ResponseModel = TypeVar("_ResponseModel", bound=BaseModel)
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+
+
+def response_token_usage(response: Any) -> TokenUsage | None:
+    """Normalize provider token names without relaxing the strict usage contract."""
+    if response is None or response.usage is None:
+        return None
+    usage = response.usage
+    return TokenUsage(
+        prompt_tokens=getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", None)),
+        completion_tokens=getattr(usage, "output_tokens", getattr(usage, "completion_tokens", None)),
+        total_tokens=usage.total_tokens,
+    )
+
+
+def first_response_refusal(response: Any) -> str | None:
+    """Read only an explicit Responses message refusal, never infer one from prose."""
+    for item in response.output or ():
+        if getattr(item, "type", None) != "message":
+            continue
+        for content in getattr(item, "content", None) or ():
+            if getattr(content, "type", None) == "refusal":
+                return str(content.refusal)
+    return None
 
 
 class SemanticTransportDisposition(str, Enum):

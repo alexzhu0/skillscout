@@ -17,9 +17,11 @@ from skillscout.adapters.semantic_provider import (
     SemanticStage,
     classify_semantic_provider_failure,
     create_semantic_client,
+    first_response_refusal,
     deepseek_json_instructions,
     request_deepseek_json,
     resolve_semantic_provider,
+    response_token_usage,
 )
 from skillscout.domain.enums import EffectScope
 from skillscout.domain.extraction import EXTRACT_PROMPT_VERSION, ExtractorResponse
@@ -286,7 +288,7 @@ class OpenAIExtractionClient:
                 response=response,
                 incomplete_reason=(reason or "incomplete")[:MAX_INCOMPLETE_REASON_CHARS],
             )
-        refusal = _first_refusal(response)
+        refusal = first_response_refusal(response)
         if refusal is not None:
             return self._result(
                 "refused",
@@ -320,23 +322,7 @@ class OpenAIExtractionClient:
         incomplete_reason: str | None = None,
     ) -> ExtractionResult:
         try:
-            usage = None
-            if response is not None and response.usage is not None:
-                prompt_tokens = getattr(
-                    response.usage,
-                    "input_tokens",
-                    getattr(response.usage, "prompt_tokens", None),
-                )
-                completion_tokens = getattr(
-                    response.usage,
-                    "output_tokens",
-                    getattr(response.usage, "completion_tokens", None),
-                )
-                usage = TokenUsage(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=response.usage.total_tokens,
-                )
+            usage = response_token_usage(response)
             return ExtractionResult(
                 status=status,
                 response=parsed,
@@ -354,13 +340,3 @@ class OpenAIExtractionClient:
         except ValidationError as error:
             # Provider-controlled telemetry violates the closed result shape.
             raise classify_semantic_provider_failure(error, sdk=openai) from None
-
-
-def _first_refusal(response: Any) -> str | None:
-    for item in response.output or ():
-        if getattr(item, "type", None) != "message":
-            continue
-        for content in getattr(item, "content", None) or ():
-            if getattr(content, "type", None) == "refusal":
-                return str(content.refusal)
-    return None
