@@ -81,6 +81,9 @@ inputs. No dotenv, subprocess, source code execution or remote publishing.
   and candidate once each. Stop on failure; no held-out tuning.
 - [ ] If admitted, use one pinned real repo through existing local extraction,
   qualification, generation and independent review, accounting all three slots.
+  Verify the extractor uses the frozen winning selection instructions; a
+  candidate suffix in the experimental runner does not automatically change
+  the existing CLI. Integrate and verify only if a non-baseline prompt wins.
 - [ ] If a Skill exists, freeze three task rubrics and run six paired calls;
   anonymized review and final user judgment decide usefulness.
 

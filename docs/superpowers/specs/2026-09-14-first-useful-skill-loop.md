@@ -49,7 +49,10 @@ A tie does not establish added usefulness. Final human review is still required.
    hashes, then run baseline and candidate once each on held-out cases.
    Do not tune on held-out failures or choose another candidate afterwards.
 5. Only after held-out admission, verify a pinned real source and run one
-   extraction. Qualify before spending generation/reviewer slots. Failed
+   extraction with the same frozen selection instructions that were evaluated.
+   If a revision wins, verify its guarded integration before that request;
+   silently falling back to the old production prompt invalidates the trial.
+   Qualify before spending generation/reviewer slots. Failed
    qualification stops the artifact path; unused slots cannot be borrowed.
 6. Freeze three task inputs, scoring checklists and pair ordering before the
    usefulness comparison. Judge anonymized outputs without version identity;
