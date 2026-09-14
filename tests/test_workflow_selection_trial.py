@@ -6,8 +6,6 @@ import hashlib
 import importlib.util
 import json
 import sqlite3
-import subprocess
-import sys
 from pathlib import Path
 
 import httpx
@@ -434,22 +432,54 @@ def test_baseline_request_bytes_match_existing_evidence_selection_client(tmp_pat
     assert _reservation_count(root) == 1
 
 
-def test_cli_defaults_to_content_free_offline_preflight() -> None:
-    result = subprocess.run(
-        [sys.executable, "-I", str(TOOL)],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def test_result_reports_monotonic_request_latency(tmp_path: Path, monkeypatch) -> None:
+    module, root = _campaign(tmp_path)
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _selection_response(workflow=False)})
+    ticks = iter((10.0, 10.25))
+    monkeypatch.setattr(module, "monotonic", lambda: next(ticks), raising=False)
 
-    assert result.returncode == 0, result.stderr
-    report = json.loads(result.stdout)
+    with httpx.Client(transport=recorded.transport()) as http_client:
+        result = module.run_case(
+            root,
+            _cases()[0],
+            "baseline",
+            http_client=http_client,
+            api_key=CANARY_KEY,
+        )
+
+    assert result["latency_ms"] == 250
+
+
+def test_cli_defaults_to_content_free_offline_preflight(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _runner()
+    _manifest(tmp_path)
+    monkeypatch.setattr(module, "CAMPAIGN_ROOT", tmp_path / "runtime")
+
+    assert module.main([]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    report = json.loads(captured.out)
     assert report == {
         "development_case_count": 7,
         "external_requests": 0,
         "mode": "offline_preflight",
     }
-    assert "select" not in result.stdout
-    assert "source_text" not in result.stdout
-    assert hashlib.sha256(DEVELOPMENT_DATASET.read_bytes()).hexdigest() not in result.stdout
+    assert "select" not in captured.out
+    assert "source_text" not in captured.out
+    assert hashlib.sha256(DEVELOPMENT_DATASET.read_bytes()).hexdigest() not in captured.out
+
+
+def test_cli_preflight_fails_closed_when_manifest_is_missing(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _runner()
+    monkeypatch.setattr(module, "CAMPAIGN_ROOT", tmp_path / "runtime")
+
+    assert module.main([]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "workflow selection trial failed\n"

@@ -13,6 +13,7 @@ import sys
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from time import monotonic
 from typing import Any, Iterator
 from urllib.parse import quote
 
@@ -461,6 +462,7 @@ def _zero_request_result(
         "outcome": outcome,
         "workflows": [],
         "usage": None,
+        "latency_ms": 0,
         "digests": {"input": input_digest, "prompt": prompt_digest},
     }
 
@@ -518,6 +520,7 @@ def run_case(
     slot = f"{profile}:{case_id}"
     try:
         reserve_slot(root, "development", slot, catalog.digest, prompt_digest, MODEL)
+        started = monotonic()
         response = request_deepseek_json(
             client,
             sdk=openai,
@@ -528,6 +531,7 @@ def run_case(
             response_model=EvidenceSelectionResponse,
             max_tokens=MAX_EXTRACT_OUTPUT_TOKENS,
         )
+        latency_ms = max(0, int((monotonic() - started) * 1_000))
     finally:
         client.close()
 
@@ -566,6 +570,7 @@ def run_case(
         "outcome": outcome,
         "workflows": admitted,
         "usage": usage.model_dump(mode="json") if usage is not None else None,
+        "latency_ms": latency_ms,
         "digests": {"input": catalog.digest, "prompt": prompt_digest},
         "model": MODEL,
         "request_id": request_id,
