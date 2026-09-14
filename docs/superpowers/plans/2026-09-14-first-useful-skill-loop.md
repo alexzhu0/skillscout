@@ -27,7 +27,7 @@
 
 **Interfaces:** expose pure `prepare_case(case)` (only source text enters catalogue), `initialize_campaign(root)` (exclusive runtime dir and SQLite ledger), `reserve_slot(root, group, slot, input_digest, prompt_digest, model)` (durable before dispatch), and `run_case(root, case, profile, *, http_client=None, api_key=None)` (one guarded extraction request maximum). The root parameter is injectable for tests; production CLI uses the one fixed campaign root. Profiles baseline/r1/r2/r3 map to trusted baseline instructions plus optional versioned selection-only suffix; never send case ID, expected, rationale, outline or scoring notes in provider payload.
 
-- [ ] Write focused RED tests first. Examples of required behavior:
+- [x] Write focused RED tests first. Examples of required behavior:
 
 ```python
 assert 'ANSWER-KEY-CANARY' not in prepare_case(case).user_payload()
@@ -42,37 +42,37 @@ are rejected, normal runs cannot recreate missing state. Strict bounded JSON
 dataset reads reject duplicate IDs/keys, excessive size and symlink/non-regular
 inputs. No dotenv, subprocess, source code execution or remote publishing.
 
-- [ ] Implement the smallest ledger/runner. Group caps are fixed; validate slot
+- [x] Implement the smallest ledger/runner. Group caps are fixed; validate slot
   identities against a frozen manifest of admitted case IDs/profiles so callers
   cannot create replacement slots. Init records development dataset hash and
   baseline prompt identity; held-out identity comes from the curator manifest,
   without printing/returning its contents. Each profile's prompt/input identity
   is immutable after its first reservation. Empty catalogue or over-limit
   payload means zero requests. No default automatic seven-case loop on errors.
-- [ ] Baseline must use the existing `EVIDENCE_SELECTION_INSTRUCTIONS_V1`,
+- [x] Baseline must use the existing `EVIDENCE_SELECTION_INSTRUCTIONS_V1`,
   `EvidenceSelectionResponse`, `MAX_EXTRACT_OUTPUT_TOKENS`,
   `deepseek_json_instructions` and `request_deepseek_json` with the existing local
   provider configuration. Preserve full request byte cap 65,536 and no-tools,
   zero-retry behavior. Recorded-transport tests compare baseline request bytes
   to `OpenAIExtractionClient.extract(..., evidence_selection=True)` so this
   experiment cannot silently measure a different baseline.
-- [ ] Materialize via `materialize_workflow` and `validate_workflow_boundaries`;
+- [x] Materialize via `materialize_workflow` and `validate_workflow_boundaries`;
   return only admitted workflow objects plus bounded outcome/usage/digests.
   Discard rejected model text. Results are experiment-only, never candidate
   descriptors or publication evidence. Judgment of substantive core coverage
   remains separate from mechanical admission; no `quality_passed` inference.
-- [ ] CLI defaults to offline preflight; explicit run requires injected key and
+- [x] CLI defaults to offline preflight; explicit run requires injected key and
   one named development slot. Held-out dispatch remains disabled until a
   controller-recorded prompt-freeze marker binds the candidate and dataset.
   Do not implement real artifact/usefulness dispatch yet: reserve their quotas
   in the ledger for later guarded adapters; do not claim end-to-end completion.
-- [ ] Run focused tests, Ruff and diff checks; commit only named files. Write a
+- [x] Run focused tests, Ruff and diff checks; commit only named files. Write a
   report with RED/GREEN evidence and limitations. Controller arranges review.
 
 ## Controller execution after Task 1
 
-- [ ] Review runner and curate development rubric independently of model output.
-- [ ] Confirm held-out manifest and sample-label status; keep source/answers unread.
+- [x] Review runner and curate development rubric independently of model output.
+- [x] Confirm held-out manifest and sample-label status; keep source/answers unread.
 - [ ] Resolve runtime credential delivery and initialize one ledger; record 0/49.
 - [ ] Run seven baseline cases once; independently score actual admitted outputs.
 - [ ] For each permitted round, record hypothesis then change only selection
@@ -88,3 +88,25 @@ inputs. No dotenv, subprocess, source code execution or remote publishing.
   anonymized review and final user judgment decide usefulness.
 
 No later checklist grants extra budget, credential access or publication.
+
+## Offline checkpoint — 2026-09-14
+
+Implementation: `e2546b6`, campaign-stop fix `40b99a8`, hermetic preflight and
+latency fix `955bddc`. Task review and final scoped re-review approved the
+preparation only; no conclusion about model quality or Skill usefulness.
+
+- Fresh final focused regression: **205 passed** at `955bddc`; Ruff lint and
+  formatting passed. Tests use recorded HTTP responses, not live requests.
+- Earlier broad run at `e2546b6`: **2,905 passed, 3 skipped**, with the 12 slow
+  recovery cases excluded. All 12 unchanged recovery cases subsequently passed
+  in three disjoint groups. This is not a claim that the full suite was rerun
+  after the final test-fixture/latency edit.
+- Exclusive runtime initialization succeeded. Read-only ledger check: **0
+  reservations**, caps development 28 / heldout 12 / artifact 3 / usefulness 6.
+- Runtime credentials remain unavailable. No secret file was read, no model
+  request made, no Skill produced, and no branch pushed or PR created.
+- Next: resolve credential injection, then run each of the seven baseline
+  cases once. Stop on unknown outcomes; never reinitialize the campaign.
+
+The experiment and branch remain in progress. Do not merge, delete its private
+state, or mark the useful-Skill objective complete based on this checkpoint.
