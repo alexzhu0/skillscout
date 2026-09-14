@@ -63,6 +63,10 @@ The September 10 trial produced zero admissible workflows. A separately approved
 exported one real workflow, but offline qualification rejected it for dependency
 installation and missing approval controls. No Skill was generated. Both trial
 budgets are exhausted; there is no automatic retry.
+The [September 14 offline diagnosis](docs/project/2026-09-14-local-v3-diagnosis.md)
+reconstructed the exact evidence catalogue: core RAG information was retained,
+but the surviving candidate selected demo operations. The next focus is semantic
+workflow selection and usefulness evaluation, not relaxing safety rules.
 
 For a nested example, local `extract-repo --readme-path path/to/README.md`
 reads only that selected file at the subject's exact 40-character commit SHA.
