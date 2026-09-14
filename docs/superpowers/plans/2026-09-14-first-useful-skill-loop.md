@@ -154,3 +154,10 @@ by implementer, no artifact/usefulness adapter, no new dependencies or CLI.
 Use synthetic temporary held-out files in TDD tests; never open real held-out
 sources or credentials during implementation/review. Controller dispatches
 only after task review and fresh regression checks.
+
+Held-out dispatch order, fixed before reading sources or outputs: baseline
+h01..h06, then candidate h01..h06. One call per invocation, identical private
+transport settings, no retries. Stop immediately on unknown/transport/schema
+failure; otherwise score after completing the frozen comparison. Report both
+profiles under the existing source rubric, without changing labels or candidate.
+An ineligible candidate ends this campaign, even when budget remains unused.
