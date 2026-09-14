@@ -27,11 +27,17 @@ A tie does not establish added usefulness. Final human review is still required.
 
 ## Scientific procedure
 
-1. Freeze seven existing development cases and six independently curated,
+1. Freeze seven source-only development cases and six independently curated,
    controller-blind held-out cases. The controller may inspect development
    examples, but not held-out source, reference outlines or labels before
    freezing the candidate. Curator-created synthetic examples are not human
    gold truth; the user has approved the decision standard, not each label.
+   Development data is `tests/fixtures/workflow_selection/extraction_cases.json`.
+   It preserves the first six original source texts and adds one new synthetic
+   insufficient-detail case. The old `cases.json` remains unchanged: its seventh
+   expected label judges a supplied demo outline, not extraction from its source,
+   so using that label for a source-only test would be invalid. This correction
+   precedes all model requests; none of the new data is historical live evidence.
 2. Measure **actual source-to-workflow output**, using only source text as model
    input. Never send proposed outlines, expected labels, rationale or scoring
    notes. The existing label comparator is not a model evaluation runner.
@@ -101,6 +107,8 @@ the runtime boundary. No secret-file access is granted by budget approval.
 
 At initialization: 0/49 requests. Runtime environment lacks DEEPSEEK_API_KEY;
 credential delivery is being clarified separately without inspecting secrets.
-Six held-out cases are being prepared by a fresh curator who has not read the
-development examples or current prompt. Their digest, not contents, will be
-visible to the controller. Nothing in this document claims model quality.
+Six held-out cases were prepared by a fresh curator who has not read the
+development examples or current prompt. The controller has seen only the
+content-free manifest. Dataset SHA-256 from the manifest:
+`efd0d9eba47ff92ec8777bf0121d7980b3929e5042ff0c32ff3a9ef477eb5164`.
+Nothing in this document claims model quality.

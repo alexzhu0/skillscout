@@ -15,6 +15,9 @@
 - At most 49 external requests: 28 development, 12 held-out, 3 artifact, 6 usefulness; no borrowing or retries.
 - No source execution, credentials in files/logs/prompts, live calls by implementers, hosted workflow changes, safety relaxation, automatic publication or merge.
 - Keep controller blind to held-out sources/labels until prompt freeze.
+- Development extraction uses `tests/fixtures/workflow_selection/extraction_cases.json`,
+  not the original candidate-label fixture. The seven-case source-only rubric
+  was corrected before any model request; historical fixtures remain unchanged.
 - Main agent handles docs and fixtures; implementer touches only the two named code/test files. No subagents from workers.
 - Runtime missing credentials is a stop, not permission to read `.env`.
 
