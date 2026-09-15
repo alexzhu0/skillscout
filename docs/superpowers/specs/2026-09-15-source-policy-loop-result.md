@@ -69,7 +69,11 @@ CNY0.147790. These are token-based estimates, not verified billing charges.
 - The first launcher implementation reused an HTTP client that the SDK closed
   after each request. This was found before live execution and fixed with a real
   guarded-SDK/MockTransport regression exercising eight distinct clients.
-- Full offline suite is still running; its terminal result will be recorded.
+- The full offline process overlapped v4 edits and ended with 2,902 passed,
+  63 dynamic-import failures and 3 skipped. Its cached old extraction module
+  lacked the new suffix imported by the updated tool. This mixed-code run is
+  not final-tree verification; a fresh frozen-code suite is running. See the
+  [v4 result](2026-09-15-local-v4-real-source-result.md) for the retained failure.
 - Runtime credentials were selected only by the previously authorized loader.
   No credential contents or raw rejected provider prose entered the report/state.
 

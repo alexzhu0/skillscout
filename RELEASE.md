@@ -20,6 +20,10 @@ cases. The candidate fixed the absent-policy case but retained claim-type/ordere
 approval problems and lost the hostile-text case to mechanical rejection. The
 next opt-in local v4 hypothesis is limited to the real absent-policy source; it
 does not promote a default or hosted prompt. See the [full results and limitations](docs/superpowers/specs/2026-09-15-source-policy-loop-result.md).
+The [one-request real v4 trial](docs/superpowers/specs/2026-09-15-local-v4-real-source-result.md)
+then produced one schema-valid workflow but incorrectly included notebook-exercise
+preconditions and a practice step. Independent source review rejected it before
+export/build. No generation, Pro review or usefulness comparison ran.
 
 ## September 14 offline selection-evaluation groundwork
 
