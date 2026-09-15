@@ -1,0 +1,25 @@
+{
+  "campaign": "real-useful-skill-20260915",
+  "implementation_baseline": "58aa4219dee6c6858ed7601304ddeb89ebfefcd8",
+  "max_requests": {"extraction": 3, "generation": 1, "review": 1, "comparison": 9},
+  "extraction_profile": "local-readme-v3",
+  "extract_generation_model": "deepseek-flash",
+  "review_model": "deepseek-v4-pro",
+  "sources": [
+    {
+      "rank": 1,
+      "repository": "microsoft/generative-ai-for-beginners",
+      "commit": "c9657f3fdb6e4f50a168b1d026eadf4cda2f0d07",
+      "path": "04-prompt-engineering-fundamentals/README.md",
+      "license": "MIT",
+      "license_blob_sha": "9e841e7a26e4eb057b24511e7b92d42b257a80e5",
+      "blob_sha": "90cb596676fd2198da4bfdfeb1702707864a5bf3",
+      "content_sha256": "cb859f174d8a08f99b3d0b29b71f0ff5746f20648592bf1d60ecb38991da1f5b",
+      "bytes": 44273,
+      "selection_score": 3,
+      "summary": "Design and refine prompts from a stated objective, target audience, supplied content and output structure; recognizes response variation and fabricated facts.",
+      "catalogue_truncated": true,
+      "retained_scope": "128 entries retain design/refinement steps, audience-limited summaries, output-format examples and fabrication limitations; later advanced sections are not presumed available."
+    }
+  ]
+}
