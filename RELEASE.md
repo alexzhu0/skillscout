@@ -14,6 +14,13 @@ publication or remote state changes occurred. The pilot is closed, with original
 state and an unmodified diagnostic export preserved. This is not a useful-Skill
 or Phase 6 acceptance milestone. See the [result and inspection guide](docs/superpowers/specs/2026-09-15-real-useful-skill-result.md).
 
+A subsequent bounded eight-request `source_only` experiment also failed its
+general acceptance criterion: both baseline and candidate passed 1/4 synthetic
+cases. The candidate fixed the absent-policy case but retained claim-type/ordered-
+approval problems and lost the hostile-text case to mechanical rejection. The
+next opt-in local v4 hypothesis is limited to the real absent-policy source; it
+does not promote a default or hosted prompt. See the [full results and limitations](docs/superpowers/specs/2026-09-15-source-policy-loop-result.md).
+
 ## September 14 offline selection-evaluation groundwork
 
 The exact v3 catalogue reconstruction retained core RAG information; the surviving

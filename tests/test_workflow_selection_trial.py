@@ -1200,6 +1200,9 @@ def test_source_only_has_distinct_binding_without_changing_historical_profiles(
         profile: module.profile_prompt_digest(profile) for profile in HISTORICAL_PROMPT_DIGESTS
     } == HISTORICAL_PROMPT_DIGESTS
     source_only_digest = module.profile_prompt_digest("source_only")
+    assert source_only_digest == (
+        "sha256:1d0dd63b7620ab5556995ffe18f6e5e5dc0ab19afbdc93ccc9b5fb93d43d0edc"
+    )
     assert source_only_digest not in HISTORICAL_PROMPT_DIGESTS.values()
     with pytest.raises(ValueError, match="profile not frozen"):
         module.profile_prompt_digest("r3")

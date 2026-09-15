@@ -30,7 +30,9 @@ from skillscout.domain.filtering import ALLOWED_LICENSE_SPDX
 from skillscout.domain.local_preview import (
     LOCAL_EVIDENCE_PROMPT_VERSION, LOCAL_EVIDENCE_RETRY_VERSION,
     LOCAL_EXTRACTION_PROMPT_VERSION, LOCAL_EXTRACTION_RETRY_VERSION,
-    LOCAL_README_POLICY_VERSION, LOCAL_README_SCOPE_KEY, LocalReadmeSubject,
+    LOCAL_README_POLICY_VERSION, LOCAL_README_SCOPE_KEY,
+    LOCAL_SOURCE_ONLY_PROMPT_VERSION, LOCAL_SOURCE_ONLY_RETRY_VERSION,
+    LocalReadmeSubject,
 )
 from skillscout.domain.evidence_selection import EVIDENCE_CATALOG_POLICY_VERSION, EVIDENCE_SELECTION_SCHEMA_VERSION
 from skillscout.domain.models import VerifiedRunChain
@@ -275,19 +277,29 @@ def _validate_local_readme_chain(
             or extractor.policy_version != EXTRACT_POLICY_VERSION
         ):
             raise ValueError("local extraction prompt identity mismatch")
-    if subject.scope_version == "local-readme-v3":
+    if subject.scope_version in {"local-readme-v3", "local-readme-v4"}:
+        prompt_version, retry_version = {
+            "local-readme-v3": (
+                LOCAL_EVIDENCE_PROMPT_VERSION,
+                LOCAL_EVIDENCE_RETRY_VERSION,
+            ),
+            "local-readme-v4": (
+                LOCAL_SOURCE_ONLY_PROMPT_VERSION,
+                LOCAL_SOURCE_ONLY_RETRY_VERSION,
+            ),
+        }[subject.scope_version]
         extractor = results[3]
         if chain.identity.retry_policy_version not in {
-            LOCAL_EVIDENCE_RETRY_VERSION,
-            LOCAL_EVIDENCE_RETRY_VERSION + "+extract-correction-policy-v1",
+            retry_version,
+            retry_version + "+extract-correction-policy-v1",
         } or extractor.attempt_no != 1:
             raise ValueError("local evidence retry identity mismatch")
         empty_catalog = extractor.payload.get("skip_reason") == "no_eligible_evidence"
         if extractor.payload.get("outcome") != "skipped" or empty_catalog:
             audit = extractor.payload.get("evidence_catalog")
             if (
-                extractor.prompt_version != LOCAL_EVIDENCE_PROMPT_VERSION
-                or extractor.payload.get("prompt_version") != LOCAL_EVIDENCE_PROMPT_VERSION
+                extractor.prompt_version != prompt_version
+                or extractor.payload.get("prompt_version") != prompt_version
                 or extractor.policy_version != EXTRACT_POLICY_VERSION
                 or extractor.payload.get("response_schema_version") != EVIDENCE_SELECTION_SCHEMA_VERSION
                 or not isinstance(audit, Mapping)

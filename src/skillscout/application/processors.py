@@ -67,6 +67,7 @@ from skillscout.domain.local_preview import (
     LOCAL_EXTRACTION_PROMPT_VERSION,
     LOCAL_README_POLICY_VERSION,
     LOCAL_README_SCOPE_KEY,
+    LOCAL_SOURCE_ONLY_PROMPT_VERSION,
     LocalReadmeSubject,
 )
 from skillscout.domain.evidence_selection import (
@@ -140,7 +141,11 @@ class PhaseTwoProcessor:
         outcome = self._dispatch(stage_input, context)
         if type(context.subject) is LocalReadmeSubject:
             payload = dict(outcome.payload)
-            if context.subject.scope_version in {"local-readme-v2", "local-readme-v3"} and stage_input.stage is PipelineStage.EXTRACTOR:
+            if context.subject.scope_version in {
+                "local-readme-v2",
+                "local-readme-v3",
+                "local-readme-v4",
+            } and stage_input.stage is PipelineStage.EXTRACTOR:
                 # Never persist unvalidated model summaries or refusal text in
                 # this local diagnostic profile, including non-workflow exits.
                 for field in ("repository_summary", "rejection_reason"):
@@ -545,8 +550,21 @@ class PhaseTwoProcessor:
             type(correction) is ExtractionCorrectionReason
             and self._semantic_provider is SemanticProvider.DEEPSEEK
         )
-        local_preview = type(subject) is LocalReadmeSubject and subject.scope_version in {"local-readme-v2", "local-readme-v3"}
-        evidence_selection = local_preview and subject.scope_version == "local-readme-v3"
+        local_preview = type(subject) is LocalReadmeSubject and subject.scope_version in {
+            "local-readme-v2",
+            "local-readme-v3",
+            "local-readme-v4",
+        }
+        evidence_selection = local_preview and subject.scope_version in {
+            "local-readme-v3",
+            "local-readme-v4",
+        }
+        source_only_fields = local_preview and subject.scope_version == "local-readme-v4"
+        evidence_prompt_version = (
+            LOCAL_SOURCE_ONLY_PROMPT_VERSION
+            if source_only_fields
+            else LOCAL_EVIDENCE_PROMPT_VERSION
+        )
         catalog = None
         if evidence_selection:
             if correction_requested or len(ordered) != 1 or ordered[0][1] != subject.readme_path:
@@ -563,7 +581,11 @@ class PhaseTwoProcessor:
                 preflight_code = "no_eligible_evidence"
             else:
                 try:
-                    result = self._openai.extract(user_payload=user_payload, evidence_selection=True)
+                    result = self._openai.extract(
+                        user_payload=user_payload,
+                        evidence_selection=True,
+                        source_only_fields=source_only_fields,
+                    )
                 except EvidenceSelectionInputTooLarge:
                     preflight_code = "evidence_input_budget_exceeded"
             if preflight_code is not None:
@@ -572,7 +594,7 @@ class PhaseTwoProcessor:
                     "output_schema_version": WORKFLOW_SPEC_SCHEMA_VERSION,
                     "stage": stage_input.stage.value,
                     "subject_id": stage_input.subject_id,
-                    "prompt_version": LOCAL_EVIDENCE_PROMPT_VERSION,
+                    "prompt_version": evidence_prompt_version,
                     "response_schema_version": EVIDENCE_SELECTION_SCHEMA_VERSION,
                     "evidence_catalog": catalog.audit(),
                     "outcome": "skipped" if not catalog.entries else "schema_failure",
@@ -582,7 +604,7 @@ class PhaseTwoProcessor:
                 if not catalog.entries:
                     payload["skip_reason"] = preflight_code
                 return StageOutcome(payload=payload, telemetry=StageTelemetry(
-                    prompt_version=LOCAL_EVIDENCE_PROMPT_VERSION,
+                    prompt_version=evidence_prompt_version,
                     policy_version=EXTRACT_POLICY_VERSION,
                 ))
         elif local_preview:
@@ -597,7 +619,7 @@ class PhaseTwoProcessor:
         else:
             result = self._openai.extract(user_payload=user_payload)
         prompt_version = (
-            LOCAL_EVIDENCE_PROMPT_VERSION if evidence_selection else
+            evidence_prompt_version if evidence_selection else
             LOCAL_EXTRACTION_PROMPT_VERSION if local_preview else
             EXTRACTION_CORRECTION_PROMPT_VERSION
             if correction_requested

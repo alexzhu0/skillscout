@@ -1,0 +1,32 @@
+{
+  "campaign": "local-v4-microsoft-20260915",
+  "hypothesis": "The opt-in source-only profile can avoid invented obligations on the pinned real prompt-refinement source with no stated approval policy; this is not general prompt promotion.",
+  "prior_experiment": "source-policy-check-20260915: both profiles 1/4, not passed",
+  "source": {
+    "repository": "microsoft/generative-ai-for-beginners",
+    "commit": "c9657f3fdb6e4f50a168b1d026eadf4cda2f0d07",
+    "path": "04-prompt-engineering-fundamentals/README.md",
+    "license": "MIT",
+    "license_blob_sha": "9e841e7a26e4eb057b24511e7b92d42b257a80e5",
+    "blob_sha": "90cb596676fd2198da4bfdfeb1702707864a5bf3",
+    "content_sha256": "cb859f174d8a08f99b3d0b29b71f0ff5746f20648592bf1d60ecb38991da1f5b",
+    "retained_scope": "Instruction-prompt design and iterative refinement; truncated primary-content procedure is excluded."
+  },
+  "scope_version": "local-readme-v4",
+  "prompt_version": "extract-local-evidence-source-only-fields-v1",
+  "model": "deepseek-flash",
+  "review_model": "deepseek-v4-pro",
+  "max_requests": {
+    "extraction": 1,
+    "generation": 1,
+    "review": 1,
+    "comparison": 9
+  },
+  "cost_reserve_cny": 6,
+  "prior_known_estimate_cny": 0.147790,
+  "overall_ceiling_cny": 100,
+  "stop_on": ["unknown_response", "transport_failure", "schema_failure", "source_fidelity_failure", "qualification_failure", "generation_failure", "review_failure", "identity_drift"],
+  "remote_writes_allowed": false,
+  "retry_allowed": false,
+  "manual_candidate_repairs_allowed": false
+}

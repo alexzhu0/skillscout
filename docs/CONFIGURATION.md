@@ -187,6 +187,27 @@ v3; hosted/publication sources reject it. Offline recorded-transport extraction,
 export and real-validator build checks do not demonstrate real model quality or
 a useful Skill. Existing pilot facts and the exhausted 3/3 budget are unchanged.
 
+### Experimental local v4 source-field attribution
+
+`extract-repo --source-only-fields` additionally requires both `--readme-path`
+and `--evidence-selection`. Without the new flag, v2/v3 behavior is unchanged.
+This is an opt-in experiment, not a generally validated extraction improvement:
+both baseline and the experimental suffix passed only 1/4 of the frozen
+[source-policy cases](superpowers/specs/2026-09-15-source-policy-loop-result.md).
+
+For a newly bounded local trial, append `--source-only-fields` to the v3 command
+above and use fresh state/output paths. The identities are `local-readme-v4`,
+`extract-local-evidence-source-only-fields-v1` and `retry-local-readme-v4-once`.
+The response schema, catalogue, content/size limits and safety validators do not
+change. The longer trusted prompt counts toward the same 65,536-byte input cap.
+
+V4 asks the model to distinguish source obligations/deliverables from the operator's safety
+policy. It does not disable that policy or prove its own fidelity. One-shot
+rules and unknown-outcome quarantine remain mandatory. Verified v4 evidence is
+local-export/build only; publication and hosted admission remain denied. Earlier
+v3 state retains its original identity and remains readable. Never silently
+relabel old outputs or fall back from a failed v4 attempt to another profile.
+
 ## Limits and fixed defaults
 
 These limits are defined in source and are not environment-variable overrides.

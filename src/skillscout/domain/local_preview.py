@@ -15,12 +15,16 @@ LOCAL_EXTRACTION_PROMPT_VERSION = "extract-local-output-prompt-v1"
 LOCAL_EXTRACTION_RETRY_VERSION = "retry-local-readme-v2-once"
 LOCAL_EVIDENCE_PROMPT_VERSION = "extract-local-evidence-select-v1"
 LOCAL_EVIDENCE_RETRY_VERSION = "retry-local-readme-v3-once"
+LOCAL_SOURCE_ONLY_PROMPT_VERSION = "extract-local-evidence-source-only-fields-v1"
+LOCAL_SOURCE_ONLY_RETRY_VERSION = "retry-local-readme-v4-once"
 
 
 class LocalReadmeSubject(RepositorySubject):
     """One operator-selected inert README at an immutable public repository SHA."""
 
-    scope_version: Literal["local-readme-v1", "local-readme-v2", "local-readme-v3"] = "local-readme-v1"
+    scope_version: Literal[
+        "local-readme-v1", "local-readme-v2", "local-readme-v3", "local-readme-v4"
+    ] = "local-readme-v1"
     readme_path: str
 
     @model_validator(mode="after")

@@ -61,6 +61,12 @@ post-extraction fidelity review rejected invented approval and record-keeping ob
 was built and no usefulness comparison ran. The trial is closed; its diagnostic
 export is not an approved candidate.
 
+The subsequent [source-policy comparison](docs/superpowers/specs/2026-09-15-source-policy-loop-result.md)
+scored both prompts 1/4; it established no general improvement. An explicit
+[local v4 opt-in](docs/CONFIGURATION.md#experimental-local-v4-source-field-attribution)
+tests the narrower real-source hypothesis without changing default/hosted prompts
+or weakening candidate checks. It is not evidence of a useful Skill yet.
+
 For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
 `export-candidates` bridges verified extraction state into canonical local build
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)

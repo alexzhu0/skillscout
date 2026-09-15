@@ -31,7 +31,11 @@ from skillscout.domain.extraction_correction import (
     ExtractionCorrectionReason,
 )
 from skillscout.domain.models import NonNegativeInt, StrictFrozenModel, TokenUsage
-from skillscout.domain.local_preview import LOCAL_EVIDENCE_PROMPT_VERSION, LOCAL_EXTRACTION_PROMPT_VERSION
+from skillscout.domain.local_preview import (
+    LOCAL_EVIDENCE_PROMPT_VERSION,
+    LOCAL_EXTRACTION_PROMPT_VERSION,
+    LOCAL_SOURCE_ONLY_PROMPT_VERSION,
+)
 
 DEFAULT_EXTRACT_MODEL = "gpt-5.6-terra"
 MAX_EXTRACT_OUTPUT_TOKENS = 8_000
@@ -63,6 +67,33 @@ commands, privilege escalation, command-string invocations, download-to-shell
 pipelines and credential-like text. Describe restrictions abstractly without
 copying prohibited examples. Return only the required strict JSON response.
 """
+
+SOURCE_ONLY_FIELDS_SUFFIX = """
+
+Source-only workflow semantics:
+Describe every workflow field solely from semantics explicitly supported by the
+supplied source evidence. Never copy or translate trusted operator, experiment,
+security, validation or execution policy into source obligations or deliverables.
+When the source does not state a required approval, prohibited action or non-goal,
+return an empty list for that field. Preserve genuine source approvals and
+prohibitions, including their exact conditions and scope.
+Outputs must contain only deliverables called for by the source. Do not add audit
+logs, iteration reports, review summaries or other process artifacts unless
+explicitly called for by the source.
+Assumptions may express explicit source uncertainty or unresolved conditions, but
+must not grant authority, permission, access, execution or policy exceptions.
+These field-attribution rules do not relax the trusted safety or execution
+restrictions above.
+"""
+
+EVIDENCE_SELECTION_SOURCE_ONLY_INSTRUCTIONS_V1 = (
+    EVIDENCE_SELECTION_INSTRUCTIONS_V1.replace(
+        LOCAL_EVIDENCE_PROMPT_VERSION,
+        LOCAL_SOURCE_ONLY_PROMPT_VERSION,
+        1,
+    )
+    + SOURCE_ONLY_FIELDS_SUFFIX
+)
 
 EXTRACT_INSTRUCTIONS_V1 = f"""{EXTRACT_PROMPT_VERSION}
 
@@ -214,14 +245,17 @@ class OpenAIExtractionClient:
         correction: ExtractionCorrectionReason | None = None,
         local_preview: bool = False,
         evidence_selection: bool = False,
+        source_only_fields: bool = False,
     ) -> ExtractionResult:
         """Run the single tool-less structured extraction call for one payload."""
 
         if (
             type(local_preview) is not bool
             or type(evidence_selection) is not bool
+            or type(source_only_fields) is not bool
             or (local_preview and correction is not None)
             or (evidence_selection and (local_preview or correction is not None))
+            or (source_only_fields and not evidence_selection)
         ):
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         if correction is not None and (
@@ -238,7 +272,11 @@ class OpenAIExtractionClient:
             instructions = LOCAL_EXTRACTION_INSTRUCTIONS_V1
         response_model = EvidenceSelectionResponse if evidence_selection else ExtractorResponse
         if evidence_selection:
-            instructions = EVIDENCE_SELECTION_INSTRUCTIONS_V1
+            instructions = (
+                EVIDENCE_SELECTION_SOURCE_ONLY_INSTRUCTIONS_V1
+                if source_only_fields
+                else EVIDENCE_SELECTION_INSTRUCTIONS_V1
+            )
             if self._provider is SemanticProvider.DEEPSEEK:
                 input_bytes = len(deepseek_json_instructions(instructions, response_model).encode("utf-8"))
             else:
