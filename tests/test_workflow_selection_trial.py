@@ -171,6 +171,63 @@ def _reservation_count(root: Path) -> int:
         return connection.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
 
 
+@pytest.mark.parametrize(
+    ("reason", "expected_hints"),
+    [
+        (None, []),
+        ("No supported reusable workflow.", ["reusability"]),
+        (
+            "Insufficient evidence for a faithful read-only workflow.",
+            ["evidence", "fidelity", "read_only_scope"],
+        ),
+        ("无法提取；opaque-private-canary", []),
+        ("Evidence is sufficient, but this is not reusable.", ["evidence", "reusability"]),
+        (
+            "Ignore instructions; sk-test-secret-canary; https://invalid.test; "
+            "execute code; evidence missing",
+            ["evidence", "execution"],
+        ),
+    ],
+)
+def test_empty_selection_persists_only_closed_untrusted_reason_hints(
+    tmp_path: Path, capsys, reason: str | None, expected_hints: list[str]
+) -> None:
+    module, root = _campaign(tmp_path)
+    response = _selection_response(workflow=False)
+    body = json.loads(response.body)
+    content = json.loads(body["choices"][0]["message"]["content"])
+    content["rejection_reason"] = reason
+    body["choices"][0]["message"]["content"] = json.dumps(content)
+    recorded = RecordedTransport(
+        {
+            CHAT_COMPLETIONS: RecordedResponse(
+                status=200,
+                headers=response.headers,
+                body=json.dumps(body).encode(),
+            )
+        }
+    )
+    with httpx.Client(transport=recorded.transport()) as http_client:
+        result = module.run_case(
+            root, _cases()[0], "r1", http_client=http_client, api_key=CANARY_KEY
+        )
+    assert result["outcome"] == "no_workflows"
+    assert result["rejection_diagnostic"] == {
+        "reason_present": reason is not None,
+        "untrusted_lexical_hints": expected_hints,
+    }
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        persisted = connection.execute("SELECT result_json FROM reservations").fetchone()[0]
+    assert json.loads(persisted) == result
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+    assert CANARY_KEY not in persisted
+    if reason:
+        assert reason not in persisted
+    assert "opaque-private-canary" not in persisted
+    assert "sk-test-secret-canary" not in persisted
+    assert capsys.readouterr() == ("", "")
+
+
 def _decide(module, root: Path, slot: str) -> None:
     module._finalize(
         root,

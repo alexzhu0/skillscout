@@ -111,3 +111,42 @@ where workflows stall. Roadmap notes provide delivery constraints, not user
 demand. Cluster only traceable observations, preserve dissenting examples, note
 sampling and tagging uncertainty, and rank opportunities with evidence summaries
 and reasons for low confidence.
+
+## Follow-up: closed rejection diagnostics and two-call retest
+
+After the user approved the diagnostic follow-up, the experimental runner gained
+one optional `rejection_diagnostic` field for `no_workflows` results only. It
+records `reason_present` and a bounded list of `untrusted_lexical_hints` from five
+fixed English topic vocabularies. It does not retain rejection prose, summaries,
+URLs, credentials, or arbitrary model strings. Unsupported language can produce
+no hints. Negation is intentionally not interpreted: a mentioned topic is not
+a semantic classification, causal conclusion, or instruction. The diagnostic
+does not affect selection, retries, or admission. Existing output schemas,
+prompts, production adapters, and historical records were not changed.
+
+Six HTTP-fixture cases first failed on the missing diagnostic, then passed with
+the implementation. The related selection suites passed **149 tests**; scoped
+Ruff passed. Independent code review found no blockers. The implementation adds
+19 lines to the experimental runner and introduces no dependencies.
+
+A separate `rejection-check-20260915` ledger admitted exactly two requests on
+the already-known h03 development case: r1 once, then r2 once. Same input digest
+`sha256:404e5cd51699abb0c60f126bde146bba63efd87ad5a89dd2f7e2dd64039aa065`,
+same frozen r1/r2 prompt digests, same `deepseek-flash` request configuration.
+This is diagnostic reproduction, not a new held-out evaluation.
+
+- r1: mechanically admitted one workflow; no rejection diagnostic.
+- r2: `no_workflows`; reason present; hints `evidence`, `read_only_scope`,
+  `execution`. No rejection prose was persisted.
+- Both slots are decided; no retries. Total usage: 3,683 input + 1,010 output =
+  4,693 tokens. At the same conservative pricing above, estimated CNY0.015446,
+  not measured wallet spend.
+- The old twelve-request ledger's SHA-256 was verified unchanged.
+- New private ledger SHA-256:
+  `307ff2ece86ea05c604fd105bc9d3c2f3a49739e621e7c2f97714c4c185b05b6`.
+
+The repeated omission plus topic hints supports investigating whether r2
+overrestricts a read-only analysis workflow as execution. It does **not** prove
+that mechanism: the hints omit context, and r1 shares the read-only constraint.
+No production prompt was promoted, no new fix was inferred successful, and no
+additional comparison or publication automatically follows this retest.

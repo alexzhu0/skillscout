@@ -839,6 +839,25 @@ def _run_case(
         "model": MODEL,
         "request_id": request_id,
     }
+    if outcome == "no_workflows" and response.parsed is not None:
+        # Closed lexical hints only: untrusted prose is never persisted or used
+        # for admission/retry decisions. A mentioned topic is not a proven cause.
+        reason = response.parsed.rejection_reason
+        words = set(re.findall(r"[a-z]+(?:-[a-z]+)*", (reason or "").lower()))
+        result["rejection_diagnostic"] = {
+            "reason_present": reason is not None,
+            "untrusted_lexical_hints": [
+                label
+                for label, vocabulary in (
+                    ("evidence", {"evidence", "grounding"}),
+                    ("fidelity", {"faithful", "faithfully", "fidelity"}),
+                    ("read_only_scope", {"readonly", "read-only"}),
+                    ("execution", {"execute", "execution", "installation", "operational"}),
+                    ("reusability", {"reusable", "reusability"}),
+                )
+                if words & vocabulary
+            ],
+        }
     _finalize(Path(root), group, slot, outcome, result)
     return result
 
