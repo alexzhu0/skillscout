@@ -24,6 +24,8 @@ The [one-request real v4 trial](docs/superpowers/specs/2026-09-15-local-v4-real-
 then produced one schema-valid workflow but incorrectly included notebook-exercise
 preconditions and a practice step. Independent source review rejected it before
 export/build. No generation, Pro review or usefulness comparison ran.
+Frozen-code offline regression verification completed with 2,981 passed and
+3 documented skips; the skips do not establish Phase 6/live publication acceptance.
 
 ## September 14 offline selection-evaluation groundwork
 

@@ -72,8 +72,10 @@ CNY0.147790. These are token-based estimates, not verified billing charges.
 - The full offline process overlapped v4 edits and ended with 2,902 passed,
   63 dynamic-import failures and 3 skipped. Its cached old extraction module
   lacked the new suffix imported by the updated tool. This mixed-code run is
-  not final-tree verification; a fresh frozen-code suite is running. See the
-  [v4 result](2026-09-15-local-v4-real-source-result.md) for the retained failure.
+  not final-tree verification. The fresh frozen-code suite subsequently completed
+  with **2,981 passed, 3 skipped**, exit code 0, in 1,214.71 seconds. See the
+  [v4 result](2026-09-15-local-v4-real-source-result.md) for the retained failure
+  and the explicit skip reasons.
 - Runtime credentials were selected only by the previously authorized loader.
   No credential contents or raw rejected provider prose entered the report/state.
 

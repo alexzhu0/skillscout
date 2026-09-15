@@ -75,7 +75,13 @@ These are estimates, not verified charges. Other request categories were unused.
   trial-tool imports of the new suffix while the process retained the old
   extraction module. It is a mixed-code test run, not a valid final-tree check;
   its failure is retained rather than called a pass.
-- A fresh full offline run on the frozen v4 implementation is in progress.
+- The fresh full offline run on the frozen v4 implementation completed:
+  **2,981 passed, 3 skipped in 1,214.71 seconds**, exit code 0. Command:
+  `.tools/uv-0.11.29/bin/uv run --locked --no-env-file pytest -q -rs --tb=short`.
+  Source/test code remained unchanged from `67648a1` throughout this run;
+  subsequent changes were documentation only. The skips were the unfinished
+  Phase 6 release requirement map and two explicitly unconfigured live publication
+  canary checks. They do not prove Phase 6 or live publication acceptance.
 
 ## Next hypothesis
 
