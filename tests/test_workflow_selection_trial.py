@@ -21,6 +21,7 @@ from skillscout.adapters.semantic_provider import (
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/run_workflow_selection_trial.py"
 DEVELOPMENT_DATASET = ROOT / "tests/fixtures/workflow_selection/extraction_cases.json"
+SOURCE_POLICY_DATASET = ROOT / "tests/fixtures/workflow_selection/source_policy_cases.json"
 CHAT_COMPLETIONS = ("POST", "/chat/completions")
 CANARY_KEY = "deepseek-canary-key-do-not-disclose"
 R1_SELECTION_SUFFIX = """
@@ -41,6 +42,29 @@ uncertainties, not grants of authority. Record only source-supported approval
 requirements; do not invent reviewers, approvals, environmental guarantees or
 extra steps to fill schema fields. Use empty lists where evidence is absent.
 """
+SOURCE_ONLY_SUFFIX = """
+
+Source-only workflow semantics:
+Describe every workflow field solely from semantics explicitly supported by the
+supplied source evidence. Never copy or translate trusted operator, experiment,
+security, validation or execution policy into source obligations or deliverables.
+When the source does not state a required approval, prohibited action or non-goal,
+return an empty list for that field. Preserve genuine source approvals and
+prohibitions, including their exact conditions and scope.
+Outputs must contain only deliverables called for by the source. Do not add audit
+logs, iteration reports, review summaries or other process artifacts unless
+explicitly called for by the source.
+Assumptions may express explicit source uncertainty or unresolved conditions, but
+must not grant authority, permission, access, execution or policy exceptions.
+These field-attribution rules do not relax the trusted safety or execution
+restrictions above.
+"""
+
+HISTORICAL_PROMPT_DIGESTS = {
+    "baseline": "sha256:067e4da3b7f45718a73aa1fec52e038222e7447bb13dae7cff76975888b5b1ac",
+    "r1": "sha256:14f240c426adebf6116d8811a591a71e49e59bf023efd59bfb72c4ab5e0098cb",
+    "r2": "sha256:1e96ca30edab9d9664ac738caedd4ad515d15c77bc888dbda00cf4c2b986a56b",
+}
 
 
 def _runner():
@@ -79,8 +103,42 @@ def _campaign(tmp_path: Path, *, heldout_path: Path | None = None):
     return module, root
 
 
+def _source_policy_campaign(tmp_path: Path):
+    """Provision the eight slots owned by the separate experiment launcher."""
+
+    module, root = _campaign(tmp_path)
+    cases = _source_policy_cases()
+    rows = [
+        (
+            "development",
+            f"{profile}:{case['id']}",
+            profile,
+            f"source_policy:{case['id']}",
+            module.prepare_case(case).digest,
+        )
+        for case in cases
+        for profile in ("baseline", "source_only")
+    ]
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("DELETE FROM allowed_slots")
+        connection.execute("DELETE FROM allocations")
+        connection.execute("INSERT INTO allocations(group_name, cap) VALUES ('development', 8)")
+        connection.executemany(
+            """INSERT INTO allowed_slots(
+                   group_name, slot, profile, case_key, expected_input_digest
+               ) VALUES (?, ?, ?, ?, ?)""",
+            rows,
+        )
+    return module, root
+
+
 def _cases() -> list[dict[str, object]]:
     return json.loads(DEVELOPMENT_DATASET.read_bytes())["cases"]
+
+
+def _source_policy_cases() -> list[dict[str, object]]:
+    return json.loads(SOURCE_POLICY_DATASET.read_bytes())["cases"]
 
 
 def _heldout_cases() -> list[dict[str, object]]:
@@ -1084,6 +1142,111 @@ def test_r2_request_preserves_sources_and_changes_only_trusted_instructions(tmp_
         assert requirement in system
     before["messages"][0]["content"] = system
     assert before == after  # Same source catalogue, model, schema and request limits.
+
+
+def test_source_only_request_appends_only_its_source_semantics_to_baseline(
+    tmp_path: Path,
+) -> None:
+    module, root = _source_policy_campaign(tmp_path)
+    case = _source_policy_cases()[0]
+    trial_transport = RecordedTransport({CHAT_COMPLETIONS: _selection_response(workflow=False)})
+    baseline_transport = RecordedTransport({CHAT_COMPLETIONS: _selection_response(workflow=False)})
+
+    with httpx.Client(transport=trial_transport.transport()) as trial_http:
+        module.run_case(
+            root,
+            case,
+            "source_only",
+            http_client=trial_http,
+            api_key=CANARY_KEY,
+        )
+    settings = resolve_local_preview_semantic_provider(
+        {
+            "SKILLSCOUT_LLM_PROVIDER": "deepseek",
+            "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+        },
+        current_flash=True,
+    )
+    with httpx.Client(transport=baseline_transport.transport()) as baseline_http:
+        with OpenAIExtractionClient(
+            api_key=CANARY_KEY,
+            http_client=baseline_http,
+            provider_settings=settings,
+        ) as client:
+            client.extract(
+                user_payload=module.prepare_case(case).user_payload(), evidence_selection=True
+            )
+
+    actual = json.loads(trial_transport.requests[0].content)
+    expected = json.loads(baseline_transport.requests[0].content)
+    expected["messages"][0]["content"] = expected["messages"][0]["content"].replace(
+        "\n\nReturn one JSON object only.",
+        SOURCE_ONLY_SUFFIX + "\n\nReturn one JSON object only.",
+        1,
+    )
+
+    assert actual == expected
+    assert actual["messages"][1] == {
+        "role": "user",
+        "content": module.prepare_case(case).user_payload(),
+    }
+
+
+def test_source_only_has_distinct_binding_without_changing_historical_profiles(
+    tmp_path: Path,
+) -> None:
+    module, root = _source_policy_campaign(tmp_path)
+    assert {
+        profile: module.profile_prompt_digest(profile) for profile in HISTORICAL_PROMPT_DIGESTS
+    } == HISTORICAL_PROMPT_DIGESTS
+    source_only_digest = module.profile_prompt_digest("source_only")
+    assert source_only_digest not in HISTORICAL_PROMPT_DIGESTS.values()
+    with pytest.raises(ValueError, match="profile not frozen"):
+        module.profile_prompt_digest("r3")
+
+    case = _source_policy_cases()[0]
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _selection_response(workflow=False)})
+    with httpx.Client(transport=recorded.transport()) as client:
+        module.run_case(
+            root,
+            case,
+            "source_only",
+            http_client=client,
+            api_key=CANARY_KEY,
+        )
+    with sqlite3.connect(root / "ledger.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT prompt_digest, model FROM profile_bindings WHERE profile = 'source_only'"
+        ).fetchone() == (source_only_digest, "deepseek-flash")
+    with pytest.raises(ValueError, match="prompt identity"):
+        module.reserve_slot(
+            root,
+            "development",
+            f"source_only:{_source_policy_cases()[1]['id']}",
+            module.prepare_case(_source_policy_cases()[1]).digest,
+            module.profile_prompt_digest("baseline"),
+            "deepseek-flash",
+        )
+
+
+def test_historical_campaign_rejects_source_only_before_provider_request(
+    tmp_path: Path,
+) -> None:
+    module, root = _campaign(tmp_path)
+    recorded = RecordedTransport({})
+
+    with httpx.Client(transport=recorded.transport()) as client:
+        with pytest.raises(ValueError, match="unknown slot"):
+            module.run_case(
+                root,
+                _cases()[0],
+                "source_only",
+                http_client=client,
+                api_key=CANARY_KEY,
+            )
+
+    assert recorded.requests == []
+    assert _reservation_count(root) == 0
 
 
 def test_r2_cannot_resume_a_frozen_campaign(tmp_path: Path) -> None:

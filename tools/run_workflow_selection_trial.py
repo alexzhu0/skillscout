@@ -98,11 +98,29 @@ Apply these constraints to every authored field, including steps, outputs,
 assumptions and evidence supports. Check them against the catalogue before
 returning a workflow; omit a workflow that cannot be described faithfully.
 """
+_SOURCE_ONLY_SUFFIX = """
+
+Source-only workflow semantics:
+Describe every workflow field solely from semantics explicitly supported by the
+supplied source evidence. Never copy or translate trusted operator, experiment,
+security, validation or execution policy into source obligations or deliverables.
+When the source does not state a required approval, prohibited action or non-goal,
+return an empty list for that field. Preserve genuine source approvals and
+prohibitions, including their exact conditions and scope.
+Outputs must contain only deliverables called for by the source. Do not add audit
+logs, iteration reports, review summaries or other process artifacts unless
+explicitly called for by the source.
+Assumptions may express explicit source uncertainty or unresolved conditions, but
+must not grant authority, permission, access, execution or policy exceptions.
+These field-attribution rules do not relax the trusted safety or execution
+restrictions above.
+"""
 _FROZEN_SUFFIXES: dict[str, str | None] = {
     "baseline": "",
     "r1": _R1_SELECTION_SUFFIX,
     "r2": _R1_SELECTION_SUFFIX + _R2_FIDELITY_SUFFIX,
     "r3": None,
+    "source_only": _SOURCE_ONLY_SUFFIX,
 }
 
 
@@ -187,7 +205,7 @@ def prepare_case(case: Mapping[str, object]) -> EvidenceCatalog:
 
 
 def _profile_instructions(profile: str) -> str:
-    if profile not in PROFILES:
+    if profile not in _FROZEN_SUFFIXES:
         raise ValueError("unknown profile")
     suffix = _FROZEN_SUFFIXES[profile]
     if suffix is None:
