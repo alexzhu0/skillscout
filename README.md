@@ -54,6 +54,13 @@ The lock file is authoritative; keep `--locked` enabled so dependency resolution
 
 ## Quick start
 
+The [September 15 real-source pilot](docs/superpowers/specs/2026-09-15-real-useful-skill-result.md)
+used one Flash request and extracted one Microsoft prompt-refinement workflow.
+Although schema validation and deterministic qualification passed, independent
+post-extraction fidelity review rejected invented approval and record-keeping obligations. No Skill
+was built and no usefulness comparison ran. The trial is closed; its diagnostic
+export is not an approved candidate.
+
 For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
 `export-candidates` bridges verified extraction state into canonical local build
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)

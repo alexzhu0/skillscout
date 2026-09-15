@@ -19,17 +19,17 @@ hosted-state update, source execution, dependency installation, or prompt promot
 
 ## Task 1: freeze sources and conditions
 
-- [ ] Screen at most three public repository sources read-only. Require an allowed
+- [x] Screen at most three public repository sources read-only. Require an allowed
   permissive license and explicit input/steps/output, not setup-only guidance.
-- [ ] Rank eligible sources by complete input/steps/output, explicit limitations,
+- [x] Rank eligible sources by complete input/steps/output, explicit limitations,
   standalone usability (one point each), then repository/path lexical order.
   Freeze order, SHA, license, file path/hash before any model request.
-- [ ] Verify useful source text survives existing catalogue rules. Do not expand
+- [x] Verify useful source text survives existing catalogue rules. Do not expand
   boundaries to rescue an unsuitable source. Create a fresh local pilot record.
 
 ## Task 2: real extraction and build
 
-- [ ] Attempt each eligible frozen source once in order. Inspect all authored
+- [x] Attempt each eligible frozen source once in order. Inspect all authored
   fields for fidelity, evidence roles, assumptions, approvals and source support.
 - [ ] Export unmodified verified descriptors. First faithful candidate passing
   existing deterministic qualification may enter build, once only.
@@ -54,13 +54,13 @@ hosted-state update, source execution, dependency installation, or prompt promot
 
 ## Task 4: verification and handoff
 
-- [ ] TDD any deterministic integration fix, independent review of changed code;
+- [x] TDD any deterministic integration fix, independent review of changed code;
   no extra public interface, schema, dependency or framework by default.
 - [ ] Verify source binding, descriptor identity, failed-stage gating, caps,
   unknown-outcome denial, equal comparison inputs and non-disclosing diagnostics.
-- [ ] Run relevant and full locked offline pytest, Ruff; list baseline failures
+- [x] Run relevant and full locked offline pytest, Ruff; list baseline failures
   and skips separately. Use .tools/uv-0.11.29/bin/uv run --locked --no-env-file.
-- [ ] Update README, RELEASE and result record with actual source/request/token/
+- [x] Update README, RELEASE and result record with actual source/request/token/
   cost/outcome facts and minimal CLI guide. Commit locally, never push/merge.
 
 ## Execution record
@@ -74,3 +74,8 @@ hosted-state update, source execution, dependency installation, or prompt promot
   Attribution-NonCommercial 4.0 International. Excluded by permissive-license rule.
 - Only the Microsoft source remains eligible. Fewer than three eligible sources
   does not authorize screening additional repositories or additional calls.
+- Closed after one extraction: source fidelity failed on unsupported obligations.
+  Diagnostic export occurred while review was pending; no build was attempted.
+  Task 3 and downstream paid portions of Task 2 are not run, not successful.
+  See [the result record](../specs/2026-09-15-real-useful-skill-result.md) for
+  request evidence, the sequencing deviation and verification status.

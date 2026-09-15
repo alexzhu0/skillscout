@@ -4,6 +4,16 @@ SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turn
 
 This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
 
+## September 15 real useful-Skill pilot — fidelity rejection
+
+One frozen Microsoft README produced one schema-valid workflow using a real
+`deepseek-flash` request (20,154 tokens). Independent field-level review rejected
+unsupported approval and record-keeping obligations even though deterministic
+qualification scored 100/100. No generation, Pro review, usefulness comparisons,
+publication or remote state changes occurred. The pilot is closed, with original
+state and an unmodified diagnostic export preserved. This is not a useful-Skill
+or Phase 6 acceptance milestone. See the [result and inspection guide](docs/superpowers/specs/2026-09-15-real-useful-skill-result.md).
+
 ## September 14 offline selection-evaluation groundwork
 
 The exact v3 catalogue reconstruction retained core RAG information; the surviving
