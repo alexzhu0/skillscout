@@ -1,0 +1,55 @@
+{
+  "schema_version": "workflow-selection-eval-v1",
+  "label_status": "assistant_proposed_not_human_validated",
+  "purpose": "Development regressions only; not held-out data, live results, or publication authority.",
+  "cases": [
+    {
+      "id": "fidelity-customer-policy",
+      "origin": "synthetic_previously_observed_failure",
+      "source": "useful-skill-loop-20260914/candidate:h06",
+      "source_text": "Take an AI-drafted support reply, the customer message, and current policy. Mark promises unsupported by policy, rewrite calmly without changing confirmed facts, and map each revised claim to evidence. Check every promise is grounded before approval.",
+      "expected": "select",
+      "must_cover": [
+        "Use the customer message and current policy in their respective evidence roles.",
+        "Mark unsupported promises, rewrite calmly, preserve confirmed facts and map revised claims to supporting evidence.",
+        "Check every promise is grounded before approval."
+      ],
+      "must_not_claim": [
+        "All revised claims must be supported only by policy.",
+        "Everything in the customer message is a confirmed fact."
+      ]
+    },
+    {
+      "id": "fidelity-observation-hypothesis",
+      "origin": "synthetic_development",
+      "source": null,
+      "source_text": "Review an AI incident summary using service logs and operator interviews. Link observations to logs and reported experiences to interview passages. Keep suspected causes labeled as hypotheses until corroborated. Return a claim-evidence table and unresolved questions.",
+      "expected": "select",
+      "must_cover": [
+        "Preserve both log and interview evidence with their distinct roles.",
+        "Keep suspected causes as hypotheses until corroborated.",
+        "Return claim-level evidence and unresolved questions."
+      ],
+      "must_not_claim": [
+        "Logs alone support every interview report.",
+        "An operator report proves the root cause."
+      ]
+    },
+    {
+      "id": "fidelity-explicit-source-restriction",
+      "origin": "synthetic_development",
+      "source": null,
+      "source_text": "Review an AI eligibility reply using an approved policy and an applicant statement. Use the statement only to identify the applicant's question, never as eligibility evidence. Ground eligibility claims solely in the policy. Preserve unverified declarations as unverified and return unsupported claims for human review.",
+      "expected": "select",
+      "must_cover": [
+        "Use the applicant statement only to identify the question.",
+        "Respect the explicit policy-only restriction for eligibility claims.",
+        "Keep unverified declarations unverified and return unsupported claims for human review."
+      ],
+      "must_not_claim": [
+        "Every supplied input must be accepted as evidence for every claim.",
+        "Applicant statements independently prove eligibility."
+      ]
+    }
+  ]
+}

@@ -68,3 +68,25 @@ future experiment. Investigate preserving all evidence sources and the distincti
 between asserted and confirmed facts. Keep the same safety and publication
 boundaries. A new live experiment needs fresh held-out cases and an explicit new
 budget; no new runtime platform or production feature is justified by this result.
+
+## Offline repair preparation — 2026-09-15
+
+With separate user approval, prepared an additive r2 prompt in the existing
+experiment runner. It preserves source-specific evidence roles and uncertainty
+across every authored field; it also forbids broadening an explicitly restricted
+source. R1 and baseline request instructions remain unchanged. This is not a
+change to production extraction defaults or a new live-campaign authorization.
+
+Added `tests/fixtures/workflow_selection/fidelity_regressions.json`: the observed
+h06 failure, a log/interview hypothesis case, and an explicit policy-only
+counterexample. These are development checklists, not fresh held-out evidence
+or automated semantic grades. The old held-out dataset remains unchanged.
+
+Two new tests first failed while r2 was unavailable, then passed: recorded HTTP
+requests carry the added instructions without changing other request fields;
+the frozen campaign rejects r2 before any request. Related regression: 241
+passed; scoped Ruff passed. These tests verify wiring and isolation, not whether
+DeepSeek follows the instructions. No new provider request was made, no secret
+was read, and the historical ledger remains at 26 decided requests with its
+terminal stop intact. Model-level fidelity still requires a separately approved
+fresh evaluation; do not count the remaining old slots as available budget.

@@ -62,9 +62,7 @@ _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 
 # Prompt revisions remain unusable until the controller preregisters each
 # hypothesis and fills its selection-only suffix before viewing that round.
-_FROZEN_SUFFIXES: dict[str, str | None] = {
-    "baseline": "",
-    "r1": """
+_R1_SELECTION_SUFFIX = """
 
 Selection focus r1:
 Select source-supported core AI reasoning, analysis, or verification procedures,
@@ -81,8 +79,29 @@ or authority to execute, access resources, or write data. Assumptions must remai
 uncertainties, not grants of authority. Record only source-supported approval
 requirements; do not invent reviewers, approvals, environmental guarantees or
 extra steps to fill schema fields. Use empty lists where evidence is absent.
-""",
-    "r2": None,
+"""
+# Offline repair candidate, not permission to resume the frozen September 14 run.
+# Reuse r1 unchanged; only evidence fidelity is a new experimental variable.
+_R2_FIDELITY_SUFFIX = """
+
+Evidence fidelity r2:
+Preserve each supplied evidence source and its distinct role in the workflow.
+Do not narrow or broaden which evidence may support a claim without explicit
+source support. Different claim types may require different evidence sources;
+a rule for one type must not become a rule for every claim. Missing support
+remains unresolved, not invented or silently replaced by another source.
+Keep reported, alleged, inferred and confirmed facts distinct. Preserve source
+qualifiers and conditions on what may be retained, changed or approved.
+Never upgrade a source assertion or an assumption into a verified fact, and
+never infer source completeness, authority or universal applicability.
+Apply these constraints to every authored field, including steps, outputs,
+assumptions and evidence supports. Check them against the catalogue before
+returning a workflow; omit a workflow that cannot be described faithfully.
+"""
+_FROZEN_SUFFIXES: dict[str, str | None] = {
+    "baseline": "",
+    "r1": _R1_SELECTION_SUFFIX,
+    "r2": _R1_SELECTION_SUFFIX + _R2_FIDELITY_SUFFIX,
     "r3": None,
 }
 

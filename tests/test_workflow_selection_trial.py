@@ -872,9 +872,8 @@ def test_missing_key_and_unfrozen_revisions_stop_before_reservation(tmp_path: Pa
 
     with pytest.raises(ValueError, match="credential missing"):
         module.run_case(root, case, "baseline")
-    for profile in ("r2", "r3"):
-        with pytest.raises(ValueError, match="profile not frozen"):
-            module.run_case(root, case, profile, api_key=CANARY_KEY)
+    with pytest.raises(ValueError, match="profile not frozen"):
+        module.run_case(root, case, "r3", api_key=CANARY_KEY)
     assert _reservation_count(root) == 0
 
 
@@ -1005,6 +1004,39 @@ def test_r1_request_adds_only_the_preregistered_selection_suffix(tmp_path: Path)
         "role": "user",
         "content": module.prepare_case(case).user_payload(),
     }
+
+
+def test_r2_request_preserves_sources_and_changes_only_trusted_instructions(tmp_path: Path) -> None:
+    module, root = _campaign(tmp_path)
+    case = _cases()[0]
+    requests = []
+    for profile in ("r1", "r2"):
+        recorded = RecordedTransport({CHAT_COMPLETIONS: _selection_response(workflow=False)})
+        with httpx.Client(transport=recorded.transport()) as client:
+            module.run_case(root, case, profile, http_client=client, api_key=CANARY_KEY)
+        requests.append(json.loads(recorded.requests[0].content))
+    before, after = requests
+    system = after["messages"][0]["content"]
+    for requirement in (
+        "Preserve each supplied evidence source and its distinct role",
+        "Do not narrow or broaden which evidence may support a claim",
+        "Keep reported, alleged, inferred and confirmed facts distinct",
+        "Never upgrade a source assertion or an assumption into a verified fact",
+        "Apply these constraints to every authored field",
+    ):
+        assert requirement in system
+    before["messages"][0]["content"] = system
+    assert before == after  # Same source catalogue, model, schema and request limits.
+
+
+def test_r2_cannot_resume_a_frozen_campaign(tmp_path: Path) -> None:
+    module, root, _ = _frozen_campaign(tmp_path)
+    recorded = RecordedTransport({})
+    with httpx.Client(transport=recorded.transport()) as client:
+        with pytest.raises(ValueError, match="development closed after freeze"):
+            module.run_case(root, _cases()[0], "r2", http_client=client, api_key=CANARY_KEY)
+    assert recorded.requests == []
+    assert _reservation_count(root) == 14
 
 
 def test_result_reports_monotonic_request_latency(tmp_path: Path, monkeypatch) -> None:
