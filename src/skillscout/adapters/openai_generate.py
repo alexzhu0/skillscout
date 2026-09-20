@@ -23,6 +23,7 @@ from skillscout.adapters.semantic_provider import (
 from skillscout.domain.candidate_authority import WorkflowSpecAuthorityV1
 from skillscout.domain.canonical import canonical_json_bytes
 from skillscout.domain.enums import EffectScope
+from skillscout.domain.generation_diagnostics import rejection_diagnostic
 from skillscout.domain.models import (
     Digest,
     NonNegativeInt,
@@ -202,6 +203,7 @@ class OpenAIGenerationClient:
         self._model = selected_model
         self._max_output_tokens = max_output_tokens
         self._prompt_version = prompt_version
+        self._last_diagnostic: dict[str, object] | None = None
         self._instructions = (
             GENERATOR_LOCAL_SOURCE_FAITHFUL_INSTRUCTIONS_V1
             if prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
@@ -224,6 +226,11 @@ class OpenAIGenerationClient:
     def prompt_version(self) -> str:
         return self._prompt_version
 
+    @property
+    def last_diagnostic(self) -> dict[str, object] | None:
+        """Latest local-only rejection; not part of stage or publication authority."""
+        return self._last_diagnostic
+
     def close(self) -> None:
         self._client.close()
 
@@ -236,6 +243,8 @@ class OpenAIGenerationClient:
     def generate(self, *, request: GenerationRequestV1) -> GenerationResult:
         """Make exactly one bounded SDK request, leaving retries to the runner."""
 
+        self._last_diagnostic = None
+        local_diagnostics = self._prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
         if type(request) is not GenerationRequestV1:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         user_payload_bytes = canonical_json_bytes(request)
@@ -253,19 +262,19 @@ class OpenAIGenerationClient:
                 user_payload=user_payload_bytes.decode("utf-8"),
                 response_model=GeneratedSkillDraft,
                 max_tokens=self._max_output_tokens,
+                collect_diagnostics=local_diagnostics,
             )
-            return self._enforce_source_faithful_result(
-                request=request,
-                result=self._result(
-                    deepseek.status,
-                    started,
-                    response=deepseek,
-                    draft=deepseek.parsed,
-                    incomplete_reason=(
-                        "max_tokens" if deepseek.status == "incomplete" else None
-                    ),
+            result = self._result(
+                deepseek.status,
+                started,
+                response=deepseek,
+                draft=deepseek.parsed,
+                incomplete_reason=(
+                    "max_tokens" if deepseek.status == "incomplete" else None
                 ),
             )
+            self._last_diagnostic = deepseek.diagnostic
+            return self._enforce_source_faithful_result(request=request, result=result)
         try:
             response = self._client.responses.parse(
                 model=self._model,
@@ -277,7 +286,9 @@ class OpenAIGenerationClient:
                 store=False,
                 max_output_tokens=self._max_output_tokens,
             )
-        except ValidationError:
+        except ValidationError as error:
+            if local_diagnostics:
+                self._last_diagnostic = rejection_diagnostic("schema_invalid", error=error)
             return self._result("schema_invalid", started)
         except openai.APIError as error:
             raise classify_semantic_provider_failure(error, sdk=openai) from None
@@ -301,7 +312,10 @@ class OpenAIGenerationClient:
             )
         parsed = response.output_parsed
         if parsed is None:
-            return self._result("schema_invalid", started, response=response)
+            result = self._result("schema_invalid", started, response=response)
+            if local_diagnostics:
+                self._last_diagnostic = rejection_diagnostic("missing_parsed_output")
+            return result
         return self._enforce_source_faithful_result(
             request=request,
             result=self._result("parsed", started, response=response, draft=parsed),
@@ -320,14 +334,17 @@ class OpenAIGenerationClient:
         ):
             return result
         workflow = request.workflow_spec_authority.workflow_spec
-        unsupported = (
-            not workflow.required_approvals
-            and result.draft.approvals != (SOURCE_APPROVALS_UNSPECIFIED,)
-        ) or (
-            not workflow.failure_modes
-            and result.draft.failure_handling != (SOURCE_FAILURE_HANDLING_UNSPECIFIED,)
+        unsupported = tuple(
+            name for name, missing, values, expected in (
+                ("approvals", not workflow.required_approvals,
+                 result.draft.approvals, SOURCE_APPROVALS_UNSPECIFIED),
+                ("failure_handling", not workflow.failure_modes,
+                 result.draft.failure_handling, SOURCE_FAILURE_HANDLING_UNSPECIFIED),
+            )
+            if missing and values != (expected,)
         )
         if unsupported:
+            self._last_diagnostic = rejection_diagnostic("source_contract", fields=unsupported)
             return result.model_copy(update={"status": "schema_invalid", "draft": None})
         return result
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from skillscout import cli
@@ -29,6 +31,85 @@ from test_phase3_pipeline import (
     _workflow,
     _write_composition_descriptor_for_workflow,
 )
+
+
+def test_local_generation_diagnostic_sidecar_is_not_authority_or_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    from recorded_transport import RecordedTransport
+    from test_generation_diagnostics import PRIVATE, _response
+    from test_openai_generate import CANARY_KEY, CHAT_COMPLETIONS
+
+    descriptor, phase2_state, state, output = _candidate_paths(tmp_path)
+    source = _CompositionSource(workflow=_workflow())
+    monkeypatch.setattr(cli, "SQLitePhaseTwoCandidateSource", lambda *a, **k: source)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", CANARY_KEY)
+    monkeypatch.setenv("SKILLSCOUT_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _response("nested")})
+    real_generator = cli.OpenAIGenerationClient
+    monkeypatch.setattr(
+        cli, "OpenAIGenerationClient",
+        lambda **kwargs: real_generator(http_client=httpx.Client(transport=recorded.transport()), **kwargs),
+    )
+    monkeypatch.setattr(cli, "OpenAIReviewClient", lambda **k: pytest.fail("review reached"))
+    arguments = _build_argv(descriptor, phase2_state, state, output,
+                            single_attempt=True, source_faithful_generation=True)
+    assert cli.main(arguments) == 0
+    public = json.loads(capsys.readouterr().out)
+    assert public["outcome"] == "generator_schema_failure"
+    terminal_bytes = (output / "candidate-terminal-summary.json").read_bytes()
+    terminal = json.loads(terminal_bytes)
+    sidecar = output / "generation-diagnostic.json"
+    diagnostic = json.loads(sidecar.read_bytes())
+    assert diagnostic == {
+        "schema_version": "local-generation-diagnostic-v1",
+        "reason": "schema_invalid",
+        "findings": [{"field": "references", "code": "extra_forbidden"}],
+        "truncated": False,
+        "terminal_summary_digest": terminal["terminal_summary_digest"],
+    }
+    assert PRIVATE not in sidecar.read_text() and CANARY_KEY not in sidecar.read_text()
+    assert all(item["kind"] != "generation_diagnostic" for item in public["evidence"])
+    with sqlite3.connect(state) as db:
+        assert db.execute("select stage from phase3_attempts order by stage_index").fetchall() == [
+            ("qualifier",), ("generator",),
+        ]
+        assert db.execute("select count(*) from phase3_artifacts where artifact_kind='generation_diagnostic'").fetchone() == (0,)
+    assert len(recorded.requests) == 1
+
+    # An old/missing sidecar is never reconstructed by replaying the model.
+    sidecar.unlink()
+    monkeypatch.setattr(cli, "OpenAIGenerationClient", lambda **k: pytest.fail("replayed model"))
+    assert cli.main(arguments) == 0
+    assert json.loads(capsys.readouterr().out) == public
+    assert not sidecar.exists()
+    assert (output / "candidate-terminal-summary.json").read_bytes() == terminal_bytes
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_generation_diagnostic_refuses_existing_conflict_or_symlink(tmp_path: Path, symlink):
+    from types import SimpleNamespace
+    from skillscout.application.ports import SafeFailure
+
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"original")
+    output = tmp_path / "output"
+    output.mkdir()
+    sidecar = output / "generation-diagnostic.json"
+    if symlink:
+        sidecar.symlink_to(outside)
+    else:
+        sidecar.write_bytes(b"original")
+        sidecar.chmod(0o600)
+    with pytest.raises(SafeFailure):
+        cli._write_generation_diagnostic(
+            output, SimpleNamespace(terminal_summary_digest="sha256:" + "a" * 64),
+            {"schema_version": "local-generation-diagnostic-v1", "reason": "empty_content",
+             "findings": [], "truncated": False},
+        )
+    assert outside.read_bytes() == b"original"
+    assert sidecar.read_bytes() == b"original"
 
 def _candidate_paths(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     descriptor_root = tmp_path / "descriptor"

@@ -290,6 +290,26 @@ the application does not overwrite the model's text to make it pass. Nonempty
 source requirements remain subject to semantic fidelity review. This guard only
 covers those two structured fields, not all possible invention elsewhere in prose.
 
+For a **new** source-faithful generation rejection, local `build-candidate` also
+writes `generation-diagnostic.json` beside `candidate-terminal-summary.json`.
+This is troubleshooting metadata, not a package file, canonical stage artifact,
+publication credential, or reason to retry. It binds to `terminal_summary_digest`.
+The unchanged terminal remains the authority for acceptance and model/token facts.
+
+The diagnostic distinguishes `response_shape`, `empty_content`, `json_invalid`,
+`schema_invalid`, `source_contract`, and OpenAI's `missing_parsed_output`.
+It retains at most16 unique top-level field/error categories. Unknown field names
+map to `document` and unknown error kinds to `invalid_value`. It never includes
+model text, rejected values, arbitrary nested paths, exception messages or context.
+Default/hosted builds, extraction and Reviewer do not collect this diagnostic.
+
+Read these two files locally; inspection does not require a key or a model call.
+An absent sidecar is **not** success: the run may predate diagnostics, stop before
+classification or be interrupted before the sidecar is written. Completed replay
+does not recreate a missing diagnostic or contact the model. Conflicting existing
+sidecars and symlinks are rejected without replacing their target; the already
+recorded terminal is preserved. Do not rerun a consumed trial to fill missing data.
+
 The local renderer links the reference files it creates using their validated
 names. It adds no scripts, executes no source code and grants no tool authority.
 Existing format, safety, attribution and 80-character copying checks still decide
@@ -301,6 +321,8 @@ Phase 2 source and an otherwise eligible local candidate. A zero CLI exit status
 can still represent a recorded rejection: inspect the terminal, validation and
 Reviewer reports. Offline tests cannot prove a real model will produce a faithful
 or useful Skill; that requires a fresh frozen trial after implementation checks.
+The closed September20 real failure cannot be diagnosed retroactively: its rejected
+response was not retained. See the [diagnostic plan](superpowers/plans/2026-09-20-generation-rejection-diagnostics.md).
 
 ## Limits and fixed defaults
 

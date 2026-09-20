@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 
 from skillscout.application.ports import ErrorCode, SafeFailure
 from skillscout.domain.models import TokenUsage
+from skillscout.domain.generation_diagnostics import rejection_diagnostic
 
 OPENAI_MODEL = "gpt-5.6-terra"
 DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"
@@ -209,6 +210,7 @@ class DeepSeekJSONResult(Generic[_ResponseModel]):
     request_id: object | None = field(default=None, repr=False)
     model: object | None = field(default=None, repr=False)
     usage: object | None = field(default=None, repr=False)
+    diagnostic: dict[str, object] | None = field(default=None, repr=False)
 
 
 def resolve_semantic_provider(
@@ -354,6 +356,7 @@ def request_deepseek_json(
     user_payload: str,
     response_model: type[_ResponseModel],
     max_tokens: int,
+    collect_diagnostics: bool = False,
 ) -> DeepSeekJSONResult[_ResponseModel]:
     """Make one no-tools JSON request and strictly validate assistant content."""
 
@@ -393,7 +396,10 @@ def request_deepseek_json(
         )
     choices = response.choices
     if len(choices) != 1:
-        return _closed_deepseek_result("schema_invalid", response)
+        return _closed_deepseek_result(
+            "schema_invalid", response,
+            diagnostic=rejection_diagnostic("response_shape") if collect_diagnostics else None,
+        )
     choice = choices[0]
     if choice.finish_reason != "stop":
         return _closed_deepseek_result("incomplete", response)
@@ -405,11 +411,20 @@ def request_deepseek_json(
         return _closed_deepseek_result("refused", response)
     content = choice.message.content
     if type(content) is not str or not content:
-        return _closed_deepseek_result("schema_invalid", response)
+        return _closed_deepseek_result(
+            "schema_invalid", response,
+            diagnostic=rejection_diagnostic("empty_content") if collect_diagnostics else None,
+        )
     try:
         parsed = response_model.model_validate_json(content, strict=True)
-    except ValidationError:
-        return _closed_deepseek_result("schema_invalid", response)
+    except ValidationError as error:
+        return _closed_deepseek_result(
+            "schema_invalid", response,
+            diagnostic=(
+                rejection_diagnostic("schema_invalid", error=error)
+                if collect_diagnostics else None
+            ),
+        )
     return DeepSeekJSONResult(
         status="parsed",
         parsed=parsed,
@@ -422,6 +437,8 @@ def request_deepseek_json(
 def _closed_deepseek_result(
     status: Literal["refused", "incomplete", "schema_invalid"],
     response: object,
+    *,
+    diagnostic: dict[str, object] | None = None,
 ) -> DeepSeekJSONResult[Any]:
     return DeepSeekJSONResult(
         status=status,
@@ -429,4 +446,5 @@ def _closed_deepseek_result(
         request_id=getattr(response, "id", None),
         model=getattr(response, "model", None),
         usage=getattr(response, "usage", None),
+        diagnostic=diagnostic,
     )

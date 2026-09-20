@@ -4,6 +4,30 @@ SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turn
 
 This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
 
+## September 20 local rejection diagnostics
+
+The [diagnostic change](docs/superpowers/plans/2026-09-20-generation-rejection-diagnostics.md)
+adds an opt-in, terminal-bound `generation-diagnostic.json` to new failed local
+source-faithful builds. Fixed reasons distinguish response shape, empty content,
+JSON/schema rejection and absent-source-field mismatch, with at most16 deduplicated
+allowlisted field/error categories. Rejected text, values, arbitrary paths and
+exception details are not retained. Existing sidecars are not silently overwritten.
+
+Public authority/schema shapes, model requests/prompts, acceptance, retry limits,
+Reviewer policy and hosted behavior stay unchanged. The diagnostic is never a
+publication artifact. Completed replay does not invent missing diagnostics or make
+a model request. This is an observability change, not a successful Skill or a repair
+of the previous failed response. No live call or remote update accompanies it.
+
+Verification: **3051 passed, 3 skipped** in 1225.05s on the final implementation;
+the expanded focused suite passed **416 tests**. Whole-repository Ruff and
+whitespace checks passed. Independent review found a late-telemetry diagnostic
+state issue, fixed with failing-then-passing DeepSeek and OpenAI regression tests.
+The conflict test now reaches byte-conflict validation rather than failing on
+permissions first. Historical failure artifacts and closed-trial hashes match.
+The three existing skips remain the pending Phase 6 requirement map and two
+unconfigured protected live canaries; they do not establish live acceptance.
+
 ## September 20 independent real regression — generation rejected
 
 The [fresh regression](docs/superpowers/specs/2026-09-20-source-faithful-real-result.md)

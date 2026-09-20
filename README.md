@@ -93,6 +93,11 @@ usefulness comparison. The retained content-free diagnostic does not identify
 the failing field, so no specific semantic defect is claimed. This trial is closed;
 the corrected generator has not yet demonstrated a successful real Skill.
 
+The [diagnostic improvement](docs/CONFIGURATION.md#local-source-faithful-generation)
+now gives future local rejections a separate, content-free reason/field report.
+It does not change prompts, relax validation, reconstruct the old response, or
+establish that real generation works. No additional paid test accompanied it.
+
 For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
 `export-candidates` bridges verified extraction state into canonical local build
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)

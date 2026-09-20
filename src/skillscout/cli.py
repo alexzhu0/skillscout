@@ -599,11 +599,35 @@ def _run_export_candidates(arguments: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _write_generation_diagnostic(
+    output: Path, terminal_summary: object, diagnostic: Mapping[str, object],
+) -> None:
+    """Write local troubleshooting only, never a canonical stage artifact."""
+    payload = canonical_json_bytes({
+        **diagnostic,
+        "terminal_summary_digest": getattr(terminal_summary, "terminal_summary_digest"),
+    })
+    anchor: AnchoredDirectory | None = None
+    try:
+        anchor = AnchoredDirectory.open(output)
+        existing = anchor.read_bytes("generation-diagnostic.json", max_bytes=4096, missing_ok=True)
+        if existing is not None and existing != payload:
+            raise DurableWriteError("immutable_diagnostic_conflict")
+        if existing is None:
+            anchor.atomic_write("generation-diagnostic.json", payload, max_bytes=4096)
+    except (DurableWriteError, OSError, TypeError, ValueError):
+        raise SafeFailure(ErrorCode.STATE_OPERATION_FAILED) from None
+    finally:
+        if anchor is not None:
+            anchor.close()
+
+
 def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     if arguments.source_faithful_generation and not arguments.single_attempt:
         raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
     _validate_candidate_paths(arguments)
     clients: list[object] = []
+    generation_client: object | None = None
     provider = (
         resolve_local_preview_semantic_provider(current_flash=True)
         if arguments.deepseek_current_flash
@@ -622,6 +646,7 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
     )
 
     def generator_factory() -> object:
+        nonlocal generation_client
         client = (
             OpenAIGenerationClient(
                 model=profile.configured_generator_model_id,
@@ -637,6 +662,7 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
             )
         )
         clients.append(client)
+        generation_client = client
         return client
 
     def reviewer_factory() -> object:
@@ -698,6 +724,12 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
             )
         if result.terminal_summary is None or result.artifacts is None:
             raise SafeFailure(ErrorCode.STATE_INTEGRITY_ERROR)
+        if (
+            arguments.source_faithful_generation
+            and result.outcome == "generator_schema_failure"
+            and (diagnostic := getattr(generation_client, "last_diagnostic", None)) is not None
+        ):
+            _write_generation_diagnostic(arguments.output, result.terminal_summary, diagnostic)
         return _public_candidate_payload(
             outcome=result.outcome,
             terminal_summary=result.terminal_summary,
