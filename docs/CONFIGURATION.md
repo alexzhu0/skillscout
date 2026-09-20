@@ -35,6 +35,14 @@ uv run skillscout extract-repo \
 
 For `build-candidate`, the candidate descriptor, Phase 2 database, Phase 3 database, and output directory must not resolve to the same existing filesystem object. An existing output path must be an empty directory owned by the current user and must not be group- or world-writable.
 
+For a bounded local pilot, `build-candidate --single-attempt` limits generation
+and independent review to one application-level attempt each. The existing
+runtime-profile digest and durable stage reservations bind these limits; a
+confirmed transient failure does not authorize a second request. Unknown outcomes
+remain non-replayable. Without this flag, the existing defaults remain three
+attempts per stage. This option changes neither the selected models nor safety,
+format, qualification or publication checks.
+
 `SKILLSCOUT_GITHUB_TOKEN` is optional for public-repository reads: `GitHubReadClient` omits the authorization header when it is absent. If supplied locally, inject it through the process environment and use a placeholder in examples:
 
 ```bash
@@ -264,7 +272,9 @@ These limits are defined in source and are not environment-variable overrides.
 | Protected discovery handoff candidates | 60 |
 | Protected discovery handoff bytes | 65,536 |
 
-Changing these values requires a code change and corresponding contract/test updates.
+These are default ceilings. The existing `build-candidate` command can only lower
+both semantic-attempt ceilings to one with the explicit `--single-attempt` option.
+Other changes require a code change and corresponding contract/test updates.
 
 ## Automated discovery operations
 

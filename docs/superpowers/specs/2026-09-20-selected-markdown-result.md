@@ -13,7 +13,9 @@ Controller verification so far: 115 product-focused tests and 29 private launche
 tests passed; full Ruff and whitespace checks passed. Independent task and final
 integration review found no blocking issue; one minor private-launcher path
 validation mismatch was fixed and independently re-reviewed. The frozen full-suite
-result is pending.
+result is pending. The initial full run was intentionally interrupted before a
+confirmed integration fix: 1,878 passed,1skipped in588.20s, exit2. This partial run
+is not a full-suite success claim.
 
 ## Source screening before model use
 
@@ -81,3 +83,55 @@ SDK retries being disabled does not establish that application-level bound.
 
 No push, PR, merge, remote state mutation, Skill publication, source-code execution
 or human repair of generated semantic data occurred.
+
+## Real extraction and independent fidelity result
+
+On committed source `153b8a2932c06691ee1eeb37af40c790bf667fc8`, the fresh one-shot
+launcher made exactly one real `deepseek-flash` extraction request. Run
+`686a3ed1ed3b4c399ce66b0f13f4d18f` completed with one WorkflowSpec and no dropped
+workflow. Fingerprint:
+`sha256:a6ef7f7a24de05defe57f7f121c6b53192b392909e353fc3f89c86a341209de1`.
+The returned model identity and evidence catalogue matched the frozen settings.
+
+Telemetry: request `f5ef0b40-4bd2-4ef1-9a1f-2db6dfeea922`, 3,373 input tokens,
+1,118 output tokens, 4,491 total. Conservative peak uncached estimate:
+CNY0.015690; cumulative known estimate CNY0.212152, not a provider bill.
+
+Independent field-by-field review passed source fidelity: all three output
+sections, exact 20/10/16/5 count/word constraints, numbered Markdown, absence of
+extra notes, duplicate items and repeated openings survived. All16 evidence
+records exactly match the frozen source; all11 step references are declared.
+No invented approval, setup prerequisite, scenario fact or authorship was added.
+Empty preconditions, assumptions and approval fields accurately reflect the source.
+Section-label punctuation remains exact in evidence even where semantic fields
+omit the trailing colon; downstream generation must preserve the required format.
+
+Pure deterministic qualification evaluates to85/100 with no hard failure (25
+specificity,10reusability,15verifiability,25evidence,10safety). Missing explicit
+preconditions/non-goals/failure modes were not invented to inflate this score.
+This diagnostic score does not by itself establish end-to-end candidate admission.
+
+The first unchanged CLI export attempt failed closed with
+`candidate_source_unavailable`. Read-only isolation verified the complete four-stage
+chain and selected-file scope; the remaining rejection was `_source_facts`
+comparing `repo:danielmiessler/fabric` with GitHub metadata spelling
+`danielmiessler/Fabric`. GitHub's
+[repository API contract](https://docs.github.com/en/rest/repos/repos#get-a-repository)
+defines owner/repository names as case-insensitive. A minimal ASCII comparison
+fix preserves metadata spelling and all other identity/integrity checks. The same
+unmodified source state then exported exactly one canonical descriptor locally,
+with no model request. A new opt-in `build-candidate --single-attempt` binds existing
+generator/reviewer attempt fields to1/1; defaults remain3/3. Both fixes are covered
+by regressions under the
+[local integration plan](../plans/2026-09-20-local-pilot-integration-fixes.md).
+No original semantic JSON or state was edited, and extraction will not be retried.
+
+| Evidence layer | Current result |
+| --- | --- |
+| Structured extraction | Passed, one real workflow |
+| Source fidelity | Passed independent field-level review |
+| Pure qualification | 85/100, no hard failure |
+| Canonical export/admission | Passed after minimal case-only comparison fix; original state unchanged |
+| Generated package / official format / security | Not run |
+| Independent Pro Reviewer | Not run |
+| Nine usefulness comparisons | Not run |

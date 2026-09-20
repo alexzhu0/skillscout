@@ -10,13 +10,17 @@ The opt-in local extraction route now accepts one explicitly selected `.md` file
 at an immutable source SHA. It keeps the source-only v4 prompt, bounded evidence
 filtering, historical README compatibility and local-only publication denial.
 Focused controller checks passed (115 product tests plus 29 private-launcher
-tests); independent code review found no blocking product defect. The full frozen
-offline suite is still running at this checkpoint.
+tests); independent code review found no blocking product defect. A full run was
+deliberately interrupted before a later real-source integration repair
+(1,878passed,1skipped, exit2); final frozen verification is pending.
 
-Three Microsoft education documents were screened and excluded before any model
-call because their essential fenced instructions did not survive the unchanged
-catalogue. This is an input-path milestone, not a successful extraction, validated
-Skill, usefulness result or Phase 6 acceptance. See the
+Three Microsoft education documents were excluded because their essential fenced
+instructions did not survive the unchanged catalogue. A subsequently frozen
+Fabric summarization source produced one real structured extraction (4,491tokens),
+passed independent source fidelity and scored85/100 in pure qualification.
+Canonical export exposed a case-only repository identity defect now under repair.
+No Skill generation, Pro review or usefulness comparison has run; this is not a
+validated Skill or Phase6 acceptance. See the
 [screening and validation record](docs/superpowers/specs/2026-09-20-selected-markdown-result.md).
 
 ## September 15 real useful-Skill pilot — fidelity rejection

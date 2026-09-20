@@ -60,6 +60,24 @@ def test_exported_descriptor_loads_without_editing_and_preserves_source(
     assert _all_persisted_bytes(state) == before
 
 
+def test_export_accepts_case_only_repository_identity_and_preserves_metadata_spelling(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state, descriptor, _workflow_spec = _create_phase2_state(
+        tmp_path,
+        repository_owner="Example",
+        repository_name="Approved-Repo",
+    )
+    output = tmp_path / "candidates"
+
+    assert cli.main(_args(state, descriptor.phase2_run_id, output)) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["candidate_count"] == 1
+    assert result["candidates"][0]["repository_url"] == "https://github.com/Example/Approved-Repo"
+
+
 def test_export_sorts_three_verified_candidates(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

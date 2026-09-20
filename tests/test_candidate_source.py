@@ -109,9 +109,13 @@ class _PhaseTwoResultProcessor:
         *,
         outcome: str = "extracted",
         workflows: tuple[dict[str, object], ...] | None = None,
+        repository_owner: str = "example",
+        repository_name: str = "approved-repo",
     ) -> None:
         self._outcome = outcome
         self._workflows = workflows
+        self._repository_owner = repository_owner
+        self._repository_name = repository_name
 
     def process(self, stage_input: StageInput, context: StageContext) -> StageOutcome:
         del context
@@ -126,8 +130,8 @@ class _PhaseTwoResultProcessor:
                 {
                     "repository": {
                         "id": 1234,
-                        "owner": "example",
-                        "name": "approved-repo",
+                        "owner": self._repository_owner,
+                        "name": self._repository_name,
                         "license_spdx": "MIT",
                     },
                     "pinned_commit_sha": PINNED_SHA,
@@ -151,6 +155,8 @@ def _create_phase2_state(
     outcome: str = "extracted",
     workflows: tuple[dict[str, object], ...] | None = None,
     fail_after: str | None = None,
+    repository_owner: str = "example",
+    repository_name: str = "approved-repo",
 ) -> tuple[Path, CandidateSubjectDescriptorV1, WorkflowSpec]:
     selected = _workflow()
     projected = workflows
@@ -165,6 +171,8 @@ def _create_phase2_state(
                 _PhaseTwoResultProcessor(
                     outcome=outcome,
                     workflows=projected,
+                    repository_owner=repository_owner,
+                    repository_name=repository_name,
                 ),
             ).run(
                 load_subject(APPROVED_SUBJECT),
@@ -252,6 +260,46 @@ def test_phase2_query_is_read_only_and_returns_exact_canonical_workflow(
     assert _all_persisted_bytes(state_path) == before
     assert not tuple(state_path.parent.glob("*-journal"))
     assert not tuple(state_path.parent.glob("*-wal"))
+
+
+def test_phase2_query_matches_ascii_repository_identity_case_insensitively(
+    tmp_path: Path,
+) -> None:
+    state_path, descriptor, _workflow_spec = _create_phase2_state(
+        tmp_path,
+        repository_owner="Example",
+        repository_name="Approved-Repo",
+    )
+
+    projection = SQLitePhaseTwoCandidateSource(state_path).resolve(descriptor)
+
+    assert projection.repository_id == 1234
+    assert projection.repository_url == "https://github.com/Example/Approved-Repo"
+    assert projection.pinned_commit_sha == PINNED_SHA
+    assert projection.license_spdx == "MIT"
+
+
+@pytest.mark.parametrize(
+    ("repository_owner", "repository_name"),
+    (
+        ("different", "approved-repo"),
+        ("example", "different-repo"),
+        ("example", "approved-repo-copy"),
+        ("example", "approved_repo"),
+    ),
+)
+def test_phase2_query_rejects_non_case_repository_identity_changes(
+    tmp_path: Path,
+    repository_owner: str,
+    repository_name: str,
+) -> None:
+    state_path, descriptor, _workflow_spec = _create_phase2_state(
+        tmp_path,
+        repository_owner=repository_owner,
+        repository_name=repository_name,
+    )
+
+    _assert_unavailable(SQLitePhaseTwoCandidateSource(state_path), descriptor)
 
 
 def test_phase2_query_admits_descriptor_bytes_under_shared_lock_before_sqlite(

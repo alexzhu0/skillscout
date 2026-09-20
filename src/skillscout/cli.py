@@ -168,6 +168,11 @@ def build_parser() -> SafeArgumentParser:
         "--fail-after",
         choices=PHASE_THREE_STAGE_SEQUENCE,
     )
+    build_candidate.add_argument(
+        "--single-attempt",
+        action="store_true",
+        help="Limit local generation and review to one provider request each.",
+    )
     for local_command in (extract_repo, build_candidate):
         local_command.add_argument(
             "--deepseek-current-flash",
@@ -600,6 +605,10 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
         generator_model_id=provider.generator_model,
         reviewer_model_id=provider.reviewer_model,
     )
+    if arguments.single_attempt:
+        profile = profile.model_copy(
+            update={"max_generator_attempts": 1, "max_reviewer_attempts": 1}
+        )
 
     def generator_factory() -> object:
         client = (

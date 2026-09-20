@@ -194,7 +194,8 @@ def _source_facts(
         or _REPOSITORY_PART.fullmatch(owner) is None
         or not isinstance(name, str)
         or _REPOSITORY_PART.fullmatch(name) is None
-        or subject_id != f"repo:{owner}/{name}"
+        or not subject_id.isascii()
+        or subject_id.lower() != f"repo:{owner}/{name}".lower()
         or not isinstance(pinned_commit_sha, str)
         or _COMMIT_SHA.fullmatch(pinned_commit_sha) is None
         or not isinstance(scout_license, str)
