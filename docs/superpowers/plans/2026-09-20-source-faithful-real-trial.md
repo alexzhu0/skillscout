@@ -49,29 +49,34 @@ Files: new `config/previews/source-faithful-real-20260920.json`, private
 `docs/project/BENCHMARK_STATE.md`. No production source or dependency changes.
 
 - [x] Independently re-admit the original descriptor and inspect source fidelity.
-- [ ] Write failing launcher tests for reservation-before-key, duplicate launch,
+- [x] Write failing launcher tests for reservation-before-key, duplicate launch,
   drift, exact flags, fresh paths, unknown-result no-retry and secret-free outputs.
   Exercise real reservation files and fake only credential/network subprocesses.
-- [ ] Implement the smallest wrapper using existing hash-pinned private helpers:
+- [x] Implement the smallest wrapper using existing hash-pinned private helpers:
   `_identity() -> dict`, `initialize() -> dict`, `run(key_loader=...) -> int`.
   Freeze config/launcher/loader/candidate/source-state/prompt hashes in the manifest.
   Use `os.O_EXCL` plus fsync through the existing `_write_exclusive_json` helper.
   Run the real CLI with `--deepseek-current-flash --single-attempt
   --source-faithful-generation`, fresh state/output, hidden stdout/stderr, timeout240s.
-- [ ] Run private tests and focused product regressions; independently review the
+- [x] Run private tests and focused product regressions; independently review the
   launcher and freeze documents in a local commit before initializing the manifest.
 
 ## Task 2: one real build, inspect, and stop-or-continue
 
-- [ ] Initialize the fresh manifest without credentials, then consume exactly one
+- [x] Initialize the fresh manifest without credentials, then consume exactly one
   build reservation through the existing approved runtime loader.
-- [ ] Inspect terminal, validation, request/model/token evidence, package and
+- [x] Inspect terminal, validation, request/model/token evidence, package and
   independent Pro decision. Do not interpret exit0 alone as accepted.
-- [ ] Independently compare the generated package with the full source and verified
+- [x] Independently compare the generated package with the full source and verified
   WorkflowSpec; preserve all output bytes and report every failure.
-- [ ] On any failed prerequisite, close the trial and leave comparison calls unused.
+  Not applicable: no package was produced. Independent post-run review instead
+  verified the generation rejection and absence of downstream artifacts.
+- [x] On any failed prerequisite, close the trial and leave comparison calls unused.
 
 ## Task 3: conditional usefulness test
+
+**Not reached:** generation returned `schema_invalid`; no tasks, comparison harness
+or scores were created, and all nine requests remain unused and closed.
 
 Only if Task 2 fully passes: freeze three synthetic, newly authored tasks and a
 0–2 rubric for procedure correctness, missing-information handling, verifiability
@@ -91,12 +96,20 @@ Model/agent scores are preliminary and require human confirmation, never publica
 
 ## Task 4: evidence and local handoff
 
-- [ ] Write actual request/token/cost/outcome evidence and update README, RELEASE,
+- [x] Write actual request/token/cost/outcome evidence and update README, RELEASE,
   and BENCHMARK_STATE. Keep original failure reports unchanged.
-- [ ] Verify unchanged implementation/historical inputs, run relevant offline checks,
+- [x] Verify unchanged implementation/historical inputs, run relevant offline checks,
   and commit documentation locally. No remote write, PR, merge or publication.
 
 Ruling: Reuse the faithful historical extraction as immutable test input, not a
 fresh extraction — isolates the corrected generation boundary and avoids spending
 on an unchanged step — cost if wrong is limited generalization; report regression
 scope explicitly and make no end-to-end-new-source claim.
+
+## Execution outcome
+
+Closed failed real regression: one Flash request, 6,197 tokens, estimated
+CNY0.017680. Terminal `generator_schema_failure`; no package, validator, Pro or
+comparison result. No retry, semantic edit or publication. The precise rejected
+field/check is not retained by the current content-free diagnostic. See the
+[result and independent verification](../specs/2026-09-20-source-faithful-real-result.md).

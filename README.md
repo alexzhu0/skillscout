@@ -86,6 +86,13 @@ and renders its reference links deterministically. It is not a repair of the
 failed artifact or evidence that a subsequent real Skill is useful. See the
 [opt-in and limits](docs/CONFIGURATION.md#local-source-faithful-generation).
 
+The subsequent [independent real regression](docs/superpowers/specs/2026-09-20-source-faithful-real-result.md)
+used one real Flash generation request on the unchanged, previously verified
+extraction. It stopped at `generator_schema_failure`: no package, Pro review or
+usefulness comparison. The retained content-free diagnostic does not identify
+the failing field, so no specific semantic defect is claimed. This trial is closed;
+the corrected generator has not yet demonstrated a successful real Skill.
+
 For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
 `export-candidates` bridges verified extraction state into canonical local build
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)
