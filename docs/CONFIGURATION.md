@@ -246,6 +246,62 @@ new reader file tier is `docs`. All scope/path/policy/prompt/retry identities
 must match for local export/build. Hosted and publication consumers reject this
 mode. It is not proof of a faithful workflow, useful Skill or live acceptance.
 
+### Local source-faithful generation
+
+The correction profile is selected only by
+`build-candidate --source-faithful-generation --single-attempt`. Both flags are
+required together for this mode; `--single-attempt` alone keeps the existing v1
+generation behavior and only lowers request ceilings. The source-faithful flag
+does not select a provider or change models. Add `--deepseek-current-flash` to use
+the existing local Flash/Pro pairing.
+
+For a **fresh, separately bounded** local trial, after a faithful extraction and
+canonical export, the command shape is:
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked --no-env-file skillscout build-candidate \
+  --candidate path/to/canonical-descriptor.json \
+  --phase2-state path/to/verified-phase2.db \
+  --state .tmp/new-generation-trial/phase3.db \
+  --output .tmp/new-generation-trial/output \
+  --deepseek-current-flash --single-attempt --source-faithful-generation
+```
+
+The descriptor and source state must be authentic existing outputs; never create
+them by hand to match the example. Reserve request/cost limits before invoking the
+CLI, and inject credentials only through the approved runtime mechanism. Do not
+rerun closed launchers or borrow their unused slots. This correction task makes no
+live requests and does not reopen the September 20 trial.
+
+The local identities are `phase3-local-source-faithful-v1` and
+`generator-local-source-faithful-v1`, carried in existing profile/prompt fields.
+They bind authority, provenance and completed-result reuse. Public schema shapes,
+the v1 renderer family and default/hosted prompt bytes remain unchanged. Do not mix
+profile identities or reuse a default-profile result as a local-profile result.
+
+When verified source approvals or failure modes are empty, the corresponding
+generated list must contain exactly one explicit statement:
+
+- `The source does not specify approval requirements.`
+- `The source does not specify failure handling.`
+
+Other responses fail as `schema_invalid`, with usage/request telemetry preserved;
+the application does not overwrite the model's text to make it pass. Nonempty
+source requirements remain subject to semantic fidelity review. This guard only
+covers those two structured fields, not all possible invention elsewhere in prose.
+
+The local renderer links the reference files it creates using their validated
+names. It adds no scripts, executes no source code and grants no tool authority.
+Existing format, safety, attribution and 80-character copying checks still decide
+acceptance. SkillScout's manual Skill-publication controls are not source-imposed
+approvals for a user's summary or other work product.
+
+The new profile is explicitly ineligible for publication, even with an ordinary
+Phase 2 source and an otherwise eligible local candidate. A zero CLI exit status
+can still represent a recorded rejection: inspect the terminal, validation and
+Reviewer reports. Offline tests cannot prove a real model will produce a faithful
+or useful Skill; that requires a fresh frozen trial after implementation checks.
+
 ## Limits and fixed defaults
 
 These limits are defined in source and are not environment-variable overrides.

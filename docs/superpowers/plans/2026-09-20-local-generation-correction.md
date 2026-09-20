@@ -80,7 +80,7 @@ The local generator client must report the expected prompt identity before any
 request. Legacy injected clients without that property retain their existing v1
 contract; missing/wrong identity is never accepted for the new variant.
 
-- [ ] **RED: demonstrate the missing behavior with real components and recorded transports.** Use existing `_request`, `_draft`, `_authority`, recorded transport and composition fixtures as appropriate; rebuild authority hashes whenever changing source facts. Baseline v1 snapshots are literal bytes/digests captured before the implementation, not expectations computed by the modified renderer. At minimum exercise:
+- [x] **RED: demonstrate the missing behavior with real components and recorded transports.** Use existing `_request`, `_draft`, `_authority`, recorded transport and composition fixtures as appropriate; rebuild authority hashes whenever changing source facts. Baseline v1 snapshots are literal bytes/digests captured before the implementation, not expectations computed by the modified renderer. At minimum exercise:
 
   ```python
   assert local_result.status == "schema_invalid"  # source approvals absent, invented draft
@@ -97,9 +97,9 @@ contract; missing/wrong identity is never accepted for the new variant.
   Use recorded payloads, not a test that merely searches prompt source text. No
   real API call and no claim that a fake response proves semantic model quality.
 
-- [ ] Run the new tests and save the expected pre-implementation failures in the task report. Distinguish assertion failures from fixture/setup errors.
+- [x] Run the new tests and save the expected pre-implementation failures in the task report. Distinguish assertion failures from fixture/setup errors.
 
-- [ ] **GREEN: add the minimal client/authority/rendering behavior.** Preserve the v1 prompt verbatim. Derive a separately named local prompt that clearly says: use only source-supported obligations; SkillScout's publication policy is not an approval requirement for user work products; source-absent fields use exactly the sentinels above; supplied source failure rules stay source rules, not invented exceptions; preserve exact counts, sections and limits while paraphrasing prose; avoid unregistered long source matches and retain existing quote constraints. Raw evidence stays only in the untrusted user payload, never in trusted instructions.
+- [x] **GREEN: add the minimal client/authority/rendering behavior.** Preserve the v1 prompt verbatim. Derive a separately named local prompt that clearly says: use only source-supported obligations; SkillScout's publication policy is not an approval requirement for user work products; source-absent fields use exactly the sentinels above; supplied source failure rules stay source rules, not invented exceptions; preserve exact counts, sections and limits while paraphrasing prose; avoid unregistered long source matches and retain existing quote constraints. Raw evidence stays only in the untrusted user payload, never in trusted instructions.
 
   At the actual client response boundary, for a parsed local response only:
 
@@ -135,7 +135,7 @@ contract; missing/wrong identity is never accepted for the new variant.
   schema Literals unchanged; the existing profile/prompt pair versions the local
   branch, and remains in provenance, artifact identities and replay authority.
 
-- [ ] **Exercise all Review Focus edges.** Cover default byte compatibility; new
+- [x] **Exercise all Review Focus edges.** Cover default byte compatibility; new
   profile/prompt binding and stale-completion separation; zero/four refs and safe
   labels; unchanged overcopy rejection with an 80-character match; preserved
   request telemetry on rejected new-profile outputs; no reviewer after generation
@@ -143,20 +143,20 @@ contract; missing/wrong identity is never accepted for the new variant.
   admission denial for the local authority with an otherwise eligible ordinary
   source. No sentinel may be substituted by the renderer to turn a failure green.
 
-- [ ] Run focused tests and Ruff, inspect the entire diff for new schema fields,
+- [x] Run focused tests and Ruff, inspect the entire diff for new schema fields,
   dependency or workflow changes, and write the implementation/TDD report. Tell the
   controller when product/test files are frozen. Controller runs the full suite
   once on that frozen code before final completion/commit; do not launch duplicate
   20-minute suites or edit modules during the controller's run.
 
-- [ ] Complete independent task review, address concrete findings with focused
+- [x] Complete independent task review, address concrete findings with focused
   RED/GREEN evidence, and preserve the whole-task diff for final independent review.
 
 ## Task 2: Controller verification, docs and local handoff
 
-- [ ] Re-run the focused suite independently and perform final whole-change review
+- [x] Re-run the focused suite independently and perform final whole-change review
   with a fresh reviewer. If fixes are needed, return them to the implementer.
-- [ ] Run frozen full offline tests and Ruff:
+- [x] Run frozen full offline tests and Ruff:
 
   ```bash
   UV_CACHE_DIR=.tmp/uv-cache .tools/uv-0.11.29/bin/uv run --locked --offline --no-env-file pytest -q -ra
@@ -164,11 +164,11 @@ contract; missing/wrong identity is never accepted for the new variant.
   git diff --check
   ```
 
-- [ ] Update `README.md`, `RELEASE.md`, `docs/CONFIGURATION.md` with the opt-in
+- [x] Update `README.md`, `RELEASE.md`, `docs/CONFIGURATION.md` with the opt-in
   command, one-attempt/local-only bounds, unchanged defaults and precise offline
   evidence. Add a short result section to this plan; do not rewrite the closed
   September 20 trial as a success. Record remaining semantic/real-model uncertainty.
-- [ ] Commit only reviewed local code/tests/docs; preserve worktree and historical
+- [x] Commit only reviewed local code/tests/docs; preserve worktree and historical
   diagnostic files. No push/merge/PR. No new campaign, extraction, generation or
   usefulness calls in this task. A later trial needs fresh frozen configuration,
   new durable request reservations and its own outcome record, not old slots.
@@ -182,3 +182,38 @@ and instructions are preserved in test fixtures but real model fidelity remains
 unproven. No public schema migration or hosted prompt promotion is required.
 The schema-compatible local branch is a deliberate boundary, not a general plugin
 or profile registry. All five Review Focus items map to Task 1 tests.
+
+## Execution result — September 20, 2026
+
+Implemented the explicit local variant in the existing build command. No public
+schema shape, hosted default, dependency, workflow, reviewer model, copy threshold
+or historical artifact was changed. The old stage-record profile Literal remains
+the ledger schema family; each record's authority digest binds the exact runtime
+profile/prompt. Both independent reviewers checked that separation and found no
+replay or identity ambiguity.
+
+Fresh verification on frozen code:
+
+- Full offline suite: **3033 passed, 3 skipped in 1163.93s**, exit 0.
+- Controller's expanded focused suite: **329 passed in 6.59s**.
+- Whole-repository Ruff and `git diff --check`: passed.
+- Nine public JSON schema hashes and legacy prompt hash: unchanged.
+- Six preserved September 20 failure-artifact checksums: unchanged.
+- Task review and final whole-change review: approved, no blocking findings.
+
+The three skips are the still-pending Phase 6 release-requirement map and two live
+canaries without explicit protected configuration. They are not newly claimed as
+passing. An initial full run was deliberately stopped after it exposed a stale
+CLI option-set assertion (1 failed, 1905 passed, 1 skipped); the newly authorized
+option was added to that exact test and the entire suite rerun as recorded above.
+The original RED evidence and intermediate failures remain in the local task log.
+
+One non-blocking maintenance observation remains: the CLI repeats the existing
+default attempt count `3`. Current behavior is correct; neither reviewer required
+reopening the frozen change for it.
+
+This correction made **zero live model requests** and incurred **zero provider
+spend**. It does not turn the earlier failed package into an accepted Skill, prove
+real-model source fidelity or usefulness, complete Phase 6, or grant publication
+authority. A later real trial needs fresh configuration, state/output and durable
+reservations; the closed trial is not resumed. Local commits only, no push/PR/merge.

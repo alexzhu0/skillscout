@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated, Callable, Final, Mapping
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from skillscout.adapters.openai_generate import (
     DEFAULT_GENERATOR_MODEL,
@@ -91,6 +91,8 @@ from skillscout.domain.skill_artifacts import (
     GENERATION_DRAFT_SCHEMA_VERSION,
     PROVENANCE_SCHEMA_VERSION,
     RENDERER_VERSION,
+    LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION,
+    LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION,
     FrozenSkillPackageV1,
     GenerationAuthorityProjectionV1,
     render_skill_package,
@@ -141,6 +143,14 @@ class PhaseThreeRuntimeProfile(StrictFrozenModel):
         int, Field(ge=1, le=MAX_REVIEWER_OUTPUT_TOKENS)
     ] = MAX_REVIEWER_OUTPUT_TOKENS
 
+    @model_validator(mode="after")
+    def validate_local_attempt_bounds(self) -> PhaseThreeRuntimeProfile:
+        if self.profile_version == LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION and (
+            self.max_generator_attempts != 1 or self.max_reviewer_attempts != 1
+        ):
+            raise ValueError("local source-faithful generation requires one attempt")
+        return self
+
     @classmethod
     def from_configured_models(
         cls,
@@ -165,6 +175,16 @@ class PhaseThreeRuntimeProfile(StrictFrozenModel):
                 "profile": self.model_dump(mode="json", exclude_none=False),
             }
         )
+
+    @property
+    def generator_prompt_version(self) -> str:
+        """Derive prompt authority without adding a serialized profile field."""
+
+        if self.profile_version == LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION:
+            if self.max_generator_attempts != 1 or self.max_reviewer_attempts != 1:
+                raise ValueError("local source-faithful generation requires one attempt")
+            return LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+        return GENERATOR_PROMPT_VERSION
 
 
 @dataclass(frozen=True)
@@ -205,7 +225,7 @@ def _execution_authority(
         qualification_policy_version=QUALIFICATION_POLICY_VERSION,
         qualification_report_schema_version=QUALIFICATION_REPORT_SCHEMA_VERSION,
         configured_generator_model_id=profile.configured_generator_model_id,
-        generator_prompt_version=GENERATOR_PROMPT_VERSION,
+        generator_prompt_version=profile.generator_prompt_version,
         generator_output_schema_version=GENERATION_DRAFT_SCHEMA_VERSION,
         generator_policy_version=GENERATOR_POLICY_VERSION,
         renderer_version=RENDERER_VERSION,
@@ -314,7 +334,9 @@ def _append_success(
         "previous_checkpoint_hash": previous_checkpoint_hash,
         "previous_output_hash": previous_output_hash,
         "producer_version": authority.phase3_producer_version,
-        "profile_version": authority.phase3_profile_version,
+        # Ledger records remain in their existing v1 schema family; the cited
+        # execution-authority digest binds the selected runtime profile.
+        "profile_version": PHASE_THREE_PROFILE_VERSION,
         "retry_policy_version": authority.retry_policy_version,
         "status": "succeeded",
         "outcome_code": outcome_code,
@@ -354,7 +376,7 @@ def _append_success(
             chain.results[-1].result_hash if chain.results else None
         ),
         "producer_version": authority.phase3_producer_version,
-        "profile_version": authority.phase3_profile_version,
+        "profile_version": PHASE_THREE_PROFILE_VERSION,
         "retry_policy_version": authority.retry_policy_version,
         "outcome_code": outcome_code,
         "payload_digest": payload_digest,
@@ -447,9 +469,7 @@ def _record_semantic_attempt(
         "producer_version": (
             chain.identity.candidate_execution_authority.phase3_producer_version
         ),
-        "profile_version": (
-            chain.identity.candidate_execution_authority.phase3_profile_version
-        ),
+        "profile_version": PHASE_THREE_PROFILE_VERSION,
         "retry_policy_version": (
             chain.identity.candidate_execution_authority.retry_policy_version
         ),
@@ -515,10 +535,20 @@ class PhaseThreeRunner:
         *,
         model: str,
         max_output_tokens: int,
+        prompt_version: str | None = None,
     ) -> None:
         if (
             getattr(client, "model", None) != model
             or getattr(client, "max_output_tokens", None) != max_output_tokens
+        ):
+            raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
+        observed_prompt = getattr(client, "prompt_version", None)
+        if (
+            prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+            and observed_prompt != prompt_version
+        ) or (
+            prompt_version == GENERATOR_PROMPT_VERSION
+            and observed_prompt not in {None, prompt_version}
         ):
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
 
@@ -1086,6 +1116,7 @@ class PhaseThreeRunner:
             generator,
             model=self.profile.configured_generator_model_id,
             max_output_tokens=self.profile.max_generator_output_tokens,
+            prompt_version=self.authority.generator_prompt_version,
         )
         next_attempt = len(durable_attempts) + 1
         for attempt in range(

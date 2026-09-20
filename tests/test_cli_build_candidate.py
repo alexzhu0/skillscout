@@ -15,6 +15,10 @@ from skillscout.adapters.semantic_provider import (
 from skillscout.adapters.state import SQLiteStateStore
 from skillscout.application.phase3 import PhaseThreeRuntimeProfile
 from skillscout.domain.models import CandidateRunIdentityV1
+from skillscout.domain.skill_artifacts import (
+    LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION,
+    LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION,
+)
 
 from test_cli_validate_skill import _argv
 from test_phase3_pipeline import (
@@ -25,7 +29,6 @@ from test_phase3_pipeline import (
     _workflow,
     _write_composition_descriptor_for_workflow,
 )
-
 
 def _candidate_paths(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     descriptor_root = tmp_path / "descriptor"
@@ -49,6 +52,7 @@ def _build_argv(
     output: Path,
     *,
     single_attempt: bool,
+    source_faithful_generation: bool = False,
 ) -> list[str]:
     values = _argv(
         descriptor=descriptor,
@@ -58,6 +62,8 @@ def _build_argv(
     )
     if single_attempt:
         values.append("--single-attempt")
+    if source_faithful_generation:
+        values.append("--source-faithful-generation")
     return values
 
 
@@ -88,11 +94,14 @@ def _patch_build_boundary(
     monkeypatch.setattr(
         cli,
         "OpenAIGenerationClient",
-        lambda **kwargs: generator_type(
-            "parsed",
-            calls,
-            model=kwargs["model"],
-            max_output_tokens=kwargs["max_output_tokens"],
+        lambda **kwargs: _generator_with_prompt(
+            generator_type(
+                "parsed",
+                calls,
+                model=kwargs["model"],
+                max_output_tokens=kwargs["max_output_tokens"],
+            ),
+            kwargs.get("prompt_version"),
         ),
     )
     monkeypatch.setattr(
@@ -111,6 +120,12 @@ def _patch_build_boundary(
         ),
     )
     return source
+
+
+def _generator_with_prompt(generator: _CascadeGenerator, prompt_version: str | None):
+    if prompt_version is not None:
+        generator.prompt_version = prompt_version
+    return generator
 
 
 class _ConfirmedTransientGenerator(_CascadeGenerator):
@@ -314,6 +329,111 @@ def test_single_attempt_unknown_response_is_terminal_across_restart(
         state,
         output,
         single_attempt=True,
+    )
+
+    assert cli.main(argv) == 1
+    capsys.readouterr()
+    assert calls == expected_calls
+
+    assert cli.main(argv) == 1
+    capsys.readouterr()
+    assert calls == expected_calls
+
+
+def test_source_faithful_generation_requires_single_attempt_before_provider_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    descriptor, phase2_state, state, output = _candidate_paths(tmp_path)
+    provider_calls = 0
+
+    def forbidden_provider():
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("invalid CLI combination constructed a provider")
+
+    monkeypatch.setattr(cli, "resolve_semantic_provider", forbidden_provider)
+
+    assert (
+        cli.main(
+            _build_argv(
+                descriptor,
+                phase2_state,
+                state,
+                output,
+                single_attempt=False,
+                source_faithful_generation=True,
+            )
+        )
+        == 1
+    )
+    assert capsys.readouterr().out == ""
+    assert provider_calls == 0
+    assert not state.exists()
+
+
+def test_source_faithful_generation_binds_closed_profile_prompt_and_one_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    descriptor, phase2_state, state, output = _candidate_paths(tmp_path)
+    calls: list[str] = []
+    _patch_build_boundary(monkeypatch, calls=calls)
+
+    assert (
+        cli.main(
+            _build_argv(
+                descriptor,
+                phase2_state,
+                state,
+                output,
+                single_attempt=True,
+                source_faithful_generation=True,
+            )
+        )
+        == 0
+    )
+    assert capsys.readouterr().err == ""
+
+    authority = _persisted_identity(state).candidate_execution_authority
+    assert authority.phase3_profile_version == LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION
+    assert authority.generator_prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+    assert authority.max_generator_attempts == 1
+    assert authority.max_reviewer_attempts == 1
+    assert calls == ["generator", "validator", "reviewer"]
+
+
+@pytest.mark.parametrize(
+    ("generator_type", "expected_calls"),
+    (
+        (_ConfirmedTransientGenerator, ["generator"]),
+        (_UnknownGenerator, ["generator"]),
+    ),
+    ids=("confirmed-transient", "unknown"),
+)
+def test_source_faithful_generation_never_expands_one_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    generator_type: type[_CascadeGenerator],
+    expected_calls: list[str],
+) -> None:
+    descriptor, phase2_state, state, output = _candidate_paths(tmp_path)
+    calls: list[str] = []
+    _patch_build_boundary(
+        monkeypatch,
+        calls=calls,
+        generator_type=generator_type,
+    )
+    argv = _build_argv(
+        descriptor,
+        phase2_state,
+        state,
+        output,
+        single_attempt=True,
+        source_faithful_generation=True,
     )
 
     assert cli.main(argv) == 1

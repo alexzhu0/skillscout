@@ -90,6 +90,7 @@ def test_build_candidate_parser_exposes_only_the_closed_local_contract() -> None
         "--fail-after",
         "--deepseek-current-flash",
         "--single-attempt",
+        "--source-faithful-generation",
     }
     fail_after = next(
         action for action in parser._actions if "--fail-after" in action.option_strings

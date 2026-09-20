@@ -29,6 +29,14 @@ FROZEN_PACKAGE_SCHEMA_VERSION: Final = "frozen-skill-package-v1"
 REFERENCE_SCHEMA_VERSION: Final = "generated-reference-v1"
 RENDERED_FILE_SCHEMA_VERSION: Final = "rendered-file-v1"
 RENDERER_VERSION: Final = "skill-renderer-v1"
+LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION: Final = "phase3-local-source-faithful-v1"
+LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION: Final = "generator-local-source-faithful-v1"
+SOURCE_APPROVALS_UNSPECIFIED: Final = (
+    "The source does not specify approval requirements."
+)
+SOURCE_FAILURE_HANDLING_UNSPECIFIED: Final = (
+    "The source does not specify failure handling."
+)
 
 MAX_QUOTE_CHARS: Final = 120
 MAX_TOTAL_QUOTE_CHARS: Final = 240
@@ -521,6 +529,20 @@ def _markdown_list(values: tuple[str, ...]) -> str:
     return "\n".join(f"- {value}" for value in values)
 
 
+def uses_local_source_faithful_generation(
+    *,
+    phase3_profile_version: str,
+    generator_prompt_version: str,
+) -> bool:
+    """Recognize only the exact local profile/prompt pair."""
+
+    local_profile = phase3_profile_version == LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION
+    local_prompt = generator_prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+    if local_profile != local_prompt:
+        raise ValueError("local generation profile and prompt disagree")
+    return local_profile
+
+
 def _validate_semantic_safety(
     draft: GeneratedSkillDraft,
     authority: GenerationAuthorityProjectionV1,
@@ -620,6 +642,7 @@ def _skill_markdown(
     *,
     draft: GeneratedSkillDraft,
     authority: GenerationAuthorityProjectionV1,
+    local_source_faithful: bool,
 ) -> bytes:
     sections = (
         "---",
@@ -667,6 +690,17 @@ def _skill_markdown(
         _markdown_list(draft.limitations),
     )
     quote_section: tuple[str, ...] = ()
+    reference_section: tuple[str, ...] = ()
+    if local_source_faithful and draft.references:
+        reference_section = (
+            "",
+            "## References",
+            "",
+            *(
+                f"- [{reference.name}](references/{reference.name}.md)"
+                for reference in draft.references
+            ),
+        )
     if draft.quotes:
         quote_lines = tuple(
             (
@@ -676,7 +710,9 @@ def _skill_markdown(
             for quote in draft.quotes
         )
         quote_section = ("", "## Source excerpts", "", *quote_lines)
-    return ("\n".join((*sections, *quote_section)) + "\n").encode("utf-8")
+    return (
+        "\n".join((*sections, *reference_section, *quote_section)) + "\n"
+    ).encode("utf-8")
 
 
 def render_skill_package(
@@ -700,6 +736,10 @@ def render_skill_package(
     if type(latency_ms) is not int or latency_ms < 0:
         raise ValueError("latency is outside the closed bounds")
 
+    local_source_faithful = uses_local_source_faithful_generation(
+        phase3_profile_version=authority.phase3_profile_version,
+        generator_prompt_version=authority.generator_prompt_version,
+    )
     _validate_semantic_safety(draft, authority)
     identity = generated_artifact_identity(draft=draft, authority=authority)
     provenance = _provenance(
@@ -713,7 +753,11 @@ def render_skill_package(
     files: list[RenderedFileV1] = [
         RenderedFileV1(
             path="SKILL.md",
-            content=_skill_markdown(draft=draft, authority=authority),
+            content=_skill_markdown(
+                draft=draft,
+                authority=authority,
+                local_source_faithful=local_source_faithful,
+            ),
             mode=0o644,
             is_symlink=False,
         ),

@@ -79,6 +79,13 @@ found invented approvals. Pro review and usefulness comparisons were skipped.
 This is a preserved diagnostic artifact, not an accepted Skill. No useful Skill
 has been demonstrated yet.
 
+The [local generation correction](docs/superpowers/plans/2026-09-20-local-generation-correction.md)
+targets that failure without changing hosted defaults: an explicit source-faithful
+build profile rejects invented entries in source-absent approval/failure fields
+and renders its reference links deterministically. It is not a repair of the
+failed artifact or evidence that a subsequent real Skill is useful. See the
+[opt-in and limits](docs/CONFIGURATION.md#local-source-faithful-generation).
+
 For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
 `export-candidates` bridges verified extraction state into canonical local build
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)

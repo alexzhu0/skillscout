@@ -103,6 +103,7 @@ from skillscout.domain.canonical import canonical_json_bytes, sha256_digest
 from skillscout.domain.review import candidate_terminal_summary_bytes
 from skillscout.domain.skill_artifacts import (
     FrozenSkillPackageV1,
+    LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION,
     materialize_skill_package,
 )
 from skillscout.domain.validation import (
@@ -172,6 +173,11 @@ def build_parser() -> SafeArgumentParser:
         "--single-attempt",
         action="store_true",
         help="Limit local generation and review to one provider request each.",
+    )
+    build_candidate.add_argument(
+        "--source-faithful-generation",
+        action="store_true",
+        help="Use the closed local source-faithful generation profile.",
     )
     for local_command in (extract_repo, build_candidate):
         local_command.add_argument(
@@ -594,6 +600,8 @@ def _run_export_candidates(arguments: argparse.Namespace) -> dict[str, object]:
 
 
 def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
+    if arguments.source_faithful_generation and not arguments.single_attempt:
+        raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
     _validate_candidate_paths(arguments)
     clients: list[object] = []
     provider = (
@@ -601,26 +609,31 @@ def _run_build_candidate(arguments: argparse.Namespace) -> dict[str, object]:
         if arguments.deepseek_current_flash
         else resolve_semantic_provider()
     )
-    profile = PhaseThreeRuntimeProfile.from_configured_models(
-        generator_model_id=provider.generator_model,
-        reviewer_model_id=provider.reviewer_model,
+    profile = PhaseThreeRuntimeProfile(
+        profile_version=(
+            LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION
+            if arguments.source_faithful_generation
+            else PhaseThreeRuntimeProfile().profile_version
+        ),
+        configured_generator_model_id=provider.generator_model,
+        configured_reviewer_model_id=provider.reviewer_model,
+        max_generator_attempts=1 if arguments.single_attempt else 3,
+        max_reviewer_attempts=1 if arguments.single_attempt else 3,
     )
-    if arguments.single_attempt:
-        profile = profile.model_copy(
-            update={"max_generator_attempts": 1, "max_reviewer_attempts": 1}
-        )
 
     def generator_factory() -> object:
         client = (
             OpenAIGenerationClient(
                 model=profile.configured_generator_model_id,
                 max_output_tokens=profile.max_generator_output_tokens,
+                prompt_version=profile.generator_prompt_version,
             )
             if provider.provider.value == "openai"
             else OpenAIGenerationClient(
                 model=profile.configured_generator_model_id,
                 max_output_tokens=profile.max_generator_output_tokens,
                 provider_settings=provider,
+                prompt_version=profile.generator_prompt_version,
             )
         )
         clients.append(client)

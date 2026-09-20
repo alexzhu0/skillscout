@@ -4,6 +4,27 @@ SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turn
 
 This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
 
+## September 20 local generation correction — offline verified
+
+The [correction plan](docs/superpowers/plans/2026-09-20-local-generation-correction.md)
+adds an explicit single-attempt, local-only source-faithful generation profile.
+It separates absent source requirements from SkillScout publication policy, rejects
+unsupported absent-field values without rewriting responses, and links generated
+references through trusted rendering. Default/hosted prompt bytes, public schema
+shapes, copying thresholds and the previous failed package remain unchanged.
+
+Verification: **3033 passed, 3 skipped** in 1163.93s on the frozen implementation;
+the expanded focused suite passed **329 tests**. Whole-repository Ruff, whitespace
+checks, and two independent reviews passed with no blocking findings. Nine public
+schema hashes, the legacy prompt and six preserved failure-artifact checksums
+match the pre-change baseline. The skipped cases remain the pending Phase 6
+release-requirement map and two explicitly unconfigured live canaries.
+
+The first full run exposed a stale CLI option-list test; it was corrected and the
+complete suite rerun. No live provider request, new accepted Skill, Pro result,
+usefulness comparison, remote update or publication is claimed. The correction is
+local-only; a fresh real trial is still required to test model fidelity and value.
+
 ## September 20 selected-Markdown local input
 
 The opt-in local extraction route now accepts one explicitly selected `.md` file
