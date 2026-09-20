@@ -4,6 +4,21 @@ SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turn
 
 This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
 
+## September 20 selected-Markdown local input
+
+The opt-in local extraction route now accepts one explicitly selected `.md` file
+at an immutable source SHA. It keeps the source-only v4 prompt, bounded evidence
+filtering, historical README compatibility and local-only publication denial.
+Focused controller checks passed (115 product tests plus 29 private-launcher
+tests); independent code review found no blocking product defect. The full frozen
+offline suite is still running at this checkpoint.
+
+Three Microsoft education documents were screened and excluded before any model
+call because their essential fenced instructions did not survive the unchanged
+catalogue. This is an input-path milestone, not a successful extraction, validated
+Skill, usefulness result or Phase 6 acceptance. See the
+[screening and validation record](docs/superpowers/specs/2026-09-20-selected-markdown-result.md).
+
 ## September 15 real useful-Skill pilot — fidelity rejection
 
 One frozen Microsoft README produced one schema-valid workflow using a real

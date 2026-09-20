@@ -1,0 +1,38 @@
+{
+  "campaign": "local-markdown-20260920",
+  "hypothesis": "A complete, standalone summarization contract in one selected Markdown file can yield a faithful local Skill without changing the v4 extraction prompt or validators.",
+  "source": {
+    "repository": "danielmiessler/fabric",
+    "commit": "b682dad740f24e85ce9a48d23babc6780dd476ac",
+    "path": "data/patterns/summarize/system.md",
+    "blob_sha": "b655b620b895c71593ea578fb4ea5e975cfdd3a0",
+    "license": "MIT",
+    "license_blob_sha": "fb06a6f8c497f15063059ff224965d9e60e98a01",
+    "content_sha256": "29d393bf16f9a89464ef1f734cfd523e5949c01e5e580039540fd65823bc4a06"
+  },
+  "scope_version": "local-markdown-v1",
+  "prompt_version": "extract-local-evidence-source-only-fields-v1",
+  "model": "deepseek-flash",
+  "review_model": "deepseek-v4-pro",
+  "eligible_source_order": ["danielmiessler/fabric:data/patterns/summarize/system.md"],
+  "screening": {
+    "repositories_screened": 2,
+    "documents_screened": 4,
+    "eligible_sources": 1,
+    "rank_criteria": ["complete_inputs_steps_outputs", "explicit_constraints", "standalone"],
+    "selected_source_criteria_met": 3,
+    "tie_break": "repository_then_path_lexical",
+    "catalog_digest": "sha256:3d4ae26d4776bcd430067ea4cd22030ffafd6789fd9380dac77af9b010a13c91",
+    "catalog_entries": 16,
+    "catalog_truncated": false,
+    "all_nonblank_source_characters_retained": true
+  },
+  "max_requests": {"extraction": 1, "generation": 1, "review": 1, "comparison": 9},
+  "cost_reserve_cny": 20,
+  "prior_known_estimate_cny": 0.196462,
+  "overall_ceiling_cny": 100,
+  "stop_on": ["unknown_response", "transport_failure", "schema_failure", "source_fidelity_failure", "qualification_failure", "generation_failure", "review_failure", "identity_drift"],
+  "remote_writes_allowed": false,
+  "retry_allowed": false,
+  "manual_candidate_repairs_allowed": false
+}
