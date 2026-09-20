@@ -72,8 +72,12 @@ source review rejected it before export/build. No useful Skill is established ye
 An explicit [single-Markdown preview](docs/CONFIGURATION.md#selected-markdown-local-preview)
 allows a task-specific document outside README, under the same read-only limits.
 It uses the existing source-only prompt and adds no hosted/publication authority.
-Its implementation checks and real extraction/usefulness results are separate;
-support for the input format does not establish a useful Skill.
+The [September 20 real trial](docs/superpowers/specs/2026-09-20-selected-markdown-result.md)
+faithfully extracted Fabric's summarization workflow and generated a local package.
+The package failed reference-link and copying checks; independent inspection also
+found invented approvals. Pro review and usefulness comparisons were skipped.
+This is a preserved diagnostic artifact, not an accepted Skill. No useful Skill
+has been demonstrated yet.
 
 For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
 `export-candidates` bridges verified extraction state into canonical local build

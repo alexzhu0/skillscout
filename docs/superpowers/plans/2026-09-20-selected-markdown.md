@@ -40,22 +40,32 @@
 - Reader selects exactly the chosen path as today; use `docs` tier and new reader policy for new scope, `readme` tier and old reader policy for README scopes. No other document is fetched on missing/invalid selection.
 - Exact scope/prompt/retry/reader policy/tier binding in local-chain validation; local evidence is detected through either scope envelope or either selected-file policy, before ordinary-chain admission. Only `allow_local_readme=True` consumers admit both scoped modes.
 
-- [ ] Write failing behavioral tests first. Begin with the existing recorded selected-README fixture moved to `notes/Workflow.MD`; assert one exact blob fetched, new scope/policy/retry, unchanged v4 prompt, and successful local descriptor export/re-admission.
+- [x] Write failing behavioral tests first. Begin with the existing recorded selected-README fixture moved to `notes/Workflow.MD`; assert one exact blob fetched, new scope/policy/retry, unchanged v4 prompt, and successful local descriptor export/re-admission.
   ```python
   assert cli.main(base_args + ["--markdown-path", "notes/Workflow.MD",
       "--evidence-selection", "--source-only-fields", "--deepseek-current-flash"]) == 0
   # Inspect actual persisted manifests, actual transport requests and exported bytes.
   ```
-- [ ] Run the new tests before implementation and retain the expected missing-option/scope failures.
-- [ ] Implement the minimal changes above, reusing current source selection and verifier code.
-- [ ] Add negative cases for the five Review Focus items, plus empty catalogue and consumed/unknown outcome replay. Assert no model/network request for deterministic preflight failures; mock only external transports.
-- [ ] Run new tests plus README/evidence/source-only/export tests and Ruff. The controller runs the final full frozen-code suite once after review, avoiding code edits while it is running.
+- [x] Run the new tests before implementation and retain the expected missing-option/scope failures.
+- [x] Implement the minimal changes above, reusing current source selection and verifier code.
+- [x] Add negative cases for the five Review Focus items, plus empty catalogue and consumed/unknown outcome replay. Assert no model/network request for deterministic preflight failures; mock only external transports.
+- [x] Run new tests plus README/evidence/source-only/export tests and Ruff. The controller runs the final full frozen-code suite once after review, avoiding code edits while it is running.
   ```bash
   UV_CACHE_DIR=.tmp/uv-cache .tools/uv-0.11.29/bin/uv run --locked --offline --no-env-file pytest -q tests/test_local_markdown_preview.py tests/test_local_source_only_preview.py tests/test_local_evidence_preview.py tests/test_local_readme_preview.py tests/test_cli_export_candidates.py
   UV_CACHE_DIR=.tmp/uv-cache .tools/uv-0.11.29/bin/uv run --locked --offline --no-env-file ruff check .
   ```
-- [ ] Independently review, fix material findings, and commit only this local change. No live requests by implementer/reviewer.
+- [x] Independently review, fix material findings, and commit only this local change. No live requests by implementer/reviewer.
 
 ## Follow-through (controller, no new product subsystem)
 
 Start with three selected Markdown candidates from the already pinned public MIT `microsoft/prompts-for-edu` repository, without following links. If their essential workflow is excluded by the unchanged evidence filter, preserve that exclusion and screen at most two additional public repositories, within the user's original three-repository screening limit; do not relax the filter. Freeze eligible order and a fresh local budget before calls: at most three extraction requests, one generation, one Pro review and nine comparison requests, no slot borrowing; cumulative model cost ceiling stays CNY100. First faithful qualified candidate may advance. Never hand-edit generated semantic data. Freeze usefulness tasks/rubric only after a validated package exists. Failures remain recorded.
+
+## Execution outcome
+
+Implemented at `7c0c446`; source/config frozen at `153b8a2`; two bounded real-source
+integration repairs at `7f02248`. Final offline suite: 3,011 passed, 3 skipped;
+Ruff and independent code review passed. One faithful real extraction then one
+real generation produced a package rejected by unchanged checks. No Pro request,
+comparison, remote change or publication followed. See the
+[complete result](../specs/2026-09-20-selected-markdown-result.md). The input-format
+implementation is complete; the useful-Skill goal is not achieved.

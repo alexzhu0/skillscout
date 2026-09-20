@@ -9,18 +9,28 @@ This preview demonstrates the implemented pipeline and its verification evidence
 The opt-in local extraction route now accepts one explicitly selected `.md` file
 at an immutable source SHA. It keeps the source-only v4 prompt, bounded evidence
 filtering, historical README compatibility and local-only publication denial.
-Focused controller checks passed (115 product tests plus 29 private-launcher
-tests); independent code review found no blocking product defect. A full run was
-deliberately interrupted before a later real-source integration repair
-(1,878passed,1skipped, exit2); final frozen verification is pending.
+Focused controller checks passed (210 product tests plus 29 extraction-launcher
+and 17 build-launcher tests); independent code review found no blocking code
+defect. Final frozen offline verification passed: **3,011 passed, 3 skipped** in
+1,046.83s, with Ruff and whitespace checks clean. Skips concern the unavailable
+Phase 6 requirement map and explicit protected live-canary configuration; they
+do not establish live acceptance. The earlier interrupted full run remains
+recorded as partial evidence, not a completed check.
 
 Three Microsoft education documents were excluded because their essential fenced
 instructions did not survive the unchanged catalogue. A subsequently frozen
-Fabric summarization source produced one real structured extraction (4,491tokens),
-passed independent source fidelity and scored85/100 in pure qualification.
-Canonical export exposed a case-only repository identity defect now under repair.
-No Skill generation, Pro review or usefulness comparison has run; this is not a
-validated Skill or Phase6 acceptance. See the
+Fabric summarization source produced one real structured extraction (4,491 tokens),
+passed independent source fidelity and scored 85/100. A minimal case-insensitive
+repository comparison repaired canonical export without changing the source state.
+The new opt-in `build-candidate --single-attempt` binds generation/review to one
+attempt each; default and hosted limits are unchanged.
+
+One real Flash generation (6,163 tokens) then produced a local package. Pinned
+official format validation passed, but local checks rejected two orphan references
+and an unregistered source match. Independent inspection also found invented
+approval obligations. The trial is closed with the unmodified failed package
+preserved; no Pro review, usefulness comparison, push or publication followed.
+This is not a validated Skill or Phase 6 acceptance. See the
 [screening and validation record](docs/superpowers/specs/2026-09-20-selected-markdown-result.md).
 
 ## September 15 real useful-Skill pilot — fidelity rejection
