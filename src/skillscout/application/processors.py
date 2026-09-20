@@ -65,6 +65,7 @@ from skillscout.domain.subjects import RepositorySubject
 from skillscout.domain.local_preview import (
     LOCAL_EVIDENCE_PROMPT_VERSION,
     LOCAL_EXTRACTION_PROMPT_VERSION,
+    LOCAL_MARKDOWN_POLICY_VERSION,
     LOCAL_README_POLICY_VERSION,
     LOCAL_README_SCOPE_KEY,
     LOCAL_SOURCE_ONLY_PROMPT_VERSION,
@@ -145,6 +146,7 @@ class PhaseTwoProcessor:
                 "local-readme-v2",
                 "local-readme-v3",
                 "local-readme-v4",
+                "local-markdown-v1",
             } and stage_input.stage is PipelineStage.EXTRACTOR:
                 # Never persist unvalidated model summaries or refusal text in
                 # this local diagnostic profile, including non-workflow exits.
@@ -358,7 +360,17 @@ class PhaseTwoProcessor:
             candidates = [item for item in candidates if isinstance(item, Mapping) and item.get("path") == selected_readme]
             if len(candidates) > 1:
                 raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-        policy_version = LOCAL_README_POLICY_VERSION if selected_readme is not None else READER_POLICY_VERSION
+        selected_markdown = (
+            type(subject) is LocalReadmeSubject
+            and subject.scope_version == "local-markdown-v1"
+        )
+        policy_version = (
+            LOCAL_MARKDOWN_POLICY_VERSION
+            if selected_markdown
+            else LOCAL_README_POLICY_VERSION
+            if selected_readme is not None
+            else READER_POLICY_VERSION
+        )
 
         survivors: list[tuple[int, str, ReadTier, str, int]] = []
         rejections: list[dict[str, object]] = []
@@ -390,7 +402,13 @@ class PhaseTwoProcessor:
             ):
                 rejections.append(_rejection(path, RejectionRule.PATH_VIOLATION, "not_regular_blob"))
                 continue
-            tier = ReadTier.README if selected_readme is not None else assign_tier(path)
+            tier = (
+                ReadTier.DOCS
+                if selected_markdown
+                else ReadTier.README
+                if selected_readme is not None
+                else assign_tier(path)
+            )
             if tier is None or not is_allowlisted_for_tier(tier, path):
                 rejections.append(
                     _rejection(
@@ -554,12 +572,17 @@ class PhaseTwoProcessor:
             "local-readme-v2",
             "local-readme-v3",
             "local-readme-v4",
+            "local-markdown-v1",
         }
         evidence_selection = local_preview and subject.scope_version in {
             "local-readme-v3",
             "local-readme-v4",
+            "local-markdown-v1",
         }
-        source_only_fields = local_preview and subject.scope_version == "local-readme-v4"
+        source_only_fields = local_preview and subject.scope_version in {
+            "local-readme-v4",
+            "local-markdown-v1",
+        }
         evidence_prompt_version = (
             LOCAL_SOURCE_ONLY_PROMPT_VERSION
             if source_only_fields

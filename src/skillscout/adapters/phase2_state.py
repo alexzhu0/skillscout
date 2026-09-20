@@ -30,6 +30,7 @@ from skillscout.domain.filtering import ALLOWED_LICENSE_SPDX
 from skillscout.domain.local_preview import (
     LOCAL_EVIDENCE_PROMPT_VERSION, LOCAL_EVIDENCE_RETRY_VERSION,
     LOCAL_EXTRACTION_PROMPT_VERSION, LOCAL_EXTRACTION_RETRY_VERSION,
+    LOCAL_MARKDOWN_POLICY_VERSION, LOCAL_MARKDOWN_RETRY_VERSION,
     LOCAL_README_POLICY_VERSION, LOCAL_README_SCOPE_KEY,
     LOCAL_SOURCE_ONLY_PROMPT_VERSION, LOCAL_SOURCE_ONLY_RETRY_VERSION,
     LocalReadmeSubject,
@@ -240,8 +241,11 @@ def _validate_local_readme_chain(
     results = chain.results
     if not any(
         LOCAL_README_SCOPE_KEY in result.payload
-        or result.policy_version == LOCAL_README_POLICY_VERSION
-        or result.payload.get("policy_version") == LOCAL_README_POLICY_VERSION
+        or result.policy_version in {LOCAL_README_POLICY_VERSION, LOCAL_MARKDOWN_POLICY_VERSION}
+        or result.payload.get("policy_version") in {
+            LOCAL_README_POLICY_VERSION,
+            LOCAL_MARKDOWN_POLICY_VERSION,
+        }
         for result in results
     ):
         return None
@@ -277,7 +281,11 @@ def _validate_local_readme_chain(
             or extractor.policy_version != EXTRACT_POLICY_VERSION
         ):
             raise ValueError("local extraction prompt identity mismatch")
-    if subject.scope_version in {"local-readme-v3", "local-readme-v4"}:
+    if subject.scope_version in {
+        "local-readme-v3",
+        "local-readme-v4",
+        "local-markdown-v1",
+    }:
         prompt_version, retry_version = {
             "local-readme-v3": (
                 LOCAL_EVIDENCE_PROMPT_VERSION,
@@ -286,6 +294,10 @@ def _validate_local_readme_chain(
             "local-readme-v4": (
                 LOCAL_SOURCE_ONLY_PROMPT_VERSION,
                 LOCAL_SOURCE_ONLY_RETRY_VERSION,
+            ),
+            "local-markdown-v1": (
+                LOCAL_SOURCE_ONLY_PROMPT_VERSION,
+                LOCAL_MARKDOWN_RETRY_VERSION,
             ),
         }[subject.scope_version]
         extractor = results[3]
@@ -329,9 +341,12 @@ def _validate_local_readme_chain(
     if reader.payload.get("outcome") != "accepted":
         return None
     files = reader.payload.get("files")
+    markdown_scope = subject.scope_version == "local-markdown-v1"
     if (
-        reader.policy_version != LOCAL_README_POLICY_VERSION
-        or reader.payload.get("policy_version") != LOCAL_README_POLICY_VERSION
+        reader.policy_version
+        != (LOCAL_MARKDOWN_POLICY_VERSION if markdown_scope else LOCAL_README_POLICY_VERSION)
+        or reader.payload.get("policy_version")
+        != (LOCAL_MARKDOWN_POLICY_VERSION if markdown_scope else LOCAL_README_POLICY_VERSION)
         or not isinstance(files, list)
         or len(files) != 1
     ):
@@ -339,7 +354,7 @@ def _validate_local_readme_chain(
     selected = _mapping(files[0])
     if (
         selected.get("path") != subject.readme_path
-        or selected.get("tier") != "readme"
+        or selected.get("tier") != ("docs" if markdown_scope else "readme")
         or type(selected.get("read_order")) is not int
         or selected.get("read_order") != 1
         or type(selected.get("size")) is not int

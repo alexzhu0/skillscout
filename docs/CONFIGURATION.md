@@ -189,8 +189,9 @@ a useful Skill. Existing pilot facts and the exhausted 3/3 budget are unchanged.
 
 ### Experimental local v4 source-field attribution
 
-`extract-repo --source-only-fields` additionally requires both `--readme-path`
-and `--evidence-selection`. Without the new flag, v2/v3 behavior is unchanged.
+`extract-repo --source-only-fields` additionally requires a selected path
+(`--readme-path` or the explicit Markdown mode below) and `--evidence-selection`.
+Without the new flag, README v2/v3 behavior is unchanged.
 This is an opt-in experiment, not a generally validated extraction improvement:
 both baseline and the experimental suffix passed only 1/4 of the frozen
 [source-policy cases](superpowers/specs/2026-09-15-source-policy-loop-result.md).
@@ -207,6 +208,35 @@ rules and unknown-outcome quarantine remain mandatory. Verified v4 evidence is
 local-export/build only; publication and hosted admission remain denied. Earlier
 v3 state retains its original identity and remains readable. Never silently
 relabel old outputs or fall back from a failed v4 attempt to another profile.
+
+### Selected Markdown local preview
+
+The explicit `--markdown-path` option extends the selected-file route to one
+repository-relative `.md` file (extension is case-insensitive). It requires
+`--evidence-selection --source-only-fields`, an exact 40-character commit SHA
+in the subject, and is mutually exclusive with `--readme-path`.
+
+```bash
+.tools/uv-0.11.29/bin/uv run --locked --no-env-file skillscout extract-repo \
+  --subject subject.json --markdown-path 'docs/Workflow.MD' \
+  --evidence-selection --source-only-fields --deepseek-current-flash \
+  --state .tmp/new-markdown-trial/phase2.db --output .tmp/new-markdown-trial/output
+```
+
+Use this example only under a fresh bounded live allocation; it is not permission
+to replay any recorded trial. The new scope is `local-markdown-v1`, reader policy
+`reader-selected-markdown-v1`, retry identity `retry-local-markdown-v1-once`.
+The exact v4 extraction prompt/schema/catalogue and all existing safety limits
+are unchanged. Only the selected regular UTF-8 blob is read; missing, rejected
+or oversized selections never trigger a different-file fallback. Links and
+embedded instructions remain inert source text, not execution permissions.
+
+New Markdown manifests retain the historical internal `readme_path` field and
+`local_readme_scope` envelope; the new scope/policy distinguishes their meaning.
+This avoids rewriting old state or adding a parallel subject hierarchy. The
+new reader file tier is `docs`. All scope/path/policy/prompt/retry identities
+must match for local export/build. Hosted and publication consumers reject this
+mode. It is not proof of a faithful workflow, useful Skill or live acceptance.
 
 ## Limits and fixed defaults
 

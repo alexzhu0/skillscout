@@ -11,30 +11,42 @@ from skillscout.domain.subjects import RepositorySubject
 
 LOCAL_README_SCOPE_KEY = "local_readme_scope"
 LOCAL_README_POLICY_VERSION = "reader-selected-readme-v1"
+LOCAL_MARKDOWN_POLICY_VERSION = "reader-selected-markdown-v1"
 LOCAL_EXTRACTION_PROMPT_VERSION = "extract-local-output-prompt-v1"
 LOCAL_EXTRACTION_RETRY_VERSION = "retry-local-readme-v2-once"
 LOCAL_EVIDENCE_PROMPT_VERSION = "extract-local-evidence-select-v1"
 LOCAL_EVIDENCE_RETRY_VERSION = "retry-local-readme-v3-once"
 LOCAL_SOURCE_ONLY_PROMPT_VERSION = "extract-local-evidence-source-only-fields-v1"
 LOCAL_SOURCE_ONLY_RETRY_VERSION = "retry-local-readme-v4-once"
+LOCAL_MARKDOWN_RETRY_VERSION = "retry-local-markdown-v1-once"
 
 
 class LocalReadmeSubject(RepositorySubject):
     """One operator-selected inert README at an immutable public repository SHA."""
 
     scope_version: Literal[
-        "local-readme-v1", "local-readme-v2", "local-readme-v3", "local-readme-v4"
+        "local-readme-v1",
+        "local-readme-v2",
+        "local-readme-v3",
+        "local-readme-v4",
+        "local-markdown-v1",
     ] = "local-readme-v1"
     readme_path: str
 
     @model_validator(mode="after")
     def validate_local_selection(self) -> "LocalReadmeSubject":
-        if (
+        invalid_path = (
             self.ref is None
             or re.fullmatch(r"[0-9a-f]{40}", self.ref) is None
             or not validate_repo_path(self.readme_path)
             or "." in self.readme_path.split("/")
-            or self.readme_path.rsplit("/", 1)[-1].lower() != "readme.md"
-        ):
+        )
+        selected_name = self.readme_path.rsplit("/", 1)[-1].lower()
+        invalid_name = (
+            not selected_name.endswith(".md")
+            if self.scope_version == "local-markdown-v1"
+            else selected_name != "readme.md"
+        )
+        if invalid_path or invalid_name:
             raise ValueError("local README selection rejected")
         return self

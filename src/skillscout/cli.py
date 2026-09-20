@@ -64,6 +64,7 @@ from skillscout.adapters.semantic_provider import (
 from skillscout.domain.local_preview import (
     LOCAL_EVIDENCE_RETRY_VERSION,
     LOCAL_EXTRACTION_RETRY_VERSION,
+    LOCAL_MARKDOWN_RETRY_VERSION,
     LOCAL_SOURCE_ONLY_RETRY_VERSION,
     LocalReadmeSubject,
 )
@@ -141,12 +142,18 @@ def build_parser() -> SafeArgumentParser:
     extract_repo.add_argument("--state", required=True, type=Path)
     extract_repo.add_argument("--output", required=True, type=Path)
     extract_repo.add_argument("--fail-after", choices=PHASE_TWO_STAGE_SEQUENCE)
-    extract_repo.add_argument("--readme-path", help="Read only this repository-relative README.md at the subject's exact commit SHA (local preview only).")
-    extract_repo.add_argument("--evidence-selection", action="store_true", help="Select bounded evidence IDs for a local v3 preview; requires --readme-path.")
+    selected_file = extract_repo.add_mutually_exclusive_group()
+    selected_file.add_argument("--readme-path", help="Read only this repository-relative README.md at the subject's exact commit SHA (local preview only).")
+    selected_file.add_argument("--markdown-path", help="Read only this repository-relative Markdown file at the subject's exact commit SHA (local preview only).")
+    extract_repo.add_argument(
+        "--evidence-selection",
+        action="store_true",
+        help="Select bounded evidence IDs for a selected --readme-path or --markdown-path.",
+    )
     extract_repo.add_argument(
         "--source-only-fields",
         action="store_true",
-        help="Use source-supported workflow fields in an explicit local v4 preview.",
+        help="Use source-supported workflow fields with a selected --readme-path or --markdown-path.",
     )
     export_candidates = commands.add_parser("export-candidates")
     export_candidates.add_argument("--phase2-state", required=True, type=Path)
@@ -2157,9 +2164,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_publish_discovered(arguments)
         elif arguments.command == "extract-repo":
             if (
-                arguments.evidence_selection and arguments.readme_path is None
+                arguments.markdown_path is not None
+                and (
+                    not arguments.evidence_selection
+                    or not arguments.source_only_fields
+                )
+            ) or (
+                arguments.evidence_selection
+                and arguments.readme_path is None
+                and arguments.markdown_path is None
             ) or arguments.source_only_fields and (
-                not arguments.evidence_selection or arguments.readme_path is None
+                not arguments.evidence_selection
+                or (
+                    arguments.readme_path is None
+                    and arguments.markdown_path is None
+                )
             ):
                 raise SafeFailure(ErrorCode.INVALID_SUBJECT)
             provider = (
@@ -2168,14 +2187,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else resolve_semantic_provider()
             )
             subject = load_subject(arguments.subject)
-            if arguments.readme_path is not None:
+            selected_path = (
+                arguments.markdown_path
+                if arguments.markdown_path is not None
+                else arguments.readme_path
+            )
+            if selected_path is not None:
                 try:
                     subject = LocalReadmeSubject.model_validate(
                         subject.model_dump(mode="json", exclude_none=False)
                         | {
-                            "readme_path": arguments.readme_path,
+                            "readme_path": selected_path,
                             "scope_version": (
-                                "local-readme-v4"
+                                "local-markdown-v1"
+                                if arguments.markdown_path is not None
+                                else "local-readme-v4"
                                 if arguments.source_only_fields
                                 else "local-readme-v3"
                                 if arguments.evidence_selection
@@ -2205,7 +2231,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 retry_policy=(
                     RetryPolicy(
                         version=(
-                            LOCAL_SOURCE_ONLY_RETRY_VERSION
+                            LOCAL_MARKDOWN_RETRY_VERSION
+                            if subject.scope_version == "local-markdown-v1"
+                            else LOCAL_SOURCE_ONLY_RETRY_VERSION
                             if arguments.source_only_fields
                             else LOCAL_EVIDENCE_RETRY_VERSION
                             if arguments.evidence_selection
@@ -2216,7 +2244,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     if type(subject) is LocalReadmeSubject
                     and subject.scope_version
-                    in {"local-readme-v2", "local-readme-v3", "local-readme-v4"}
+                    in {
+                        "local-readme-v2",
+                        "local-readme-v3",
+                        "local-readme-v4",
+                        "local-markdown-v1",
+                    }
                     else None
                 ),
             )

@@ -69,6 +69,12 @@ or weakening candidate checks. The [real v4 trial](docs/superpowers/specs/2026-0
 removed invented policy but mixed notebook exercises into the core workflow;
 source review rejected it before export/build. No useful Skill is established yet.
 
+An explicit [single-Markdown preview](docs/CONFIGURATION.md#selected-markdown-local-preview)
+allows a task-specific document outside README, under the same read-only limits.
+It uses the existing source-only prompt and adds no hosted/publication authority.
+Its implementation checks and real extraction/usefulness results are separate;
+support for the input format does not establish a useful Skill.
+
 For the real single-repository route, see the [extract → export → build guide](docs/GETTING-STARTED.md#local-extract-build-and-inspect-flow).
 `export-candidates` bridges verified extraction state into canonical local build
 inputs without network access or credentials. The [single-Skill pilot](docs/project/2026-09-10-single-skill-pilot.md)
