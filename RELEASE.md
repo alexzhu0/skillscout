@@ -41,6 +41,18 @@ not a bill. The `deepseek-v4-pro` reviewer alias is currently routed to V4.1-Fla
 so it would not count as independent model evidence. This does not establish a
 useful Skill or Phase 6 acceptance.
 
+## September 25 offline unknown-outcome retry quarantine
+
+Offline recovery tests exposed that an unguarded Phase 3 restart could issue a
+second generator or Reviewer request after an `attempt_interrupted` outcome when
+the bound profile allowed multiple attempts. Resume now quarantines that outcome
+regardless of the remote durability guard; confirmed transient failures retain
+their existing retry policy. This is a local safety correction, not a model run.
+
+Verification after the correction: **194** focused Phase 3/CLI/acceptance tests
+passed; full suite **3053 passed, 3 skipped** in 1149.49s; whole-repository Ruff
+passed. The new regression is listed in the [fresh trial report](docs/superpowers/specs/2026-09-25-diagnostic-real-result.md).
+
 ## September 20 independent real regression — generation rejected
 
 The [fresh regression](docs/superpowers/specs/2026-09-20-source-faithful-real-result.md)

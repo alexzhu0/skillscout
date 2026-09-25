@@ -56,7 +56,21 @@ hashes were rechecked and remain unchanged.
 
 ## Follow-up
 
-Continue offline diagnosis of the local invocation/unknown-outcome boundary.
+Offline recovery review found a separate retry-boundary defect: without a remote
+durability guard, Phase 3 resume skipped the latest `attempt_interrupted` record
+and could issue another generator or Reviewer request under a multi-attempt
+profile. A crash after persisting the “running” attempt marker is equally
+ambiguous, even if the process stopped before the client call. Phase 3 now
+quarantines either condition unconditionally; confirmed transient failures keep
+their existing retry behavior. The September 25 trial itself was already bound
+to one generation attempt, so this change did not retroactively alter that run.
+
+Regression tests reproduced a second generator request and a second Reviewer
+request before the fix. After the fix, the focused Phase 3, CLI and acceptance
+suite passed **194 tests**; full offline verification passed **3053 tests with 3
+skips** in 1149.49s, and whole-repository Ruff passed. No model request was made
+for this diagnosis or correction.
+
 Any further live trial requires its own frozen inputs and fresh request
 reservation; it must not reuse this consumed slot. Do not tune prompts or claim
 that the new diagnostic was exercised until a completed, classified rejection

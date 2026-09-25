@@ -107,6 +107,9 @@ response whose model ID differs from the requested ID remain rejected.
 Use separate private state/output paths when changing model profiles; do not reuse
 legacy evidence as current-model results. Keep the selected flag on any authorized
 resume. Never retry an unknown provider outcome or erase a permanent failure.
+On Phase 3 resume, a running or abandoned semantic attempt with unknown outcome is
+quarantined even without a remote durability guard; confirmed transient failures
+remain governed by the bound retry policy.
 The [DeepSeek model and pricing documentation](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)
 checked on September 25, 2026 says current Flash is V4.1, legacy Flash aliases
 route to it, and `deepseek-v4-pro` requests currently route to V4.1-Flash until a

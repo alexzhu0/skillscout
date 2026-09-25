@@ -1067,8 +1067,7 @@ class PhaseThreeRunner:
             if prior_attempt.status not in {"failed", "abandoned"}:
                 continue
             if (
-                self.semantic_durability is not None
-                and prior_attempt is durable_attempts[-1]
+                prior_attempt is durable_attempts[-1]
                 and prior_attempt.status == "abandoned"
                 and prior_attempt.outcome_code == "attempt_interrupted"
             ):

@@ -997,7 +997,9 @@ _REQUIRED_TEST_FUNCTIONS: dict[Path, frozenset[str]] = {
             "test_resume_budgets_completed_application_reuse_bypasses_every_mutable_factory",
             "test_resume_budgets_authority_mutation_is_a_clean_completed_miss",
             "test_reviewer_retry_resume_preserves_durable_failure_history",
-            "test_reviewer_inflight_attempt_is_abandoned_and_consumes_budget_on_resume",
+            "test_reviewer_inflight_attempt_is_quarantined_on_resume",
+            "test_generator_inflight_attempt_is_quarantined_on_resume",
+            "test_phase_three_unknown_is_not_retried_without_remote_durability_guard",
             "test_reviewer_retry_exhaustion_is_durable_across_restarts",
         }
     ),

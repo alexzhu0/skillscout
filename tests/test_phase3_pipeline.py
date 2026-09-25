@@ -2412,7 +2412,7 @@ def test_reviewer_retry_resume_preserves_durable_failure_history(
     )
 
 
-def test_reviewer_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
+def test_reviewer_inflight_attempt_is_quarantined_on_resume(
     tmp_path: Path,
 ) -> None:
     state_path = tmp_path / "reviewer-inflight.db"
@@ -2452,17 +2452,25 @@ def test_reviewer_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
     assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
     assert calls.count("reviewer") == 0
 
-    result = application.run(descriptor)
-
-    attestation = ReviewAttestationV1.model_validate_json(
-        result.artifacts["review_attestation"], strict=True
+    with pytest.raises(SemanticProviderFailure) as unknown:
+        application.run(descriptor)
+    assert unknown.value.disposition is (
+        SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
     )
-    assert calls.count("reviewer") == 1
-    assert attestation.attempt_count == 2
+    assert calls.count("reviewer") == 0
+    store = SQLiteStateStore(state_path)
+    try:
+        chain = store.verify_candidate_run_chain("reviewer-inflight")
+    finally:
+        store.close()
+    reviewer_attempts = tuple(
+        attempt
+        for attempt in chain.attempts
+        if attempt.stage is PhaseThreeStageV1.REVIEWER
+    )
     assert tuple(
-        (attempt.attempt_no, attempt.error_code)
-        for attempt in attestation.failed_attempts
-    ) == ((1, "attempt_interrupted"),)
+        (attempt.status, attempt.outcome_code) for attempt in reviewer_attempts
+    ) == (("abandoned", "attempt_interrupted"),)
 
 
 def test_reviewer_retry_exhaustion_is_durable_across_restarts(
@@ -2592,7 +2600,7 @@ def test_generator_retry_resume_preserves_durable_failure_history(
     )
 
 
-def test_generator_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
+def test_generator_inflight_attempt_is_quarantined_on_resume(
     tmp_path: Path,
 ) -> None:
     state_path = tmp_path / "generator-inflight.db"
@@ -2630,10 +2638,12 @@ def test_generator_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
     assert interrupted.value.code is ErrorCode.PIPELINE_INTERRUPTED
     assert calls.count("generator") == 0
 
-    result = application.run(descriptor)
-
-    assert result.outcome == "generator_refusal"
-    assert calls.count("generator") == 1
+    with pytest.raises(SemanticProviderFailure) as unknown:
+        application.run(descriptor)
+    assert unknown.value.disposition is (
+        SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+    )
+    assert calls.count("generator") == 0
     store = SQLiteStateStore(state_path)
     try:
         chain = store.verify_candidate_run_chain("generator-inflight")
@@ -2646,7 +2656,7 @@ def test_generator_inflight_attempt_is_abandoned_and_consumes_budget_on_resume(
     )
     assert tuple(
         (attempt.status, attempt.outcome_code) for attempt in generator_attempts
-    ) == (("abandoned", "attempt_interrupted"), ("succeeded", "refused"))
+    ) == (("abandoned", "attempt_interrupted"),)
 
 
 def test_generator_retry_exhaustion_is_durable_across_restarts(
@@ -3767,6 +3777,73 @@ def test_phase_three_unknown_is_terminally_quarantined_across_restart(
         )
     assert calls.count(semantic_stage) == 1
     assert {item.provider for item in barrier.transitions} == {provider}
+
+
+@pytest.mark.parametrize(
+    ("semantic_stage", "expected_calls"),
+    (
+        ("generator", ["generator"]),
+        ("reviewer", ["generator", "validator", "reviewer"]),
+    ),
+)
+def test_phase_three_unknown_is_not_retried_without_remote_durability_guard(
+    tmp_path: Path,
+    semantic_stage: str,
+    expected_calls: list[str],
+) -> None:
+    calls: list[str] = []
+
+    class UnknownGenerator(_CascadeGenerator):
+        def generate(self, *, request):
+            del request
+            self.calls.append("generator")
+            raise SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+                code="semantic_provider_outcome_unknown",
+            )
+
+    class UnknownReviewer(_CascadeReviewer):
+        def review(self, **kwargs):
+            del kwargs
+            self.calls.append("reviewer")
+            raise SemanticProviderFailure(
+                disposition=SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN,
+                code="semantic_provider_outcome_unknown",
+            )
+
+    class Miss:
+        def find_completed_candidate(self, _authority):
+            return None
+
+    state_path = tmp_path / f"unguarded-{semantic_stage}-unknown.sqlite3"
+    dependencies = PhaseThreeDependencies(
+        completed_projector_factory=lambda: Miss(),
+        mutable_state_factory=lambda: SQLiteStateStore(state_path),
+        generator_factory=(
+            (lambda: UnknownGenerator("unused", calls))
+            if semantic_stage == "generator"
+            else (lambda: _CascadeGenerator("parsed", calls))
+        ),
+        validator_factory=lambda: _CascadeValidator(False, calls),
+        reviewer_factory=lambda: UnknownReviewer("unused", calls),
+        artifact_projector_factory=lambda: object(),
+        run_id_factory=lambda: f"unguarded-{semantic_stage}-unknown",
+    )
+    application = PhaseThreeApplication(
+        source=_CompositionSource(),
+        profile=_composition_profile(),
+        dependencies=dependencies,
+    )
+    descriptor = _write_composition_descriptor(tmp_path)
+
+    for _ in range(2):
+        with pytest.raises(SemanticProviderFailure) as unknown:
+            application.run(descriptor)
+        assert unknown.value.disposition is (
+            SemanticTransportDisposition.SEMANTIC_OUTCOME_UNKNOWN
+        )
+
+    assert calls == expected_calls
 
 
 def test_generator_decided_result_barrier_recovers_without_second_request(
