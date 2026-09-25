@@ -84,7 +84,7 @@ export OPENAI_API_KEY='<openai-credential>'
 
 ### DeepSeek
 
-DeepSeek is enabled only with all three settings below. Extraction and generation use `deepseek-v4-flash`; the independent review stage uses `deepseek-v4-pro`.
+DeepSeek is enabled only with all three settings below. The configured extraction and generation model is `deepseek-v4-flash`; the configured review model is `deepseek-v4-pro`.
 
 ```bash
 export SKILLSCOUT_LLM_PROVIDER='deepseek'
@@ -97,7 +97,9 @@ The implementation pins the official base URL instead of accepting arbitrary com
 For a **local preview only**, `extract-repo` and `build-candidate` accept
 `--deepseek-current-flash`. With the DeepSeek provider selected, this binds
 extraction and generation to `deepseek-flash` and keeps the separately contextualized
-reviewer on `deepseek-v4-pro`. It rejects the OpenAI provider. Other commands do not
+reviewer request name on `deepseek-v4-pro`. Provider documentation currently routes
+that Pro alias to V4.1-Flash, so it is not independent cross-model review evidence.
+It rejects the OpenAI provider. Other commands do not
 accept the flag, and hosted defaults and historical Phase 6 model bindings are
 unchanged. Arbitrary model IDs, mixed legacy/current generation profiles, and a
 response whose model ID differs from the requested ID remain rejected.
@@ -105,10 +107,11 @@ response whose model ID differs from the requested ID remain rejected.
 Use separate private state/output paths when changing model profiles; do not reuse
 legacy evidence as current-model results. Keep the selected flag on any authorized
 resume. Never retry an unknown provider outcome or erase a permanent failure.
-The [DeepSeek model documentation](https://api-docs.deepseek.com/quick_start/pricing/)
-reported on September 10, 2026 that current Flash is V4.1 and legacy Flash aliases
-route to it; an API name is not an immutable model snapshot. This local opt-in
-does not renew publication or acceptance authority.
+The [DeepSeek model and pricing documentation](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)
+checked on September 25, 2026 says current Flash is V4.1, legacy Flash aliases
+route to it, and `deepseek-v4-pro` requests currently route to V4.1-Flash until a
+new Pro model is available. An API name is not an immutable model snapshot. This
+local opt-in does not renew publication or acceptance authority.
 
 ### Selected README local preview
 
@@ -309,6 +312,8 @@ classification or be interrupted before the sidecar is written. Completed replay
 does not recreate a missing diagnostic or contact the model. Conflicting existing
 sidecars and symlinks are rejected without replacing their target; the already
 recorded terminal is preserved. Do not rerun a consumed trial to fill missing data.
+An unknown provider/transport outcome with no completed generation result cannot
+be classified by this diagnostic and remains unknown; preserve it and stop.
 
 The local renderer links the reference files it creates using their validated
 names. It adds no scripts, executes no source code and grants no tool authority.

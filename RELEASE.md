@@ -17,7 +17,7 @@ Public authority/schema shapes, model requests/prompts, acceptance, retry limits
 Reviewer policy and hosted behavior stay unchanged. The diagnostic is never a
 publication artifact. Completed replay does not invent missing diagnostics or make
 a model request. This is an observability change, not a successful Skill or a repair
-of the previous failed response. No live call or remote update accompanies it.
+of the previous failed response. No live call accompanied its implementation.
 
 Verification: **3051 passed, 3 skipped** in 1225.05s on the final implementation;
 the expanded focused suite passed **416 tests**. Whole-repository Ruff and
@@ -27,6 +27,19 @@ The conflict test now reaches byte-conflict validation rather than failing on
 permissions first. Historical failure artifacts and closed-trial hashes match.
 The three existing skips remain the pending Phase 6 requirement map and two
 unconfigured protected live canaries; they do not establish live acceptance.
+
+## September 25 fresh diagnostic trial — provider outcome unknown
+
+The [fresh trial record](docs/superpowers/specs/2026-09-25-diagnostic-real-result.md)
+used one reserved generation attempt after the diagnostic implementation. The
+qualifier passed, but generation was durably recorded as `attempt_interrupted`;
+there is no terminal model result, request ID, token usage, terminal summary, or
+diagnostic sidecar. Whether DeepSeek received or billed the request is unknown.
+The slot is consumed and was not retried. No Skill package, Reviewer result,
+validation, usefulness comparison, or publication resulted. The CNY20 reserve is
+not a bill. The `deepseek-v4-pro` reviewer alias is currently routed to V4.1-Flash,
+so it would not count as independent model evidence. This does not establish a
+useful Skill or Phase 6 acceptance.
 
 ## September 20 independent real regression — generation rejected
 
