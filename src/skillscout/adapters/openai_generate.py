@@ -70,7 +70,7 @@ Standing rules:
 Policy: {GENERATOR_POLICY_VERSION}
 """
 
-GENERATOR_LOCAL_SOURCE_FAITHFUL_INSTRUCTIONS_V1 = f"""{LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION}
+GENERATOR_LOCAL_SOURCE_FAITHFUL_INSTRUCTIONS_V1 = f"""generator-local-source-faithful-v1
 
 You are the SkillScout semantic Generator. Generalize the verified structured
 workflow in the user message into one reusable Agent Skill draft. Return only
@@ -100,6 +100,18 @@ Standing rules:
 
 Policy: {GENERATOR_POLICY_VERSION}
 """
+
+GENERATOR_LOCAL_SOURCE_FAITHFUL_INSTRUCTIONS_V2 = (
+    GENERATOR_LOCAL_SOURCE_FAITHFUL_INSTRUCTIONS_V1.replace(
+        "generator-local-source-faithful-v1", LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION, 1,
+    )
+    + "\nSet quotes to an empty array ([]). Paraphrase source-supported guidance; "
+    "do not include verbatim quotations. Source attribution is retained by the renderer.\n"
+)
+_LOCAL_INSTRUCTIONS = {
+    "generator-local-source-faithful-v1": GENERATOR_LOCAL_SOURCE_FAITHFUL_INSTRUCTIONS_V1,
+    LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION: GENERATOR_LOCAL_SOURCE_FAITHFUL_INSTRUCTIONS_V2,
+}
 
 _Identifier = Annotated[str, Field(min_length=1, max_length=512)]
 _RepositoryId = Annotated[int, Field(ge=1, le=9_223_372_036_854_775_807)]
@@ -188,10 +200,7 @@ class OpenAIGenerationClient:
             )
         ):
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
-        if prompt_version not in {
-            GENERATOR_PROMPT_VERSION,
-            LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION,
-        }:
+        if prompt_version != GENERATOR_PROMPT_VERSION and prompt_version not in _LOCAL_INSTRUCTIONS:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         self._client = create_semantic_client(
             settings,
@@ -204,11 +213,7 @@ class OpenAIGenerationClient:
         self._max_output_tokens = max_output_tokens
         self._prompt_version = prompt_version
         self._last_diagnostic: dict[str, object] | None = None
-        self._instructions = (
-            GENERATOR_LOCAL_SOURCE_FAITHFUL_INSTRUCTIONS_V1
-            if prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
-            else GENERATOR_INSTRUCTIONS_V1
-        )
+        self._instructions = _LOCAL_INSTRUCTIONS.get(prompt_version, GENERATOR_INSTRUCTIONS_V1)
 
     @property
     def effect_scope(self) -> EffectScope:
@@ -244,7 +249,7 @@ class OpenAIGenerationClient:
         """Make exactly one bounded SDK request, leaving retries to the runner."""
 
         self._last_diagnostic = None
-        local_diagnostics = self._prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+        local_diagnostics = self._prompt_version in _LOCAL_INSTRUCTIONS
         if type(request) is not GenerationRequestV1:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         user_payload_bytes = canonical_json_bytes(request)
@@ -328,7 +333,7 @@ class OpenAIGenerationClient:
         result: GenerationResult,
     ) -> GenerationResult:
         if (
-            self._prompt_version != LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+            self._prompt_version not in _LOCAL_INSTRUCTIONS
             or result.status != "parsed"
             or result.draft is None
         ):

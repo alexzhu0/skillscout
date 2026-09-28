@@ -91,8 +91,7 @@ from skillscout.domain.skill_artifacts import (
     GENERATION_DRAFT_SCHEMA_VERSION,
     PROVENANCE_SCHEMA_VERSION,
     RENDERER_VERSION,
-    LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION,
-    LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION,
+    LOCAL_SOURCE_FAITHFUL_VERSIONS,
     FrozenSkillPackageV1,
     GenerationAuthorityProjectionV1,
     render_skill_package,
@@ -145,7 +144,7 @@ class PhaseThreeRuntimeProfile(StrictFrozenModel):
 
     @model_validator(mode="after")
     def validate_local_attempt_bounds(self) -> PhaseThreeRuntimeProfile:
-        if self.profile_version == LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION and (
+        if self.profile_version in dict(LOCAL_SOURCE_FAITHFUL_VERSIONS) and (
             self.max_generator_attempts != 1 or self.max_reviewer_attempts != 1
         ):
             raise ValueError("local source-faithful generation requires one attempt")
@@ -180,10 +179,10 @@ class PhaseThreeRuntimeProfile(StrictFrozenModel):
     def generator_prompt_version(self) -> str:
         """Derive prompt authority without adding a serialized profile field."""
 
-        if self.profile_version == LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION:
+        if self.profile_version in dict(LOCAL_SOURCE_FAITHFUL_VERSIONS):
             if self.max_generator_attempts != 1 or self.max_reviewer_attempts != 1:
                 raise ValueError("local source-faithful generation requires one attempt")
-            return LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+            return dict(LOCAL_SOURCE_FAITHFUL_VERSIONS)[self.profile_version]
         return GENERATOR_PROMPT_VERSION
 
 
@@ -544,7 +543,7 @@ class PhaseThreeRunner:
             raise SafeFailure(ErrorCode.STAGE_PERMANENT_FAILURE)
         observed_prompt = getattr(client, "prompt_version", None)
         if (
-            prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+            prompt_version in dict(LOCAL_SOURCE_FAITHFUL_VERSIONS).values()
             and observed_prompt != prompt_version
         ) or (
             prompt_version == GENERATOR_PROMPT_VERSION

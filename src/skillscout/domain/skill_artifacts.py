@@ -29,8 +29,12 @@ FROZEN_PACKAGE_SCHEMA_VERSION: Final = "frozen-skill-package-v1"
 REFERENCE_SCHEMA_VERSION: Final = "generated-reference-v1"
 RENDERED_FILE_SCHEMA_VERSION: Final = "rendered-file-v1"
 RENDERER_VERSION: Final = "skill-renderer-v1"
-LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION: Final = "phase3-local-source-faithful-v1"
-LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION: Final = "generator-local-source-faithful-v1"
+LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION: Final = "phase3-local-source-faithful-v2"
+LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION: Final = "generator-local-source-faithful-v2"
+LOCAL_SOURCE_FAITHFUL_VERSIONS: Final = (
+    ("phase3-local-source-faithful-v1", "generator-local-source-faithful-v1"),
+    (LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION, LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION),
+)
 SOURCE_APPROVALS_UNSPECIFIED: Final = (
     "The source does not specify approval requirements."
 )
@@ -536,9 +540,10 @@ def uses_local_source_faithful_generation(
 ) -> bool:
     """Recognize only the exact local profile/prompt pair."""
 
-    local_profile = phase3_profile_version == LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION
-    local_prompt = generator_prompt_version == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
-    if local_profile != local_prompt:
+    pair = (phase3_profile_version, generator_prompt_version)
+    local_profile = any(phase3_profile_version == profile for profile, _ in LOCAL_SOURCE_FAITHFUL_VERSIONS)
+    local_prompt = any(generator_prompt_version == prompt for _, prompt in LOCAL_SOURCE_FAITHFUL_VERSIONS)
+    if (local_profile or local_prompt) and pair not in LOCAL_SOURCE_FAITHFUL_VERSIONS:
         raise ValueError("local generation profile and prompt disagree")
     return local_profile
 

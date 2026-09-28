@@ -279,8 +279,12 @@ CLI, and inject credentials only through the approved runtime mechanism. Do not
 rerun closed launchers or borrow their unused slots. This correction task makes no
 live requests and does not reopen the September 20 trial.
 
-The local identities are `phase3-local-source-faithful-v1` and
-`generator-local-source-faithful-v1`, carried in existing profile/prompt fields.
+New local builds use `phase3-local-source-faithful-v2` and
+`generator-local-source-faithful-v2`, carried in existing profile/prompt fields.
+The v2 prompt requests `quotes=[]` and paraphrased guidance; source attribution
+is still rendered deterministically. No length, copying, safety, format or
+Reviewer check is relaxed. Historical v1 pairs remain recognized, with their
+original prompt, one-attempt limits and publication denial; mixed versions fail.
 They bind authority, provenance and completed-result reuse. Public schema shapes,
 the v1 renderer family and default/hosted prompt bytes remain unchanged. Do not mix
 profile identities or reuse a default-profile result as a local-profile result.

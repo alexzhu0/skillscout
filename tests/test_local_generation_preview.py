@@ -161,6 +161,46 @@ def _local_client(
     )
 
 
+def test_current_local_request_omits_optional_quotes_without_changing_source_payload():
+    draft = _response_draft(
+        approvals=[SOURCE_APPROVALS_UNSPECIFIED],
+        failure_handling=[SOURCE_FAILURE_HANDLING_UNSPECIFIED], quotes=[],
+    )
+    recorded = RecordedTransport({CHAT_COMPLETIONS: _deepseek_response(draft)})
+    request = _request_with_source_fields(approvals=(), failure_modes=())
+    with _local_client(recorded, deepseek=True) as client:
+        result = client.generate(request=request)
+        assert client.prompt_version == "generator-local-source-faithful-v2"
+    body = json.loads(recorded.requests[0].content)
+    assert 'Set quotes to an empty array ([]).' in body["messages"][0]["content"]
+    assert json.loads(body["messages"][1]["content"]) == request.model_dump(mode="json")
+    assert result.status == "parsed" and result.draft.quotes == ()
+    assert recorded.call_count(*CHAT_COMPLETIONS) == 1
+
+
+@pytest.mark.parametrize("version", ("v1", "v2"))
+def test_local_versions_remain_paired_and_single_attempt(version):
+    from skillscout.domain.skill_artifacts import uses_local_source_faithful_generation
+
+    profile = f"phase3-local-source-faithful-{version}"
+    prompt = f"generator-local-source-faithful-{version}"
+    assert uses_local_source_faithful_generation(
+        phase3_profile_version=profile, generator_prompt_version=prompt,
+    )
+    bounded = PhaseThreeRuntimeProfile(
+        profile_version=profile, max_generator_attempts=1, max_reviewer_attempts=1,
+    )
+    assert bounded.generator_prompt_version == prompt
+    with pytest.raises(ValueError, match="one attempt"):
+        PhaseThreeRuntimeProfile(profile_version=profile, max_generator_attempts=2)
+    with pytest.raises(ValueError):
+        uses_local_source_faithful_generation(
+            phase3_profile_version=profile,
+            generator_prompt_version="generator-local-source-faithful-v2" if version == "v1"
+            else "generator-local-source-faithful-v1",
+        )
+
+
 @pytest.mark.parametrize("deepseek", (False, True), ids=("openai", "deepseek"))
 @pytest.mark.parametrize(
     ("missing_field", "draft_changes"),

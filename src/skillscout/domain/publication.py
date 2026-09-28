@@ -19,8 +19,7 @@ from skillscout.domain.models import Digest, StrictFrozenModel
 from skillscout.domain.qualification import QualificationReportV1, qualification_report_bytes, qualification_report_digest
 from skillscout.domain.review import CandidateTerminalSummaryV1, ReviewAttestationV1, candidate_terminal_summary_bytes, review_attestation_bytes
 from skillscout.domain.skill_artifacts import (
-    LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION,
-    LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION,
+    LOCAL_SOURCE_FAITHFUL_VERSIONS,
     FrozenSkillPackageV1,
     RenderedPackageManifestV1,
 )
@@ -266,9 +265,9 @@ def admit_phase3_candidate(*, evidence: CandidatePublicationEvidenceV1 | None = 
     generation_authority = package.provenance.generation_authority
     if (
         generation_authority.phase3_profile_version
-        == LOCAL_SOURCE_FAITHFUL_PROFILE_VERSION
+        in dict(LOCAL_SOURCE_FAITHFUL_VERSIONS)
         or generation_authority.generator_prompt_version
-        == LOCAL_SOURCE_FAITHFUL_PROMPT_VERSION
+        in dict(LOCAL_SOURCE_FAITHFUL_VERSIONS).values()
     ):
         raise ValueError("local generation has no publication authority")
     manifest = RenderedPackageManifestV1.model_validate_json(artifacts["package_manifest"], strict=True)
