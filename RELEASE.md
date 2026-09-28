@@ -6,6 +6,14 @@ This preview demonstrates the implemented pipeline and its verification evidence
 
 ## September 28 observed real generation — quote-field schema rejection
 
+Follow-up: the explicit local v2 prompt requests empty optional quotes, retains
+historical v1 support, and changes no default/hosted prompt or validation rule.
+Its [one real trial](docs/superpowers/specs/2026-09-28-no-quotes-trial.md) produced
+a package but failed `overcopy_unregistered_source_match`. Reviewer and comparison
+were skipped. Estimated cost CNY0.015056; no useful Skill or publication approval.
+Verification: **3056 passed, 3 existing skips** in 1067.23s; 49 focused checks,
+the fresh-trial reservation check, Ruff and independent code/result review passed.
+
 One new real `deepseek-flash` request completed normally in 4.273s, with 5,316 input
 and 887 output tokens (estimated CNY0.017728, not a bill). The retained diagnostic
 is `quotes / string_too_long`; nested quote text versus source-path attribution
