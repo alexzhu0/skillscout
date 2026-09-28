@@ -4,6 +4,19 @@ SkillScout `0.1.0` is a public preview of an auditable Python pipeline that turn
 
 This preview demonstrates the implemented pipeline and its verification evidence. It does **not** make a whole-product production-readiness claim. Phase 5 automated discovery operations completed independent verification on **2026-07-28** with **6/6 must-haves** and **5/5 requirements** satisfied, including an exact-byte **Gate B4** for the then-reviewed workflow, GitHub App installation, catalog ruleset, protected environment, and reviewer configuration. Those approvals are historical and do not grant authority to changed code or identities.
 
+## September 28 observed real generation — quote-field schema rejection
+
+One new real `deepseek-flash` request completed normally in 4.273s, with 5,316 input
+and 887 output tokens (estimated CNY0.017728, not a bill). The retained diagnostic
+is `quotes / string_too_long`; nested quote text versus source-path attribution
+is intentionally not retained. No package, Reviewer or usefulness comparison was
+produced. Failure closed the trial without retry or semantic repair.
+
+Only private local observation and documentation were added; production code,
+prompts and safety limits stayed unchanged. Independent observer review findings
+were reproduced and fixed; 6 private checks and 90 combined provider/diagnostic
+checks passed. See the [result and hashes](docs/superpowers/specs/2026-09-28-observed-real-result.md).
+
 ## September 20 local rejection diagnostics
 
 The [diagnostic change](docs/superpowers/plans/2026-09-20-generation-rejection-diagnostics.md)

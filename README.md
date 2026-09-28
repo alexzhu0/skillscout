@@ -54,6 +54,11 @@ The lock file is authoritative; keep `--locked` enabled so dependency resolution
 
 ## Quick start
 
+Latest [September 28 real trial](docs/superpowers/specs/2026-09-28-observed-real-result.md):
+DeepSeek Flash returned normally, but generation failed `quotes / string_too_long`.
+No accepted Skill or usefulness score exists yet. The trial is closed; do not
+rerun its consumed launcher. CLI exit0 alone does not mean candidate success.
+
 The [September 15 real-source pilot](docs/superpowers/specs/2026-09-15-real-useful-skill-result.md)
 used one Flash request and extracted one Microsoft prompt-refinement workflow.
 Although schema validation and deterministic qualification passed, independent
